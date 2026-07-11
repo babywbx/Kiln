@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Optional host-only helper when local ffmpeg lacks DASH demuxer.
+# Copy to scripts/ffmpeg-cenc.local (gitignored) and point configs/local.toml at it.
+set -euo pipefail
+IMG="${KILN_FFMPEG_IMAGE:-linuxserver/ffmpeg:latest}"
+exec docker run --rm \
+  -v /tmp:/tmp \
+  -v "$HOME:$HOME" \
+  -w "$PWD" \
+  "$IMG" "$@"
