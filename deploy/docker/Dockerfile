@@ -21,13 +21,13 @@ RUN --mount=type=cache,target=/go/pkg/mod \
         -X github.com/babywbx/kiln/modules/version.BuiltAt=${BUILT_AT}" \
       -o /out/kiln ./apps/server
 
-FROM --platform=$TARGETPLATFORM ${FFMPEG_IMAGE} AS ffmpeg
+FROM ${FFMPEG_IMAGE} AS ffmpeg
 
-FROM debian:bookworm-slim AS runtime
-RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates \
- && rm -rf /var/lib/apt/lists/* \
- && useradd --system --home /var/lib/kiln --shell /usr/sbin/nologin kiln \
+FROM alpine:3.22 AS runtime
+RUN apk add --no-cache ca-certificates tzdata \
+ && delgroup ping \
+ && addgroup -S -g 999 kiln \
+ && adduser -S -D -H -u 999 -G kiln -h /var/lib/kiln -s /sbin/nologin kiln \
  && mkdir -p /var/lib/kiln/data /etc/kiln /usr/local/share/kiln \
  && chown -R kiln:kiln /var/lib/kiln /etc/kiln
 COPY --from=ffmpeg /ffmpeg   /usr/local/bin/ffmpeg
