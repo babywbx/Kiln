@@ -1,0 +1,95 @@
+# Build artifacts
+/bin/
+/dist/
+/tmp/
+*.exe
+*.test
+*.out
+coverage.out
+coverage/
+
+# Go tooling / local module cache overrides
+.gocache/
+.gomodcache/
+vendor/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+.envrc
+.direnv/
+
+# Runtime data (sessions, HLS work dirs, user content)
+/data/
+**/data/sessions/
+
+# Local-only config and host overrides (never commit)
+configs/local.*
+!configs/examples/**
+deploy/docker/kiln.toml
+deploy/docker/keys.txt
+*.local
+*.local.*
+scripts/*.local
+scripts/ffmpeg-cenc
+
+# Certificates, keys, and exported secret material
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.keys
+keys.local.txt
+*secret*.json
+*recovery-kit*.txt
+
+# Logs and ad-hoc dumps
+logs/
+*.log
+*.jsonl
+*.bak
+*.tmp
+*.temp
+
+# OS noise
+.DS_Store
+._*
+.AppleDouble
+.LSOverride
+.Spotlight-V100
+.Trashes
+Thumbs.db
+
+# Editor state
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.sublime-workspace
+*.sublime-project
+
+# Local agent / assistant state
+.superpowers/
+.codex/
+.codexcloud/
+codexcloud/
+.claude/
+.aider*
+.cursor/
+.cursorrules
+CLAUDE.local.md
+CODEX.local.md
+AGENTS.local.md
+AGENTS.private.md
+
+# Local scratch and private planning
+local/
+.local/
+docs/private/
+docs/plans/
+docs/superpowers/
+docs/**/*-draft*.md
+docs/**/*-scratch*.md
