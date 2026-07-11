@@ -1,4 +1,4 @@
-.PHONY: build test run tidy hash docker
+.PHONY: build test run tidy hash keys docker
 
 build:
 	go build -o dist/kiln ./apps/server
@@ -14,6 +14,9 @@ run:
 
 hash:
 	@go run scripts/hash-password.go $(PASSWORD)
+
+keys:
+	@go run scripts/gen-jwt-keys.go $(or $(DIR),./secrets)
 
 docker:
 	docker build -f deploy/docker/Dockerfile -t kiln:local .

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"golang.org/x/crypto/bcrypt"
+	"github.com/babywbx/kiln/modules/auth"
 )
 
 func main() {
@@ -14,10 +14,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, "usage: go run scripts/hash-password.go <password>")
 		os.Exit(2)
 	}
-	h, err := bcrypt.GenerateFromPassword([]byte(os.Args[1]), bcrypt.DefaultCost)
+	h, err := auth.HashPassword(os.Args[1])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	fmt.Println(string(h))
+	fmt.Println(h)
 }
