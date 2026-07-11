@@ -1,0 +1,460 @@
+package session
+
+import (
+	"context"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
+
+	"github.com/babywbx/kiln/modules/apperr"
+	"github.com/babywbx/kiln/modules/catalog"
+	"github.com/babywbx/kiln/modules/config"
+	"github.com/babywbx/kiln/modules/egress"
+	"github.com/babywbx/kiln/modules/observe"
+	"github.com/babywbx/kiln/modules/proxyegress"
+	"github.com/babywbx/kiln/modules/pull"
+)
+
+var ErrNotFound = apperr.New(apperr.CodeNotFound, 404, "channel not found")
+
+const (
+	maxDashRestarts   = 8
+	restartBaseDelay  = 2 * time.Second
+	restartMaxDelay   = 30 * time.Second
+	restartResetAfter = 90 * time.Second
+)
+
+var startSem = make(chan struct{}, 1)
+
+type Manager struct {
+	cat     *catalog.Service
+	pull    *pull.Client
+	obs     *observe.Service
+	egress  *proxyegress.Router
+	dataDir string
+	ffmpeg  config.FFmpeg
+	log     *slog.Logger
+
+	mu       sync.Mutex
+	sessions map[string]*Session
+	inflight map[string]*startWait
+}
+
+type startWait struct {
+	done chan struct{}
+	sess *Session
+	err  error
+}
+
+type Session struct {
+	Channel   config.Channel
+	SourceURL string
+	Upstream  config.Upstream
+	Mode      string
+	StartedAt time.Time
+	LastTouch time.Time
+	WorkDir   string
+	Errors    int
+	LastError string
+	PackMode  string
+	dash      *egress.DashJob
+	cancel    context.CancelFunc
+	ctx       context.Context
+	restarts  int
+	lastOK    time.Time
+}
+
+func NewManager(cat *catalog.Service, pullClient *pull.Client, obs *observe.Service, dataDir string, ff config.FFmpeg, log *slog.Logger, egress *proxyegress.Router) *Manager {
+	if log == nil {
+		log = slog.Default()
+	}
+	return &Manager{
+		cat:      cat,
+		pull:     pullClient,
+		obs:      obs,
+		egress:   egress,
+		dataDir:  dataDir,
+		ffmpeg:   ff,
+		log:      log,
+		sessions: map[string]*Session{},
+		inflight: map[string]*startWait{},
+	}
+}
+
+func (m *Manager) Start(ctx context.Context) {
+	go m.reaper(ctx)
+	go m.autostart(ctx)
+}
+
+func (m *Manager) Pull() *pull.Client { return m.pull }
+
+func (m *Manager) Acquire(channelID string) (*Session, error) {
+	ch, ok := m.cat.Get(channelID)
+	if !ok {
+		return nil, ErrNotFound
+	}
+	src, err := m.cat.SourceURL(ch)
+	if err != nil {
+		return nil, err
+	}
+	up, err := m.cat.Upstream(ch)
+	if err != nil {
+		return nil, err
+	}
+
+	for {
+		m.mu.Lock()
+		if s, ok := m.sessions[channelID]; ok {
+			s.LastTouch = time.Now()
+			m.publish(s, "running")
+			m.mu.Unlock()
+			return s, nil
+		}
+		if w, ok := m.inflight[channelID]; ok {
+			m.mu.Unlock()
+			<-w.done
+			if w.err != nil {
+				return nil, w.err
+			}
+			if w.sess != nil {
+				m.mu.Lock()
+				if cur, ok := m.sessions[channelID]; ok {
+					cur.LastTouch = time.Now()
+					m.publish(cur, "running")
+					m.mu.Unlock()
+					return cur, nil
+				}
+				m.mu.Unlock()
+				if w.sess != nil {
+					return w.sess, nil
+				}
+			}
+			continue
+		}
+		w := &startWait{done: make(chan struct{})}
+		m.inflight[channelID] = w
+		m.mu.Unlock()
+
+		sctx, cancel := context.WithCancel(context.Background())
+		s := &Session{
+			Channel:   ch,
+			SourceURL: src,
+			Upstream:  up,
+			Mode:      ch.Ingress,
+			StartedAt: time.Now(),
+			LastTouch: time.Now(),
+			cancel:    cancel,
+			ctx:       sctx,
+		}
+		var startErr error
+		if ch.Ingress == "dash" {
+			startErr = m.startDash(s)
+		}
+		m.mu.Lock()
+		delete(m.inflight, channelID)
+		if startErr != nil {
+			cancel()
+			w.err = startErr
+			close(w.done)
+			m.mu.Unlock()
+			return nil, startErr
+		}
+		if existing, ok := m.sessions[channelID]; ok {
+			if s.dash != nil {
+				_ = s.dash.Stop()
+			}
+			cancel()
+			existing.LastTouch = time.Now()
+			w.sess = existing
+			close(w.done)
+			m.mu.Unlock()
+			return existing, nil
+		}
+		s.lastOK = time.Now()
+		m.sessions[channelID] = s
+		m.publish(s, "running")
+		w.sess = s
+		close(w.done)
+		m.mu.Unlock()
+		m.log.Info("session started", "channel", channelID, "ingress", ch.Ingress, "pack_mode", s.PackMode)
+		return s, nil
+	}
+}
+
+func (m *Manager) startDash(s *Session) error {
+	startSem <- struct{}{}
+	defer func() { <-startSem }()
+
+	keys, err := config.LoadKeysFile(s.Channel.KeysFile)
+	if err != nil {
+		return apperr.Wrap(apperr.CodeInvalid, 400, "load keys failed", err)
+	}
+	work := filepath.Join(m.dataDir, "sessions", s.Channel.ID)
+	if s.dash != nil {
+		_ = s.dash.Stop()
+		s.dash = nil
+	}
+	_ = os.RemoveAll(work)
+	headers := map[string]string{}
+	for k, v := range s.Upstream.Headers {
+		headers[k] = v
+	}
+	for k, v := range s.Channel.Headers {
+		headers[k] = v
+	}
+	prefer := m.ffmpeg.PreferHeight
+	if s.Channel.PreferHeight > 0 {
+		prefer = s.Channel.PreferHeight
+	}
+	job, err := egress.StartDashHLS(s.ctx, egress.DashOptions{
+		Binary:       m.ffmpeg.Binary,
+		SourceURL:    s.SourceURL,
+		UserAgent:    s.Channel.UserAgent,
+		Headers:      headers,
+		Keys:         keys,
+		WorkDir:      work,
+		HLSTime:      m.ffmpeg.HLSTime,
+		HLSListSize:  m.ffmpeg.HLSListSize,
+		LogLevel:     m.ffmpeg.LogLevel,
+		PreferHeight: prefer,
+		LowLatency:   m.ffmpeg.LowLatency,
+		Logger:       m.log.With("channel", s.Channel.ID),
+		OnBytesIn: func(n int64) {
+			if m.obs != nil {
+				m.obs.AddBytesIn(n)
+			}
+		},
+		Egress:       m.egress,
+		ChannelID:    s.Channel.ID,
+		DockerFFmpeg: true,
+	})
+	if err != nil {
+		s.LastError = err.Error()
+		return apperr.Wrap(apperr.CodeUpstream, 502, "dash packager failed", err)
+	}
+	s.dash = job
+	s.WorkDir = job.WorkDir()
+	s.PackMode = job.Mode()
+	s.LastError = ""
+	s.lastOK = time.Now()
+	if s.Channel.RestartOnFailure {
+		go m.watchDash(s.Channel.ID, job)
+	}
+	return nil
+}
+
+func (m *Manager) watchDash(channelID string, job *egress.DashJob) {
+	<-job.Done()
+	if job.IntentionalStop() {
+		return
+	}
+
+	m.mu.Lock()
+	s, ok := m.sessions[channelID]
+	if !ok || s.dash != job {
+		m.mu.Unlock()
+		return
+	}
+	if s.Channel.OnDemand {
+		idle := m.cat.Config().IdleTimeout(s.Channel)
+		if time.Since(s.LastTouch) > idle {
+			m.log.Info("dash ended after idle; not restarting", "channel", channelID)
+			m.stopLocked(channelID, s)
+			m.mu.Unlock()
+			return
+		}
+	}
+	if !s.lastOK.IsZero() && time.Since(s.lastOK) >= restartResetAfter {
+		s.restarts = 0
+	}
+	s.Errors++
+	s.restarts++
+	s.LastError = errString(job.Err())
+	if s.restarts > maxDashRestarts {
+		m.log.Error("dash restart budget exceeded", "channel", channelID, "restarts", s.restarts, "err", job.Err())
+		m.publish(s, "failed")
+		m.stopLocked(channelID, s)
+		m.mu.Unlock()
+		return
+	}
+	delay := restartBaseDelay * time.Duration(1<<min(s.restarts-1, 4))
+	if delay > restartMaxDelay {
+		delay = restartMaxDelay
+	}
+	m.publish(s, "restarting")
+	m.mu.Unlock()
+
+	m.log.Warn("dash session ended; restarting",
+		"channel", channelID,
+		"err", job.Err(),
+		"attempt", s.restarts,
+		"delay", delay.String(),
+	)
+	time.Sleep(delay)
+
+	m.mu.Lock()
+	s, ok = m.sessions[channelID]
+	if !ok {
+		m.mu.Unlock()
+		return
+	}
+	m.mu.Unlock()
+
+	if err := m.startDash(s); err != nil {
+		m.log.Error("dash restart failed", "channel", channelID, "err", err)
+		m.mu.Lock()
+		if cur, ok := m.sessions[channelID]; ok && cur == s {
+			s.LastError = err.Error()
+			m.publish(s, "failed")
+			m.stopLocked(channelID, cur)
+		}
+		m.mu.Unlock()
+		return
+	}
+	m.mu.Lock()
+	if cur, ok := m.sessions[channelID]; !ok || cur != s {
+		if s.dash != nil {
+			_ = s.dash.Stop()
+		}
+		m.mu.Unlock()
+		return
+	}
+	m.publish(s, "running")
+	m.mu.Unlock()
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func (m *Manager) Touch(channelID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if s, ok := m.sessions[channelID]; ok {
+		s.LastTouch = time.Now()
+		m.publish(s, "running")
+	}
+}
+
+func (m *Manager) Get(channelID string) (*Session, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.sessions[channelID]
+	return s, ok
+}
+
+func (m *Manager) autostart(ctx context.Context) {
+	for _, ch := range m.cat.Config().ActiveChannels() {
+		if !ch.Autostart {
+			continue
+		}
+		if _, err := m.Acquire(ch.ID); err != nil {
+			m.log.Error("autostart failed", "channel", ch.ID, "err", err)
+		}
+	}
+	<-ctx.Done()
+}
+
+func (m *Manager) reaper(ctx context.Context) {
+	t := time.NewTicker(5 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			m.stopAll()
+			return
+		case <-t.C:
+			m.reapOnce()
+		}
+	}
+}
+
+func (m *Manager) reapOnce() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now()
+	for id, s := range m.sessions {
+		if !s.Channel.OnDemand {
+			continue
+		}
+		idle := m.cat.Config().IdleTimeout(s.Channel)
+		if now.Sub(s.LastTouch) > idle {
+			m.log.Info("session idle stop", "channel", id)
+			m.stopLocked(id, s)
+		}
+	}
+}
+
+func (m *Manager) stopAll() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, s := range m.sessions {
+		m.stopLocked(id, s)
+	}
+}
+
+func (m *Manager) stopLocked(id string, s *Session) {
+	if s.dash != nil {
+		_ = s.dash.Stop()
+		s.dash = nil
+	}
+	if s.cancel != nil {
+		s.cancel()
+	}
+	if s.WorkDir != "" {
+		_ = os.RemoveAll(s.WorkDir)
+	}
+	delete(m.sessions, id)
+	m.obs.RemoveSession(id)
+}
+
+func (m *Manager) StopChannel(channelID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.sessions[channelID]
+	if !ok {
+		return false
+	}
+	m.stopLocked(channelID, s)
+	return true
+}
+
+func (m *Manager) publish(s *Session, state string) {
+	m.obs.UpsertSession(observe.SessionStat{
+		ChannelID: s.Channel.ID,
+		Mode:      s.Mode,
+		PackMode:  s.PackMode,
+		StartedAt: s.StartedAt,
+		LastTouch: s.LastTouch,
+		State:     state,
+		Errors:    s.Errors,
+		LastError: s.LastError,
+	})
+}
+
+func (m *Manager) HeadersFor(ch config.Channel) map[string]string {
+	up, err := m.cat.Upstream(ch)
+	if err != nil {
+		return ch.Headers
+	}
+	out := map[string]string{}
+	for k, v := range up.Headers {
+		out[k] = v
+	}
+	for k, v := range ch.Headers {
+		out[k] = v
+	}
+	return out
+}
