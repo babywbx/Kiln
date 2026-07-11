@@ -93,11 +93,14 @@ func TestProxyTLSCompat(t *testing.T) {
 	if tr.TLSClientConfig == nil {
 		t.Fatal("TLSClientConfig required for proxy CDN compat")
 	}
-	if tr.TLSClientConfig.MaxVersion != 0x0303 {
-		t.Fatalf("MaxVersion want TLS1.2 got %x", tr.TLSClientConfig.MaxVersion)
+	if tr.TLSClientConfig.MinVersion != 0x0303 {
+		t.Fatalf("MinVersion want TLS1.2 got %x", tr.TLSClientConfig.MinVersion)
 	}
-	if len(tr.TLSClientConfig.NextProtos) != 1 || tr.TLSClientConfig.NextProtos[0] != "http/1.1" {
-		t.Fatalf("NextProtos=%v", tr.TLSClientConfig.NextProtos)
+	if tr.TLSClientConfig.MaxVersion != 0x0304 {
+		t.Fatalf("MaxVersion want TLS1.3 got %x", tr.TLSClientConfig.MaxVersion)
+	}
+	if len(tr.TLSClientConfig.NextProtos) != 0 {
+		t.Fatalf("NextProtos should be empty for proxy CDN compat, got %v", tr.TLSClientConfig.NextProtos)
 	}
 }
 
@@ -122,6 +125,37 @@ func TestPlaylistRewritePolicy(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("env=%v", env)
+	}
+}
+
+func TestEnvForFFmpegUsesCDNHostNotLANOrigin(t *testing.T) {
+	r, err := NewRouter(Config{
+		Default:        Direct,
+		PlaylistPolicy: PolicyRewrite,
+		Profiles:       []Profile{{ID: "local-http", URL: "http://127.0.0.1:7890"}},
+		Rules: []Rule{
+			{Priority: 5, Kind: KindHostExact, Pattern: "origin.example.com", ProxyID: Direct},
+			{Priority: 10, Kind: KindHostSuffix, Pattern: "origin.example.com", ProxyID: "local-http"},
+		},
+		DockerProxyHost: "host.docker.internal",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// LAN origin alone must not inject a proxy (would miss CDN host rules).
+	if env := r.EnvForFFmpeg("http://origin.example.com:8000/live/uhd", "demo-uhd", true); len(env) != 0 {
+		t.Fatalf("lan origin env=%v", env)
+	}
+	// Resolved MPD / BaseURL host must inject docker-rewritten proxy for segment pulls.
+	env := r.EnvForFFmpeg("https://origin.example.com/session/x/index.mpd", "demo-uhd", true)
+	found := false
+	for _, e := range env {
+		if e == "HTTP_PROXY=http://host.docker.internal:7890" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("cdn env=%v", env)
 	}
 }
 

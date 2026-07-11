@@ -9,8 +9,17 @@ if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   exit 1
 fi
 
-( while kill -0 "$$" 2>/dev/null; do sleep 2; done
-  docker rm -f "$NAME" >/dev/null 2>&1 || true ) &
+if [[ -n "${KILN_FF_NAME_FILE:-}" ]]; then
+  printf '%s\n' "$NAME" >"$KILN_FF_NAME_FILE"
+fi
+
+# Watchdog in a new session so Kiln's process-group kill cannot reap it.
+# When the docker client (this PID after exec) dies, force-remove the container.
+MAIN_PID=$$
+setsid bash -c "
+  while kill -0 $MAIN_PID 2>/dev/null; do sleep 2; done
+  docker rm -f '$NAME' >/dev/null 2>&1 || true
+" </dev/null >/dev/null 2>&1 &
 
 args=(
   run --rm --name "$NAME"
@@ -25,9 +34,14 @@ args=(
 for v in HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy NO_PROXY no_proxy; do
   if [[ -n "${!v:-}" ]]; then
     val="${!v}"
-    val="${val//127.0.0.1/host.docker.internal}"
-    val="${val//localhost/host.docker.internal}"
-    args+=(-e "${v}=${val}")
+    # Only rewrite proxy *endpoints*; leave NO_PROXY localhost entries intact.
+    if [[ "$v" == "NO_PROXY" || "$v" == "no_proxy" ]]; then
+      args+=(-e "${v}=${val}")
+    else
+      val="${val//127.0.0.1/host.docker.internal}"
+      val="${val//localhost/host.docker.internal}"
+      args+=(-e "${v}=${val}")
+    fi
   fi
 done
 

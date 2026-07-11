@@ -183,9 +183,15 @@ func FilterMPDForPack(mpd, mpdURL string, preferHeight int) (string, string, err
 			}
 		}
 	}
-	out, trimmed := trimSegmentTimelines(out, defaultTimelineKeep)
-	if trimmed > 0 {
-		note += fmt.Sprintf(" timeline_trim=%d", trimmed)
+	// Live MPDs: do not trim SegmentTimeline. Keeping only the last few S
+	// entries freezes a short availability window that expires (HTTP 410)
+	// before a dockerized packager can pull the first 4K segment.
+	if !isDynamicMPD(mpd) {
+		var trimmed int
+		out, trimmed = trimSegmentTimelines(out, defaultTimelineKeep)
+		if trimmed > 0 {
+			note += fmt.Sprintf(" timeline_trim=%d", trimmed)
+		}
 	}
 	return out, note, nil
 }

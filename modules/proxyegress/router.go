@@ -323,6 +323,8 @@ func buildClient(proxyURL *url.URL, _ time.Duration) (*http.Client, error) {
 	}
 	if proxyURL != nil {
 		compatTLSForProxy(tr)
+		// Proxied TLS to some CDNs is flaky with keep-alive reuse; prefer fresh dials.
+		tr.DisableKeepAlives = true
 		scheme := strings.ToLower(proxyURL.Scheme)
 		switch scheme {
 		case "http", "https":
@@ -351,14 +353,16 @@ func buildClient(proxyURL *url.URL, _ time.Duration) (*http.Client, error) {
 	return &http.Client{Transport: tr}, nil
 }
 
-// TLS1.2 + HTTP/1.1 via proxy.
+// Prefer HTTP/1.1 via proxy; allow TLS 1.2–1.3 (some CDN edges reject 1.2-only).
 func compatTLSForProxy(tr *http.Transport) {
 	tr.ForceAttemptHTTP2 = false
+	// Empty TLSNextProto disables HTTP/2 without constraining ALPN the way
+	// NextProtos: ["http/1.1"] can — that form causes handshake failures on
+	// some origin.example.com peers behind HTTP CONNECT proxies.
 	tr.TLSNextProto = map[string]func(authority string, c *tls.Conn) http.RoundTripper{}
 	tr.TLSClientConfig = &tls.Config{
 		MinVersion: tls.VersionTLS12,
-		MaxVersion: tls.VersionTLS12,
-		NextProtos: []string{"http/1.1"},
+		MaxVersion: tls.VersionTLS13,
 	}
 }
 
