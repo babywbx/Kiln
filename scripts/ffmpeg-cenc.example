@@ -1,10 +1,34 @@
 #!/usr/bin/env bash
-# Optional host-only helper when local ffmpeg lacks DASH demuxer.
-# Copy to scripts/ffmpeg-cenc.local (gitignored) and point configs/local.toml at it.
 set -euo pipefail
-IMG="${KILN_FFMPEG_IMAGE:-linuxserver/ffmpeg:latest}"
-exec docker run --rm \
-  -v /tmp:/tmp \
-  -v "$HOME:$HOME" \
-  -w "$PWD" \
-  "$IMG" "$@"
+
+IMAGE="${KILN_IMAGE:-kiln:local}"
+NAME="kiln-ff-$$-${RANDOM}"
+
+if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+  echo "ffmpeg-cenc: image '$IMAGE' not found. Run: make docker" >&2
+  exit 1
+fi
+
+( while kill -0 "$$" 2>/dev/null; do sleep 2; done
+  docker rm -f "$NAME" >/dev/null 2>&1 || true ) &
+
+args=(
+  run --rm --name "$NAME"
+  --label kiln.ffmpeg=1
+  --entrypoint /usr/local/bin/ffmpeg
+  --user "$(id -u):$(id -g)"
+  -v /tmp:/tmp
+  -v "$HOME:$HOME"
+  -w "$PWD"
+)
+
+for v in HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy NO_PROXY no_proxy; do
+  if [[ -n "${!v:-}" ]]; then
+    val="${!v}"
+    val="${val//127.0.0.1/host.docker.internal}"
+    val="${val//localhost/host.docker.internal}"
+    args+=(-e "${v}=${val}")
+  fi
+done
+
+exec docker "${args[@]}" "$IMAGE" "$@"
