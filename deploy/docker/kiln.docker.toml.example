@@ -10,8 +10,9 @@ read_timeout_sec = 15
 idle_timeout_sec = 120
 
 [logging]
-level = "info"
-format = "json"
+level = "info"       # debug | info | warn | error
+format = "text"      # text (console) | json
+color = "never"      # docker logs: no ANSI
 
 [auth]
 # Ed25519: mount keys or let first start create {data_dir}/auth/ed25519.pem

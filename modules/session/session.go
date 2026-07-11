@@ -260,7 +260,7 @@ func (m *Manager) watchDash(channelID string, job *egress.DashJob) {
 	if s.Channel.OnDemand {
 		idle := m.cat.Config().IdleTimeout(s.Channel)
 		if time.Since(s.LastTouch) > idle {
-			m.log.Info("dash ended after idle; not restarting", "channel", channelID)
+			m.log.Info("session idle end", "channel", channelID)
 			m.stopLocked(channelID, s)
 			m.mu.Unlock()
 			return
@@ -273,7 +273,7 @@ func (m *Manager) watchDash(channelID string, job *egress.DashJob) {
 	s.restarts++
 	s.LastError = errString(job.Err())
 	if s.restarts > maxDashRestarts {
-		m.log.Error("dash restart budget exceeded", "channel", channelID, "restarts", s.restarts, "err", job.Err())
+		m.log.Error("session restart budget exceeded", "channel", channelID, "restarts", s.restarts, "err", job.Err())
 		m.publish(s, "failed")
 		m.stopLocked(channelID, s)
 		m.mu.Unlock()
@@ -286,11 +286,11 @@ func (m *Manager) watchDash(channelID string, job *egress.DashJob) {
 	m.publish(s, "restarting")
 	m.mu.Unlock()
 
-	m.log.Warn("dash session ended; restarting",
+	m.log.Warn("session restarting",
 		"channel", channelID,
-		"err", job.Err(),
 		"attempt", s.restarts,
 		"delay", delay.String(),
+		"err", job.Err(),
 	)
 	time.Sleep(delay)
 
@@ -303,7 +303,7 @@ func (m *Manager) watchDash(channelID string, job *egress.DashJob) {
 	m.mu.Unlock()
 
 	if err := m.startDash(s); err != nil {
-		m.log.Error("dash restart failed", "channel", channelID, "err", err)
+		m.log.Error("session restart failed", "channel", channelID, "err", err)
 		m.mu.Lock()
 		if cur, ok := m.sessions[channelID]; ok && cur == s {
 			s.LastError = err.Error()
@@ -391,7 +391,7 @@ func (m *Manager) reapOnce() {
 		}
 		idle := m.cat.Config().IdleTimeout(s.Channel)
 		if now.Sub(s.LastTouch) > idle {
-			m.log.Info("session idle stop", "channel", id)
+			m.log.Info("session stopped", "channel", id, "reason", "idle")
 			m.stopLocked(id, s)
 		}
 	}

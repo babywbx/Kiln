@@ -21,6 +21,7 @@ import (
 	"github.com/babywbx/kiln/modules/catalog"
 	"github.com/babywbx/kiln/modules/config"
 	"github.com/babywbx/kiln/modules/egress"
+	"github.com/babywbx/kiln/modules/logging"
 	"github.com/babywbx/kiln/modules/observe"
 	"github.com/babywbx/kiln/modules/proxyegress"
 	"github.com/babywbx/kiln/modules/pull"
@@ -148,6 +149,28 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 		ww.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
 		ww.Header().Set("Pragma", "no-cache")
 		s.applyCORS(ww, r)
+
+		defer func() {
+			if rec := recover(); rec != nil {
+				s.deps.Observe.IncError()
+				s.deps.Log.Error("panic",
+					"request_id", reqID,
+					"path", r.URL.Path,
+					"panic", rec,
+				)
+				writeAppErr(ww, apperr.Internal(nil))
+			}
+			level := logging.AccessLevel(r.URL.Path, ww.code)
+			s.deps.Log.Log(r.Context(), level, "request",
+				"remote", clientIP(r),
+				"method", r.Method,
+				"path", r.URL.Path,
+				"status", ww.code,
+				"dur_ms", time.Since(start).Milliseconds(),
+				"request_id", reqID,
+			)
+		}()
+
 		if r.Method == http.MethodOptions {
 			ww.WriteHeader(http.StatusNoContent)
 			return
@@ -156,21 +179,6 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 			writeAppErr(ww, apperr.New(apperr.CodeForbidden, 403, "host not allowed"))
 			return
 		}
-		defer func() {
-			if rec := recover(); rec != nil {
-				s.deps.Observe.IncError()
-				s.deps.Log.Error("panic", "request_id", reqID, "panic", rec, "path", r.URL.Path)
-				writeAppErr(ww, apperr.Internal(nil))
-			}
-			s.deps.Log.Info("request",
-				"request_id", reqID,
-				"method", r.Method,
-				"path", r.URL.Path,
-				"status", ww.code,
-				"dur_ms", time.Since(start).Milliseconds(),
-				"remote", clientIP(r),
-			)
-		}()
 		next.ServeHTTP(ww, r)
 	})
 }

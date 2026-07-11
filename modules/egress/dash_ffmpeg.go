@@ -146,13 +146,13 @@ func StartDashHLS(parent context.Context, opt DashOptions) (*DashJob, error) {
 		if err := os.WriteFile(localMPD, []byte(filtered), 0o600); err != nil {
 			return nil, err
 		}
-		log.Info("dash ladder selected",
-			"detail", att.note,
-			"prefer_height", opt.PreferHeight,
+		log.Debug("dash ladder selected",
 			"mode", att.mode,
 			"attempt", i+1,
-			"input", redactURL(att.input),
+			"prefer_height", opt.PreferHeight,
 			"mpd_ms", mpdMS,
+			"detail", att.note,
+			"input", redactURL(att.input),
 		)
 		job, err := startPackager(parent, opt, log, absWork, key, att)
 		if err != nil {

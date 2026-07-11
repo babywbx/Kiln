@@ -29,16 +29,23 @@ func main() {
 	cfgPath := flag.String("config", "configs/examples/kiln.toml", "path to kiln.toml or kiln.jsonc")
 	flag.Parse()
 
+	boot := logging.Bootstrap()
+	slog.SetDefault(boot)
+
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
-		slog.Error("config load failed", "err", err)
+		boot.Error("config load failed", "err", err, "config", *cfgPath)
 		os.Exit(1)
 	}
-	log := logging.New(cfg.Logging.Level, cfg.Logging.Format)
+	log := logging.NewWith(logging.Options{
+		Level:  cfg.Logging.Level,
+		Format: cfg.Logging.Format,
+		Color:  cfg.Logging.Color,
+	})
 	slog.SetDefault(log)
 
 	if err := os.MkdirAll(cfg.Server.DataDir, 0o750); err != nil {
-		log.Error("data dir", "err", err)
+		log.Error("create data dir failed", "err", err, "path", cfg.Server.DataDir)
 		os.Exit(1)
 	}
 
@@ -55,12 +62,12 @@ func main() {
 
 	egCfg, err := proxyegress.ConfigFromStore(db, cfg)
 	if err != nil {
-		log.Error("egress config", "err", err)
+		log.Error("egress config failed", "err", err)
 		os.Exit(1)
 	}
 	egressRouter, err := proxyegress.NewRouter(egCfg)
 	if err != nil {
-		log.Error("egress router", "err", err)
+		log.Error("egress router failed", "err", err)
 		os.Exit(1)
 	}
 
@@ -98,13 +105,13 @@ func main() {
 
 	go func() {
 		if err := srv.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Error("server stopped", "err", err)
+			log.Error("http server stopped", "err", err)
 			cancel()
 		}
 	}()
 
 	chs, _ := cat.List(false)
-	log.Info("kiln started",
+	log.Info("kiln starting",
 		"version", version.Version,
 		"config", abs(*cfgPath),
 		"listen", cfg.Server.Listen,
@@ -128,7 +135,7 @@ func main() {
 	defer shcancel()
 	_ = srv.Shutdown(shctx)
 	cancel()
-	log.Info("shutdown complete")
+	log.Info("shutting down")
 }
 
 func abs(p string) string {

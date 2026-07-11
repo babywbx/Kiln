@@ -127,7 +127,8 @@ type FFmpeg struct {
 
 type Logging struct {
 	Level  string `json:"level" toml:"level"`
-	Format string `json:"format" toml:"format"`
+	Format string `json:"format" toml:"format"` // text | json
+	Color  string `json:"color" toml:"color"`   // auto | always | never (text only)
 }
 
 func (c File) TokenTTL() time.Duration {
@@ -199,6 +200,12 @@ func (c *File) applyEnvOverrides() {
 	if v := os.Getenv("KILN_LOG_LEVEL"); v != "" {
 		c.Logging.Level = v
 	}
+	if v := os.Getenv("KILN_LOG_FORMAT"); v != "" {
+		c.Logging.Format = v
+	}
+	if v := os.Getenv("KILN_LOG_COLOR"); v != "" {
+		c.Logging.Color = v
+	}
 	switch os.Getenv("KILN_PLAY_OPEN") {
 	case "1", "true", "TRUE":
 		c.Security.PlayRequireAuth = false
@@ -255,7 +262,10 @@ func (c *File) applyDefaults() {
 		c.Logging.Level = "info"
 	}
 	if c.Logging.Format == "" {
-		c.Logging.Format = "json"
+		c.Logging.Format = "text"
+	}
+	if c.Logging.Color == "" {
+		c.Logging.Color = "auto"
 	}
 	if os.Getenv("KILN_PLAY_OPEN") == "" {
 		c.Security.PlayRequireAuth = true

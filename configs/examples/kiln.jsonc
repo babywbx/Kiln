@@ -10,7 +10,8 @@
   },
   "logging": {
     "level": "info",
-    "format": "json",
+    "format": "text",
+    "color": "auto",
   },
   "auth": {
     "token_ttl_hours": 24,

@@ -8,8 +8,9 @@ read_timeout_sec = 15
 idle_timeout_sec = 120
 
 [logging]
-level = "info"
-format = "json"
+level = "info"       # debug | info | warn | error
+format = "text"      # text (console) | json
+color = "auto"       # auto | always | never
 
 [auth]
 # Ed25519 keys: omit to auto-create {data_dir}/auth/ed25519.pem on first start.
