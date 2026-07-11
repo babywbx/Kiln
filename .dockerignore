@@ -1,0 +1,8 @@
+.git
+.github
+dist/
+secrets/
+docs/
+*.md
+configs/local.toml
+scripts/ffmpeg-cenc
