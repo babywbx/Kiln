@@ -1,37 +1,181 @@
 package auth
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/babywbx/kiln/modules/config"
+	"github.com/golang-jwt/jwt/v5"
 )
 
-func TestLoginAndParse(t *testing.T) {
+func TestLoginAndParseEdDSA(t *testing.T) {
 	hash, err := HashPassword("secret")
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc := New(config.Auth{
-		TokenSecret: "unit-test-secret",
-		Users: []config.User{{
-			Username:     "alice",
-			PasswordHash: hash,
-			Role:         "admin",
-		}},
-	}, time.Hour)
+	if !strings.HasPrefix(hash, "$argon2id$") {
+		t.Fatalf("expected argon2id hash, got %s", hash)
+	}
+	svc, err := NewForTest([]config.User{{
+		Username:     "alice",
+		PasswordHash: hash,
+		Role:         "admin",
+	}}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
 	res, err := svc.Login("alice", "secret")
 	if err != nil {
 		t.Fatal(err)
+	}
+	parts := strings.Split(res.Token, ".")
+	if len(parts) != 3 {
+		t.Fatalf("expected JWT compact form, got %d parts", len(parts))
 	}
 	c, err := svc.Parse(res.Token)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Username != "alice" || c.Role != "admin" {
+	if c.Username() != "alice" || c.Role != "admin" {
 		t.Fatalf("%+v", c)
+	}
+	if c.Issuer != defaultIssuer || len(c.Audience) == 0 || c.Audience[0] != defaultAudience {
+		t.Fatalf("iss/aud %+v", c)
 	}
 	if _, err := svc.Login("alice", "wrong"); err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestRejectWrongAlgAndTamper(t *testing.T) {
+	hash, err := HashPassword("secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewForTest([]config.User{{
+		Username:     "alice",
+		PasswordHash: hash,
+		Role:         "admin",
+	}}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := svc.Login("alice", "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := strings.Split(res.Token, ".")
+	bad := parts[0] + "." + parts[1] + "." + "AAAA"
+	if _, err := svc.Parse(bad); err == nil {
+		t.Fatal("expected signature failure")
+	}
+
+	other, err := GenerateEd25519()
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims := Claims{
+		Role: "admin",
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    defaultIssuer,
+			Subject:   "alice",
+			Audience:  jwt.ClaimStrings{defaultAudience},
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			NotBefore: jwt.NewNumericDate(time.Now()),
+			ID:        "jti-test",
+		},
+	}
+	forged, err := signJWT(other.Private, claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Parse(forged); err == nil {
+		t.Fatal("expected foreign key rejection")
+	}
+}
+
+func TestExpiredToken(t *testing.T) {
+	hash, err := HashPassword("secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewForTest([]config.User{{
+		Username:     "alice",
+		PasswordHash: hash,
+		Role:         "admin",
+	}}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().UTC().Add(-2 * time.Hour)
+	tok, err := signJWT(svc.priv, Claims{
+		Role: "admin",
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    defaultIssuer,
+			Subject:   "alice",
+			Audience:  jwt.ClaimStrings{defaultAudience},
+			ExpiresAt: jwt.NewNumericDate(past.Add(time.Minute)),
+			IssuedAt:  jwt.NewNumericDate(past),
+			NotBefore: jwt.NewNumericDate(past),
+			ID:        "expired-jti",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Parse(tok); err == nil {
+		t.Fatal("expected expired")
+	}
+}
+
+func TestAutoKeyMaterial(t *testing.T) {
+	dir := t.TempDir()
+	hash, err := HashPassword("x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc1, err := New(config.Auth{
+		Users: []config.User{{Username: "u", PasswordHash: hash, Role: "admin"}},
+	}, time.Hour, Options{DataDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := svc1.Login("u", "x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc2, err := New(config.Auth{
+		Users: []config.User{{Username: "u", PasswordHash: hash, Role: "admin"}},
+	}, time.Hour, Options{DataDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc2.Parse(res.Token); err != nil {
+		t.Fatalf("persisted key should verify: %v", err)
+	}
+}
+
+func TestKeyMismatch(t *testing.T) {
+	a, err := GenerateEd25519()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := GenerateEd25519()
+	if err != nil {
+		t.Fatal(err)
+	}
+	privPEM, err := MarshalPrivateKeyPEM(a.Private)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubPEM, err := MarshalPublicKeyPEM(b.Public)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = ResolveKeys(string(privPEM), string(pubPEM), "", "", "")
+	if err != ErrKeyMismatch {
+		t.Fatalf("want mismatch, got %v", err)
 	}
 }

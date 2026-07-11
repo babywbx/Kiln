@@ -316,7 +316,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	c := claimsFrom(r)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"username":    c.Username,
+		"username":    c.Username(),
 		"role":        c.Role,
 		"channel_ids": c.ChannelIDs,
 	})
@@ -641,7 +641,7 @@ func (s *Server) authorizeChannel(r *http.Request, channelID string) error {
 		return nil
 	}
 	c := claimsFrom(r)
-	if c.Username == "" {
+	if c.Username() == "" {
 		return auth.ErrInvalidToken
 	}
 	if !s.deps.Auth.CanAccessChannel(c, channelID) {

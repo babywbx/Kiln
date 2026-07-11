@@ -66,7 +66,11 @@ func main() {
 
 	obs := observe.New()
 	allowed := cfg.AllowedHostSet()
-	authSvc := auth.New(cfg.Auth, cfg.TokenTTL())
+	authSvc, err := auth.New(cfg.Auth, cfg.TokenTTL(), auth.Options{DataDir: cfg.Server.DataDir})
+	if err != nil {
+		log.Error("auth init failed", "err", err)
+		os.Exit(1)
+	}
 	cat := catalog.New(cfg, db)
 	puller := pull.New(pull.Options{
 		Observe:     obs,

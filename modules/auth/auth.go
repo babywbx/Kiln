@@ -1,11 +1,9 @@
 package auth
 
 import (
-	"crypto/hmac"
+	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -14,7 +12,7 @@ import (
 
 	"github.com/babywbx/kiln/modules/apperr"
 	"github.com/babywbx/kiln/modules/config"
-	"golang.org/x/crypto/bcrypt"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 var (
@@ -25,19 +23,13 @@ var (
 )
 
 type Service struct {
-	secret []byte
-	ttl    time.Duration
-	users  map[string]config.User
-	mu     sync.RWMutex
-}
-
-type Claims struct {
-	Username   string   `json:"u"`
-	Role       string   `json:"r"`
-	ChannelIDs []string `json:"c,omitempty"`
-	Exp        int64    `json:"exp"`
-	Iat        int64    `json:"iat"`
-	Jti        string   `json:"jti"`
+	priv     ed25519.PrivateKey
+	pub      ed25519.PublicKey
+	ttl      time.Duration
+	issuer   string
+	audience string
+	users    map[string]config.User
+	mu       sync.RWMutex
 }
 
 type LoginResult struct {
@@ -47,20 +39,66 @@ type LoginResult struct {
 	Role      string    `json:"role"`
 }
 
-func New(cfg config.Auth, ttl time.Duration) *Service {
+type Options struct {
+	DataDir string
+	Keys    *KeyMaterial
+}
+
+func New(cfg config.Auth, ttl time.Duration, opts Options) (*Service, error) {
+	if ttl <= 0 {
+		ttl = 24 * time.Hour
+	}
+	var km KeyMaterial
+	var err error
+	if opts.Keys != nil {
+		km = *opts.Keys
+	} else {
+		km, err = ResolveKeys(
+			cfg.TokenPrivateKey,
+			cfg.TokenPublicKey,
+			cfg.TokenPrivateKeyFile,
+			cfg.TokenPublicKeyFile,
+			opts.DataDir,
+		)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(km.Private) != ed25519.PrivateKeySize || len(km.Public) != ed25519.PublicKeySize {
+		return nil, ErrInvalidSigningKey
+	}
+	issuer := strings.TrimSpace(cfg.TokenIssuer)
+	if issuer == "" {
+		issuer = defaultIssuer
+	}
+	audience := strings.TrimSpace(cfg.TokenAudience)
+	if audience == "" {
+		audience = defaultAudience
+	}
 	m := make(map[string]config.User, len(cfg.Users))
 	for _, u := range cfg.Users {
 		m[u.Username] = u
 	}
-	return &Service{secret: []byte(cfg.TokenSecret), ttl: ttl, users: m}
+	return &Service{
+		priv:     km.Private,
+		pub:      km.Public,
+		ttl:      ttl,
+		issuer:   issuer,
+		audience: audience,
+		users:    m,
+	}, nil
 }
 
-func HashPassword(plain string) (string, error) {
-	b, err := bcrypt.GenerateFromPassword([]byte(plain), bcrypt.DefaultCost)
+func NewForTest(users []config.User, ttl time.Duration) (*Service, error) {
+	km, err := GenerateEd25519()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return string(b), nil
+	return New(config.Auth{
+		TokenIssuer:   defaultIssuer,
+		TokenAudience: defaultAudience,
+		Users:         users,
+	}, ttl, Options{Keys: &km})
 }
 
 func (s *Service) Login(username, password string) (LoginResult, error) {
@@ -70,24 +108,29 @@ func (s *Service) Login(username, password string) (LoginResult, error) {
 	if !ok {
 		return LoginResult{}, ErrInvalidCredentials
 	}
-	if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)); err != nil {
+	if err := VerifyPassword(u.PasswordHash, password); err != nil {
 		return LoginResult{}, ErrInvalidCredentials
 	}
-	now := time.Now()
+	now := time.Now().UTC()
 	exp := now.Add(s.ttl)
 	jti, err := randomJTI()
 	if err != nil {
 		return LoginResult{}, apperr.Internal(err)
 	}
 	claims := Claims{
-		Username:   u.Username,
 		Role:       u.Role,
 		ChannelIDs: append([]string(nil), u.ChannelIDs...),
-		Exp:        exp.Unix(),
-		Iat:        now.Unix(),
-		Jti:        jti,
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    s.issuer,
+			Subject:   u.Username,
+			Audience:  jwt.ClaimStrings{s.audience},
+			ExpiresAt: jwt.NewNumericDate(exp),
+			IssuedAt:  jwt.NewNumericDate(now),
+			NotBefore: jwt.NewNumericDate(now),
+			ID:        jti,
+		},
 	}
-	token, err := s.sign(claims)
+	token, err := signJWT(s.priv, claims)
 	if err != nil {
 		return LoginResult{}, apperr.Internal(err)
 	}
@@ -100,42 +143,7 @@ func (s *Service) Login(username, password string) (LoginResult, error) {
 }
 
 func (s *Service) Parse(token string) (Claims, error) {
-	token = strings.TrimSpace(token)
-	if token == "" {
-		return Claims{}, ErrInvalidToken
-	}
-	parts := strings.Split(token, ".")
-	if len(parts) != 2 {
-		return Claims{}, ErrInvalidToken
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[0])
-	if err != nil {
-		return Claims{}, ErrInvalidToken
-	}
-	sig, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return Claims{}, ErrInvalidToken
-	}
-	mac := hmac.New(sha256.New, s.secret)
-	_, _ = mac.Write(payload)
-	if !hmac.Equal(sig, mac.Sum(nil)) {
-		return Claims{}, ErrInvalidToken
-	}
-	var c Claims
-	if err := json.Unmarshal(payload, &c); err != nil {
-		return Claims{}, ErrInvalidToken
-	}
-	now := time.Now().Unix()
-	if c.Exp > 0 && now > c.Exp {
-		return Claims{}, ErrExpiredToken
-	}
-	if c.Iat > 0 && now+60 < c.Iat {
-		return Claims{}, ErrInvalidToken
-	}
-	if c.Username == "" || c.Jti == "" {
-		return Claims{}, ErrInvalidToken
-	}
-	return c, nil
+	return parseJWT(s.pub, strings.TrimSpace(token), s.issuer, s.audience)
 }
 
 func (s *Service) CanAccessChannel(c Claims, channelID string) bool {
@@ -150,30 +158,8 @@ func (s *Service) CanAccessChannel(c Claims, channelID string) bool {
 	return false
 }
 
-func (s *Service) sign(c Claims) (string, error) {
-	payload, err := json.Marshal(c)
-	if err != nil {
-		return "", err
-	}
-	mac := hmac.New(sha256.New, s.secret)
-	_, _ = mac.Write(payload)
-	sig := mac.Sum(nil)
-	return base64.RawURLEncoding.EncodeToString(payload) + "." + base64.RawURLEncoding.EncodeToString(sig), nil
-}
-
 func randomJTI() (string, error) {
 	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(b), nil
-}
-
-func RandomSecret(n int) (string, error) {
-	if n < 32 {
-		n = 32
-	}
-	b := make([]byte, n)
 	if _, err := rand.Read(b); err != nil {
 		return "", err
 	}

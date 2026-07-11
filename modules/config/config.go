@@ -58,10 +58,15 @@ type Server struct {
 }
 
 type Auth struct {
-	TokenSecret     string `json:"token_secret" toml:"token_secret"`
-	TokenTTLHours   int    `json:"token_ttl_hours" toml:"token_ttl_hours"`
-	LoginRatePerMin int    `json:"login_rate_per_min" toml:"login_rate_per_min"`
-	Users           []User `json:"users" toml:"users"`
+	TokenPrivateKeyFile string `json:"token_private_key_file" toml:"token_private_key_file"`
+	TokenPublicKeyFile  string `json:"token_public_key_file" toml:"token_public_key_file"`
+	TokenPrivateKey     string `json:"token_private_key" toml:"token_private_key"`
+	TokenPublicKey      string `json:"token_public_key" toml:"token_public_key"`
+	TokenIssuer         string `json:"token_issuer" toml:"token_issuer"`
+	TokenAudience       string `json:"token_audience" toml:"token_audience"`
+	TokenTTLHours       int    `json:"token_ttl_hours" toml:"token_ttl_hours"`
+	LoginRatePerMin     int    `json:"login_rate_per_min" toml:"login_rate_per_min"`
+	Users               []User `json:"users" toml:"users"`
 }
 
 type User struct {
@@ -170,8 +175,17 @@ func Load(path string) (File, error) {
 }
 
 func (c *File) applyEnvOverrides() {
-	if v := os.Getenv("KILN_TOKEN_SECRET"); v != "" {
-		c.Auth.TokenSecret = v
+	if v := os.Getenv("KILN_TOKEN_PRIVATE_KEY"); v != "" {
+		c.Auth.TokenPrivateKey = v
+	}
+	if v := os.Getenv("KILN_TOKEN_PUBLIC_KEY"); v != "" {
+		c.Auth.TokenPublicKey = v
+	}
+	if v := os.Getenv("KILN_TOKEN_PRIVATE_KEY_FILE"); v != "" {
+		c.Auth.TokenPrivateKeyFile = v
+	}
+	if v := os.Getenv("KILN_TOKEN_PUBLIC_KEY_FILE"); v != "" {
+		c.Auth.TokenPublicKeyFile = v
 	}
 	if v := os.Getenv("KILN_LISTEN"); v != "" {
 		c.Server.Listen = v
@@ -215,6 +229,12 @@ func (c *File) applyDefaults() {
 	}
 	if c.Auth.LoginRatePerMin <= 0 {
 		c.Auth.LoginRatePerMin = 20
+	}
+	if c.Auth.TokenIssuer == "" {
+		c.Auth.TokenIssuer = "kiln"
+	}
+	if c.Auth.TokenAudience == "" {
+		c.Auth.TokenAudience = "kiln"
 	}
 	if c.FFmpeg.Binary == "" {
 		c.FFmpeg.Binary = "ffmpeg"
@@ -300,11 +320,13 @@ func (c *File) resolveKeysPaths(configPath string) {
 }
 
 func (c File) validate() error {
-	if len(c.Auth.TokenSecret) < 16 {
-		return fmt.Errorf("auth.token_secret must be at least 16 characters (or set KILN_TOKEN_SECRET)")
-	}
 	if len(c.Auth.Users) == 0 {
 		return fmt.Errorf("auth.users must not be empty")
+	}
+	if c.Server.DataDir == "" &&
+		c.Auth.TokenPrivateKey == "" &&
+		c.Auth.TokenPrivateKeyFile == "" {
+		return fmt.Errorf("auth requires token_private_key, token_private_key_file, or server.data_dir for auto-managed Ed25519 keys")
 	}
 	users := map[string]struct{}{}
 	for _, u := range c.Auth.Users {

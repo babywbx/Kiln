@@ -52,9 +52,10 @@ func TestHLSPlayEndToEnd(t *testing.T) {
 			IdleTimeout:   30,
 		},
 		Auth: config.Auth{
-			TokenSecret:     "unit-test-secret-32b-minimum",
 			TokenTTLHours:   1,
 			LoginRatePerMin: 100,
+			TokenIssuer:     "kiln",
+			TokenAudience:   "kiln",
 			Users: []config.User{{
 				Username:     "admin",
 				PasswordHash: hash,
@@ -86,7 +87,10 @@ func TestHLSPlayEndToEnd(t *testing.T) {
 	allowed := cfg.AllowedHostSet()
 
 	obs := observe.New()
-	authSvc := auth.New(cfg.Auth, time.Hour)
+	authSvc, err := auth.New(cfg.Auth, time.Hour, auth.Options{DataDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
 	db, err := store.Open(dir)
 	if err != nil {
 		t.Fatal(err)

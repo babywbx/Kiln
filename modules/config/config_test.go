@@ -16,12 +16,11 @@ public_base_url = "http://127.0.0.1:8080"
 data_dir = "./data"
 
 [auth]
-token_secret = "test-secret-16chars"
 token_ttl_hours = 1
 
 [[auth.users]]
 username = "admin"
-password_hash = "$2a$10$abcdefghijklmnopqrstuuABCDEFGHIJKLmnopqr"
+password_hash = "$argon2id$v=19$m=65536,t=2,p=1$dGVzdHNhbHQxMjM0NTY$dGVzdGhhc2gxMjM0NTY3ODkwMTIzNDU2Nzg5MDEy"
 role = "admin"
 
 [[upstreams]]
@@ -54,8 +53,7 @@ on_demand = true
 	jc := `{
   "server": { "listen": "0.0.0.0:8081", "public_base_url": "http://127.0.0.1:8081", "data_dir": "./data" },
   "auth": {
-    "token_secret": "test-secret-16chars",
-    "users": [{ "username": "admin", "password_hash": "$2a$10$abcdefghijklmnopqrstuuABCDEFGHIJKLmnopqr", "role": "admin" }],
+    "users": [{ "username": "admin", "password_hash": "$argon2id$v=19$m=65536,t=2,p=1$dGVzdHNhbHQxMjM0NTY$dGVzdGhhc2gxMjM0NTY3ODkwMTIzNDU2Nzg5MDEy", "role": "admin" }],
   },
   "upstreams": [{ "id": "origin", "base_url": "http://127.0.0.1:5050" }],
   "channels": [{ "id": "c2", "upstream": "origin", "path": "/x", "ingress": "hls", "on_demand": true }],
