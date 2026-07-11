@@ -1,0 +1,91 @@
+# Kiln example configuration
+
+[server]
+listen = "0.0.0.0:8080"
+public_base_url = "http://127.0.0.1:8080"
+data_dir = "./data"
+read_timeout_sec = 15
+idle_timeout_sec = 120
+
+[logging]
+level = "info"
+format = "json"
+
+[auth]
+token_secret = "dev-only-change-me-use-long-random"
+token_ttl_hours = 24
+login_rate_per_min = 20
+
+[[auth.users]]
+username = "admin"
+# bcrypt hash for password "admin" — change before production use
+password_hash = "$2a$10$8JxhvnpdTX/TrOTi1XaYWuPlrZK1aw3ANgGIWpTO6KtD2M432w7Ie"
+role = "admin"
+
+[security]
+play_require_auth = true
+allowed_hosts = []
+# cors_origins = ["http://127.0.0.1:5173"]
+# public_hosts = ["kiln.lan", "origin.example.com", "localhost"]
+max_playlist_bytes = 8388608
+max_body_bytes = 1048576
+
+[ffmpeg]
+binary = "ffmpeg"
+hls_time = 2
+hls_list_size = 4
+log_level = "error"
+prefer_height = 1080
+low_latency = true
+
+[observe]
+enabled = true
+
+# Optional outbound proxies
+# [[proxies]]
+# id = "local-http"
+# name = "HTTP Proxy"
+# url = "http://127.0.0.1:7890"
+
+# [[proxies]]
+# id = "proxy-socks"
+# url = "socks5h://127.0.0.1:7891"
+
+[egress]
+default = "direct"
+playlist_policy = "rewrite"
+# docker_proxy_host = "host.docker.internal"
+
+# [[egress.rules]]
+# id = "example-cdn"
+# priority = 10
+# kind = "host_suffix"
+# pattern = "example-cdn.com"
+# proxy = "local-http"
+
+[[upstreams]]
+id = "origin"
+base_url = "http://127.0.0.1:5050"
+# [upstreams.headers]
+# X-Custom = "value"
+
+[[channels]]
+id = "hls-demo"
+title = "Demo HLS"
+group = "Demo"
+upstream = "origin"
+path = "/live/demo-hls"
+ingress = "hls"
+on_demand = true
+autostart = false
+
+[[channels]]
+id = "dash-demo"
+title = "Demo DASH"
+group = "Demo"
+upstream = "origin"
+path = "/live/demo-dash"
+ingress = "dash"
+keys_file = "keys.example.txt"
+prefer_height = 1080
+on_demand = true

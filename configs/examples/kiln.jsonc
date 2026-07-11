@@ -1,0 +1,70 @@
+{
+  // Kiln example configuration (JSONC)
+  // Default admin password: admin
+  "server": {
+    "listen": "0.0.0.0:8080",
+    "public_base_url": "http://127.0.0.1:8080",
+    "data_dir": "./data",
+    "read_timeout_sec": 15,
+    "idle_timeout_sec": 120,
+  },
+  "logging": {
+    "level": "info",
+    "format": "json",
+  },
+  "auth": {
+    "token_secret": "dev-only-change-me-use-long-random",
+    "token_ttl_hours": 24,
+    "login_rate_per_min": 20,
+    "users": [
+      {
+        "username": "admin",
+        "password_hash": "$2a$10$8JxhvnpdTX/TrOTi1XaYWuPlrZK1aw3ANgGIWpTO6KtD2M432w7Ie",
+        "role": "admin",
+      },
+    ],
+  },
+  "security": {
+    "play_require_auth": true,
+    "allowed_hosts": [],
+    "max_playlist_bytes": 8388608,
+    "max_body_bytes": 1048576,
+  },
+  "ffmpeg": {
+    "binary": "ffmpeg",
+    "hls_time": 2,
+    "hls_list_size": 8,
+    "log_level": "error",
+  },
+  "observe": { "enabled": true },
+  "upstreams": [
+    {
+      "id": "origin",
+      "base_url": "http://127.0.0.1:5050",
+    },
+  ],
+  "channels": [
+    {
+      "id": "hls-demo",
+      "title": "Demo HLS",
+      "group": "Origin",
+      "upstream": "origin",
+      "path": "/live/demo-hls",
+      "ingress": "hls",
+      "on_demand": true,
+      "idle_timeout_sec": 90,
+    },
+    {
+      "id": "dash-demo",
+      "title": "Demo DASH",
+      "group": "Origin",
+      "upstream": "origin",
+      "path": "/live/demo-dash",
+      "ingress": "dash",
+      "on_demand": true,
+      "idle_timeout_sec": 90,
+      "keys_file": "keys.example.txt",
+      "restart_on_failure": true,
+    },
+  ],
+}
