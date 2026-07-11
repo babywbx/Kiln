@@ -122,14 +122,14 @@ func (s *Server) handleAdminCreateToken(w http.ResponseWriter, r *http.Request) 
 	}
 	base := s.deps.Catalog.PublicBase()
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"id":            row.ID,
-		"name":          row.Name,
-		"token":         plain,
-		"token_prefix":  row.Prefix,
-		"scope":         row.ScopeJSON,
-		"playlist_url":  base + "/p/" + plain + "/playlist.m3u",
-		"created_at":    row.CreatedAt,
-		"warning":       "store this token now; it will not be shown again",
+		"id":           row.ID,
+		"name":         row.Name,
+		"token":        plain,
+		"token_prefix": row.Prefix,
+		"scope":        row.ScopeJSON,
+		"playlist_url": base + "/p/" + plain + "/playlist.m3u",
+		"created_at":   row.CreatedAt,
+		"warning":      "store this token now; it will not be shown again",
 	})
 }
 
@@ -197,10 +197,10 @@ func (s *Server) handleAdminGetSettings(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	out := map[string]any{
-		"public_base_url": s.deps.Catalog.PublicBase(),
-		"listen":          s.deps.Cfg.Server.Listen,
-		"cors_origins":    s.deps.Cfg.Security.CORSOrigins,
-		"public_hosts":    s.deps.Cfg.Security.PublicHosts,
+		"public_base_url":   s.deps.Catalog.PublicBase(),
+		"listen":            s.deps.Cfg.Server.Listen,
+		"cors_origins":      s.deps.Cfg.Security.CORSOrigins,
+		"public_hosts":      s.deps.Cfg.Security.PublicHosts,
 		"play_require_auth": s.deps.Cfg.Security.PlayRequireAuth,
 	}
 	if s.deps.Store != nil {
@@ -309,13 +309,13 @@ func (s *Server) handleAdminReorderChannels(w http.ResponseWriter, r *http.Reque
 }
 
 type importM3UReq struct {
-	Content         string `json:"content"`
-	DefaultUpstream string `json:"default_upstream"`
-	DefaultIngress  string `json:"default_ingress"`
-	DefaultKeysFile string `json:"default_keys_file"`
-	PreferHeight    int    `json:"prefer_height"`
-	Apply           bool   `json:"apply"`
-	Entries []catalog.ParsedM3UEntry `json:"entries"`
+	Content         string                   `json:"content"`
+	DefaultUpstream string                   `json:"default_upstream"`
+	DefaultIngress  string                   `json:"default_ingress"`
+	DefaultKeysFile string                   `json:"default_keys_file"`
+	PreferHeight    int                      `json:"prefer_height"`
+	Apply           bool                     `json:"apply"`
+	Entries         []catalog.ParsedM3UEntry `json:"entries"`
 }
 
 func (s *Server) handleAdminImportM3U(w http.ResponseWriter, r *http.Request) {
@@ -472,11 +472,11 @@ func (s *Server) handleAdminPutEgress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Default         string                 `json:"default"`
-		PlaylistPolicy  string                 `json:"playlist_policy"`
-		DockerProxyHost string                 `json:"docker_proxy_host"`
+		Default         string                  `json:"default"`
+		PlaylistPolicy  string                  `json:"playlist_policy"`
+		DockerProxyHost string                  `json:"docker_proxy_host"`
 		Proxies         []store.ProxyProfileRow `json:"proxies"`
-		Rules           []store.ProxyRuleRow   `json:"rules"`
+		Rules           []store.ProxyRuleRow    `json:"rules"`
 	}
 	dec := json.NewDecoder(io.LimitReader(r.Body, s.deps.Cfg.Security.MaxBodyBytes*2))
 	if err := dec.Decode(&req); err != nil {

@@ -22,9 +22,9 @@ const Direct = "direct"
 type PlaylistPolicy string
 
 const (
-	PolicyRewrite PlaylistPolicy = "rewrite"
+	PolicyRewrite     PlaylistPolicy = "rewrite"
 	PolicyPassthrough PlaylistPolicy = "passthrough"
-	PolicyAuto PlaylistPolicy = "auto"
+	PolicyAuto        PlaylistPolicy = "auto"
 )
 
 type Profile struct {
@@ -54,18 +54,18 @@ type Rule struct {
 }
 
 type Config struct {
-	Default        string
-	PlaylistPolicy PlaylistPolicy
-	Profiles       []Profile
-	Rules          []Rule
+	Default         string
+	PlaylistPolicy  PlaylistPolicy
+	Profiles        []Profile
+	Rules           []Rule
 	DockerProxyHost string
 }
 
 type Decision struct {
-	ProxyID   string
-	ProxyURL  *url.URL
-	Rewrite   bool
-	Reason    string
+	ProxyID  string
+	ProxyURL *url.URL
+	Rewrite  bool
+	Reason   string
 }
 
 type Router struct {
@@ -73,7 +73,7 @@ type Router struct {
 	cfg      Config
 	profiles map[string]*url.URL
 	rules    []Rule
-	clients map[string]*http.Client
+	clients  map[string]*http.Client
 }
 
 func NewRouter(cfg Config) (*Router, error) {

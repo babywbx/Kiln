@@ -13,16 +13,16 @@ import (
 )
 
 type File struct {
-	Server    Server     `json:"server" toml:"server"`
-	Auth      Auth       `json:"auth" toml:"auth"`
-	Security  Security   `json:"security" toml:"security"`
-	Upstreams []Upstream `json:"upstreams" toml:"upstreams"`
-	Channels  []Channel  `json:"channels" toml:"channels"`
-	Observe   Observe    `json:"observe" toml:"observe"`
-	FFmpeg    FFmpeg     `json:"ffmpeg" toml:"ffmpeg"`
-	Logging   Logging    `json:"logging" toml:"logging"`
-	Proxies []ProxyProfile `json:"proxies" toml:"proxies"`
-	Egress Egress `json:"egress" toml:"egress"`
+	Server    Server         `json:"server" toml:"server"`
+	Auth      Auth           `json:"auth" toml:"auth"`
+	Security  Security       `json:"security" toml:"security"`
+	Upstreams []Upstream     `json:"upstreams" toml:"upstreams"`
+	Channels  []Channel      `json:"channels" toml:"channels"`
+	Observe   Observe        `json:"observe" toml:"observe"`
+	FFmpeg    FFmpeg         `json:"ffmpeg" toml:"ffmpeg"`
+	Logging   Logging        `json:"logging" toml:"logging"`
+	Proxies   []ProxyProfile `json:"proxies" toml:"proxies"`
+	Egress    Egress         `json:"egress" toml:"egress"`
 }
 
 type ProxyProfile struct {
@@ -33,8 +33,8 @@ type ProxyProfile struct {
 }
 
 type Egress struct {
-	Default string `json:"default" toml:"default"`
-	PlaylistPolicy string `json:"playlist_policy" toml:"playlist_policy"`
+	Default         string       `json:"default" toml:"default"`
+	PlaylistPolicy  string       `json:"playlist_policy" toml:"playlist_policy"`
 	DockerProxyHost string       `json:"docker_proxy_host" toml:"docker_proxy_host"`
 	Rules           []EgressRule `json:"rules" toml:"rules"`
 }
@@ -81,8 +81,8 @@ type Security struct {
 	AllowedHosts     []string `json:"allowed_hosts" toml:"allowed_hosts"`
 	MaxPlaylistBytes int64    `json:"max_playlist_bytes" toml:"max_playlist_bytes"`
 	MaxBodyBytes     int64    `json:"max_body_bytes" toml:"max_body_bytes"`
-	CORSOrigins []string `json:"cors_origins" toml:"cors_origins"`
-	PublicHosts []string `json:"public_hosts" toml:"public_hosts"`
+	CORSOrigins      []string `json:"cors_origins" toml:"cors_origins"`
+	PublicHosts      []string `json:"public_hosts" toml:"public_hosts"`
 }
 
 type Upstream struct {
@@ -109,7 +109,7 @@ type Channel struct {
 	UserAgent        string            `json:"user_agent" toml:"user_agent"`
 	Headers          map[string]string `json:"headers" toml:"headers"`
 	RestartOnFailure bool              `json:"restart_on_failure" toml:"restart_on_failure"`
-	PreferHeight int `json:"prefer_height" toml:"prefer_height"`
+	PreferHeight     int               `json:"prefer_height" toml:"prefer_height"`
 }
 
 type Observe struct {

@@ -29,14 +29,14 @@ type SessionStat struct {
 }
 
 type Snapshot struct {
-	UptimeSec   uint64        `json:"uptime_sec"`
-	BytesIn     uint64        `json:"bytes_in"`
-	BytesOut    uint64        `json:"bytes_out"`
-	Requests    uint64        `json:"requests"`
-	Errors      uint64        `json:"errors"`
-	Goroutines  int           `json:"goroutines"`
-	Sessions    []SessionStat `json:"sessions"`
-	SessionCount int          `json:"session_count"`
+	UptimeSec    uint64        `json:"uptime_sec"`
+	BytesIn      uint64        `json:"bytes_in"`
+	BytesOut     uint64        `json:"bytes_out"`
+	Requests     uint64        `json:"requests"`
+	Errors       uint64        `json:"errors"`
+	Goroutines   int           `json:"goroutines"`
+	Sessions     []SessionStat `json:"sessions"`
+	SessionCount int           `json:"session_count"`
 }
 
 func New() *Service {

@@ -9,16 +9,16 @@ import (
 type Code string
 
 const (
-	CodeInvalid       Code = "invalid_request"
-	CodeUnauthorized  Code = "unauthorized"
-	CodeForbidden     Code = "forbidden"
-	CodeNotFound      Code = "not_found"
-	CodeConflict      Code = "conflict"
-	CodeUpstream      Code = "upstream_error"
-	CodeUnavailable   Code = "unavailable"
-	CodeInternal      Code = "internal"
-	CodeTooMany       Code = "too_many_requests"
-	CodeNotReady      Code = "not_ready"
+	CodeInvalid      Code = "invalid_request"
+	CodeUnauthorized Code = "unauthorized"
+	CodeForbidden    Code = "forbidden"
+	CodeNotFound     Code = "not_found"
+	CodeConflict     Code = "conflict"
+	CodeUpstream     Code = "upstream_error"
+	CodeUnavailable  Code = "unavailable"
+	CodeInternal     Code = "internal"
+	CodeTooMany      Code = "too_many_requests"
+	CodeNotReady     Code = "not_ready"
 )
 
 type Error struct {
@@ -70,10 +70,10 @@ func PublicMessage(err error) (Code, int, string) {
 }
 
 var (
-	ErrNotFound      = New(CodeNotFound, http.StatusNotFound, "not found")
-	ErrUnauthorized  = New(CodeUnauthorized, http.StatusUnauthorized, "unauthorized")
-	ErrForbidden     = New(CodeForbidden, http.StatusForbidden, "forbidden")
-	ErrInvalid       = New(CodeInvalid, http.StatusBadRequest, "invalid request")
-	ErrTooMany       = New(CodeTooMany, http.StatusTooManyRequests, "too many requests")
-	ErrUnavailable   = New(CodeUnavailable, http.StatusServiceUnavailable, "service unavailable")
+	ErrNotFound     = New(CodeNotFound, http.StatusNotFound, "not found")
+	ErrUnauthorized = New(CodeUnauthorized, http.StatusUnauthorized, "unauthorized")
+	ErrForbidden    = New(CodeForbidden, http.StatusForbidden, "forbidden")
+	ErrInvalid      = New(CodeInvalid, http.StatusBadRequest, "invalid request")
+	ErrTooMany      = New(CodeTooMany, http.StatusTooManyRequests, "too many requests")
+	ErrUnavailable  = New(CodeUnavailable, http.StatusServiceUnavailable, "service unavailable")
 )
