@@ -1,0 +1,26 @@
+Kiln
+Copyright © 2026-present Babywbx
+Licensed under the GNU Affero General Public License version 3 only
+(AGPL-3.0-only). See LICENSE.
+
+--------------------------------------------------------------------------------
+
+This product's container image redistributes an unmodified, statically linked
+FFmpeg binary. Kiln itself does not link against FFmpeg; it invokes the binary
+as a separate process.
+
+  FFmpeg 8.1.2
+  https://ffmpeg.org
+  Licensed under the GNU General Public License version 3 or later (GPLv3+),
+  as the binary is built with --enable-gpl --enable-version3.
+
+  The binary is copied verbatim from the upstream multi-arch image pinned in
+  deploy/docker/Dockerfile:
+
+    mwader/static-ffmpeg:8.1.2
+    sha256:33f770f812cbfc3de96c547157fc9faf8bd95a36481753439ffa761045167585
+
+  The exact build configuration is embedded in the binary and can be printed
+  with `ffmpeg -buildconf`. Corresponding source for this version of FFmpeg is
+  available from https://ffmpeg.org/download.html and from the upstream image's
+  build definition.
