@@ -20,7 +20,7 @@ import (
 //
 // Time is local wall clock. Levels are 3 letters. Fields are logfmt key=value.
 type consoleHandler struct {
-	mu    sync.Mutex
+	mu    *sync.Mutex
 	w     io.Writer
 	opts  slog.HandlerOptions
 	attrs []slog.Attr
@@ -29,7 +29,7 @@ type consoleHandler struct {
 }
 
 func newConsoleHandler(w io.Writer, opts *slog.HandlerOptions, color bool) *consoleHandler {
-	h := &consoleHandler{w: w, color: color}
+	h := &consoleHandler{mu: &sync.Mutex{}, w: w, color: color}
 	if opts != nil {
 		h.opts = *opts
 	}

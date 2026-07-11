@@ -2,8 +2,10 @@ package logging
 
 import (
 	"bytes"
+	"context"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -146,4 +148,30 @@ func TestWithAttrsChannel(t *testing.T) {
 		t.Fatalf("\n got: %s\nwant: %s", got, want)
 	}
 	_ = log
+}
+
+func TestDerivedHandlersShareTheLock(t *testing.T) {
+	var buf bytes.Buffer
+	base := newConsoleHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}, false)
+	derived := base.WithAttrs([]slog.Attr{slog.String("channel", "news")})
+	grouped := base.WithGroup("egress")
+
+	ts := time.Date(2026, 7, 11, 0, 0, 0, 0, time.Local)
+	var wg sync.WaitGroup
+	for _, h := range []slog.Handler{base, derived, grouped} {
+		for i := 0; i < 50; i++ {
+			wg.Add(1)
+			go func(h slog.Handler) {
+				defer wg.Done()
+				_ = h.Handle(context.Background(), slog.NewRecord(ts, slog.LevelInfo, "concurrent", 0))
+			}(h)
+		}
+	}
+	wg.Wait()
+
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		if !strings.HasSuffix(line, "concurrent") {
+			t.Fatalf("interleaved log line, derived handlers are not sharing the lock: %q", line)
+		}
+	}
 }
