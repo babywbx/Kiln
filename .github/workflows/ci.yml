@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "not gofmt'd:"; echo "$unformatted"; exit 1
+          fi
+      - run: go vet ./...
+      - run: go build ./...
+      - run: go test -race ./...
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build amd64 (runs capability + CENC assertions inside the build)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: kiln:ci-amd64
+          build-args: |
+            VERSION=ci
+            COMMIT=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build arm64 (runs the same assertions under emulation)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          platforms: linux/arm64
+          outputs: type=cacheonly
+          build-args: |
+            VERSION=ci
+            COMMIT=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke the remote (HTTP origin) path
+        run: |
+          docker network create kilnsmoke
+          docker run -d --name kiln-origin --network kilnsmoke \
+            -v "$PWD/testdata/cenc:/www:ro" busybox:1.36 httpd -f -p 8000 -h /www
+          docker run --rm --network kilnsmoke \
+            -e ORIGIN_URL=http://kiln-origin:8000 \
+            -v "$PWD:/src:ro" -w /src \
+            --entrypoint /bin/sh kiln:ci-amd64 \
+            deploy/docker/smoke.sh /usr/local/bin/ffmpeg testdata/cenc
+
+      - name: Report image size
+        run: docker images --format '{{.Repository}}:{{.Tag}} {{.Size}}' kiln:ci-amd64
