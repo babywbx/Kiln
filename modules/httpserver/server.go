@@ -99,6 +99,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/playlist.m3u", s.requireAuth(s.handlePlaylist))
 
 	s.mux.HandleFunc("GET /v1/admin/channels", s.requireAuth(s.handleAdminListChannels))
+	s.mux.HandleFunc("GET /v1/admin/channels/{id}", s.requireAuth(s.handleAdminGetChannel))
 	s.mux.HandleFunc("POST /v1/admin/channels", s.requireAuth(s.handleAdminUpsertChannel))
 	s.mux.HandleFunc("PUT /v1/admin/channels/{id}", s.requireAuth(s.handleAdminUpsertChannel))
 	s.mux.HandleFunc("DELETE /v1/admin/channels/{id}", s.requireAuth(s.handleAdminDeleteChannel))
@@ -110,9 +111,13 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/admin/settings", s.requireAuth(s.handleAdminGetSettings))
 	s.mux.HandleFunc("PUT /v1/admin/settings", s.requireAuth(s.handleAdminPutSettings))
 	s.mux.HandleFunc("POST /v1/admin/channels/{id}/probe", s.requireAuth(s.handleAdminProbeChannel))
+	s.mux.HandleFunc("POST /v1/admin/channels/{id}/warmup", s.requireAuth(s.handleAdminWarmupChannel))
+	s.mux.HandleFunc("POST /v1/admin/channels/{id}/preview", s.requireAuth(s.handleAdminPreviewChannel))
+	s.mux.HandleFunc("DELETE /v1/admin/sessions/{id}", s.requireAuth(s.handleAdminStopSession))
 	s.mux.HandleFunc("PUT /v1/admin/channels/reorder", s.requireAuth(s.handleAdminReorderChannels))
 	s.mux.HandleFunc("POST /v1/admin/import/m3u", s.requireAuth(s.handleAdminImportM3U))
 	s.mux.HandleFunc("GET /v1/admin/access-logs", s.requireAuth(s.handleAdminAccessLogs))
+	s.mux.HandleFunc("DELETE /v1/admin/access-logs", s.requireAuth(s.handleAdminClearAccessLogs))
 	s.mux.HandleFunc("GET /v1/admin/egress", s.requireAuth(s.handleAdminEgress))
 	s.mux.HandleFunc("PUT /v1/admin/egress", s.requireAuth(s.handleAdminPutEgress))
 	s.mux.HandleFunc("POST /v1/admin/egress/proxies", s.requireAuth(s.handleAdminUpsertProxy))
@@ -146,6 +151,7 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 		ww.Header().Set("X-Content-Type-Options", "nosniff")
 		ww.Header().Set("Referrer-Policy", "no-referrer")
 		ww.Header().Set("X-Frame-Options", "DENY")
+		ww.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: http: https:; media-src 'self' blob:; connect-src 'self'; worker-src 'self' blob:; font-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
 		ww.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
 		ww.Header().Set("Pragma", "no-cache")
 		s.applyCORS(ww, r)
@@ -155,7 +161,7 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 				s.deps.Observe.IncError()
 				s.deps.Log.Error("panic",
 					"request_id", reqID,
-					"path", r.URL.Path,
+					"path", redactRequestPath(r.URL.Path),
 					"panic", rec,
 				)
 				writeAppErr(ww, apperr.Internal(nil))
@@ -164,7 +170,7 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 			s.deps.Log.Log(r.Context(), level, "request",
 				"remote", clientIP(r),
 				"method", r.Method,
-				"path", r.URL.Path,
+				"path", redactRequestPath(r.URL.Path),
 				"status", ww.code,
 				"dur_ms", time.Since(start).Milliseconds(),
 				"request_id", reqID,
@@ -406,7 +412,7 @@ func (s *Server) serveHLSIndex(w http.ResponseWriter, r *http.Request, sess *ses
 	headers := s.deps.Sessions.HeadersFor(sess.Channel)
 	body, finalURL, err := s.deps.Sessions.Pull().GetBytes(r.Context(), pull.Request{
 		URL:       sess.SourceURL,
-		UserAgent: sess.Channel.UserAgent,
+		UserAgent: version.UserAgent(sess.Channel.UserAgent),
 		Headers:   headers,
 		ChannelID: sess.Channel.ID,
 	})
@@ -562,7 +568,7 @@ func (s *Server) handlePlayUpstream(w http.ResponseWriter, r *http.Request) {
 	headers := s.deps.Sessions.HeadersFor(ch)
 	res, err := s.deps.Sessions.Pull().Get(r.Context(), pull.Request{
 		URL:       abs,
-		UserAgent: ch.UserAgent,
+		UserAgent: version.UserAgent(ch.UserAgent),
 		Headers:   headers,
 		ChannelID: id,
 	})
@@ -630,6 +636,10 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			writeAppErr(w, err)
 			return
 		}
+		if c.Role == "preview" {
+			writeAppErr(w, auth.ErrInvalidToken)
+			return
+		}
 		next(w, r.WithContext(context.WithValue(r.Context(), claimsKey, c)))
 	}
 }
@@ -640,7 +650,12 @@ func (s *Server) requirePlayAuth(next http.HandlerFunc) http.HandlerFunc {
 			next(w, r)
 			return
 		}
-		s.requireAuth(next)(w, r)
+		c, err := s.deps.Auth.Parse(extractToken(r))
+		if err != nil {
+			writeAppErr(w, err)
+			return
+		}
+		next(w, r.WithContext(context.WithValue(r.Context(), claimsKey, c)))
 	}
 }
 
@@ -769,6 +784,22 @@ func clientIP(r *http.Request) string {
 		return r.RemoteAddr
 	}
 	return host
+}
+
+func redactRequestPath(raw string) string {
+	if !strings.HasPrefix(raw, "/p/") {
+		return raw
+	}
+	rest := strings.TrimPrefix(raw, "/p/")
+	token, suffix, ok := strings.Cut(rest, "/")
+	if !ok || token == "" {
+		return "/p/[redacted]"
+	}
+	prefix := accesstoken.Prefix(token)
+	if prefix == "" {
+		prefix = "[redacted]"
+	}
+	return "/p/" + prefix + "…/" + suffix
 }
 
 func randomID() string {

@@ -142,6 +142,41 @@ func (s *Service) Login(username, password string) (LoginResult, error) {
 	}, nil
 }
 
+// IssuePreview creates a short-lived token scoped to one channel.
+func (s *Service) IssuePreview(channelID string, ttl time.Duration) (string, time.Time, error) {
+	channelID = strings.TrimSpace(channelID)
+	if channelID == "" {
+		return "", time.Time{}, apperr.New(apperr.CodeInvalid, 400, "channel id required")
+	}
+	if ttl <= 0 {
+		ttl = 5 * time.Minute
+	}
+	now := time.Now().UTC()
+	expiresAt := now.Add(ttl)
+	jti, err := randomJTI()
+	if err != nil {
+		return "", time.Time{}, apperr.Internal(err)
+	}
+	claims := Claims{
+		Role:       "preview",
+		ChannelIDs: []string{channelID},
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    s.issuer,
+			Subject:   "admin-preview",
+			Audience:  jwt.ClaimStrings{s.audience},
+			ExpiresAt: jwt.NewNumericDate(expiresAt),
+			IssuedAt:  jwt.NewNumericDate(now),
+			NotBefore: jwt.NewNumericDate(now),
+			ID:        jti,
+		},
+	}
+	token, err := signJWT(s.priv, claims)
+	if err != nil {
+		return "", time.Time{}, apperr.Internal(err)
+	}
+	return token, expiresAt, nil
+}
+
 func (s *Service) Parse(token string) (Claims, error) {
 	return parseJWT(s.pub, strings.TrimSpace(token), s.issuer, s.audience)
 }

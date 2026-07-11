@@ -2,7 +2,9 @@ package httpserver
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/babywbx/kiln/modules/accesstoken"
 	"github.com/babywbx/kiln/modules/apperr"
@@ -21,7 +23,7 @@ func (s *Server) resolveAccessToken(raw string) (store.AccessTokenRow, error) {
 	if err != nil {
 		return store.AccessTokenRow{}, apperr.Internal(err)
 	}
-	if !ok || !row.Enabled || row.RevokedAt != 0 {
+	if !ok || !row.Enabled || row.RevokedAt != 0 || (row.ExpiresAt > 0 && row.ExpiresAt <= time.Now().Unix()) {
 		return store.AccessTokenRow{}, authInvalidAccess()
 	}
 	_ = s.deps.Store.TouchAccessToken(row.ID)
@@ -35,11 +37,18 @@ func (s *Server) logAccess(row store.AccessTokenRow, r *http.Request, channelID 
 	_ = s.deps.Store.InsertAccessLog(store.AccessLogRow{
 		TokenID:     row.ID,
 		TokenPrefix: row.Prefix,
-		Path:        r.URL.Path,
+		Path:        redactRequestPath(r.URL.Path),
 		ChannelID:   channelID,
 		Status:      status,
 		Remote:      clientIP(r),
 	})
+	days := 30
+	if raw, ok, _ := s.deps.Store.GetSetting("access_log_retention_days"); ok {
+		if configured, err := strconv.Atoi(raw); err == nil && configured >= 1 && configured <= 3650 {
+			days = configured
+		}
+	}
+	_, _ = s.deps.Store.DeleteAccessLogsBefore(time.Now().Add(-time.Duration(days) * 24 * time.Hour).Unix())
 }
 
 func authInvalidAccess() error {

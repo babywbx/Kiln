@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,6 +19,10 @@ type DB struct {
 	sql *sql.DB
 	mu  sync.Mutex
 }
+
+var ErrRevisionConflict = errors.New("store revision conflict")
+
+const currentSchemaVersion = 4
 
 func Open(dataDir string) (*DB, error) {
 	if err := os.MkdirAll(dataDir, 0o750); err != nil {
@@ -46,11 +51,58 @@ func (db *DB) Close() error {
 }
 
 func (db *DB) migrate() error {
-	const schema = `
-CREATE TABLE IF NOT EXISTS schema_version (
-  version INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS channels (
+	tx, err := db.sql.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)`); err != nil {
+		return err
+	}
+	var version int
+	if err := tx.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_version`).Scan(&version); err != nil {
+		return err
+	}
+	if version > currentSchemaVersion {
+		return fmt.Errorf("database schema version %d is newer than supported version %d", version, currentSchemaVersion)
+	}
+	for version < currentSchemaVersion {
+		next := version + 1
+		if err := applyMigration(tx, next); err != nil {
+			return fmt.Errorf("migrate database to version %d: %w", next, err)
+		}
+		if _, err := tx.Exec(`DELETE FROM schema_version`); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`INSERT INTO schema_version(version) VALUES (?)`, next); err != nil {
+			return err
+		}
+		version = next
+	}
+	return tx.Commit()
+}
+
+func applyMigration(tx *sql.Tx, version int) error {
+	switch version {
+	case 1:
+		_, err := tx.Exec(schemaV1)
+		return err
+	case 2:
+		_, err := tx.Exec(schemaV2)
+		return err
+	case 3:
+		_, err := tx.Exec(schemaV3)
+		return err
+	case 4:
+		_, err := tx.Exec(schemaV4)
+		return err
+	default:
+		return fmt.Errorf("unknown schema version %d", version)
+	}
+}
+
+const schemaV1 = `
+CREATE TABLE channels (
   id TEXT PRIMARY KEY,
   title TEXT NOT NULL DEFAULT '',
   group_name TEXT NOT NULL DEFAULT '',
@@ -71,7 +123,7 @@ CREATE TABLE IF NOT EXISTS channels (
   sort_order INTEGER NOT NULL DEFAULT 0,
   updated_at INTEGER NOT NULL
 );
-CREATE TABLE IF NOT EXISTS access_tokens (
+CREATE TABLE access_tokens (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   token_hash TEXT NOT NULL UNIQUE,
@@ -83,12 +135,12 @@ CREATE TABLE IF NOT EXISTS access_tokens (
   last_used_at INTEGER NOT NULL DEFAULT 0,
   revoked_at INTEGER NOT NULL DEFAULT 0
 );
-CREATE INDEX IF NOT EXISTS idx_access_tokens_hash ON access_tokens(token_hash);
-CREATE TABLE IF NOT EXISTS settings (
+CREATE INDEX idx_access_tokens_hash ON access_tokens(token_hash);
+CREATE TABLE settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS access_logs (
+CREATE TABLE access_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   token_id TEXT NOT NULL DEFAULT '',
   token_prefix TEXT NOT NULL DEFAULT '',
@@ -98,41 +150,15 @@ CREATE TABLE IF NOT EXISTS access_logs (
   remote TEXT NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_access_logs_created ON access_logs(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_access_logs_token ON access_logs(token_id, created_at DESC);
-`
-	if _, err := db.sql.Exec(schema); err != nil {
-		return err
-	}
-	var n int
-	if err := db.sql.QueryRow(`SELECT COUNT(1) FROM schema_version`).Scan(&n); err != nil {
-		return err
-	}
-	if n == 0 {
-		if _, err := db.sql.Exec(`INSERT INTO schema_version(version) VALUES (1)`); err != nil {
-			return err
-		}
-	}
-	if _, err := db.sql.Exec(`CREATE TABLE IF NOT EXISTS access_logs (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  token_id TEXT NOT NULL DEFAULT '',
-  token_prefix TEXT NOT NULL DEFAULT '',
-  path TEXT NOT NULL DEFAULT '',
-  channel_id TEXT NOT NULL DEFAULT '',
-  status INTEGER NOT NULL DEFAULT 0,
-  remote TEXT NOT NULL DEFAULT '',
-  created_at INTEGER NOT NULL
-)`); err != nil {
-		return err
-	}
-	if _, err := db.sql.Exec(`
-CREATE TABLE IF NOT EXISTS proxy_profiles (
+CREATE INDEX idx_access_logs_created ON access_logs(created_at DESC);
+CREATE INDEX idx_access_logs_token ON access_logs(token_id, created_at DESC);
+CREATE TABLE proxy_profiles (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL DEFAULT '',
   url TEXT NOT NULL,
   disabled INTEGER NOT NULL DEFAULT 0
 );
-CREATE TABLE IF NOT EXISTS proxy_rules (
+CREATE TABLE proxy_rules (
   id TEXT PRIMARY KEY,
   priority INTEGER NOT NULL DEFAULT 100,
   kind TEXT NOT NULL DEFAULT 'host_suffix',
@@ -140,11 +166,37 @@ CREATE TABLE IF NOT EXISTS proxy_rules (
   proxy_id TEXT NOT NULL DEFAULT 'direct',
   disabled INTEGER NOT NULL DEFAULT 0
 );
-`); err != nil {
-		return err
-	}
-	return nil
-}
+`
+
+const schemaV2 = `
+ALTER TABLE channels ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE access_tokens ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE access_tokens ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE access_tokens ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0;
+UPDATE access_tokens SET updated_at = created_at WHERE updated_at = 0;
+ALTER TABLE settings ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE settings ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE proxy_profiles ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE proxy_profiles ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE proxy_rules ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE proxy_rules ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0;
+UPDATE settings SET updated_at = unixepoch() WHERE updated_at = 0;
+UPDATE proxy_profiles SET updated_at = unixepoch() WHERE updated_at = 0;
+UPDATE proxy_rules SET updated_at = unixepoch() WHERE updated_at = 0;
+UPDATE channels SET user_agent = '' WHERE user_agent = 'Kiln/0.2';
+`
+
+const schemaV3 = `
+UPDATE access_logs
+SET path = '/p/' || CASE WHEN token_prefix = '' THEN '[redacted]' ELSE token_prefix END || '…/' ||
+  substr(substr(path, 4), instr(substr(path, 4), '/') + 1)
+WHERE path LIKE '/p/%' AND instr(substr(path, 4), '/') > 0;
+`
+
+const schemaV4 = `
+INSERT OR IGNORE INTO settings(key, value, revision, updated_at)
+VALUES ('runtime_settings_revision', '1', 1, unixepoch());
+`
 
 func (db *DB) SeedFromConfig(cfg config.File) error {
 	if err := db.seedChannels(cfg); err != nil {
@@ -175,7 +227,7 @@ func (db *DB) seedChannels(cfg config.File) error {
 		}
 	}
 	if cfg.Server.PublicBaseURL != "" {
-		if _, err := tx.Exec(`INSERT OR IGNORE INTO settings(key, value) VALUES ('public_base_url', ?)`, cfg.Server.PublicBaseURL); err != nil {
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO settings(key, value, updated_at) VALUES ('public_base_url', ?, ?)`, cfg.Server.PublicBaseURL, now); err != nil {
 			return err
 		}
 	}
@@ -189,62 +241,168 @@ func (db *DB) seedEgress(cfg config.File) error {
 	if err := db.sql.QueryRow(`SELECT COUNT(1) FROM proxy_profiles`).Scan(&n); err != nil {
 		return err
 	}
-	if n > 0 {
-		return nil
-	}
 	tx, err := db.sql.Begin()
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	for _, p := range cfg.Proxies {
-		if _, err := tx.Exec(`INSERT INTO proxy_profiles(id, name, url, disabled) VALUES (?,?,?,?)`,
-			p.ID, p.Name, p.URL, boolInt(p.Disabled)); err != nil {
-			return err
+	now := time.Now().Unix()
+	if n == 0 {
+		for _, p := range cfg.Proxies {
+			if _, err := tx.Exec(`INSERT INTO proxy_profiles(id, name, url, disabled, updated_at) VALUES (?,?,?,?,?)`,
+				p.ID, p.Name, p.URL, boolInt(p.Disabled), now); err != nil {
+				return err
+			}
+		}
+		for i, r := range cfg.Egress.Rules {
+			id := r.ID
+			if id == "" {
+				id = fmt.Sprintf("rule-%d", i+1)
+			}
+			if _, err := tx.Exec(`INSERT INTO proxy_rules(id, priority, kind, pattern, proxy_id, disabled, updated_at) VALUES (?,?,?,?,?,?,?)`,
+				id, r.Priority, r.Kind, r.Pattern, r.Proxy, boolInt(r.Disabled), now); err != nil {
+				return err
+			}
 		}
 	}
-	for i, r := range cfg.Egress.Rules {
-		id := r.ID
-		if id == "" {
-			id = fmt.Sprintf("rule-%d", i+1)
-		}
-		if _, err := tx.Exec(`INSERT INTO proxy_rules(id, priority, kind, pattern, proxy_id, disabled) VALUES (?,?,?,?,?,?)`,
-			id, r.Priority, r.Kind, r.Pattern, r.Proxy, boolInt(r.Disabled)); err != nil {
-			return err
-		}
-	}
-	if _, err := tx.Exec(`INSERT OR IGNORE INTO settings(key, value) VALUES ('egress_default', ?)`, cfg.Egress.Default); err != nil {
+	if _, err := tx.Exec(`INSERT OR IGNORE INTO settings(key, value, updated_at) VALUES ('egress_default', ?, ?)`, cfg.Egress.Default, now); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`INSERT OR IGNORE INTO settings(key, value) VALUES ('playlist_policy', ?)`, cfg.Egress.PlaylistPolicy); err != nil {
+	if _, err := tx.Exec(`INSERT OR IGNORE INTO settings(key, value, updated_at) VALUES ('playlist_policy', ?, ?)`, cfg.Egress.PlaylistPolicy, now); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`INSERT OR IGNORE INTO settings(key, value) VALUES ('docker_proxy_host', ?)`, cfg.Egress.DockerProxyHost); err != nil {
+	if _, err := tx.Exec(`INSERT OR IGNORE INTO settings(key, value, updated_at) VALUES ('docker_proxy_host', ?, ?)`, cfg.Egress.DockerProxyHost, now); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
 type ProxyProfileRow struct {
-	ID       string `json:"id"`
-	Name     string `json:"name,omitempty"`
-	URL      string `json:"url"`
-	Disabled bool   `json:"disabled"`
+	ID        string `json:"id"`
+	Name      string `json:"name,omitempty"`
+	URL       string `json:"url"`
+	Disabled  bool   `json:"disabled"`
+	Revision  int64  `json:"revision"`
+	UpdatedAt int64  `json:"updated_at"`
 }
 
 type ProxyRuleRow struct {
-	ID       string `json:"id"`
-	Priority int    `json:"priority"`
-	Kind     string `json:"kind"`
-	Pattern  string `json:"pattern"`
-	ProxyID  string `json:"proxy"`
-	Disabled bool   `json:"disabled"`
+	ID        string `json:"id"`
+	Priority  int    `json:"priority"`
+	Kind      string `json:"kind"`
+	Pattern   string `json:"pattern"`
+	ProxyID   string `json:"proxy"`
+	Disabled  bool   `json:"disabled"`
+	Revision  int64  `json:"revision"`
+	UpdatedAt int64  `json:"updated_at"`
+}
+
+type EgressSnapshot struct {
+	Default         string
+	PlaylistPolicy  string
+	DockerProxyHost string
+	Profiles        []ProxyProfileRow
+	Rules           []ProxyRuleRow
+	Revision        int64
+}
+
+func (db *DB) GetEgressSnapshot() (EgressSnapshot, error) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	var snapshot EgressSnapshot
+	rows, err := db.sql.Query(`SELECT id, name, url, disabled, revision, updated_at FROM proxy_profiles ORDER BY id`)
+	if err != nil {
+		return EgressSnapshot{}, err
+	}
+	for rows.Next() {
+		var profile ProxyProfileRow
+		var disabled int
+		if err := rows.Scan(&profile.ID, &profile.Name, &profile.URL, &disabled, &profile.Revision, &profile.UpdatedAt); err != nil {
+			_ = rows.Close()
+			return EgressSnapshot{}, err
+		}
+		profile.Disabled = intBool(disabled)
+		snapshot.Profiles = append(snapshot.Profiles, profile)
+	}
+	if err := rows.Close(); err != nil {
+		return EgressSnapshot{}, err
+	}
+	ruleRows, err := db.sql.Query(`SELECT id, priority, kind, pattern, proxy_id, disabled, revision, updated_at FROM proxy_rules ORDER BY priority ASC, id ASC`)
+	if err != nil {
+		return EgressSnapshot{}, err
+	}
+	for ruleRows.Next() {
+		var rule ProxyRuleRow
+		var disabled int
+		if err := ruleRows.Scan(&rule.ID, &rule.Priority, &rule.Kind, &rule.Pattern, &rule.ProxyID, &disabled, &rule.Revision, &rule.UpdatedAt); err != nil {
+			_ = ruleRows.Close()
+			return EgressSnapshot{}, err
+		}
+		rule.Disabled = intBool(disabled)
+		snapshot.Rules = append(snapshot.Rules, rule)
+	}
+	if err := ruleRows.Close(); err != nil {
+		return EgressSnapshot{}, err
+	}
+	settingRows, err := db.sql.Query(`SELECT key, value, revision FROM settings
+		WHERE key IN ('egress_default','playlist_policy','docker_proxy_host')`)
+	if err != nil {
+		return EgressSnapshot{}, err
+	}
+	defer settingRows.Close()
+	for settingRows.Next() {
+		var key, value string
+		var revision int64
+		if err := settingRows.Scan(&key, &value, &revision); err != nil {
+			return EgressSnapshot{}, err
+		}
+		switch key {
+		case "egress_default":
+			snapshot.Default = value
+			snapshot.Revision = revision
+		case "playlist_policy":
+			snapshot.PlaylistPolicy = value
+		case "docker_proxy_host":
+			snapshot.DockerProxyHost = value
+		}
+	}
+	return snapshot, settingRows.Err()
+}
+
+type RuntimeSettingsSnapshot struct {
+	Values   map[string]string
+	Revision int64
+}
+
+func (db *DB) GetRuntimeSettingsSnapshot() (RuntimeSettingsSnapshot, error) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	snapshot := RuntimeSettingsSnapshot{Values: map[string]string{}}
+	rows, err := db.sql.Query(`SELECT key, value, revision FROM settings
+		WHERE key IN ('public_base_url','access_log_retention_days','runtime_settings_revision')`)
+	if err != nil {
+		return RuntimeSettingsSnapshot{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key, value string
+		var revision int64
+		if err := rows.Scan(&key, &value, &revision); err != nil {
+			return RuntimeSettingsSnapshot{}, err
+		}
+		if key == "runtime_settings_revision" {
+			snapshot.Revision = revision
+		} else {
+			snapshot.Values[key] = value
+		}
+	}
+	return snapshot, rows.Err()
 }
 
 func (db *DB) ListProxyProfiles() ([]ProxyProfileRow, error) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	rows, err := db.sql.Query(`SELECT id, name, url, disabled FROM proxy_profiles ORDER BY id`)
+	rows, err := db.sql.Query(`SELECT id, name, url, disabled, revision, updated_at FROM proxy_profiles ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -253,7 +411,7 @@ func (db *DB) ListProxyProfiles() ([]ProxyProfileRow, error) {
 	for rows.Next() {
 		var r ProxyProfileRow
 		var dis int
-		if err := rows.Scan(&r.ID, &r.Name, &r.URL, &dis); err != nil {
+		if err := rows.Scan(&r.ID, &r.Name, &r.URL, &dis, &r.Revision, &r.UpdatedAt); err != nil {
 			return nil, err
 		}
 		r.Disabled = intBool(dis)
@@ -265,9 +423,29 @@ func (db *DB) ListProxyProfiles() ([]ProxyProfileRow, error) {
 func (db *DB) UpsertProxyProfile(p ProxyProfileRow) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	_, err := db.sql.Exec(`INSERT INTO proxy_profiles(id, name, url, disabled) VALUES (?,?,?,?)
-		ON CONFLICT(id) DO UPDATE SET name=excluded.name, url=excluded.url, disabled=excluded.disabled`,
-		p.ID, p.Name, p.URL, boolInt(p.Disabled))
+	return db.upsertProxyProfile(p, 0)
+}
+
+func (db *DB) UpsertProxyProfileIfRevision(p ProxyProfileRow, expectedRevision int64) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	return db.upsertProxyProfile(p, expectedRevision)
+}
+
+func (db *DB) upsertProxyProfile(p ProxyProfileRow, expectedRevision int64) error {
+	now := time.Now().Unix()
+	if expectedRevision > 0 {
+		result, err := db.sql.Exec(`UPDATE proxy_profiles SET name=?, url=?, disabled=?, revision=revision+1, updated_at=?
+			WHERE id=? AND revision=?`, p.Name, p.URL, boolInt(p.Disabled), now, p.ID, expectedRevision)
+		if err != nil {
+			return err
+		}
+		return revisionResult(result)
+	}
+	_, err := db.sql.Exec(`INSERT INTO proxy_profiles(id, name, url, disabled, updated_at) VALUES (?,?,?,?,?)
+		ON CONFLICT(id) DO UPDATE SET name=excluded.name, url=excluded.url, disabled=excluded.disabled,
+		revision=proxy_profiles.revision+1, updated_at=excluded.updated_at`,
+		p.ID, p.Name, p.URL, boolInt(p.Disabled), now)
 	return err
 }
 
@@ -281,7 +459,7 @@ func (db *DB) DeleteProxyProfile(id string) error {
 func (db *DB) ListProxyRules() ([]ProxyRuleRow, error) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	rows, err := db.sql.Query(`SELECT id, priority, kind, pattern, proxy_id, disabled FROM proxy_rules ORDER BY priority ASC, id ASC`)
+	rows, err := db.sql.Query(`SELECT id, priority, kind, pattern, proxy_id, disabled, revision, updated_at FROM proxy_rules ORDER BY priority ASC, id ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -290,7 +468,7 @@ func (db *DB) ListProxyRules() ([]ProxyRuleRow, error) {
 	for rows.Next() {
 		var r ProxyRuleRow
 		var dis int
-		if err := rows.Scan(&r.ID, &r.Priority, &r.Kind, &r.Pattern, &r.ProxyID, &dis); err != nil {
+		if err := rows.Scan(&r.ID, &r.Priority, &r.Kind, &r.Pattern, &r.ProxyID, &dis, &r.Revision, &r.UpdatedAt); err != nil {
 			return nil, err
 		}
 		r.Disabled = intBool(dis)
@@ -302,6 +480,16 @@ func (db *DB) ListProxyRules() ([]ProxyRuleRow, error) {
 func (db *DB) UpsertProxyRule(r ProxyRuleRow) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
+	return db.upsertProxyRule(r, 0)
+}
+
+func (db *DB) UpsertProxyRuleIfRevision(r ProxyRuleRow, expectedRevision int64) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	return db.upsertProxyRule(r, expectedRevision)
+}
+
+func (db *DB) upsertProxyRule(r ProxyRuleRow, expectedRevision int64) error {
 	if r.ID == "" {
 		return fmt.Errorf("rule id required")
 	}
@@ -311,10 +499,21 @@ func (db *DB) UpsertProxyRule(r ProxyRuleRow) error {
 	if r.ProxyID == "" {
 		r.ProxyID = "direct"
 	}
-	_, err := db.sql.Exec(`INSERT INTO proxy_rules(id, priority, kind, pattern, proxy_id, disabled) VALUES (?,?,?,?,?,?)
+	now := time.Now().Unix()
+	if expectedRevision > 0 {
+		result, err := db.sql.Exec(`UPDATE proxy_rules SET priority=?, kind=?, pattern=?, proxy_id=?, disabled=?,
+			revision=revision+1, updated_at=? WHERE id=? AND revision=?`,
+			r.Priority, r.Kind, r.Pattern, r.ProxyID, boolInt(r.Disabled), now, r.ID, expectedRevision)
+		if err != nil {
+			return err
+		}
+		return revisionResult(result)
+	}
+	_, err := db.sql.Exec(`INSERT INTO proxy_rules(id, priority, kind, pattern, proxy_id, disabled, updated_at) VALUES (?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET priority=excluded.priority, kind=excluded.kind, pattern=excluded.pattern,
-		proxy_id=excluded.proxy_id, disabled=excluded.disabled`,
-		r.ID, r.Priority, r.Kind, r.Pattern, r.ProxyID, boolInt(r.Disabled))
+		proxy_id=excluded.proxy_id, disabled=excluded.disabled, revision=proxy_rules.revision+1,
+		updated_at=excluded.updated_at`,
+		r.ID, r.Priority, r.Kind, r.Pattern, r.ProxyID, boolInt(r.Disabled), now)
 	return err
 }
 
@@ -336,6 +535,7 @@ func (db *DB) ReplaceAllProxyRules(rules []ProxyRuleRow) error {
 	if _, err := tx.Exec(`DELETE FROM proxy_rules`); err != nil {
 		return err
 	}
+	now := time.Now().Unix()
 	for _, r := range rules {
 		if r.ID == "" {
 			continue
@@ -346,8 +546,57 @@ func (db *DB) ReplaceAllProxyRules(rules []ProxyRuleRow) error {
 		if r.ProxyID == "" {
 			r.ProxyID = "direct"
 		}
-		if _, err := tx.Exec(`INSERT INTO proxy_rules(id, priority, kind, pattern, proxy_id, disabled) VALUES (?,?,?,?,?,?)`,
-			r.ID, r.Priority, r.Kind, r.Pattern, r.ProxyID, boolInt(r.Disabled)); err != nil {
+		if _, err := tx.Exec(`INSERT INTO proxy_rules(id, priority, kind, pattern, proxy_id, disabled, updated_at) VALUES (?,?,?,?,?,?,?)`,
+			r.ID, r.Priority, r.Kind, r.Pattern, r.ProxyID, boolInt(r.Disabled), now); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// ReplaceEgressConfiguration persists a validated egress draft as one transaction.
+func (db *DB) ReplaceEgressConfiguration(defaultID, playlistPolicy, dockerProxyHost string, profiles []ProxyProfileRow, rules []ProxyRuleRow, expectedRevision int64) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	tx, err := db.sql.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	now := time.Now().Unix()
+	result, err := tx.Exec(`UPDATE settings SET value=?, revision=revision+1, updated_at=?
+		WHERE key='egress_default' AND revision=?`, defaultID, now, expectedRevision)
+	if err != nil {
+		return err
+	}
+	if err := revisionResult(result); err != nil {
+		return err
+	}
+	for key, value := range map[string]string{
+		"playlist_policy":   playlistPolicy,
+		"docker_proxy_host": dockerProxyHost,
+	} {
+		if _, err := tx.Exec(`INSERT INTO settings(key, value, updated_at) VALUES (?,?,?)
+			ON CONFLICT(key) DO UPDATE SET value=excluded.value, revision=settings.revision+1,
+			updated_at=excluded.updated_at`, key, value, now); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`DELETE FROM proxy_rules`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM proxy_profiles`); err != nil {
+		return err
+	}
+	for _, profile := range profiles {
+		if _, err := tx.Exec(`INSERT INTO proxy_profiles(id, name, url, disabled, updated_at) VALUES (?,?,?,?,?)`,
+			profile.ID, profile.Name, profile.URL, boolInt(profile.Disabled), now); err != nil {
+			return err
+		}
+	}
+	for _, rule := range rules {
+		if _, err := tx.Exec(`INSERT INTO proxy_rules(id, priority, kind, pattern, proxy_id, disabled, updated_at) VALUES (?,?,?,?,?,?,?)`,
+			rule.ID, rule.Priority, rule.Kind, rule.Pattern, rule.ProxyID, boolInt(rule.Disabled), now); err != nil {
 			return err
 		}
 	}
@@ -380,6 +629,13 @@ func boolInt(v bool) int {
 
 func intBool(v int) bool { return v != 0 }
 
+func nonzeroTime(value, fallback int64) int64 {
+	if value != 0 {
+		return value
+	}
+	return fallback
+}
+
 func decodeHeaders(s string) map[string]string {
 	out := map[string]string{}
 	if strings.TrimSpace(s) == "" {
@@ -406,6 +662,8 @@ func encodeHeaders(h map[string]string) string {
 type ChannelRow struct {
 	Channel   config.Channel
 	SortOrder int
+	Revision  int64
+	UpdatedAt int64
 }
 
 func scanChannelRow(row interface {
@@ -414,11 +672,11 @@ func scanChannelRow(row interface {
 	var ch config.Channel
 	var disabled, onDemand, autostart, restart int
 	var headers string
-	var sort, updated int64
+	var sort, revision, updated int64
 	err := row.Scan(
 		&ch.ID, &ch.Title, &ch.Group, &ch.LogoURL, &ch.Upstream, &ch.Path, &ch.Ingress,
 		&disabled, &onDemand, &autostart, &ch.IdleTimeoutSec, &ch.MaxViewers, &ch.KeysFile, &ch.UserAgent,
-		&headers, &restart, &ch.PreferHeight, &sort, &updated,
+		&headers, &restart, &ch.PreferHeight, &sort, &revision, &updated,
 	)
 	if err != nil {
 		return ChannelRow{}, err
@@ -428,14 +686,14 @@ func scanChannelRow(row interface {
 	ch.Autostart = intBool(autostart)
 	ch.RestartOnFailure = intBool(restart)
 	ch.Headers = decodeHeaders(headers)
-	return ChannelRow{Channel: ch, SortOrder: int(sort)}, nil
+	return ChannelRow{Channel: ch, SortOrder: int(sort), Revision: revision, UpdatedAt: updated}, nil
 }
 
 func (db *DB) ListChannelRows(includeDisabled bool) ([]ChannelRow, error) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	q := `SELECT id, title, group_name, logo_url, upstream, path, ingress, disabled, on_demand, autostart,
-		idle_timeout_sec, max_viewers, keys_file, user_agent, headers_json, restart_on_failure, prefer_height, sort_order, updated_at
+		idle_timeout_sec, max_viewers, keys_file, user_agent, headers_json, restart_on_failure, prefer_height, sort_order, revision, updated_at
 		FROM channels`
 	if !includeDisabled {
 		q += ` WHERE disabled = 0`
@@ -470,25 +728,96 @@ func (db *DB) ListChannels(includeDisabled bool) ([]config.Channel, error) {
 }
 
 func (db *DB) GetChannel(id string) (config.Channel, bool, error) {
+	row, ok, err := db.GetChannelRow(id)
+	return row.Channel, ok, err
+}
+
+func (db *DB) GetChannelRow(id string) (ChannelRow, bool, error) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	row := db.sql.QueryRow(`SELECT id, title, group_name, logo_url, upstream, path, ingress, disabled, on_demand, autostart,
-		idle_timeout_sec, max_viewers, keys_file, user_agent, headers_json, restart_on_failure, prefer_height, sort_order, updated_at
+		idle_timeout_sec, max_viewers, keys_file, user_agent, headers_json, restart_on_failure, prefer_height, sort_order, revision, updated_at
 		FROM channels WHERE id = ?`, id)
 	ch, err := scanChannelRow(row)
 	if err == sql.ErrNoRows {
-		return config.Channel{}, false, nil
+		return ChannelRow{}, false, nil
 	}
 	if err != nil {
-		return config.Channel{}, false, err
+		return ChannelRow{}, false, err
 	}
-	return ch.Channel, true, nil
+	return ch, true, nil
 }
 
 func (db *DB) UpsertChannel(ch config.Channel) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
+	return db.upsertChannel(ch, 0)
+}
+
+func (db *DB) UpsertChannelIfRevision(ch config.Channel, expectedRevision int64) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	return db.upsertChannel(ch, expectedRevision)
+}
+
+func (db *DB) UpsertChannelsIfRevisions(channels []config.Channel, revisions map[string]int64) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	tx, err := db.sql.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var maxSort int
+	if err := tx.QueryRow(`SELECT COALESCE(MAX(sort_order), -1) FROM channels`).Scan(&maxSort); err != nil {
+		return err
+	}
 	now := time.Now().Unix()
+	for _, ch := range channels {
+		expected := revisions[ch.ID]
+		if expected == 0 {
+			maxSort++
+			if err := insertChannelTx(tx, ch, maxSort, now); err != nil {
+				return ErrRevisionConflict
+			}
+			continue
+		}
+		result, err := tx.Exec(`UPDATE channels SET
+			title=?, group_name=?, logo_url=?, upstream=?, path=?, ingress=?, disabled=?, on_demand=?, autostart=?,
+			idle_timeout_sec=?, max_viewers=?, keys_file=?, user_agent=?, headers_json=?, restart_on_failure=?,
+			prefer_height=?, revision=revision+1, updated_at=? WHERE id=? AND revision=?`,
+			ch.Title, ch.Group, ch.LogoURL, ch.Upstream, ch.Path, ch.Ingress, boolInt(ch.Disabled),
+			boolInt(ch.OnDemand), boolInt(ch.Autostart), ch.IdleTimeoutSec, ch.MaxViewers, ch.KeysFile,
+			ch.UserAgent, encodeHeaders(ch.Headers), boolInt(ch.RestartOnFailure), ch.PreferHeight,
+			now, ch.ID, expected)
+		if err != nil {
+			return err
+		}
+		if err := revisionResult(result); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (db *DB) upsertChannel(ch config.Channel, expectedRevision int64) error {
+	now := time.Now().Unix()
+	if expectedRevision > 0 {
+		result, err := db.sql.Exec(`UPDATE channels SET
+			title=?, group_name=?, logo_url=?, upstream=?, path=?, ingress=?, disabled=?, on_demand=?, autostart=?,
+			idle_timeout_sec=?, max_viewers=?, keys_file=?, user_agent=?, headers_json=?, restart_on_failure=?,
+			prefer_height=?, revision=revision+1, updated_at=?
+			WHERE id=? AND revision=?`,
+			ch.Title, ch.Group, ch.LogoURL, ch.Upstream, ch.Path, ch.Ingress,
+			boolInt(ch.Disabled), boolInt(ch.OnDemand), boolInt(ch.Autostart),
+			ch.IdleTimeoutSec, ch.MaxViewers, ch.KeysFile, ch.UserAgent, encodeHeaders(ch.Headers),
+			boolInt(ch.RestartOnFailure), ch.PreferHeight, now, ch.ID, expectedRevision,
+		)
+		if err != nil {
+			return err
+		}
+		return revisionResult(result)
+	}
 	var maxSort int
 	_ = db.sql.QueryRow(`SELECT COALESCE(MAX(sort_order), -1) FROM channels`).Scan(&maxSort)
 	_, err := db.sql.Exec(`INSERT INTO channels(
@@ -502,13 +831,24 @@ func (db *DB) UpsertChannel(ch config.Channel) error {
 		idle_timeout_sec=excluded.idle_timeout_sec, max_viewers=excluded.max_viewers,
 		keys_file=excluded.keys_file, user_agent=excluded.user_agent, headers_json=excluded.headers_json,
 		restart_on_failure=excluded.restart_on_failure, prefer_height=excluded.prefer_height,
-		updated_at=excluded.updated_at`,
+		revision=channels.revision+1, updated_at=excluded.updated_at`,
 		ch.ID, ch.Title, ch.Group, ch.LogoURL, ch.Upstream, ch.Path, ch.Ingress,
 		boolInt(ch.Disabled), boolInt(ch.OnDemand), boolInt(ch.Autostart),
 		ch.IdleTimeoutSec, ch.MaxViewers, ch.KeysFile, ch.UserAgent, encodeHeaders(ch.Headers),
 		boolInt(ch.RestartOnFailure), ch.PreferHeight, maxSort+1, now,
 	)
 	return err
+}
+
+func revisionResult(result sql.Result) error {
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed == 0 {
+		return ErrRevisionConflict
+	}
+	return nil
 }
 
 func (db *DB) ReorderChannels(ids []string) error {
@@ -525,7 +865,37 @@ func (db *DB) ReorderChannels(ids []string) error {
 		if id == "" {
 			continue
 		}
-		if _, err := tx.Exec(`UPDATE channels SET sort_order = ?, updated_at = ? WHERE id = ?`, i, now, id); err != nil {
+		if _, err := tx.Exec(`UPDATE channels SET sort_order = ?, revision = revision + 1, updated_at = ? WHERE id = ?`, i, now, id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (db *DB) ReorderChannelsIfRevisions(ids []string, revisions map[string]int64) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	tx, err := db.sql.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, id := range ids {
+		expected := revisions[id]
+		if expected == 0 {
+			return ErrRevisionConflict
+		}
+		var current int64
+		if err := tx.QueryRow(`SELECT revision FROM channels WHERE id = ?`, id).Scan(&current); err != nil {
+			return err
+		}
+		if current != expected {
+			return ErrRevisionConflict
+		}
+	}
+	now := time.Now().Unix()
+	for i, id := range ids {
+		if _, err := tx.Exec(`UPDATE channels SET sort_order=?, revision=revision+1, updated_at=? WHERE id=?`, i, now, id); err != nil {
 			return err
 		}
 	}
@@ -537,6 +907,16 @@ func (db *DB) DeleteChannel(id string) error {
 	defer db.mu.Unlock()
 	_, err := db.sql.Exec(`DELETE FROM channels WHERE id = ?`, id)
 	return err
+}
+
+func (db *DB) DeleteChannelIfRevision(id string, expectedRevision int64) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	result, err := db.sql.Exec(`DELETE FROM channels WHERE id = ? AND revision = ?`, id, expectedRevision)
+	if err != nil {
+		return err
+	}
+	return revisionResult(result)
 }
 
 type AccessLogRow struct {
@@ -599,6 +979,26 @@ func (db *DB) ListAccessLogs(limit int, tokenID string) ([]AccessLogRow, error) 
 	return out, rows.Err()
 }
 
+func (db *DB) DeleteAccessLogsBefore(cutoff int64) (int64, error) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	result, err := db.sql.Exec(`DELETE FROM access_logs WHERE created_at < ?`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+func (db *DB) ClearAccessLogs() (int64, error) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	result, err := db.sql.Exec(`DELETE FROM access_logs`)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 type AccessTokenRow struct {
 	ID         string
 	Name       string
@@ -608,18 +1008,21 @@ type AccessTokenRow struct {
 	Enabled    bool
 	Note       string
 	CreatedAt  int64
+	ExpiresAt  int64
 	LastUsedAt int64
 	RevokedAt  int64
+	Revision   int64
+	UpdatedAt  int64
 }
 
 func (db *DB) InsertAccessToken(row AccessTokenRow) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	_, err := db.sql.Exec(`INSERT INTO access_tokens(
-		id, name, token_hash, token_prefix, scope_json, enabled, note, created_at, last_used_at, revoked_at
-	) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		id, name, token_hash, token_prefix, scope_json, enabled, note, created_at, expires_at, last_used_at, revoked_at, updated_at
+	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
 		row.ID, row.Name, row.TokenHash, row.Prefix, row.ScopeJSON, boolInt(row.Enabled), row.Note,
-		row.CreatedAt, row.LastUsedAt, row.RevokedAt,
+		row.CreatedAt, row.ExpiresAt, row.LastUsedAt, row.RevokedAt, nonzeroTime(row.UpdatedAt, row.CreatedAt),
 	)
 	return err
 }
@@ -627,7 +1030,7 @@ func (db *DB) InsertAccessToken(row AccessTokenRow) error {
 func (db *DB) ListAccessTokens() ([]AccessTokenRow, error) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	rows, err := db.sql.Query(`SELECT id, name, token_hash, token_prefix, scope_json, enabled, note, created_at, last_used_at, revoked_at
+	rows, err := db.sql.Query(`SELECT id, name, token_hash, token_prefix, scope_json, enabled, note, created_at, expires_at, last_used_at, revoked_at, revision, updated_at
 		FROM access_tokens ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
@@ -637,7 +1040,7 @@ func (db *DB) ListAccessTokens() ([]AccessTokenRow, error) {
 	for rows.Next() {
 		var r AccessTokenRow
 		var en int
-		if err := rows.Scan(&r.ID, &r.Name, &r.TokenHash, &r.Prefix, &r.ScopeJSON, &en, &r.Note, &r.CreatedAt, &r.LastUsedAt, &r.RevokedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.Name, &r.TokenHash, &r.Prefix, &r.ScopeJSON, &en, &r.Note, &r.CreatedAt, &r.ExpiresAt, &r.LastUsedAt, &r.RevokedAt, &r.Revision, &r.UpdatedAt); err != nil {
 			return nil, err
 		}
 		r.Enabled = intBool(en)
@@ -651,9 +1054,9 @@ func (db *DB) GetAccessTokenByHash(hash string) (AccessTokenRow, bool, error) {
 	defer db.mu.Unlock()
 	var r AccessTokenRow
 	var en int
-	err := db.sql.QueryRow(`SELECT id, name, token_hash, token_prefix, scope_json, enabled, note, created_at, last_used_at, revoked_at
+	err := db.sql.QueryRow(`SELECT id, name, token_hash, token_prefix, scope_json, enabled, note, created_at, expires_at, last_used_at, revoked_at, revision, updated_at
 		FROM access_tokens WHERE token_hash = ?`, hash).Scan(
-		&r.ID, &r.Name, &r.TokenHash, &r.Prefix, &r.ScopeJSON, &en, &r.Note, &r.CreatedAt, &r.LastUsedAt, &r.RevokedAt,
+		&r.ID, &r.Name, &r.TokenHash, &r.Prefix, &r.ScopeJSON, &en, &r.Note, &r.CreatedAt, &r.ExpiresAt, &r.LastUsedAt, &r.RevokedAt, &r.Revision, &r.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return AccessTokenRow{}, false, nil
@@ -675,7 +1078,27 @@ func (db *DB) TouchAccessToken(id string) error {
 func (db *DB) RevokeAccessToken(id string) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	_, err := db.sql.Exec(`UPDATE access_tokens SET revoked_at = ?, enabled = 0 WHERE id = ? AND revoked_at = 0`, time.Now().Unix(), id)
+	return db.revokeAccessToken(id, 0)
+}
+
+func (db *DB) RevokeAccessTokenIfRevision(id string, expectedRevision int64) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	return db.revokeAccessToken(id, expectedRevision)
+}
+
+func (db *DB) revokeAccessToken(id string, expectedRevision int64) error {
+	now := time.Now().Unix()
+	if expectedRevision > 0 {
+		result, err := db.sql.Exec(`UPDATE access_tokens SET revoked_at=?, enabled=0, revision=revision+1, updated_at=?
+			WHERE id=? AND revision=? AND revoked_at=0`, now, now, id, expectedRevision)
+		if err != nil {
+			return err
+		}
+		return revisionResult(result)
+	}
+	_, err := db.sql.Exec(`UPDATE access_tokens SET revoked_at=?, enabled=0, revision=revision+1, updated_at=?
+		WHERE id=? AND revoked_at=0`, now, now, id)
 	return err
 }
 
@@ -686,26 +1109,101 @@ func (db *DB) DeleteAccessToken(id string) error {
 	return err
 }
 
-func (db *DB) GetSetting(key string) (string, bool, error) {
+func (db *DB) DeleteAccessTokenIfRevision(id string, expectedRevision int64) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	var v string
-	err := db.sql.QueryRow(`SELECT value FROM settings WHERE key = ?`, key).Scan(&v)
+	result, err := db.sql.Exec(`DELETE FROM access_tokens WHERE id = ? AND revision = ?`, id, expectedRevision)
+	if err != nil {
+		return err
+	}
+	return revisionResult(result)
+}
+
+func (db *DB) GetSetting(key string) (string, bool, error) {
+	row, ok, err := db.GetSettingRow(key)
+	return row.Value, ok, err
+}
+
+type SettingRow struct {
+	Key       string `json:"key"`
+	Value     string `json:"value"`
+	Revision  int64  `json:"revision"`
+	UpdatedAt int64  `json:"updated_at"`
+}
+
+func (db *DB) GetSettingRow(key string) (SettingRow, bool, error) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	var row SettingRow
+	err := db.sql.QueryRow(`SELECT key, value, revision, updated_at FROM settings WHERE key = ?`, key).Scan(
+		&row.Key, &row.Value, &row.Revision, &row.UpdatedAt,
+	)
 	if err == sql.ErrNoRows {
-		return "", false, nil
+		return SettingRow{}, false, nil
 	}
 	if err != nil {
-		return "", false, err
+		return SettingRow{}, false, err
 	}
-	return v, true, nil
+	return row, true, nil
 }
 
 func (db *DB) SetSetting(key, value string) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	_, err := db.sql.Exec(`INSERT INTO settings(key, value) VALUES (?,?)
-		ON CONFLICT(key) DO UPDATE SET value=excluded.value`, key, value)
+	return db.setSetting(key, value, 0)
+}
+
+func (db *DB) SetSettingIfRevision(key, value string, expectedRevision int64) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	return db.setSetting(key, value, expectedRevision)
+}
+
+func (db *DB) setSetting(key, value string, expectedRevision int64) error {
+	now := time.Now().Unix()
+	if expectedRevision > 0 {
+		result, err := db.sql.Exec(`UPDATE settings SET value=?, revision=revision+1, updated_at=?
+			WHERE key=? AND revision=?`, value, now, key, expectedRevision)
+		if err != nil {
+			return err
+		}
+		return revisionResult(result)
+	}
+	_, err := db.sql.Exec(`INSERT INTO settings(key, value, updated_at) VALUES (?,?,?)
+		ON CONFLICT(key) DO UPDATE SET value=excluded.value, revision=settings.revision+1,
+		updated_at=excluded.updated_at`, key, value, now)
 	return err
+}
+
+// ReplaceRuntimeSettings updates the safe hot-reload settings atomically.
+func (db *DB) ReplaceRuntimeSettings(publicBaseURL, retentionDays string, expectedRevision int64) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	tx, err := db.sql.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	now := time.Now().Unix()
+	result, err := tx.Exec(`UPDATE settings SET revision=revision+1, updated_at=?
+		WHERE key='runtime_settings_revision' AND revision=?`, now, expectedRevision)
+	if err != nil {
+		return err
+	}
+	if err := revisionResult(result); err != nil {
+		return err
+	}
+	for key, value := range map[string]string{
+		"public_base_url":           publicBaseURL,
+		"access_log_retention_days": retentionDays,
+	} {
+		if _, err := tx.Exec(`INSERT INTO settings(key, value, updated_at) VALUES (?,?,?)
+			ON CONFLICT(key) DO UPDATE SET value=excluded.value, revision=settings.revision+1,
+			updated_at=excluded.updated_at`, key, value, now); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (db *DB) ListSettings() (map[string]string, error) {

@@ -130,6 +130,33 @@ func TestExpiredToken(t *testing.T) {
 	}
 }
 
+func TestIssuePreviewTokenScopesOneChannel(t *testing.T) {
+	svc, err := NewForTest(nil, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, expiresAt, err := svc.IssuePreview("news", 5*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if until := time.Until(expiresAt); until < 4*time.Minute || until > 6*time.Minute {
+		t.Fatalf("unexpected expiry window: %v", until)
+	}
+	claims, err := svc.Parse(tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims.Role != "preview" || claims.Username() != "admin-preview" {
+		t.Fatalf("unexpected claims: %+v", claims)
+	}
+	if !svc.CanAccessChannel(claims, "news") {
+		t.Fatal("preview token should allow its channel")
+	}
+	if svc.CanAccessChannel(claims, "sports") {
+		t.Fatal("preview token must not allow another channel")
+	}
+}
+
 func TestAutoKeyMaterial(t *testing.T) {
 	dir := t.TempDir()
 	hash, err := HashPassword("x")

@@ -1,4 +1,4 @@
-.PHONY: build test run tidy hash keys ci \
+.PHONY: build test run tidy hash keys ci audit-admin-ui \
         docker docker-multiarch docker-verify docker-smoke docker-reap fixtures
 
 VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
@@ -34,6 +34,9 @@ ci:
 	go vet ./...
 	go build ./...
 	go test -race ./...
+
+audit-admin-ui:
+	./scripts/audit-admin-ui.sh $(or $(URL),http://127.0.0.1:8080/admin)
 
 docker:
 	docker buildx build -f deploy/docker/Dockerfile $(BUILD_ARGS) -t $(IMAGE) --load .

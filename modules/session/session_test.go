@@ -1,0 +1,206 @@
+package session_test
+
+import (
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/babywbx/kiln/modules/catalog"
+	"github.com/babywbx/kiln/modules/config"
+	"github.com/babywbx/kiln/modules/observe"
+	"github.com/babywbx/kiln/modules/session"
+)
+
+func TestManagerWarmupStartsHLSChannel(t *testing.T) {
+	t.Parallel()
+
+	manager, _ := newManager(t, config.Channel{
+		ID:       "news",
+		Upstream: "origin",
+		Path:     "/live.m3u8",
+		Ingress:  "hls",
+	})
+
+	if err := manager.Warmup("news"); err != nil {
+		t.Fatalf("Warmup() error = %v", err)
+	}
+
+	eventually(t, func() bool {
+		_, ok := manager.Get("news")
+		return ok
+	})
+}
+
+func TestManagerWarmupPublishesStarting(t *testing.T) {
+	t.Parallel()
+
+	requestStarted := make(chan struct{})
+	requestCanceled := make(chan struct{})
+	releaseUpstream := make(chan struct{})
+	var startedOnce sync.Once
+	var canceledOnce sync.Once
+	var requests atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		startedOnce.Do(func() { close(requestStarted) })
+		select {
+		case <-r.Context().Done():
+			canceledOnce.Do(func() { close(requestCanceled) })
+		case <-releaseUpstream:
+		}
+	}))
+	defer func() {
+		close(releaseUpstream)
+		upstream.Close()
+	}()
+
+	keysFile := t.TempDir() + "/channel.keys"
+	if err := os.WriteFile(keysFile, []byte("00112233445566778899aabbccddeeff:ffeeddccbbaa99887766554433221100\n"), 0o600); err != nil {
+		t.Fatalf("write keys: %v", err)
+	}
+	manager, obs := newManagerWithBaseURL(t, upstream.URL, config.Channel{
+		ID:       "news",
+		Upstream: "origin",
+		Path:     "/live.mpd",
+		Ingress:  "dash",
+		KeysFile: keysFile,
+	})
+	defer manager.StopChannel("news")
+
+	if err := manager.Warmup("news"); err != nil {
+		t.Fatalf("Warmup() error = %v", err)
+	}
+	select {
+	case <-requestStarted:
+	case <-time.After(time.Second):
+		t.Fatal("warmup did not request the upstream")
+	}
+
+	eventually(t, func() bool {
+		return sessionState(obs, "news") == "starting"
+	})
+	if err := manager.Warmup("news"); err != nil {
+		t.Fatalf("second Warmup() error = %v", err)
+	}
+	if stopped := manager.StopChannel("news"); !stopped {
+		t.Fatal("StopChannel() = false while channel is starting")
+	}
+	select {
+	case <-requestCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("StopChannel() did not cancel the upstream request")
+	}
+	eventually(t, func() bool {
+		return sessionState(obs, "news") == ""
+	})
+	time.Sleep(10 * time.Millisecond)
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("upstream requests = %d, want 1", got)
+	}
+	if _, ok := manager.Get("news"); ok {
+		t.Fatal("Get() found session after stopping warmup")
+	}
+}
+
+func TestManagerWarmupPublishesFailure(t *testing.T) {
+	t.Parallel()
+
+	manager, obs := newManager(t, config.Channel{
+		ID:       "news",
+		Upstream: "origin",
+		Path:     "/live.mpd",
+		Ingress:  "dash",
+		KeysFile: t.TempDir() + "/missing.keys",
+	})
+
+	if err := manager.Warmup("news"); err != nil {
+		t.Fatalf("Warmup() error = %v", err)
+	}
+
+	eventually(t, func() bool {
+		stat, ok := findSession(obs, "news")
+		return ok && stat.State == "failed" && stat.LastError != ""
+	})
+	if _, ok := manager.Get("news"); ok {
+		t.Fatal("Get() found session after failed warmup")
+	}
+}
+
+func TestManagerWarmupRejectsUnknownChannel(t *testing.T) {
+	t.Parallel()
+
+	manager, _ := newManager(t, config.Channel{
+		ID:       "news",
+		Upstream: "origin",
+		Path:     "/live.m3u8",
+		Ingress:  "hls",
+	})
+
+	if err := manager.Warmup("missing"); err != session.ErrNotFound {
+		t.Fatalf("Warmup() error = %v, want ErrNotFound", err)
+	}
+}
+
+func newManager(t *testing.T, channel config.Channel) (*session.Manager, *observe.Service) {
+	t.Helper()
+	return newManagerWithBaseURL(t, "https://example.com", channel)
+}
+
+func newManagerWithBaseURL(t *testing.T, baseURL string, channel config.Channel) (*session.Manager, *observe.Service) {
+	t.Helper()
+
+	cfg := config.File{
+		Upstreams: []config.Upstream{{
+			ID:      "origin",
+			BaseURL: baseURL,
+		}},
+		Channels: []config.Channel{channel},
+	}
+	obs := observe.New()
+	manager := session.NewManager(
+		catalog.New(cfg, nil),
+		nil,
+		obs,
+		t.TempDir(),
+		config.FFmpeg{},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		nil,
+	)
+	return manager, obs
+}
+
+func sessionState(obs *observe.Service, channelID string) string {
+	stat, ok := findSession(obs, channelID)
+	if !ok {
+		return ""
+	}
+	return stat.State
+}
+
+func findSession(obs *observe.Service, channelID string) (observe.SessionStat, bool) {
+	for _, stat := range obs.Snapshot().Sessions {
+		if stat.ChannelID == channelID {
+			return stat, true
+		}
+	}
+	return observe.SessionStat{}, false
+}
+
+func eventually(t *testing.T, condition func() bool) {
+	t.Helper()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("condition was not met before timeout")
+}

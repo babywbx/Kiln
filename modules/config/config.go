@@ -294,9 +294,6 @@ func (c *File) applyDefaults() {
 		if ch.IdleTimeoutSec <= 0 {
 			ch.IdleTimeoutSec = 90
 		}
-		if ch.UserAgent == "" {
-			ch.UserAgent = "Kiln/0.2"
-		}
 		if ch.Ingress == "dash" {
 			ch.RestartOnFailure = true
 		}

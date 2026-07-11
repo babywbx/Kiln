@@ -24,3 +24,26 @@ as a separate process.
   with `ffmpeg -buildconf`. Corresponding source for this version of FFmpeg is
   available from https://ffmpeg.org/download.html and from the upstream image's
   build definition.
+
+--------------------------------------------------------------------------------
+
+The embedded administration interface includes the following locally served
+browser libraries. Their complete license texts are retained
+next to the distributed files under modules/httpserver/admin/assets/third_party/.
+
+  hls.js 1.6.16
+  Copyright (c) 2017 Dailymotion
+  Apache License 2.0
+
+--------------------------------------------------------------------------------
+
+The administration console resolves Chinese channel names to Mandarin pinyin and
+Cantonese jyutping for search. The reading tables in
+modules/httpserver/admin/assets/data/romanize.js are generated from the Unicode
+Character Database by scripts/gen-romanize-data.go, which reads the kMandarin,
+kXHC1983, kTGHZ2013, kCantonese, and kSimplifiedVariant fields and re-encodes
+them. No Unicode source file is redistributed verbatim.
+
+  Unicode Character Database (Unihan)
+  Copyright © 1991-2025 Unicode, Inc. All rights reserved.
+  Distributed under the Terms of Use in https://www.unicode.org/copyright.html

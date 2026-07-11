@@ -31,6 +31,7 @@ type ChannelView struct {
 	KeysFile  string `json:"keys_file,omitempty"`
 	PreferH   int    `json:"prefer_height,omitempty"`
 	SortOrder int    `json:"sort_order"`
+	Revision  int64  `json:"revision,omitempty"`
 	PlayURL   string `json:"play_url,omitempty"`
 }
 
@@ -77,7 +78,7 @@ func (s *Service) ListViews(publicBase string, includeDisabled bool) ([]ChannelV
 				ID: ch.ID, Title: title, Group: ch.Group, LogoURL: ch.LogoURL,
 				Ingress: ch.Ingress, OnDemand: ch.OnDemand, Upstream: ch.Upstream,
 				Path: ch.Path, Disabled: ch.Disabled, KeysFile: ch.KeysFile, PreferH: ch.PreferHeight,
-				SortOrder: row.SortOrder,
+				SortOrder: row.SortOrder, Revision: row.Revision,
 			}
 			if publicBase != "" && !ch.Disabled {
 				view.PlayURL = publicBase + "/v1/play/" + ch.ID + "/index.m3u8"
@@ -117,6 +118,13 @@ func (s *Service) Reorder(ids []string) error {
 	return s.db.ReorderChannels(ids)
 }
 
+func (s *Service) ReorderIfRevisions(ids []string, revisions map[string]int64) error {
+	if s.db == nil {
+		return fmt.Errorf("store not available")
+	}
+	return s.db.ReorderChannelsIfRevisions(ids, revisions)
+}
+
 func (s *Service) Get(id string) (config.Channel, bool) {
 	if s.db != nil {
 		ch, ok, err := s.db.GetChannel(id)
@@ -147,13 +155,44 @@ func (s *Service) Upsert(ch config.Channel) error {
 	if s.db == nil {
 		return fmt.Errorf("store not available")
 	}
+	ch = normalizeChannel(ch)
+	if err := store.ValidateChannel(ch, s.cfg.Upstreams); err != nil {
+		return err
+	}
+	return s.db.UpsertChannel(ch)
+}
+
+func (s *Service) UpsertIfRevision(ch config.Channel, expectedRevision int64) error {
+	if s.db == nil {
+		return fmt.Errorf("store not available")
+	}
+	ch = normalizeChannel(ch)
+	if err := store.ValidateChannel(ch, s.cfg.Upstreams); err != nil {
+		return err
+	}
+	return s.db.UpsertChannelIfRevision(ch, expectedRevision)
+}
+
+func (s *Service) UpsertBatchIfRevisions(channels []config.Channel, revisions map[string]int64) error {
+	if s.db == nil {
+		return fmt.Errorf("store not available")
+	}
+	normalized := make([]config.Channel, 0, len(channels))
+	for _, ch := range channels {
+		ch = normalizeChannel(ch)
+		if err := store.ValidateChannel(ch, s.cfg.Upstreams); err != nil {
+			return err
+		}
+		normalized = append(normalized, ch)
+	}
+	return s.db.UpsertChannelsIfRevisions(normalized, revisions)
+}
+
+func normalizeChannel(ch config.Channel) config.Channel {
 	if ch.Ingress == "" {
 		ch.Ingress = "hls"
 	}
 	ch.Ingress = strings.ToLower(ch.Ingress)
-	if ch.UserAgent == "" {
-		ch.UserAgent = "Kiln/0.2"
-	}
 	if ch.IdleTimeoutSec <= 0 {
 		ch.IdleTimeoutSec = 90
 	}
@@ -163,10 +202,7 @@ func (s *Service) Upsert(ch config.Channel) error {
 	if !ch.OnDemand && !ch.Autostart {
 		ch.OnDemand = true
 	}
-	if err := store.ValidateChannel(ch, s.cfg.Upstreams); err != nil {
-		return err
-	}
-	return s.db.UpsertChannel(ch)
+	return ch
 }
 
 func (s *Service) Delete(id string) error {
@@ -174,6 +210,13 @@ func (s *Service) Delete(id string) error {
 		return fmt.Errorf("store not available")
 	}
 	return s.db.DeleteChannel(id)
+}
+
+func (s *Service) DeleteIfRevision(id string, expectedRevision int64) error {
+	if s.db == nil {
+		return fmt.Errorf("store not available")
+	}
+	return s.db.DeleteChannelIfRevision(id, expectedRevision)
 }
 
 func (s *Service) SourceURL(ch config.Channel) (string, error) {

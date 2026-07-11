@@ -52,14 +52,14 @@ func ConfigFromStore(db *store.DB, file config.File) (Config, error) {
 			})
 		}
 	}
-	if len(cfg.Profiles) == 0 {
+	if db == nil {
 		for _, p := range file.Proxies {
 			cfg.Profiles = append(cfg.Profiles, Profile{
 				ID: p.ID, Name: p.Name, URL: p.URL, Disabled: p.Disabled,
 			})
 		}
 	}
-	if len(cfg.Rules) == 0 {
+	if db == nil {
 		for _, r := range file.Egress.Rules {
 			cfg.Rules = append(cfg.Rules, Rule{
 				ID: r.ID, Priority: r.Priority, Kind: RuleKind(r.Kind),

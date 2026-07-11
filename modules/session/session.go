@@ -15,6 +15,7 @@ import (
 	"github.com/babywbx/kiln/modules/observe"
 	"github.com/babywbx/kiln/modules/proxyegress"
 	"github.com/babywbx/kiln/modules/pull"
+	"github.com/babywbx/kiln/modules/version"
 )
 
 var ErrNotFound = apperr.New(apperr.CodeNotFound, 404, "channel not found")
@@ -43,9 +44,11 @@ type Manager struct {
 }
 
 type startWait struct {
-	done chan struct{}
-	sess *Session
-	err  error
+	done    chan struct{}
+	sess    *Session
+	err     error
+	cancel  context.CancelFunc
+	stopped bool
 }
 
 type Session struct {
@@ -90,16 +93,37 @@ func (m *Manager) Start(ctx context.Context) {
 
 func (m *Manager) Pull() *pull.Client { return m.pull }
 
-func (m *Manager) Acquire(channelID string) (*Session, error) {
-	ch, ok := m.cat.Get(channelID)
-	if !ok {
-		return nil, ErrNotFound
-	}
-	src, err := m.cat.SourceURL(ch)
+// Warmup starts a channel asynchronously and is idempotent while it is active.
+func (m *Manager) Warmup(channelID string) error {
+	ch, src, up, err := m.resolve(channelID)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	up, err := m.cat.Upstream(ch)
+
+	m.mu.Lock()
+	if s, ok := m.sessions[channelID]; ok {
+		s.LastTouch = time.Now()
+		m.publish(s, "running")
+		m.mu.Unlock()
+		return nil
+	}
+	if _, ok := m.inflight[channelID]; ok {
+		m.mu.Unlock()
+		return nil
+	}
+	w, s := m.beginStartLocked(ch, src, up)
+	m.mu.Unlock()
+
+	go func() {
+		if _, err := m.finishStart(channelID, w, s); err != nil && err != context.Canceled {
+			m.log.Error("session warmup failed", "channel", channelID, "err", err)
+		}
+	}()
+	return nil
+}
+
+func (m *Manager) Acquire(channelID string) (*Session, error) {
+	ch, src, up, err := m.resolve(channelID)
 	if err != nil {
 		return nil, err
 	}
@@ -133,58 +157,103 @@ func (m *Manager) Acquire(channelID string) (*Session, error) {
 			}
 			continue
 		}
-		w := &startWait{done: make(chan struct{})}
-		m.inflight[channelID] = w
+		w, s := m.beginStartLocked(ch, src, up)
 		m.mu.Unlock()
-
-		sctx, cancel := context.WithCancel(context.Background())
-		s := &Session{
-			Channel:   ch,
-			SourceURL: src,
-			Upstream:  up,
-			Mode:      ch.Ingress,
-			StartedAt: time.Now(),
-			LastTouch: time.Now(),
-			cancel:    cancel,
-			ctx:       sctx,
-		}
-		var startErr error
-		if ch.Ingress == "dash" {
-			startErr = m.startDash(s)
-		}
-		m.mu.Lock()
-		delete(m.inflight, channelID)
-		if startErr != nil {
-			cancel()
-			w.err = startErr
-			close(w.done)
-			m.mu.Unlock()
-			return nil, startErr
-		}
-		if existing, ok := m.sessions[channelID]; ok {
-			if s.dash != nil {
-				_ = s.dash.Stop()
-			}
-			cancel()
-			existing.LastTouch = time.Now()
-			w.sess = existing
-			close(w.done)
-			m.mu.Unlock()
-			return existing, nil
-		}
-		s.lastOK = time.Now()
-		m.sessions[channelID] = s
-		m.publish(s, "running")
-		w.sess = s
-		close(w.done)
-		m.mu.Unlock()
-		m.log.Info("session started", "channel", channelID, "ingress", ch.Ingress, "pack_mode", s.PackMode)
-		return s, nil
+		return m.finishStart(channelID, w, s)
 	}
 }
 
+func (m *Manager) resolve(channelID string) (config.Channel, string, config.Upstream, error) {
+	ch, ok := m.cat.Get(channelID)
+	if !ok {
+		return config.Channel{}, "", config.Upstream{}, ErrNotFound
+	}
+	src, err := m.cat.SourceURL(ch)
+	if err != nil {
+		return config.Channel{}, "", config.Upstream{}, err
+	}
+	up, err := m.cat.Upstream(ch)
+	if err != nil {
+		return config.Channel{}, "", config.Upstream{}, err
+	}
+	return ch, src, up, nil
+}
+
+func (m *Manager) beginStartLocked(ch config.Channel, src string, up config.Upstream) (*startWait, *Session) {
+	sctx, cancel := context.WithCancel(context.Background())
+	now := time.Now()
+	s := &Session{
+		Channel:   ch,
+		SourceURL: src,
+		Upstream:  up,
+		Mode:      ch.Ingress,
+		StartedAt: now,
+		LastTouch: now,
+		cancel:    cancel,
+		ctx:       sctx,
+	}
+	w := &startWait{done: make(chan struct{}), sess: s, cancel: cancel}
+	m.inflight[ch.ID] = w
+	m.publish(s, "starting")
+	return w, s
+}
+
+func (m *Manager) finishStart(channelID string, w *startWait, s *Session) (*Session, error) {
+	var startErr error
+	if s.Channel.Ingress == "dash" {
+		startErr = m.startDash(s)
+	}
+
+	m.mu.Lock()
+	current := m.inflight[channelID] == w
+	if current {
+		delete(m.inflight, channelID)
+	}
+	if w.stopped || !current {
+		if s.dash != nil {
+			_ = s.dash.Stop()
+		}
+		w.cancel()
+		w.err = context.Canceled
+		close(w.done)
+		m.mu.Unlock()
+		return nil, context.Canceled
+	}
+	if startErr != nil {
+		w.cancel()
+		s.LastError = startErr.Error()
+		m.publish(s, "failed")
+		w.err = startErr
+		close(w.done)
+		m.mu.Unlock()
+		return nil, startErr
+	}
+	if existing, ok := m.sessions[channelID]; ok {
+		if s.dash != nil {
+			_ = s.dash.Stop()
+		}
+		w.cancel()
+		existing.LastTouch = time.Now()
+		w.sess = existing
+		close(w.done)
+		m.mu.Unlock()
+		return existing, nil
+	}
+	s.lastOK = time.Now()
+	m.sessions[channelID] = s
+	m.publish(s, "running")
+	close(w.done)
+	m.mu.Unlock()
+	m.log.Info("session started", "channel", channelID, "ingress", s.Channel.Ingress, "pack_mode", s.PackMode)
+	return s, nil
+}
+
 func (m *Manager) startDash(s *Session) error {
-	startSem <- struct{}{}
+	select {
+	case startSem <- struct{}{}:
+	case <-s.ctx.Done():
+		return s.ctx.Err()
+	}
 	defer func() { <-startSem }()
 
 	keys, err := config.LoadKeysFile(s.Channel.KeysFile)
@@ -211,7 +280,7 @@ func (m *Manager) startDash(s *Session) error {
 	job, err := egress.StartDashHLS(s.ctx, egress.DashOptions{
 		Binary:       m.ffmpeg.Binary,
 		SourceURL:    s.SourceURL,
-		UserAgent:    s.Channel.UserAgent,
+		UserAgent:    version.UserAgent(s.Channel.UserAgent),
 		Headers:      headers,
 		Keys:         keys,
 		WorkDir:      work,
@@ -424,10 +493,18 @@ func (m *Manager) StopChannel(channelID string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	s, ok := m.sessions[channelID]
+	if ok {
+		m.stopLocked(channelID, s)
+		return true
+	}
+	w, ok := m.inflight[channelID]
 	if !ok {
 		return false
 	}
-	m.stopLocked(channelID, s)
+	w.stopped = true
+	w.cancel()
+	delete(m.inflight, channelID)
+	m.obs.RemoveSession(channelID)
 	return true
 }
 
