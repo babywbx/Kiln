@@ -1,0 +1,26 @@
+# Production-style single media stack.
+# Copy and adjust paths; do not commit real secrets.
+
+services:
+  kiln:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    image: kiln:local
+    container_name: kiln
+    ports:
+      - "8080:8080"
+    environment:
+      KILN_TOKEN_SECRET: "replace-with-long-random-secret"
+      # KILN_PUBLIC_BASE_URL: "http://your-host:8080"
+      # KILN_LOG_LEVEL: "info"
+    volumes:
+      - ./kiln.toml:/etc/kiln/kiln.toml:ro
+      - ./keys.txt:/etc/kiln/keys.txt:ro
+      - kiln-data:/var/lib/kiln/data
+    restart: unless-stopped
+    # If origin is another docker service on the same network, set base_url to
+    # http://service-name:port and attach both to the same network.
+
+volumes:
+  kiln-data:

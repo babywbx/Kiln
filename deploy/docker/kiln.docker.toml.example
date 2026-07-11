@@ -1,0 +1,71 @@
+# Example config for the production media image.
+# Mount as /etc/kiln/kiln.toml
+# Use system ffmpeg from the image (do NOT point to host-only wrappers).
+
+[server]
+listen = "0.0.0.0:8080"
+public_base_url = "http://127.0.0.1:8080"
+data_dir = "/var/lib/kiln/data"
+read_timeout_sec = 15
+idle_timeout_sec = 120
+
+[logging]
+level = "info"
+format = "json"
+
+[auth]
+# Prefer: docker run -e KILN_TOKEN_SECRET=...
+token_secret = "replace-with-long-random-secret"
+token_ttl_hours = 24
+login_rate_per_min = 20
+
+[[auth.users]]
+username = "admin"
+# generate: go run scripts/hash-password.go 'your-password'
+password_hash = "$2a$10$8JxhvnpdTX/TrOTi1XaYWuPlrZK1aw3ANgGIWpTO6KtD2M432w7Ie"
+role = "admin"
+
+[security]
+play_require_auth = true
+allowed_hosts = []
+max_playlist_bytes = 8388608
+max_body_bytes = 1048576
+
+[ffmpeg]
+binary = "ffmpeg"
+hls_time = 2
+hls_list_size = 4
+log_level = "error"
+prefer_height = 1080
+low_latency = true
+
+[observe]
+enabled = true
+
+[[upstreams]]
+id = "origin"
+base_url = "http://origin.example.com:8000"
+
+[[channels]]
+id = "demo-news"
+title = "News Channel"
+group = "News"
+upstream = "origin"
+path = "/live/demo-dash"
+ingress = "dash"
+on_demand = true
+idle_timeout_sec = 120
+keys_file = "/etc/kiln/keys.txt"
+restart_on_failure = true
+
+[[channels]]
+id = "demo-uhd"
+title = "UHD Channel"
+group = "News"
+upstream = "origin"
+path = "/live/uhd"
+ingress = "dash"
+on_demand = true
+idle_timeout_sec = 120
+keys_file = "/etc/kiln/keys.txt"
+restart_on_failure = true
