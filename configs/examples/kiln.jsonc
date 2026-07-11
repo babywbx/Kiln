@@ -13,13 +13,14 @@
     "format": "json",
   },
   "auth": {
-    "token_secret": "dev-only-change-me-use-long-random",
     "token_ttl_hours": 24,
     "login_rate_per_min": 20,
+    "token_issuer": "kiln",
+    "token_audience": "kiln",
     "users": [
       {
         "username": "admin",
-        "password_hash": "$2a$10$8JxhvnpdTX/TrOTi1XaYWuPlrZK1aw3ANgGIWpTO6KtD2M432w7Ie",
+        "password_hash": "$argon2id$v=19$m=65536,t=2,p=1$NoPZL19JasDMzCoAHW94PA$K9rCvuXYHSevXNZyI+1BbsIY6ZulUOl9iVFJ6ebfx+A",
         "role": "admin",
       },
     ],

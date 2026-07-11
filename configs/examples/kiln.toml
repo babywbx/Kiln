@@ -12,14 +12,19 @@ level = "info"
 format = "json"
 
 [auth]
-token_secret = "dev-only-change-me-use-long-random"
+# Ed25519 keys: omit to auto-create {data_dir}/auth/ed25519.pem on first start.
+# token_private_key_file = "/etc/kiln/ed25519.pem"
+# token_public_key_file = "/etc/kiln/ed25519.pub.pem"
 token_ttl_hours = 24
 login_rate_per_min = 20
+token_issuer = "kiln"
+token_audience = "kiln"
 
 [[auth.users]]
 username = "admin"
-# bcrypt hash for password "admin" — change before production use
-password_hash = "$2a$10$8JxhvnpdTX/TrOTi1XaYWuPlrZK1aw3ANgGIWpTO6KtD2M432w7Ie"
+# Argon2id hash for password "admin" — change before production use
+# generate: go run scripts/hash-password.go 'your-password'
+password_hash = "$argon2id$v=19$m=65536,t=2,p=1$NoPZL19JasDMzCoAHW94PA$K9rCvuXYHSevXNZyI+1BbsIY6ZulUOl9iVFJ6ebfx+A"
 role = "admin"
 
 [security]
