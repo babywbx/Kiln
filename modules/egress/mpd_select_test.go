@@ -39,6 +39,47 @@ func TestFilterMPDForPackPrefer1080(t *testing.T) {
 	}
 }
 
+// An AdaptationSet whose Representations were all dropped must go too: ffmpeg's
+// DASH demuxer stalls on an empty one and never emits a segment.
+func TestFilterMPDForPackDropsEmptyAdaptationSets(t *testing.T) {
+	mpd := `<?xml version="1.0"?>
+<MPD type="dynamic">
+  <Period>
+    <BaseURL>6/</BaseURL>
+    <AdaptationSet id="1" contentType="video">
+      <SegmentTemplate media="$RepresentationID$/D$Time$.cmfv"><SegmentTimeline><S t="0" d="100"/></SegmentTimeline></SegmentTemplate>
+      <Representation id="v5000000" bandwidth="5000000" width="1920" height="1080" codecs="hev1"/>
+    </AdaptationSet>
+    <AdaptationSet id="2" contentType="video">
+      <SegmentTemplate media="$RepresentationID$/D$Time$.cmfi"><SegmentTimeline><S t="0" d="100"/></SegmentTimeline></SegmentTemplate>
+      <Representation id="v5000000-TrickMode" bandwidth="2500000" width="1920" height="1080" codecs="hev1" maxPlayoutRate="400"/>
+    </AdaptationSet>
+    <AdaptationSet id="3" contentType="audio">
+      <Representation id="a128000" bandwidth="128000" codecs="mp4a.40.2" audioSamplingRate="32000"/>
+    </AdaptationSet>
+    <AdaptationSet id="4" contentType="audio">
+      <Representation id="a128001" bandwidth="128001" codecs="mp4a.40.2" audioSamplingRate="32000"/>
+    </AdaptationSet>
+  </Period>
+</MPD>`
+	out, _, err := FilterMPDForPack(mpd, "http://cdn.example/live/index.mpd", 1080)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sets := adaptationSetRe.FindAllString(out, -1)
+	if len(sets) != 2 {
+		t.Fatalf("want 2 adaptation sets (one video, one audio), got %d:\n%s", len(sets), out)
+	}
+	for _, s := range sets {
+		if !repTagRe.MatchString(s) {
+			t.Fatalf("empty adaptation set survived:\n%s", s)
+		}
+	}
+	if contains(out, "TrickMode") || contains(out, `id="a128001"`) {
+		t.Fatalf("dropped representations still present:\n%s", out)
+	}
+}
+
 func TestPickVideoHighestWhenPreferZero(t *testing.T) {
 	videos := []videoRep{
 		{id: "a", height: 576, bandwidth: 1},

@@ -23,8 +23,19 @@ var (
 	baseURLRe           = regexp.MustCompile(`(?i)<BaseURL>[^<]*</BaseURL>`)
 	segmentTimelineRe   = regexp.MustCompile(`(?is)<SegmentTimeline>\s*(.*?)\s*</SegmentTimeline>`)
 	segmentTimelineSRe  = regexp.MustCompile(`(?is)<S\b[^>]*?/>`)
+	adaptationSetRe     = regexp.MustCompile(`(?is)<AdaptationSet\b[^>]*?/>|<AdaptationSet\b[^>]*>.*?</AdaptationSet>`)
 	defaultTimelineKeep = 10
 )
+
+func dropEmptyAdaptationSets(mpd string) string {
+	out := mpd
+	for _, set := range adaptationSetRe.FindAllString(mpd, -1) {
+		if !repTagRe.MatchString(set) {
+			out = strings.Replace(out, set, "", 1)
+		}
+	}
+	return out
+}
 
 type StreamPick struct {
 	VideoIndex int
@@ -171,6 +182,10 @@ func FilterMPDForPack(mpd, mpdURL string, preferHeight int) (string, string, err
 		}
 		out = strings.Replace(out, r, "", 1)
 	}
+	// Dropping every Representation of an AdaptationSet leaves an empty one
+	// behind. That is invalid DASH and stalls the ffmpeg demuxer, so the whole
+	// set has to go with it.
+	out = dropEmptyAdaptationSets(out)
 
 	base := resolveBaseURL(mpd, mpdURL)
 	if base != "" {
