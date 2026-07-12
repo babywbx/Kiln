@@ -14,8 +14,8 @@ func TestLoginAndParseEdDSA(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(hash, "$argon2id$") {
-		t.Fatalf("expected argon2id hash, got %s", hash)
+	if !strings.HasPrefix(hash, "$2") {
+		t.Fatalf("expected bcrypt hash, got %s", hash)
 	}
 	svc, err := NewForTest([]config.User{{
 		Username:     "alice",

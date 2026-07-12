@@ -23,9 +23,9 @@ token_audience = "kiln"
 
 [[auth.users]]
 username = "admin"
-# Argon2id hash for password "admin" — change before production use
+# bcrypt hash for password "admin" — change before production use
 # generate: go run scripts/hash-password.go 'your-password'
-password_hash = "$argon2id$v=19$m=65536,t=2,p=1$NoPZL19JasDMzCoAHW94PA$K9rCvuXYHSevXNZyI+1BbsIY6ZulUOl9iVFJ6ebfx+A"
+password_hash = "$2a$10$8JxhvnpdTX/TrOTi1XaYWuPlrZK1aw3ANgGIWpTO6KtD2M432w7Ie"
 role = "admin"
 
 [security]
