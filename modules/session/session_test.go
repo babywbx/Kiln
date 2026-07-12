@@ -108,6 +108,71 @@ func TestManagerWarmupPublishesStarting(t *testing.T) {
 	}
 }
 
+func TestManagerShutdownCancelsWarmup(t *testing.T) {
+	t.Parallel()
+
+	requestStarted := make(chan struct{})
+	requestCanceled := make(chan struct{})
+	releaseUpstream := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(requestStarted)
+		select {
+		case <-r.Context().Done():
+			close(requestCanceled)
+		case <-releaseUpstream:
+		}
+	}))
+	defer func() {
+		close(releaseUpstream)
+		upstream.Close()
+	}()
+
+	keysFile := t.TempDir() + "/channel.keys"
+	if err := os.WriteFile(keysFile, []byte("00112233445566778899aabbccddeeff:ffeeddccbbaa99887766554433221100\n"), 0o600); err != nil {
+		t.Fatalf("write keys: %v", err)
+	}
+	manager, _ := newManagerWithBaseURL(t, upstream.URL, config.Channel{
+		ID:       "news",
+		Upstream: "origin",
+		Path:     "/live.mpd",
+		Ingress:  "dash",
+		KeysFile: keysFile,
+	})
+
+	if err := manager.Warmup("news"); err != nil {
+		t.Fatalf("Warmup() error = %v", err)
+	}
+	select {
+	case <-requestStarted:
+	case <-time.After(time.Second):
+		t.Fatal("warmup did not request the upstream")
+	}
+	manager.Shutdown()
+	select {
+	case <-requestCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("Shutdown() did not cancel the inflight warmup")
+	}
+}
+
+func TestManagerRejectsStartsAfterShutdown(t *testing.T) {
+	t.Parallel()
+
+	manager, _ := newManager(t, config.Channel{
+		ID:       "news",
+		Upstream: "origin",
+		Path:     "/live.m3u8",
+		Ingress:  "hls",
+	})
+	manager.Shutdown()
+	if err := manager.Warmup("news"); err == nil {
+		t.Fatal("Warmup() succeeded after Shutdown()")
+	}
+	if _, err := manager.Acquire("news"); err == nil {
+		t.Fatal("Acquire() succeeded after Shutdown()")
+	}
+}
+
 func TestManagerWarmupPublishesFailure(t *testing.T) {
 	t.Parallel()
 

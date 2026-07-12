@@ -32,7 +32,6 @@ deploy/docker/keys.txt
 *.local
 *.local.*
 scripts/*.local
-scripts/ffmpeg-cenc
 
 # Certificates, keys, and exported secret material
 *.pem

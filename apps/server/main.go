@@ -135,6 +135,7 @@ func main() {
 	defer shcancel()
 	_ = srv.Shutdown(shctx)
 	cancel()
+	sessions.Shutdown()
 	log.Info("shutting down")
 }
 

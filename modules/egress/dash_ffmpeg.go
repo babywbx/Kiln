@@ -15,7 +15,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/babywbx/kiln/modules/config"
@@ -44,6 +43,7 @@ type DashJob struct {
 	intentional bool
 	mode        string
 	pid         int
+	container   string
 }
 
 type DashOptions struct {
@@ -62,7 +62,8 @@ type DashOptions struct {
 	OnBytesIn    func(n int64)
 	Egress       *proxyegress.Router
 	ChannelID    string
-	DockerFFmpeg bool
+	FFmpegMode   config.FFmpegMode
+	DockerImage  string
 }
 
 var kidRe = regexp.MustCompile(`(?i)default_KID="([0-9a-fA-F-]{32,36})"`)
@@ -206,7 +207,6 @@ func startPackager(parent context.Context, opt DashOptions, log *slog.Logger, ab
 	indexPath := filepath.Join(absWork, "index.m3u8")
 	segPattern := filepath.Join(absWork, "seg_%05d.ts")
 	stderrPath := filepath.Join(absWork, "ffmpeg.stderr.log")
-	nameFile := filepath.Join(absWork, ".ffmpeg-container")
 
 	ctx, cancel := context.WithCancel(parent)
 	args := []string{
@@ -251,14 +251,8 @@ func startPackager(parent context.Context, opt DashOptions, log *slog.Logger, ab
 		return nil, fmt.Errorf("open ffmpeg stderr log: %w", err)
 	}
 	var stderrBuf bytes.Buffer
-	cmd := exec.CommandContext(ctx, opt.Binary, args...)
-	cmd.Stdout = nil
-	cmd.Stderr = io.MultiWriter(stderrFile, &stderrBuf)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	env := append([]string{}, os.Environ()...)
-	env = append(env, "KILN_FF_NAME_FILE="+nameFile)
+	proxyEnv := []string{}
 	if opt.Egress != nil {
-		forDocker := opt.DockerFFmpeg || looksLikeDockerFFmpeg(opt.Binary)
 		// Segment fetches hit the CDN host from the resolved MPD, not the LAN origin.
 		proxyTarget := resolvedURL
 		if proxyTarget == "" {
@@ -267,24 +261,43 @@ func startPackager(parent context.Context, opt DashOptions, log *slog.Logger, ab
 		if att.remote && att.input != "" {
 			proxyTarget = att.input
 		}
-		if proxyEnv := opt.Egress.EnvForFFmpeg(proxyTarget, opt.ChannelID, forDocker); len(proxyEnv) > 0 {
-			env = append(env, proxyEnv...)
+		proxyEnv, err = opt.Egress.EnvForFFmpeg(proxyTarget, opt.ChannelID, opt.FFmpegMode.IsDocker())
+		if err != nil {
+			_ = stderrFile.Close()
+			cancel()
+			return nil, err
 		}
 	}
-	cmd.Env = env
+	containerName := ""
+	if opt.FFmpegMode.IsDocker() {
+		containerName = fmt.Sprintf("kiln-ff-%d-%d", os.Getpid(), time.Now().UnixNano())
+	}
+	plan, err := planFFmpegCommand(opt, absWork, args, proxyEnv, containerName)
+	if err != nil {
+		_ = stderrFile.Close()
+		cancel()
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, plan.executable, plan.args...)
+	cmd.Stdout = nil
+	cmd.Stderr = io.MultiWriter(stderrFile, &stderrBuf)
+	configureProcessGroup(cmd)
+	cmd.Env = append(os.Environ(), plan.env...)
 
 	job := &DashJob{
-		cmd:     cmd,
-		workDir: opt.WorkDir,
-		cancel:  cancel,
-		started: time.Now(),
-		done:    make(chan struct{}),
-		log:     log,
-		mode:    att.mode,
+		cmd:       cmd,
+		workDir:   opt.WorkDir,
+		cancel:    cancel,
+		started:   time.Now(),
+		done:      make(chan struct{}),
+		log:       log,
+		mode:      att.mode,
+		container: plan.containerName,
 	}
 	if err := cmd.Start(); err != nil {
 		_ = stderrFile.Close()
 		cancel()
+		reapDockerContainer(plan.containerName)
 		return nil, fmt.Errorf("start ffmpeg: %w", err)
 	}
 	if cmd.Process != nil {
@@ -301,6 +314,7 @@ func startPackager(parent context.Context, opt DashOptions, log *slog.Logger, ab
 			msg := tailLog(&stderrBuf, stderrPath)
 			log.Error("ffmpeg exited", "err", err, "mode", att.mode, "stderr", msg)
 		}
+		reapDockerContainer(plan.containerName)
 		close(job.done)
 	}()
 
@@ -433,11 +447,6 @@ func readyPlaylist(index, workDir string) bool {
 		return true
 	}
 	return false
-}
-
-func looksLikeDockerFFmpeg(binary string) bool {
-	b := strings.ToLower(binary)
-	return strings.Contains(b, "ffmpeg-cenc") || strings.Contains(b, "docker")
 }
 
 func resolveMPD(ctx context.Context, opt DashOptions) (string, string, error) {
@@ -660,43 +669,35 @@ func (j *DashJob) Stop() error {
 	if j.cmd != nil && j.cmd.Process != nil {
 		pid = j.cmd.Process.Pid
 	}
-	workDir := j.workDir
+	containerName := j.container
 	j.mu.Unlock()
 	if j.cancel != nil {
 		j.cancel()
 	}
 	if pid > 0 {
-		_ = syscall.Kill(-pid, syscall.SIGTERM)
+		_ = terminateProcessGroup(pid, false)
 	}
 	select {
 	case <-j.done:
-		reapDockerFFmpeg(workDir)
 		return nil
 	case <-time.After(2 * time.Second):
 	}
 	if pid > 0 {
-		_ = syscall.Kill(-pid, syscall.SIGKILL)
+		_ = terminateProcessGroup(pid, true)
 	}
 	if j.cmd != nil && j.cmd.Process != nil {
 		_ = j.cmd.Process.Kill()
 	}
 	select {
 	case <-j.done:
+		return nil
 	case <-time.After(2 * time.Second):
 	}
-	reapDockerFFmpeg(workDir)
+	reapDockerContainer(containerName)
 	return nil
 }
 
-func reapDockerFFmpeg(workDir string) {
-	if workDir == "" {
-		return
-	}
-	b, err := os.ReadFile(filepath.Join(workDir, ".ffmpeg-container"))
-	if err != nil {
-		return
-	}
-	name := strings.TrimSpace(string(b))
+func reapDockerContainer(name string) {
 	if name == "" || strings.ContainsAny(name, " \t\n/\\") {
 		return
 	}

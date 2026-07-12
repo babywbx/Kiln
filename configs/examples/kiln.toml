@@ -37,7 +37,9 @@ max_playlist_bytes = 8388608
 max_body_bytes = 1048576
 
 [ffmpeg]
+mode = "native"       # native | docker
 binary = "ffmpeg"
+# docker_image = "kiln:local"  # used only when mode = "docker"
 hls_time = 2
 hls_list_size = 4
 log_level = "error"

@@ -116,13 +116,37 @@ type Observe struct {
 	Enabled bool `json:"enabled" toml:"enabled"`
 }
 
+type FFmpegMode string
+
+const (
+	FFmpegModeNative FFmpegMode = "native"
+	FFmpegModeDocker FFmpegMode = "docker"
+)
+
+func (m FFmpegMode) Valid() bool {
+	return m == FFmpegModeNative || m == FFmpegModeDocker
+}
+
+func (m FFmpegMode) IsDocker() bool {
+	return m == FFmpegModeDocker
+}
+
 type FFmpeg struct {
-	Binary       string `json:"binary" toml:"binary"`
-	HLSTime      int    `json:"hls_time" toml:"hls_time"`
-	HLSListSize  int    `json:"hls_list_size" toml:"hls_list_size"`
-	LogLevel     string `json:"log_level" toml:"log_level"`
-	PreferHeight int    `json:"prefer_height" toml:"prefer_height"`
-	LowLatency   bool   `json:"low_latency" toml:"low_latency"`
+	Binary       string     `json:"binary" toml:"binary"`
+	Mode         FFmpegMode `json:"mode" toml:"mode"`
+	DockerImage  string     `json:"docker_image" toml:"docker_image"`
+	HLSTime      int        `json:"hls_time" toml:"hls_time"`
+	HLSListSize  int        `json:"hls_list_size" toml:"hls_list_size"`
+	LogLevel     string     `json:"log_level" toml:"log_level"`
+	PreferHeight int        `json:"prefer_height" toml:"prefer_height"`
+	LowLatency   bool       `json:"low_latency" toml:"low_latency"`
+}
+
+func (f FFmpeg) Dependency() string {
+	if f.Mode.IsDocker() {
+		return "docker"
+	}
+	return f.Binary
 }
 
 type Logging struct {
@@ -246,6 +270,12 @@ func (c *File) applyDefaults() {
 	if c.FFmpeg.Binary == "" {
 		c.FFmpeg.Binary = "ffmpeg"
 	}
+	if c.FFmpeg.Mode == "" {
+		c.FFmpeg.Mode = FFmpegModeNative
+	}
+	if c.FFmpeg.DockerImage == "" {
+		c.FFmpeg.DockerImage = "kiln:local"
+	}
 	if c.FFmpeg.HLSTime <= 0 {
 		c.FFmpeg.HLSTime = 2
 	}
@@ -327,6 +357,9 @@ func (c *File) resolveKeysPaths(configPath string) {
 }
 
 func (c File) validate() error {
+	if !c.FFmpeg.Mode.Valid() {
+		return fmt.Errorf("ffmpeg.mode must be native or docker")
+	}
 	if len(c.Auth.Users) == 0 {
 		return fmt.Errorf("auth.users must not be empty")
 	}

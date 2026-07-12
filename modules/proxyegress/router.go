@@ -366,10 +366,19 @@ func compatTLSForProxy(tr *http.Transport) {
 	}
 }
 
-func (r *Router) EnvForFFmpeg(targetURL, channelID string, forDocker bool) []string {
+// EnvForFFmpeg returns the proxy environment ffmpeg needs to fetch targetURL,
+// or nil when the route is direct. It errors when the route cannot be honored.
+func (r *Router) EnvForFFmpeg(targetURL, channelID string, forDocker bool) ([]string, error) {
 	d := r.Resolve(targetURL, channelID)
 	if d.ProxyID == Direct || d.ProxyURL == nil {
-		return nil
+		return nil, nil
+	}
+	// ffmpeg only speaks HTTP CONNECT and only reads http_proxy/https_proxy.
+	// A SOCKS route cannot be expressed, and ffmpeg would silently ignore it
+	// and fetch the media direct — say so instead of leaking the request.
+	if s := strings.ToLower(d.ProxyURL.Scheme); s != "http" && s != "https" {
+		return nil, fmt.Errorf("proxy %q uses %s, which ffmpeg cannot use; route %s through an http proxy or direct",
+			d.ProxyID, s, targetURL)
 	}
 	u := *d.ProxyURL
 	if forDocker {
@@ -379,13 +388,11 @@ func (r *Router) EnvForFFmpeg(targetURL, channelID string, forDocker bool) []str
 	return []string{
 		"HTTP_PROXY=" + proxyStr,
 		"HTTPS_PROXY=" + proxyStr,
-		"ALL_PROXY=" + proxyStr,
 		"http_proxy=" + proxyStr,
 		"https_proxy=" + proxyStr,
-		"all_proxy=" + proxyStr,
-		"NO_PROXY=localhost,127.0.0.1,10.0.0.0/8,192.168.0.0/16,172.16.0.0/12",
-		"no_proxy=localhost,127.0.0.1,10.0.0.0/8,192.168.0.0/16,172.16.0.0/12",
-	}
+		"NO_PROXY=localhost,127.0.0.1",
+		"no_proxy=localhost,127.0.0.1",
+	}, nil
 }
 
 func matchHostSuffix(host, pattern string) bool {

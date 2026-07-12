@@ -48,6 +48,25 @@ on_demand = true
 	if len(cfg.Channels) != 1 || cfg.Channels[0].ID != "ch1" {
 		t.Fatalf("channels %+v", cfg.Channels)
 	}
+	if cfg.FFmpeg.Mode != FFmpegModeNative || cfg.FFmpeg.DockerImage != "kiln:local" {
+		t.Fatalf("ffmpeg defaults: %+v", cfg.FFmpeg)
+	}
+	if cfg.FFmpeg.Dependency() != "ffmpeg" || cfg.FFmpeg.Mode.IsDocker() {
+		t.Fatalf("native ffmpeg behavior: %+v", cfg.FFmpeg)
+	}
+	dockerCfg := cfg
+	dockerCfg.FFmpeg.Mode = FFmpegModeDocker
+	if err := dockerCfg.validate(); err != nil {
+		t.Fatalf("docker ffmpeg mode rejected: %v", err)
+	}
+	if dockerCfg.FFmpeg.Dependency() != "docker" || !dockerCfg.FFmpeg.Mode.IsDocker() {
+		t.Fatalf("docker ffmpeg behavior: %+v", dockerCfg.FFmpeg)
+	}
+	invalidCfg := cfg
+	invalidCfg.FFmpeg.Mode = "sidecar"
+	if err := invalidCfg.validate(); err == nil {
+		t.Fatal("invalid ffmpeg mode accepted")
+	}
 
 	jsoncPath := filepath.Join(dir, "kiln.jsonc")
 	jc := `{

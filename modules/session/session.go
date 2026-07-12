@@ -41,6 +41,7 @@ type Manager struct {
 	mu       sync.Mutex
 	sessions map[string]*Session
 	inflight map[string]*startWait
+	closing  bool
 }
 
 type startWait struct {
@@ -101,6 +102,10 @@ func (m *Manager) Warmup(channelID string) error {
 	}
 
 	m.mu.Lock()
+	if m.closing {
+		m.mu.Unlock()
+		return context.Canceled
+	}
 	if s, ok := m.sessions[channelID]; ok {
 		s.LastTouch = time.Now()
 		m.publish(s, "running")
@@ -130,6 +135,10 @@ func (m *Manager) Acquire(channelID string) (*Session, error) {
 
 	for {
 		m.mu.Lock()
+		if m.closing {
+			m.mu.Unlock()
+			return nil, context.Canceled
+		}
 		if s, ok := m.sessions[channelID]; ok {
 			s.LastTouch = time.Now()
 			m.publish(s, "running")
@@ -279,6 +288,8 @@ func (m *Manager) startDash(s *Session) error {
 	}
 	job, err := egress.StartDashHLS(s.ctx, egress.DashOptions{
 		Binary:       m.ffmpeg.Binary,
+		FFmpegMode:   m.ffmpeg.Mode,
+		DockerImage:  m.ffmpeg.DockerImage,
 		SourceURL:    s.SourceURL,
 		UserAgent:    version.UserAgent(s.Channel.UserAgent),
 		Headers:      headers,
@@ -295,9 +306,8 @@ func (m *Manager) startDash(s *Session) error {
 				m.obs.AddBytesIn(n)
 			}
 		},
-		Egress:       m.egress,
-		ChannelID:    s.Channel.ID,
-		DockerFFmpeg: true,
+		Egress:    m.egress,
+		ChannelID: s.Channel.ID,
 	})
 	if err != nil {
 		s.LastError = err.Error()
@@ -426,6 +436,11 @@ func (m *Manager) Get(channelID string) (*Session, bool) {
 
 func (m *Manager) autostart(ctx context.Context) {
 	for _, ch := range m.cat.Config().ActiveChannels() {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
 		if !ch.Autostart {
 			continue
 		}
@@ -472,6 +487,24 @@ func (m *Manager) stopAll() {
 	for id, s := range m.sessions {
 		m.stopLocked(id, s)
 	}
+}
+
+func (m *Manager) Shutdown() {
+	m.mu.Lock()
+	m.closing = true
+	waits := make([]*startWait, 0, len(m.inflight))
+	for id, wait := range m.inflight {
+		wait.stopped = true
+		wait.cancel()
+		delete(m.inflight, id)
+		m.obs.RemoveSession(id)
+		waits = append(waits, wait)
+	}
+	m.mu.Unlock()
+	for _, wait := range waits {
+		<-wait.done
+	}
+	m.stopAll()
 }
 
 func (m *Manager) stopLocked(id string, s *Session) {

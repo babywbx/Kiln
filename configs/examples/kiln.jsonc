@@ -33,7 +33,9 @@
     "max_body_bytes": 1048576,
   },
   "ffmpeg": {
+    "mode": "native",
     "binary": "ffmpeg",
+    "docker_image": "kiln:local",
     "hls_time": 2,
     "hls_list_size": 8,
     "log_level": "error",

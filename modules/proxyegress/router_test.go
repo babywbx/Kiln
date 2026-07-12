@@ -113,18 +113,21 @@ func TestPlaylistRewritePolicy(t *testing.T) {
 	if !d.Rewrite || d.ProxyURL == nil {
 		t.Fatalf("%+v", d)
 	}
-	env := r.EnvForFFmpeg("http://example.com/", "", true)
-	found := false
-	for _, e := range env {
-		if e == "HTTP_PROXY=socks5h://host.docker.internal:6153" || e == "HTTP_PROXY=socks5://host.docker.internal:6153" {
-			found = true
-		}
-		if contains(e, "host.docker.internal:6153") {
-			found = true
-		}
+}
+
+// ffmpeg cannot use a SOCKS proxy. Handing it one used to emit an http_proxy it
+// silently ignored, fetching the media direct — report the misroute instead.
+func TestEnvForFFmpegRejectsSocksRoute(t *testing.T) {
+	r, _ := NewRouter(Config{
+		Default:  "p1",
+		Profiles: []Profile{{ID: "p1", URL: "socks5h://127.0.0.1:6153"}},
+	})
+	env, err := r.EnvForFFmpeg("http://example.com/", "", true)
+	if err == nil {
+		t.Fatalf("want error for socks route, got env=%v", env)
 	}
-	if !found {
-		t.Fatalf("env=%v", env)
+	if env != nil {
+		t.Fatalf("no env may be emitted for an unusable route, got %v", env)
 	}
 }
 
@@ -143,11 +146,15 @@ func TestEnvForFFmpegUsesCDNHostNotLANOrigin(t *testing.T) {
 		t.Fatal(err)
 	}
 	// LAN origin alone must not inject a proxy (would miss CDN host rules).
-	if env := r.EnvForFFmpeg("http://origin.example.com:8000/live/uhd", "demo-uhd", true); len(env) != 0 {
-		t.Fatalf("lan origin env=%v", env)
+	env, err := r.EnvForFFmpeg("http://origin.example.com:8000/live/uhd", "demo-uhd", true)
+	if err != nil || len(env) != 0 {
+		t.Fatalf("lan origin env=%v err=%v", env, err)
 	}
 	// Resolved MPD / BaseURL host must inject docker-rewritten proxy for segment pulls.
-	env := r.EnvForFFmpeg("https://origin.example.com/session/x/index.mpd", "demo-uhd", true)
+	env, err = r.EnvForFFmpeg("https://origin.example.com/session/x/index.mpd", "demo-uhd", true)
+	if err != nil {
+		t.Fatal(err)
+	}
 	found := false
 	for _, e := range env {
 		if e == "HTTP_PROXY=http://host.docker.internal:7890" {
@@ -157,16 +164,4 @@ func TestEnvForFFmpegUsesCDNHostNotLANOrigin(t *testing.T) {
 	if !found {
 		t.Fatalf("cdn env=%v", env)
 	}
-}
-
-func contains(s, sub string) bool {
-	return len(s) >= len(sub) && (s == sub || len(sub) == 0 || (len(s) > 0 && stringIndex(s, sub) >= 0))
-}
-func stringIndex(s, sub string) int {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i
-		}
-	}
-	return -1
 }

@@ -285,8 +285,9 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if needFF {
-		if _, err := exec.LookPath(s.deps.Cfg.FFmpeg.Binary); err != nil {
-			if _, statErr := os.Stat(s.deps.Cfg.FFmpeg.Binary); statErr != nil {
+		dependency := s.deps.Cfg.FFmpeg.Dependency()
+		if _, err := exec.LookPath(dependency); err != nil {
+			if _, statErr := os.Stat(dependency); statErr != nil {
 				writeAppErr(w, apperr.New(apperr.CodeNotReady, 503, "ffmpeg not available"))
 				return
 			}

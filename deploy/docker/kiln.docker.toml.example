@@ -36,6 +36,7 @@ max_playlist_bytes = 8388608
 max_body_bytes = 1048576
 
 [ffmpeg]
+mode = "native"
 binary = "ffmpeg"
 hls_time = 2
 hls_list_size = 4
