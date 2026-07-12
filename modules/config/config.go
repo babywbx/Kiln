@@ -140,6 +140,8 @@ type FFmpeg struct {
 	LogLevel     string     `json:"log_level" toml:"log_level"`
 	PreferHeight int        `json:"prefer_height" toml:"prefer_height"`
 	LowLatency   bool       `json:"low_latency" toml:"low_latency"`
+	// MaxStarts bounds concurrent ffmpeg launches only, not readiness waits.
+	MaxStarts int `json:"max_starts" toml:"max_starts"`
 }
 
 func (f FFmpeg) Dependency() string {

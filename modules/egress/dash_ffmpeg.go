@@ -47,6 +47,13 @@ type DashJob struct {
 	container   string
 }
 
+// SpawnGate bounds how many packagers may be launched at once. It must only
+// cover the launch itself: holding it across the readiness wait serializes
+// every channel's cold start behind the slowest source.
+type SpawnGate interface {
+	Acquire(ctx context.Context) (release func(), err error)
+}
+
 type DashOptions struct {
 	Binary       string
 	SourceURL    string
@@ -65,6 +72,7 @@ type DashOptions struct {
 	ChannelID    string
 	FFmpegMode   config.FFmpegMode
 	DockerImage  string
+	SpawnGate    SpawnGate
 }
 
 var kidRe = regexp.MustCompile(`(?i)default_KID="([0-9a-fA-F-]{32,36})"`)
@@ -298,11 +306,11 @@ func startPackager(parent context.Context, opt DashOptions, log *slog.Logger, ab
 		mode:      att.mode,
 		container: plan.containerName,
 	}
-	if err := cmd.Start(); err != nil {
+	if err := spawn(ctx, opt.SpawnGate, cmd); err != nil {
 		_ = stderrFile.Close()
 		cancel()
 		reapDockerContainer(plan.containerName)
-		return nil, fmt.Errorf("start ffmpeg: %w", err)
+		return nil, err
 	}
 	if cmd.Process != nil {
 		job.pid = cmd.Process.Pid
@@ -337,6 +345,21 @@ func startPackager(parent context.Context, opt DashOptions, log *slog.Logger, ab
 		return nil, err
 	}
 	return job, nil
+}
+
+// spawn holds the gate for the launch only, never for the readiness wait.
+func spawn(ctx context.Context, gate SpawnGate, cmd *exec.Cmd) error {
+	if gate != nil {
+		release, err := gate.Acquire(ctx)
+		if err != nil {
+			return err
+		}
+		defer release()
+	}
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start ffmpeg: %w", err)
+	}
+	return nil
 }
 
 func formatFFmpegHeaders(h map[string]string) string {

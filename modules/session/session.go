@@ -27,7 +27,27 @@ const (
 	restartResetAfter = 90 * time.Second
 )
 
-var startSem = make(chan struct{}, 1)
+// spawnGate bounds concurrent packager launches. It is deliberately scoped to
+// the launch itself: the previous global semaphore was held across the whole
+// readiness wait, so one slow source blocked every other channel's cold start
+// for minutes.
+type spawnGate chan struct{}
+
+func newSpawnGate(n int) spawnGate {
+	if n <= 0 {
+		n = 1
+	}
+	return make(spawnGate, n)
+}
+
+func (g spawnGate) Acquire(ctx context.Context) (func(), error) {
+	select {
+	case g <- struct{}{}:
+		return func() { <-g }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
 
 type Manager struct {
 	cat     *catalog.Service
@@ -37,6 +57,7 @@ type Manager struct {
 	dataDir string
 	ffmpeg  config.FFmpeg
 	log     *slog.Logger
+	spawn   spawnGate
 
 	mu       sync.Mutex
 	sessions map[string]*Session
@@ -82,6 +103,7 @@ func NewManager(cat *catalog.Service, pullClient *pull.Client, obs *observe.Serv
 		dataDir:  dataDir,
 		ffmpeg:   ff,
 		log:      log,
+		spawn:    newSpawnGate(ff.MaxStarts),
 		sessions: map[string]*Session{},
 		inflight: map[string]*startWait{},
 	}
@@ -258,13 +280,6 @@ func (m *Manager) finishStart(channelID string, w *startWait, s *Session) (*Sess
 }
 
 func (m *Manager) startDash(s *Session) error {
-	select {
-	case startSem <- struct{}{}:
-	case <-s.ctx.Done():
-		return s.ctx.Err()
-	}
-	defer func() { <-startSem }()
-
 	keys, err := config.LoadKeysFile(s.Channel.KeysFile)
 	if err != nil {
 		return apperr.Wrap(apperr.CodeInvalid, 400, "load keys failed", err)
@@ -308,6 +323,7 @@ func (m *Manager) startDash(s *Session) error {
 		},
 		Egress:    m.egress,
 		ChannelID: s.Channel.ID,
+		SpawnGate: m.spawn,
 	})
 	if err != nil {
 		s.LastError = err.Error()
