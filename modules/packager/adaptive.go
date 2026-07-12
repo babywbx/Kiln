@@ -115,11 +115,11 @@ func (p *nativePublication) Asset(name string) (Asset, bool) {
 // and sequence numbering under a player that is already reading it.
 type AdaptivePackager struct {
 	native *NativeAdapter
-	ffmpeg *FFmpegAdapter
+	ffmpeg Packager
 	log    *slog.Logger
 }
 
-func NewAdaptivePackager(native *NativeAdapter, ffmpeg *FFmpegAdapter, log *slog.Logger) *AdaptivePackager {
+func NewAdaptivePackager(native *NativeAdapter, ffmpeg Packager, log *slog.Logger) *AdaptivePackager {
 	if log == nil {
 		log = slog.Default()
 	}

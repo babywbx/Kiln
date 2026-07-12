@@ -206,7 +206,7 @@ func StartNative(ctx context.Context, opts Options) (*Native, error) {
 		Now:          opts.Now,
 	})
 	if err != nil {
-		return nil, err
+		return nil, noFallback(plan, err)
 	}
 
 	now := opts.Now()
@@ -222,7 +222,7 @@ func StartNative(ctx context.Context, opts Options) (*Native, error) {
 		audio:    &trackState{name: trackAudio, rep: plan.Audio, init: audioInit, nextSeq: 1, lastProgress: now},
 	}
 	if err := n.registerTracks(); err != nil {
-		return nil, err
+		return nil, noFallback(plan, err)
 	}
 
 	runCtx, cancel := context.WithCancel(context.Background())
@@ -230,11 +230,26 @@ func StartNative(ctx context.Context, opts Options) (*Native, error) {
 
 	if err := n.publishFirst(ctx, pres); err != nil {
 		cancel()
-		return nil, err
+		return nil, noFallback(plan, err)
 	}
 
 	go n.run(runCtx, pres)
 	return n, nil
+}
+
+// noFallback re-stamps a startup failure with the plan's fallback verdict. Once
+// the init segments prove the input is multi-KID, every later failure has to
+// carry that: ffmpeg takes a single key, so a plain error here would send the
+// stream down a path that starts and then decodes one track to garbage.
+func noFallback(plan Plan, err error) error {
+	if err == nil || plan.FallbackAllowed {
+		return err
+	}
+	var fb *FallbackError
+	if errors.As(err, &fb) {
+		return &FallbackError{Reason: fb.Reason, Allowed: false, Err: fb.Err}
+	}
+	return &FallbackError{Reason: ReasonMultiKIDNoFall, Allowed: false, Err: err}
 }
 
 func fetchManifest(ctx context.Context, opts Options) (*mpd.Presentation, error) {
