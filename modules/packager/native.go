@@ -44,16 +44,22 @@ type Options struct {
 	// ReanchorAfter is how long a dynamic publication may make no progress
 	// before it stops trusting its position and relocates the live edge.
 	ReanchorAfter time.Duration
-	Now           func() time.Time
-	Log           *slog.Logger
+	// PrimaryTrackHold bounds how far, in media time, audio may run ahead of
+	// video. Audio and video keep their own segment boundaries, so they are never
+	// paired by number, but audio must not run away: it would slide its own
+	// playlist window past the segments a player stalled on video still needs.
+	PrimaryTrackHold time.Duration
+	Now              func() time.Time
+	Log              *slog.Logger
 }
 
 const (
-	defaultStartSegments   = 3
-	defaultPrefetch        = 3
-	defaultMaxSegmentBytes = 32 << 20
-	defaultReanchorAfter   = 30 * time.Second
-	defaultRefreshInterval = 2 * time.Second
+	defaultStartSegments    = 3
+	defaultPrefetch         = 3
+	defaultMaxSegmentBytes  = 32 << 20
+	defaultReanchorAfter    = 30 * time.Second
+	defaultPrimaryTrackHold = 12 * time.Second
+	defaultRefreshInterval  = 2 * time.Second
 )
 
 func (o *Options) applyDefaults() {
@@ -68,6 +74,9 @@ func (o *Options) applyDefaults() {
 	}
 	if o.ReanchorAfter <= 0 {
 		o.ReanchorAfter = defaultReanchorAfter
+	}
+	if o.PrimaryTrackHold <= 0 {
+		o.PrimaryTrackHold = defaultPrimaryTrackHold
 	}
 	if o.Now == nil {
 		o.Now = time.Now
@@ -101,6 +110,17 @@ type trackState struct {
 	// or an init change.
 	forceDiscontinuity bool
 	lastProgress       time.Time
+
+	// readyMillis is the presentation time this track is published through, on
+	// the manifest's timeline. It is the watermark the other track reads, so it
+	// is atomic; -1 means nothing is published yet.
+	readyMillis atomic.Int64
+}
+
+func newTrackState(name string, rep mpd.Representation, init *cmaf.Init, now time.Time) *trackState {
+	ts := &trackState{name: name, rep: rep, init: init, nextSeq: 1, lastProgress: now}
+	ts.readyMillis.Store(-1)
+	return ts
 }
 
 // Native is a running native_rewrite publication.
@@ -129,6 +149,7 @@ type Native struct {
 	manifestErrs      atomic.Uint64
 	discontinuities   atomic.Uint64
 	reanchors         atomic.Uint64
+	trackHolds        atomic.Uint64
 	keyMismatches     atomic.Uint64
 	decryptNanos      atomic.Int64
 }
@@ -144,6 +165,7 @@ func (n *Native) Stats() Stats {
 		ManifestErrs:      n.manifestErrs.Load(),
 		Discontinuities:   n.discontinuities.Load(),
 		Reanchors:         n.reanchors.Load(),
+		TrackHolds:        n.trackHolds.Load(),
 		KeyMismatches:     n.keyMismatches.Load(),
 		DecryptSeconds:    time.Duration(n.decryptNanos.Load()).Seconds(),
 		CacheBytes:        bytes,
@@ -218,8 +240,8 @@ func StartNative(ctx context.Context, opts Options) (*Native, error) {
 		plan:     plan,
 		packMode: packMode(pres, plan),
 		done:     make(chan struct{}),
-		video:    &trackState{name: trackVideo, rep: plan.Video, init: videoInit, nextSeq: 1, lastProgress: now},
-		audio:    &trackState{name: trackAudio, rep: plan.Audio, init: audioInit, nextSeq: 1, lastProgress: now},
+		video:    newTrackState(trackVideo, plan.Video, videoInit, now),
+		audio:    newTrackState(trackAudio, plan.Audio, audioInit, now),
 	}
 	if err := n.registerTracks(); err != nil {
 		return nil, noFallback(plan, err)
@@ -455,7 +477,15 @@ func (n *Native) commit(ts *trackState, seg mpd.Segment, p prepared) error {
 	ts.hasExpected = true
 	ts.forceDiscontinuity = false
 	ts.lastProgress = n.now()
+	ts.readyMillis.Store(millis(seg.Time+seg.Duration, ts.rep.Addressing.Timescale))
 	return nil
+}
+
+func millis(ticks uint64, timescale uint64) int64 {
+	if timescale == 0 {
+		return -1
+	}
+	return int64(ticks * 1000 / timescale)
 }
 
 // continuous allows a small rounding drift, since some packagers round segment
@@ -636,7 +666,35 @@ func (n *Native) advanceTrack(ctx context.Context, pres *mpd.Presentation, ts *t
 			pending = append(pending, seg)
 		}
 	}
+	if ts == n.audio {
+		pending = n.holdBehindVideo(pending)
+	}
 	return n.publishSegments(ctx, ts, pending)
+}
+
+// holdBehindVideo drops the audio segments that would run further ahead of the
+// video watermark than the hold allows. They are not lost: nothing about the
+// track's position moves, so the next manifest refresh offers them again.
+//
+// The hold cannot deadlock. It only engages while video is not advancing, and a
+// video that stops advancing hits the no-progress re-anchor on its own, which
+// relocates both tracks to the live edge.
+func (n *Native) holdBehindVideo(pending []mpd.Segment) []mpd.Segment {
+	watermark := n.video.readyMillis.Load()
+	if watermark < 0 || len(pending) == 0 {
+		return pending
+	}
+	limit := watermark + n.opts.PrimaryTrackHold.Milliseconds()
+	timescale := n.audio.rep.Addressing.Timescale
+	for i, seg := range pending {
+		if start := millis(seg.Time, timescale); start >= 0 && start > limit {
+			n.trackHolds.Add(1)
+			n.log.Info("holding audio behind the video watermark",
+				"video_ready_ms", watermark, "audio_start_ms", start, "held", len(pending)-i)
+			return pending[:i]
+		}
+	}
+	return pending
 }
 
 // needsReanchor decides whether our idea of where we are in the stream is still

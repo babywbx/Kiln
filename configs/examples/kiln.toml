@@ -46,6 +46,10 @@ start_segments = 3
 prefetch_segments = 3
 max_segment_bytes = 33554432
 grace_sec = 30
+# How far, in media seconds, audio may run ahead of video. Not an A/V sync knob:
+# it stops audio from sliding its playlist window past what a player stalled on
+# video still needs.
+primary_track_hold_sec = 12
 
 [ffmpeg]
 mode = "native"       # native | docker

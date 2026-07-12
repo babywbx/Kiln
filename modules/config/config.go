@@ -160,6 +160,11 @@ type Packager struct {
 	// GraceSec keeps a segment readable after it leaves the playlist, so a
 	// player holding the previous playlist does not get a hard 404.
 	GraceSec int `json:"grace_sec" toml:"grace_sec"`
+	// PrimaryTrackHoldSec bounds how far, in media time, audio may run ahead of
+	// video. It is not an A/V sync knob: the tracks keep their own segment
+	// boundaries. It stops audio from sliding its playlist window past what a
+	// player stalled on video still needs.
+	PrimaryTrackHoldSec int `json:"primary_track_hold_sec" toml:"primary_track_hold_sec"`
 }
 
 const (
@@ -348,6 +353,9 @@ func (c *File) applyDefaults() {
 	}
 	if c.Packager.GraceSec <= 0 {
 		c.Packager.GraceSec = 30
+	}
+	if c.Packager.PrimaryTrackHoldSec <= 0 {
+		c.Packager.PrimaryTrackHoldSec = 12
 	}
 	c.Observe.Enabled = true
 	if c.Logging.Level == "" {

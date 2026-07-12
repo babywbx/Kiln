@@ -23,8 +23,10 @@ type liveOrigin struct {
 	mu sync.Mutex
 	// timelineStart is the S@t of the first segment on offer.
 	timelineStart uint64
-	// count is how many segments the timeline advertises.
-	count int
+	// videoCount/audioCount are how many segments each timeline advertises. They
+	// are separate so a track can be made to stall while the other keeps going.
+	videoCount int
+	audioCount int
 	// videoChunks/audioChunks map a segment index to a fixture file.
 	videoChunks []string
 	audioChunks []string
@@ -43,7 +45,8 @@ func newLiveOrigin(t *testing.T) *liveOrigin {
 		// Start the timeline well past zero so a rollback to zero is a genuine
 		// step backwards rather than a no-op.
 		timelineStart: 6000,
-		count:         3,
+		videoCount:    3,
+		audioCount:    3,
 		videoInit:     "init-stream0.m4s",
 		audioInit:     "init-stream1.m4s",
 		videoChunks:   []string{"chunk-stream0-00001.m4s", "chunk-stream0-00002.m4s", "chunk-stream0-00003.m4s"},
@@ -75,8 +78,16 @@ func (o *liveOrigin) manifest() []byte {
     </AdaptationSet>
   </Period>
 </MPD>`,
-		liveTimescale, o.timelineStart, liveSegTicks, o.count-1,
-		liveTimescale, o.timelineStart, liveSegTicks, o.count-1)
+		liveTimescale, o.timelineStart, liveSegTicks, o.videoCount-1,
+		liveTimescale, o.timelineStart, liveSegTicks, o.audioCount-1)
+}
+
+// stallVideo keeps the audio timeline growing while the video timeline stops,
+// which is how a struggling primary track looks from the outside.
+func (o *liveOrigin) stallVideo(extraAudio int) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.audioCount += extraAudio
 }
 
 // Fetch resolves manifest, init and media URLs against the fixture files.
@@ -263,6 +274,50 @@ func TestNoProgressTriggersReanchor(t *testing.T) {
 		t.Fatal("a stalled publication did not re-anchor")
 	}
 	assertSequenceIncreases(t, videoPlaylist(t, n))
+}
+
+// Audio and video are never paired by segment number, but audio must not run
+// away from a struggling video either: its own playlist window would slide past
+// the audio a player stalled on video still needs. The bound is media time, and
+// it expires into the no-progress re-anchor rather than blocking forever.
+func TestAudioIsHeldBehindAStalledVideo(t *testing.T) {
+	origin := newLiveOrigin(t)
+	clock := newClock()
+	n, _ := startLive(t, origin, clock)
+
+	// Video stops producing. Audio keeps going, and stays available as the live
+	// edge moves, but not long enough for video to give up yet.
+	origin.stallVideo(20)
+	clock.advance(20 * time.Second)
+	if err := n.advance(context.Background(), parseManifest(t, origin)); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+
+	if n.Stats().TrackHolds == 0 {
+		t.Fatal("audio was never held behind the stalled video")
+	}
+	if n.Reanchors() != 0 {
+		t.Fatal("the hold must not be a re-anchor in disguise")
+	}
+	video := n.video.readyMillis.Load()
+	audio := n.audio.readyMillis.Load()
+	limit := video + defaultPrimaryTrackHold.Milliseconds() + liveSegTicks
+	if audio > limit {
+		t.Fatalf("audio ran to %d ms while video is stuck at %d ms (limit %d)", audio, video, limit)
+	}
+	if audio <= video {
+		t.Fatalf("audio did not advance at all (%d ms); the hold is too tight", audio)
+	}
+
+	// The hold has an expiry: a video that is not advancing eventually stops
+	// being trusted, and both tracks relocate to the live edge.
+	clock.advance(15 * time.Second)
+	if err := n.advance(context.Background(), parseManifest(t, origin)); err != nil {
+		t.Fatalf("advance after the hold expired: %v", err)
+	}
+	if n.Reanchors() == 0 {
+		t.Fatal("a video stalled past ReanchorAfter never re-anchored; the hold blocks forever")
+	}
 }
 
 // The counters have to reflect real work, otherwise they are decoration that

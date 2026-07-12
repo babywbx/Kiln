@@ -19,9 +19,10 @@ import (
 // NativeAdapter runs the in-process CMAF rewrite path. It starts no external
 // process and writes no MPEG-TS.
 type NativeAdapter struct {
-	StartSegments   int
-	Prefetch        int
-	MaxSegmentBytes int64
+	StartSegments    int
+	Prefetch         int
+	MaxSegmentBytes  int64
+	PrimaryTrackHold time.Duration
 
 	newFetcher   func(req Request) Fetcher
 	playlistSize int
@@ -39,18 +40,19 @@ func (a *NativeAdapter) Start(ctx context.Context, req Request) (Job, error) {
 		return nil, &FallbackError{Reason: ReasonMissingKey, Allowed: true, Err: err}
 	}
 	native, err := StartNative(ctx, Options{
-		ManifestURL:     req.SourceURL,
-		Dir:             req.WorkDir,
-		Keys:            keys,
-		Fetcher:         a.newFetcher(req),
-		PreferHeight:    req.PreferHeight,
-		PlaylistSize:    a.playlistSize,
-		StartSegments:   a.StartSegments,
-		Prefetch:        a.Prefetch,
-		MaxSegmentBytes: a.MaxSegmentBytes,
-		Grace:           a.grace,
-		Now:             a.now,
-		Log:             req.Log,
+		ManifestURL:      req.SourceURL,
+		Dir:              req.WorkDir,
+		Keys:             keys,
+		Fetcher:          a.newFetcher(req),
+		PreferHeight:     req.PreferHeight,
+		PlaylistSize:     a.playlistSize,
+		StartSegments:    a.StartSegments,
+		Prefetch:         a.Prefetch,
+		MaxSegmentBytes:  a.MaxSegmentBytes,
+		PrimaryTrackHold: a.PrimaryTrackHold,
+		Grace:            a.grace,
+		Now:              a.now,
+		Log:              req.Log,
 	})
 	if err != nil {
 		return nil, err

@@ -142,6 +142,7 @@ func (m *Manager) newPackager() packager.Packager {
 	native.StartSegments = cfg.StartSegments
 	native.Prefetch = cfg.PrefetchSegments
 	native.MaxSegmentBytes = cfg.MaxSegmentBytes
+	native.PrimaryTrackHold = time.Duration(cfg.PrimaryTrackHoldSec) * time.Second
 	ffmpeg := packager.NewFFmpegAdapter(m.ffmpeg, m.egress, m.spawn, onBytesIn)
 	return packager.NewAdaptivePackager(native, ffmpeg, m.log)
 }
@@ -622,6 +623,7 @@ func packagerStat(job packager.Job) *observe.PackagerStat {
 		ManifestErrs:      st.ManifestErrs,
 		Discontinuities:   st.Discontinuities,
 		Reanchors:         st.Reanchors,
+		TrackHolds:        st.TrackHolds,
 		KeyMismatches:     st.KeyMismatches,
 		DecryptSeconds:    st.DecryptSeconds,
 		CacheBytes:        st.CacheBytes,
