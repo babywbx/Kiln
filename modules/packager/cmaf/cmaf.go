@@ -18,9 +18,10 @@ const (
 	KindAudio Kind = "audio"
 )
 
-// supportedSchemes is the whitelist. cbcs is decodable by the library but has
-// no fixture coverage yet, so it stays out and falls back instead.
-var supportedSchemes = map[string]struct{}{"cenc": {}}
+// supportedSchemes is the whitelist. cenc is AES-CTR full-sample encryption;
+// cbcs is AES-CBC pattern encryption. cens and cbc1 stay out: no fixture, so no
+// claim.
+var supportedSchemes = map[string]struct{}{"cenc": {}, "cbcs": {}}
 
 // KeySet maps a normalized KID to its 16-byte content key.
 type KeySet map[string][]byte

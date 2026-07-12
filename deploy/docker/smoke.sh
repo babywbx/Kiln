@@ -96,6 +96,51 @@ check_multikid() {
   fi
 }
 
+# cbcs is pattern encryption, and the native path now carries it. A cbcs source
+# that falls back for some unrelated reason still lands on ffmpeg, so this asserts
+# the premise that makes that fallback safe: ffmpeg decrypts cbcs to exactly the
+# plaintext. If this ever fails, a cbcs source must stop being allowed to fall back.
+check_cbcs() {
+  d="$FIXTURES/cbcs"
+  c="$FIXTURES/cbcs-clear"
+  [ -d "$d" ] && [ -d "$c" ] || { bad "cbcs: fixture missing"; return; }
+  out="$WORK/cbcs"
+  mkdir -p "$out"
+
+  cat "$c/init-stream0.m4s" "$c"/chunk-stream0-*.m4s > "$out/clear.mp4"
+  "$FF" -hide_banner -v error -nostdin -i "$out/clear.mp4" -map 0:v -f framecrc - \
+    2>"$out/clear.log" | grep '^0,' > "$out/clear.crc" || true
+  if [ ! -s "$out/clear.crc" ]; then
+    bad "cbcs: the plaintext reference does not decode"
+    return
+  fi
+
+  "$FF" -hide_banner -v error -nostdin \
+    -protocol_whitelist file,http,https,tcp,tls,crypto \
+    -cenc_decryption_key "$KEY" -i "$(cd "$d" && pwd)/stream.mpd" -map 0:v -f framecrc - \
+    2>"$out/enc.log" | grep '^0,' > "$out/enc.crc" || true
+  if [ ! -s "$out/enc.crc" ]; then
+    bad "cbcs: ffmpeg produced no frames from the cbcs source"
+    sed -n '1,3p' "$out/enc.log" | sed 's/^/        /'
+    return
+  fi
+  if ! cmp -s "$out/enc.crc" "$out/clear.crc"; then
+    bad "cbcs: ffmpeg decrypted the cbcs source to something other than the plaintext"
+    return
+  fi
+
+  # And the fixture really is encrypted: without the key it must not come out clean.
+  "$FF" -hide_banner -v error -nostdin \
+    -protocol_whitelist file,http,https,tcp,tls,crypto \
+    -i "$(cd "$d" && pwd)/stream.mpd" -map 0:v -f framecrc - \
+    2>"$out/nokey.log" | grep '^0,' > "$out/nokey.crc" || true
+  if cmp -s "$out/nokey.crc" "$out/clear.crc"; then
+    bad "cbcs: the fixture decodes to the plaintext WITHOUT a key - it is not encrypted"
+    return
+  fi
+  ok "cbcs: ffmpeg decrypts it to exactly the plaintext, and needs the key to do it"
+}
+
 echo "== DASH + CENC -> HLS/TS smoke =="
 "$FF" -hide_banner -version | head -1
 echo "-- local MPD (file protocol) --"
@@ -110,6 +155,9 @@ done
 
 echo "-- multi-KID is out of ffmpeg's reach --"
 check_multikid
+
+echo "-- cbcs is within it --"
+check_cbcs
 
 if [ -n "$ORIGIN_URL" ]; then
   echo "-- remote MPD over HTTP ($ORIGIN_URL) --"

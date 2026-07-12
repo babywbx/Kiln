@@ -55,11 +55,56 @@ build() {
   echo "  $name: $(du -sh "$d" | cut -f1), CENC boxes present"
 }
 
+# cbcs is pattern encryption, and ffmpeg only writes cenc-aes-ctr. The clear
+# fragments go in beside the encrypted ones: a cbcs test that only compares the
+# library against itself would prove nothing.
+build_cbcs() {
+  local d="$OUT/cbcs"
+  local clear="$OUT/cbcs-clear"
+  rm -rf "$d" "$clear"
+  mkdir -p "$d" "$clear"
+
+  local FRAG=(
+    -movflags +frag_keyframe+empty_moov+default_base_moof+skip_sidx
+    -frag_duration 2000000
+    -f mp4
+  )
+
+  "$FF" -hide_banner -loglevel error -y \
+    -f lavfi -i "testsrc2=size=320x180:rate=25:duration=4" \
+    -an -c:v libx264 -preset ultrafast -g 50 -b:v 120k -pix_fmt yuv420p \
+    "${FRAG[@]}" "$TMP/cbcs-v.mp4"
+
+  "$FF" -hide_banner -loglevel error -y \
+    -f lavfi -i "sine=frequency=440:duration=4" \
+    -vn -c:a aac -b:a 32k -ac 2 -ar 44100 \
+    "${FRAG[@]}" "$TMP/cbcs-a.mp4"
+
+  go run scripts/make-cbcs-fixture.go \
+    -video "$TMP/cbcs-v.mp4" -audio "$TMP/cbcs-a.mp4" \
+    -out "$d" -clear-out "$clear" -key "$KEY" -kid "$KID" \
+    -vcodec "avc1.42c00c" -width 320 -height 180 -duration 4.0
+
+  local f
+  for f in "$d"/init-stream0.m4s "$d"/chunk-stream0-00001.m4s; do
+    if ! strings -a "$f" | grep -qE 'tenc|senc|encv'; then
+      echo "FATAL: $f carries no CENC boxes - fixture is not encrypted" >&2
+      exit 1
+    fi
+  done
+  if strings -a "$clear"/init-stream0.m4s | grep -qE 'tenc|encv'; then
+    echo "FATAL: the plaintext reference is encrypted" >&2
+    exit 1
+  fi
+  echo "  cbcs: $(du -sh "$d" | cut -f1), cbcs boxes present"
+}
+
 mkdir -p "$OUT"
 build h264     libx264 "avc1.42c00c"     "$KEY"  "$KID"  "$KEY"  "$KID"
 build hevc     libx265 "hvc1.1.6.L60.90" "$KEY"  "$KID"  "$KEY"  "$KID" -tag:v hvc1
 build hev1     libx265 "hev1.1.6.L60.90" "$KEY"  "$KID"  "$KEY"  "$KID" -tag:v hev1
 build multikid libx264 "avc1.42c00c"     "$VKEY" "$VKID" "$AKEY" "$AKID"
+build_cbcs
 
 printf '%s\n' "$KEY" > "$OUT/key.txt"
 printf '%s\n' "$KID" > "$OUT/kid.txt"
