@@ -31,10 +31,17 @@ func mediaPlaylist(t *track, endList bool) []byte {
 	fmt.Fprintf(&b, "#EXT-X-TARGETDURATION:%d\n", targetDuration(t.segments))
 	fmt.Fprintf(&b, "#EXT-X-MEDIA-SEQUENCE:%d\n", t.mediaSequence)
 	fmt.Fprintf(&b, "#EXT-X-DISCONTINUITY-SEQUENCE:%d\n", t.discontinuitySequence)
-	fmt.Fprintf(&b, "#EXT-X-MAP:URI=%q\n", t.initName())
+
+	// The map is re-emitted whenever it changes, so segments that decode against
+	// an older init keep working after the stream switches to a new one.
+	currentMap := ""
 	for _, s := range t.segments {
 		if s.Discontinuity {
 			b.WriteString("#EXT-X-DISCONTINUITY\n")
+		}
+		if s.InitName != currentMap {
+			fmt.Fprintf(&b, "#EXT-X-MAP:URI=%q\n", s.InitName)
+			currentMap = s.InitName
 		}
 		fmt.Fprintf(&b, "#EXTINF:%.6f,\n", s.Duration)
 		b.WriteString(s.Name)

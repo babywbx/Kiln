@@ -36,15 +36,25 @@ export function openModal({ title, description, body, actions = [], onClose }) {
     h(
       "div",
       { class: "modal-head" },
-      h("div", { class: "modal-title" }, h("h2", { text: title }), description ? h("p", { text: description }) : null),
+      h(
+        "div",
+        { class: "modal-title" },
+        h("h2", { id: "modal-title", text: title }),
+        description ? h("p", { id: "modal-desc", text: description }) : null,
+      ),
       h("button", { class: "icon-button", type: "button", "aria-label": "关闭", onClick: closeModal }, icon("x", 18)),
     ),
     h("div", { class: "modal-body" }, body),
     actions.length ? h("div", { class: "modal-actions" }, actions) : null,
   );
+  el.setAttribute("aria-labelledby", "modal-title");
+  if (description) el.setAttribute("aria-describedby", "modal-desc");
+  else el.removeAttribute("aria-describedby");
   el.returnValue = "";
-  if (!el.open) el.showModal();
+  // Escape closes natively without routing through closeModal.
+  el.addEventListener("close", () => content.replaceChildren(), { once: true });
   if (onClose) el.addEventListener("close", onClose, { once: true });
+  if (!el.open) el.showModal();
   return el;
 }
 
@@ -77,6 +87,7 @@ export function confirmDialog({ title, description, confirmLabel, tone = "danger
       const input = h("input", {
         type: "text",
         autocomplete: "off",
+        autofocus: true,
         placeholder: expect,
         "aria-label": "输入确认内容",
         onInput: (event) => {

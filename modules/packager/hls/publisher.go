@@ -46,12 +46,16 @@ type segment struct {
 	Seq           uint64
 	Duration      float64
 	Discontinuity bool
-	expiresAt     time.Time
+	// InitName is the map this segment decodes against. A stream whose init
+	// changes mid-flight needs a new EXT-X-MAP, not a silently reused one.
+	InitName  string
+	expiresAt time.Time
 }
 
 type track struct {
 	Track
-	init                  []byte
+	initName              string
+	initCount             int
 	initReady             bool
 	segments              []segment
 	tombstones            []segment
@@ -63,7 +67,6 @@ type track struct {
 	hasFrontier bool
 }
 
-func (t *track) initName() string     { return t.Name + "-init.mp4" }
 func (t *track) playlistName() string { return t.Name + ".m3u8" }
 func segmentName(track string, seq uint64) string {
 	return fmt.Sprintf("%s-%06d.m4s", track, seq)
@@ -126,6 +129,9 @@ func (p *Publisher) AddTrack(t Track) error {
 	return nil
 }
 
+// PublishInit registers an init segment. Publishing a second one does not
+// overwrite the first: segments already in the playlist still decode against
+// the old map, so it gets its own name and a fresh EXT-X-MAP.
 func (p *Publisher) PublishInit(name string, data []byte) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -133,10 +139,15 @@ func (p *Publisher) PublishInit(name string, data []byte) error {
 	if !ok {
 		return fmt.Errorf("hls: unknown track %s", name)
 	}
-	if err := p.writeAsset(t.initName(), data); err != nil {
+	assetName := t.Name + "-init.mp4"
+	if t.initCount > 0 {
+		assetName = fmt.Sprintf("%s-init-%d.mp4", t.Name, t.initCount+1)
+	}
+	if err := p.writeAsset(assetName, data); err != nil {
 		return err
 	}
-	t.init = data
+	t.initName = assetName
+	t.initCount++
 	t.initReady = true
 	return nil
 }
@@ -170,6 +181,7 @@ func (p *Publisher) PublishSegment(name string, seq uint64, duration float64, da
 		Seq:           seq,
 		Duration:      duration,
 		Discontinuity: discontinuity,
+		InitName:      t.initName,
 	})
 	t.frontier = seq
 	t.hasFrontier = true
