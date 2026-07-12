@@ -8,9 +8,15 @@ import (
 // Presentation is the normalized manifest. Every Representation it carries is
 // self-contained: no caller ever has to walk back up for inherited attributes.
 type Presentation struct {
-	Dynamic                    bool
-	Profiles                   string
-	BaseURL                    string
+	Dynamic  bool
+	Profiles string
+	BaseURL  string
+	// Location is where DASH says to re-fetch a dynamic manifest, when the
+	// manifest says so. It is absolute.
+	Location string
+	// Refresh is where the next refresh must actually go: Location if there is
+	// one, otherwise the URL this manifest resolved to.
+	Refresh                    string
 	MinimumUpdatePeriod        time.Duration
 	AvailabilityStartTime      time.Time
 	PublishTime                time.Time

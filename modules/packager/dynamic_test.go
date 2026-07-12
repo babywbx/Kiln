@@ -56,6 +56,13 @@ func newLiveOrigin(t *testing.T) *liveOrigin {
 
 func (o *liveOrigin) manifest() []byte {
 	o.mu.Lock()
+	start := o.timelineStart
+	o.mu.Unlock()
+	return o.manifestFrom(start)
+}
+
+func (o *liveOrigin) manifestFrom(start uint64) []byte {
+	o.mu.Lock()
 	defer o.mu.Unlock()
 	return fmt.Appendf(nil, `<?xml version="1.0"?>
 <MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="dynamic"
@@ -78,8 +85,8 @@ func (o *liveOrigin) manifest() []byte {
     </AdaptationSet>
   </Period>
 </MPD>`,
-		liveTimescale, o.timelineStart, liveSegTicks, o.videoCount-1,
-		liveTimescale, o.timelineStart, liveSegTicks, o.audioCount-1)
+		liveTimescale, start, liveSegTicks, o.videoCount-1,
+		liveTimescale, start, liveSegTicks, o.audioCount-1)
 }
 
 // stallVideo keeps the audio timeline growing while the video timeline stops,
@@ -92,7 +99,7 @@ func (o *liveOrigin) stallVideo(extraAudio int) {
 
 // Fetch resolves manifest, init and media URLs against the fixture files.
 func (o *liveOrigin) Fetch(_ context.Context, url string) ([]byte, string, error) {
-	if strings.HasSuffix(url, "stream.mpd") {
+	if strings.Contains(url, "stream.mpd") {
 		return o.manifest(), url, nil
 	}
 
@@ -317,6 +324,129 @@ func TestAudioIsHeldBehindAStalledVideo(t *testing.T) {
 	}
 	if n.Reanchors() == 0 {
 		t.Fatal("a video stalled past ReanchorAfter never re-anchored; the hold blocks forever")
+	}
+}
+
+const entryURL = "https://origin.example.com/live/stream.mpd"
+
+// rotatingOrigin redirects every request for the entry URL to a fresh session,
+// the way a CDN that load-balances by redirect does. The sessions are not in
+// step: a newly handed-out one lags a segment behind. Re-resolving the entry URL
+// on every refresh therefore reads as the timeline rolling backwards, and the
+// channel would re-anchor, and stutter, every few seconds.
+type rotatingOrigin struct {
+	*liveOrigin
+
+	rmu      sync.Mutex
+	sessions int
+	hits     map[string]int
+	dead     bool
+}
+
+func newRotatingOrigin(t *testing.T) *rotatingOrigin {
+	return &rotatingOrigin{liveOrigin: newLiveOrigin(t), hits: map[string]int{}}
+}
+
+func (o *rotatingOrigin) Fetch(ctx context.Context, url string) ([]byte, string, error) {
+	if !strings.Contains(url, "stream.mpd") {
+		return o.liveOrigin.Fetch(ctx, url)
+	}
+
+	o.rmu.Lock()
+	o.hits[url]++
+	pinned := strings.Contains(url, "session=")
+	if pinned && o.dead {
+		o.rmu.Unlock()
+		return nil, "", fmt.Errorf("session expired")
+	}
+	if !pinned {
+		o.sessions++
+	}
+	session := o.sessions
+	o.rmu.Unlock()
+
+	// Every session after the first lags one segment behind.
+	start := o.timelineStart
+	if session > 1 {
+		start -= liveSegTicks
+	}
+	return o.manifestFrom(start), fmt.Sprintf("%s?session=%d", entryURL, session), nil
+}
+
+func (o *rotatingOrigin) hitsOn(url string) int {
+	o.rmu.Lock()
+	defer o.rmu.Unlock()
+	return o.hits[url]
+}
+
+func (o *rotatingOrigin) expireSessions() {
+	o.rmu.Lock()
+	o.dead = true
+	o.rmu.Unlock()
+}
+
+func startRotating(t *testing.T, origin *rotatingOrigin, clock *fakeClock) *Native {
+	t.Helper()
+	n, err := StartNative(context.Background(), Options{
+		ManifestURL:   entryURL,
+		Dir:           t.TempDir(),
+		Keys:          keys(t),
+		Fetcher:       origin,
+		StartSegments: 3,
+		PlaylistSize:  10,
+		ReanchorAfter: 30 * time.Second,
+		Now:           clock.now,
+	})
+	if err != nil {
+		t.Fatalf("StartNative: %v", err)
+	}
+	t.Cleanup(func() { _ = n.Stop() })
+	return n
+}
+
+// Refreshing must stay on the manifest we already resolved. Going back to the
+// entry URL each time hands us a different edge, and edges are not in step.
+func TestManifestRefreshStaysOnTheResolvedSession(t *testing.T) {
+	origin := newRotatingOrigin(t)
+	n := startRotating(t, origin, newClock())
+
+	for i := 0; i < 3; i++ {
+		pres, err := n.refreshManifest(context.Background())
+		if err != nil {
+			t.Fatalf("refresh %d: %v", i, err)
+		}
+		if err := n.advance(context.Background(), pres); err != nil {
+			t.Fatalf("advance %d: %v", i, err)
+		}
+	}
+
+	if got := origin.hitsOn(entryURL); got != 1 {
+		t.Errorf("the entry url was resolved %d times, want 1: every refresh landed on a new edge", got)
+	}
+	if got := origin.hitsOn(entryURL + "?session=1"); got != 3 {
+		t.Errorf("the pinned session was refreshed %d times, want 3", got)
+	}
+	if n.Reanchors() != 0 {
+		t.Errorf("hopping between edges was mistaken for a rollover (%d re-anchors)", n.Reanchors())
+	}
+}
+
+// Pinning must not become a trap. A session that dies has to send us back to the
+// entry URL, which is the only thing that can hand out a live one.
+func TestExpiredSessionReresolvesTheEntryURL(t *testing.T) {
+	origin := newRotatingOrigin(t)
+	n := startRotating(t, origin, newClock())
+
+	origin.expireSessions()
+	pres, err := n.refreshManifest(context.Background())
+	if err != nil {
+		t.Fatalf("a dead session must be recovered by re-resolving the entry url: %v", err)
+	}
+	if got := origin.hitsOn(entryURL); got != 2 {
+		t.Errorf("the entry url was resolved %d times, want 2", got)
+	}
+	if pres.Refresh == entryURL+"?session=1" {
+		t.Error("the publication is still pinned to the dead session")
 	}
 }
 

@@ -24,6 +24,7 @@ type xmlMPD struct {
 	MaxSegmentDuration        string      `xml:"maxSegmentDuration,attr"`
 	MinBufferTime             string      `xml:"minBufferTime,attr"`
 	BaseURL                   []string    `xml:"BaseURL"`
+	Location                  []string    `xml:"Location"`
 	Periods                   []xmlPeriod `xml:"Period"`
 }
 
@@ -154,6 +155,16 @@ func Parse(data []byte, baseURL string) (*Presentation, error) {
 		Dynamic:  strings.EqualFold(doc.Type, "dynamic"),
 		BaseURL:  baseURL,
 		Profiles: doc.Profiles,
+	}
+	for _, loc := range doc.Location {
+		loc = strings.TrimSpace(loc)
+		if loc == "" {
+			continue
+		}
+		if abs, err := resolveRef(root, loc); err == nil {
+			p.Location = abs
+		}
+		break
 	}
 	if p.MinimumUpdatePeriod, err = optDuration(doc.MinimumUpdatePeriod); err != nil {
 		return nil, err

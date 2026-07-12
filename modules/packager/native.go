@@ -132,6 +132,8 @@ type Native struct {
 	pub      *hls.Publisher
 	plan     Plan
 	packMode string
+	// refresh is the manifest URL to re-read. Only the run goroutine touches it.
+	refresh string
 
 	video *trackState
 	audio *trackState
@@ -199,7 +201,7 @@ func StartNative(ctx context.Context, opts Options) (*Native, error) {
 	}
 	opts.applyDefaults()
 
-	pres, err := fetchManifest(ctx, opts)
+	pres, err := fetchManifest(ctx, opts, opts.ManifestURL)
 	if err != nil {
 		return nil, err
 	}
@@ -239,6 +241,7 @@ func StartNative(ctx context.Context, opts Options) (*Native, error) {
 		pub:      pub,
 		plan:     plan,
 		packMode: packMode(pres, plan),
+		refresh:  pres.Refresh,
 		done:     make(chan struct{}),
 		video:    newTrackState(trackVideo, plan.Video, videoInit, now),
 		audio:    newTrackState(trackAudio, plan.Audio, audioInit, now),
@@ -274,8 +277,8 @@ func noFallback(plan Plan, err error) error {
 	return &FallbackError{Reason: ReasonMultiKIDNoFall, Allowed: false, Err: err}
 }
 
-func fetchManifest(ctx context.Context, opts Options) (*mpd.Presentation, error) {
-	raw, finalURL, err := opts.Fetcher.Fetch(ctx, opts.ManifestURL)
+func fetchManifest(ctx context.Context, opts Options, url string) (*mpd.Presentation, error) {
+	raw, finalURL, err := opts.Fetcher.Fetch(ctx, url)
 	if err != nil {
 		return nil, fmt.Errorf("fetch manifest: %w", err)
 	}
@@ -283,7 +286,21 @@ func fetchManifest(ctx context.Context, opts Options) (*mpd.Presentation, error)
 	if err != nil {
 		return nil, &FallbackError{Reason: ReasonAddressing, Allowed: true, Err: err}
 	}
+	pres.Refresh = refreshURL(pres, finalURL)
 	return pres, nil
+}
+
+// refreshURL is where the next manifest refresh must go. DASH says to use
+// <Location> when the manifest carries one. Otherwise it is the URL the fetch
+// actually resolved to, which matters more than it looks: an origin that
+// load-balances by redirect hands out a different edge, and a different session,
+// on every request. Re-resolving the entry URL each time would hop between edges
+// whose timelines are not in step, and every hop reads as a rollover.
+func refreshURL(pres *mpd.Presentation, finalURL string) string {
+	if pres.Location != "" {
+		return pres.Location
+	}
+	return finalURL
 }
 
 func fetchInits(ctx context.Context, opts Options, plan Plan) (*cmaf.Init, *cmaf.Init, error) {
@@ -561,7 +578,7 @@ func (n *Native) run(ctx context.Context, pres *mpd.Presentation) {
 		}
 
 		n.manifestRefreshes.Add(1)
-		next, err := fetchManifest(ctx, n.opts)
+		next, err := n.refreshManifest(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -587,6 +604,29 @@ func (n *Native) run(ctx context.Context, pres *mpd.Presentation) {
 		}
 		timer.Reset(interval)
 	}
+}
+
+// refreshManifest stays on the manifest we are already following, and only goes
+// back to the entry URL when that stops working. A pinned session can expire or
+// its edge can fail; re-resolving then is the recovery, and the timeline jump it
+// may bring is a real one, which the re-anchor handles.
+func (n *Native) refreshManifest(ctx context.Context) (*mpd.Presentation, error) {
+	pres, err := fetchManifest(ctx, n.opts, n.refresh)
+	if err == nil {
+		n.refresh = pres.Refresh
+		return pres, nil
+	}
+	if ctx.Err() != nil || n.refresh == n.opts.ManifestURL {
+		return nil, err
+	}
+	n.log.Warn("pinned manifest failed, re-resolving from the entry url",
+		"pinned", n.refresh, "err", err)
+	pres, err = fetchManifest(ctx, n.opts, n.opts.ManifestURL)
+	if err != nil {
+		return nil, err
+	}
+	n.refresh = pres.Refresh
+	return pres, nil
 }
 
 // fatalError ends the publication instead of being retried on the next refresh.
