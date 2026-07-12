@@ -93,3 +93,5 @@ docs/plans/
 docs/superpowers/
 docs/**/*-draft*.md
 docs/**/*-scratch*.md
+
+.playwright-mcp/
