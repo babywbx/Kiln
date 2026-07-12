@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/babywbx/kiln/modules/packager/cmaf"
@@ -120,7 +121,36 @@ type Native struct {
 	mu          sync.Mutex
 	err         error
 	intentional bool
-	reanchors   int
+
+	segmentsPublished atomic.Uint64
+	segmentsFetched   atomic.Uint64
+	segmentFetchErrs  atomic.Uint64
+	manifestRefreshes atomic.Uint64
+	manifestErrs      atomic.Uint64
+	discontinuities   atomic.Uint64
+	reanchors         atomic.Uint64
+	keyMismatches     atomic.Uint64
+	decryptNanos      atomic.Int64
+}
+
+func (n *Native) Stats() Stats {
+	bytes, items := n.pub.CacheUsage()
+	frontier := n.pub.Frontier()
+	return Stats{
+		SegmentsPublished: n.segmentsPublished.Load(),
+		SegmentsFetched:   n.segmentsFetched.Load(),
+		SegmentFetchErrs:  n.segmentFetchErrs.Load(),
+		ManifestRefreshes: n.manifestRefreshes.Load(),
+		ManifestErrs:      n.manifestErrs.Load(),
+		Discontinuities:   n.discontinuities.Load(),
+		Reanchors:         n.reanchors.Load(),
+		KeyMismatches:     n.keyMismatches.Load(),
+		DecryptSeconds:    time.Duration(n.decryptNanos.Load()).Seconds(),
+		CacheBytes:        bytes,
+		CacheItems:        items,
+		VideoFrontier:     frontier[trackVideo],
+		AudioFrontier:     frontier[trackAudio],
+	}
 }
 
 // FallbackError says the native path declined this input at startup. The
@@ -398,6 +428,10 @@ func (n *Native) commit(ts *trackState, seg mpd.Segment, p prepared) error {
 	if err := n.pub.PublishSegment(ts.name, ts.nextSeq, p.dur, p.data, discontinuity); err != nil {
 		return err
 	}
+	n.segmentsPublished.Add(1)
+	if discontinuity {
+		n.discontinuities.Add(1)
+	}
 
 	ts.nextSeq++
 	ts.lastTime = seg.Time
@@ -423,17 +457,25 @@ func continuous(expected, got uint64, timescale uint32) bool {
 }
 
 func (n *Native) prepare(ctx context.Context, ts *trackState, seg mpd.Segment) (res prepared) {
+	n.segmentsFetched.Add(1)
 	raw, _, err := n.opts.Fetcher.Fetch(ctx, seg.URL)
 	if err != nil {
+		n.segmentFetchErrs.Add(1)
 		res.err = fmt.Errorf("fetch segment %s#%d: %w", ts.rep.ID, seg.Number, err)
 		return res
 	}
 	if n.opts.MaxSegmentBytes > 0 && int64(len(raw)) > n.opts.MaxSegmentBytes {
+		n.segmentFetchErrs.Add(1)
 		res.err = fmt.Errorf("segment %s#%d is %d bytes, over the limit", ts.rep.ID, seg.Number, len(raw))
 		return res
 	}
+	started := time.Now()
 	clear, err := ts.init.Decrypt(raw, n.opts.Keys)
+	n.decryptNanos.Add(int64(time.Since(started)))
 	if err != nil {
+		if u, ok := cmaf.Unsupported(err); ok && u.Reason == cmaf.ReasonMissingKey {
+			n.keyMismatches.Add(1)
+		}
 		res.err = fmt.Errorf("decrypt segment %s#%d: %w", ts.rep.ID, seg.Number, err)
 		return res
 	}
@@ -473,11 +515,13 @@ func (n *Native) run(ctx context.Context, pres *mpd.Presentation) {
 		case <-timer.C:
 		}
 
+		n.manifestRefreshes.Add(1)
 		next, err := fetchManifest(ctx, n.opts)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
 			}
+			n.manifestErrs.Add(1)
 			n.log.Warn("mpd refresh failed", "err", err)
 			timer.Reset(interval)
 			continue
@@ -605,10 +649,7 @@ func (n *Native) needsReanchor(ts *trackState, segs []mpd.Segment) (string, bool
 // and marks the next publish as a discontinuity. The published sequence keeps
 // counting up, so players never see it go backwards.
 func (n *Native) reanchor(ctx context.Context, ts *trackState, reason string) error {
-	n.mu.Lock()
-	n.reanchors++
-	count := n.reanchors
-	n.mu.Unlock()
+	count := n.reanchors.Add(1)
 	n.log.Warn("live re-anchor", "track", ts.name, "reason", reason, "count", count)
 
 	init, err := loadInit(ctx, n.opts, ts.rep)
@@ -675,11 +716,7 @@ func (n *Native) PackMode() string            { return n.packMode }
 func (n *Native) Done() <-chan struct{}       { return n.done }
 
 // Reanchors is how many times the publication had to relocate the live edge.
-func (n *Native) Reanchors() int {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	return n.reanchors
-}
+func (n *Native) Reanchors() uint64 { return n.reanchors.Load() }
 
 func (n *Native) Err() error {
 	n.mu.Lock()

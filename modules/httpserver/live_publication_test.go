@@ -85,6 +85,7 @@ func (j *fakeJob) FallbackReason() string            { return "" }
 func (j *fakeJob) Done() <-chan struct{}             { return j.done }
 func (j *fakeJob) Err() error                        { return nil }
 func (j *fakeJob) IntentionalStop() bool             { return true }
+func (j *fakeJob) Stats() packager.Stats             { return packager.Stats{} }
 func (j *fakeJob) Stop() error                       { close(j.done); return nil }
 
 type fakePackager struct{}

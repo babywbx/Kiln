@@ -321,3 +321,21 @@ func (p *Publisher) Frontier() map[string]uint64 {
 	}
 	return out
 }
+
+// CacheUsage is what this publication currently holds on disk, counting both
+// the playlist window and the assets still inside their grace period.
+func (p *Publisher) CacheUsage() (int64, int) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	var bytes int64
+	items := 0
+	for name := range p.assets {
+		st, err := os.Stat(p.assets[name])
+		if err != nil {
+			continue
+		}
+		bytes += st.Size()
+		items++
+	}
+	return bytes, items
+}

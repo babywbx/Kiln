@@ -82,6 +82,7 @@ func (j *nativeJob) Done() <-chan struct{}    { return j.native.Done() }
 func (j *nativeJob) Err() error               { return j.native.Err() }
 func (j *nativeJob) Stop() error              { return j.native.Stop() }
 func (j *nativeJob) IntentionalStop() bool    { return j.native.IntentionalStop() }
+func (j *nativeJob) Stats() Stats             { return j.native.Stats() }
 
 type nativePublication struct {
 	pub *hls.Publisher

@@ -265,6 +265,46 @@ func TestNoProgressTriggersReanchor(t *testing.T) {
 	assertSequenceIncreases(t, videoPlaylist(t, n))
 }
 
+// The counters have to reflect real work, otherwise they are decoration that
+// makes a stalled channel look healthy.
+func TestStatsReflectPublishedWork(t *testing.T) {
+	origin := newLiveOrigin(t)
+	clock := newClock()
+	n, _ := startLive(t, origin, clock)
+
+	st := n.Stats()
+	if st.SegmentsPublished != 6 {
+		t.Errorf("segments published = %d, want 6 (3 video + 3 audio)", st.SegmentsPublished)
+	}
+	if st.SegmentsFetched != 6 {
+		t.Errorf("segments fetched = %d, want 6", st.SegmentsFetched)
+	}
+	if st.DecryptSeconds < 0 {
+		t.Errorf("decrypt time = %.3f, want a non-negative measurement", st.DecryptSeconds)
+	}
+	if st.CacheBytes <= 0 || st.CacheItems == 0 {
+		t.Errorf("cache usage = %d bytes in %d items, want both non-zero", st.CacheBytes, st.CacheItems)
+	}
+	if st.VideoFrontier != 3 || st.AudioFrontier != 3 {
+		t.Errorf("frontier = video %d / audio %d, want 3 / 3", st.VideoFrontier, st.AudioFrontier)
+	}
+
+	origin.rollback()
+	if err := n.advance(context.Background(), parseManifest(t, origin)); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	after := n.Stats()
+	if after.Reanchors == 0 {
+		t.Error("a re-anchor was not counted")
+	}
+	if after.Discontinuities == 0 {
+		t.Error("a discontinuity was not counted")
+	}
+	if after.VideoFrontier <= st.VideoFrontier {
+		t.Error("the frontier did not advance after the re-anchor")
+	}
+}
+
 // The published sequence is ours and only ever moves forward, whatever the
 // origin does to its own numbering.
 func assertSequenceIncreases(t *testing.T, playlist string) {

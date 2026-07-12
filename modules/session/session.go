@@ -600,7 +600,35 @@ func (m *Manager) publish(s *Session, state string) {
 		State:          state,
 		Errors:         s.Errors,
 		LastError:      s.LastError,
+		Packager:       packagerStat(s.job),
 	})
+}
+
+// packagerStat copies the engine's counters into the status snapshot. An engine
+// that reports nothing stays absent instead of showing a row of zeros.
+func packagerStat(job packager.Job) *observe.PackagerStat {
+	if job == nil {
+		return nil
+	}
+	st := job.Stats()
+	if st == (packager.Stats{}) {
+		return nil
+	}
+	return &observe.PackagerStat{
+		SegmentsPublished: st.SegmentsPublished,
+		SegmentsFetched:   st.SegmentsFetched,
+		SegmentFetchErrs:  st.SegmentFetchErrs,
+		ManifestRefreshes: st.ManifestRefreshes,
+		ManifestErrs:      st.ManifestErrs,
+		Discontinuities:   st.Discontinuities,
+		Reanchors:         st.Reanchors,
+		KeyMismatches:     st.KeyMismatches,
+		DecryptSeconds:    st.DecryptSeconds,
+		CacheBytes:        st.CacheBytes,
+		CacheItems:        st.CacheItems,
+		VideoFrontier:     st.VideoFrontier,
+		AudioFrontier:     st.AudioFrontier,
+	}
 }
 
 func (m *Manager) HeadersFor(ch config.Channel) map[string]string {

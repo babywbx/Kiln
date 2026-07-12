@@ -32,6 +32,28 @@ type SessionStat struct {
 	State          string    `json:"state"`
 	Errors         int       `json:"errors"`
 	LastError      string    `json:"last_error,omitempty"`
+	// Packager holds the engine's own counters. It is absent for engines that
+	// report none, rather than filled with zeros that would read as facts.
+	Packager *PackagerStat `json:"packager,omitempty"`
+}
+
+// PackagerStat mirrors what a packager reports. It lives here rather than being
+// imported from the packager, which already depends on this module through the
+// pull client.
+type PackagerStat struct {
+	SegmentsPublished uint64  `json:"segments_published,omitempty"`
+	SegmentsFetched   uint64  `json:"segments_fetched,omitempty"`
+	SegmentFetchErrs  uint64  `json:"segment_fetch_errors,omitempty"`
+	ManifestRefreshes uint64  `json:"manifest_refreshes,omitempty"`
+	ManifestErrs      uint64  `json:"manifest_errors,omitempty"`
+	Discontinuities   uint64  `json:"discontinuities,omitempty"`
+	Reanchors         uint64  `json:"reanchors,omitempty"`
+	KeyMismatches     uint64  `json:"key_mismatches,omitempty"`
+	DecryptSeconds    float64 `json:"decrypt_seconds,omitempty"`
+	CacheBytes        int64   `json:"cache_bytes,omitempty"`
+	CacheItems        int     `json:"cache_items,omitempty"`
+	VideoFrontier     uint64  `json:"video_frontier,omitempty"`
+	AudioFrontier     uint64  `json:"audio_frontier,omitempty"`
 }
 
 type Snapshot struct {

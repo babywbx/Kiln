@@ -56,6 +56,28 @@ type Job interface {
 	// IntentionalStop separates "we stopped it" from "it died". The restart
 	// budget depends on it, so it is not optional.
 	IntentionalStop() bool
+	Stats() Stats
+}
+
+// Stats is what a running job reports about itself. These are plain fields on
+// the existing status snapshot, not a new metrics endpoint: adding one would
+// mean a new dependency and a new unauthenticated surface.
+type Stats struct {
+	SegmentsPublished uint64  `json:"segments_published,omitempty"`
+	SegmentsFetched   uint64  `json:"segments_fetched,omitempty"`
+	SegmentFetchErrs  uint64  `json:"segment_fetch_errors,omitempty"`
+	ManifestRefreshes uint64  `json:"manifest_refreshes,omitempty"`
+	ManifestErrs      uint64  `json:"manifest_errors,omitempty"`
+	Discontinuities   uint64  `json:"discontinuities,omitempty"`
+	Reanchors         uint64  `json:"reanchors,omitempty"`
+	KeyMismatches     uint64  `json:"key_mismatches,omitempty"`
+	DecryptSeconds    float64 `json:"decrypt_seconds,omitempty"`
+	CacheBytes        int64   `json:"cache_bytes,omitempty"`
+	CacheItems        int     `json:"cache_items,omitempty"`
+	// VideoFrontier and AudioFrontier are the highest published sequence per
+	// track. They only ever move forward.
+	VideoFrontier uint64 `json:"video_frontier,omitempty"`
+	AudioFrontier uint64 `json:"audio_frontier,omitempty"`
 }
 
 // Publication is the only way the HTTP layer sees media. It hands out named

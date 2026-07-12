@@ -75,6 +75,11 @@ func (j *ffmpegJob) Stop() error               { return j.job.Stop() }
 func (j *ffmpegJob) IntentionalStop() bool     { return j.job.IntentionalStop() }
 func (j *ffmpegJob) setFallback(reason string) { j.reason = reason }
 
+// Stats stays empty for ffmpeg: the counters describe work the native pipeline
+// does itself, and inventing numbers for an external process would be worse
+// than reporting none.
+func (j *ffmpegJob) Stats() Stats { return Stats{} }
+
 // ffmpegPublication exposes the ffmpeg work directory as a named playlist plus
 // a whitelist of media segments. It does not let a request path address the
 // directory directly.
