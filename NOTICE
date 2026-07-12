@@ -5,9 +5,10 @@ Licensed under the GNU Affero General Public License version 3 only
 
 --------------------------------------------------------------------------------
 
-This product's container image redistributes an unmodified, statically linked
-FFmpeg binary. Kiln itself does not link against FFmpeg; it invokes the binary
-as a separate process.
+The Kiln full container image redistributes an unmodified, statically linked
+FFmpeg binary. The core image does not contain FFmpeg. Kiln itself does not
+link against FFmpeg; the full variant invokes the binary as a separate
+process.
 
   FFmpeg 8.1.2
   https://ffmpeg.org
@@ -34,6 +35,10 @@ next to the distributed files under modules/httpserver/admin/assets/third_party/
   hls.js 1.6.16
   Copyright (c) 2017 Dailymotion
   Apache License 2.0
+
+  Lucide Icons (subset sourced from @iconify-json/lucide 1.2.116)
+  Copyright (c) 2026 Lucide Icons and Contributors
+  ISC License; selected Feather-derived icons remain MIT licensed
 
 --------------------------------------------------------------------------------
 

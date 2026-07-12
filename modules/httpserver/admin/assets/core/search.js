@@ -43,7 +43,7 @@ function invert(source) {
 
 function tables() {
   if (!tablesPromise) {
-    tablesPromise = import("./data/romanize.js").then(({ PINYIN, JYUTPING, SIMPLIFY }) => {
+    tablesPromise = import("../data/romanize.js").then(({ PINYIN, JYUTPING, SIMPLIFY }) => {
       const codes = decodeRunning(SIMPLIFY[0]);
       const targets = decode(SIMPLIFY[1]);
       const simplify = new Map();
