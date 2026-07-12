@@ -77,24 +77,32 @@ func TestPickStreamsDynamicAndIndex(t *testing.T) {
 func TestReadyPlaylistRequiresPlayableSegment(t *testing.T) {
 	dir := t.TempDir()
 	index := filepath.Join(dir, "index.m3u8")
-	seg := filepath.Join(dir, "seg_00000.ts")
-	if err := os.WriteFile(index, []byte("#EXTM3U\n#EXTINF:0.18,\nseg_00000.ts\n"), 0o600); err != nil {
-		t.Fatal(err)
+	seg0 := filepath.Join(dir, "seg_00000.ts")
+	seg1 := filepath.Join(dir, "seg_00001.ts")
+	write := func(t *testing.T, path string, b []byte) {
+		t.Helper()
+		if err := os.WriteFile(path, b, 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := os.WriteFile(seg, make([]byte, 1024), 0o600); err != nil {
-		t.Fatal(err)
-	}
+
+	write(t, index, []byte("#EXTM3U\n#EXTINF:0.18,\nseg_00000.ts\n"))
+	write(t, seg0, make([]byte, 1024))
 	if readyPlaylist(index, dir) {
 		t.Fatal("tiny partial should not be ready")
 	}
-	if err := os.WriteFile(index, []byte("#EXTM3U\n#EXTINF:2.0,\nseg_00000.ts\n"), 0o600); err != nil {
-		t.Fatal(err)
+
+	// One full segment still means the packager may have starved right after.
+	write(t, index, []byte("#EXTM3U\n#EXTINF:2.0,\nseg_00000.ts\n"))
+	write(t, seg0, make([]byte, 64*1024))
+	if readyPlaylist(index, dir) {
+		t.Fatal("a lone segment must not count as ready")
 	}
-	if err := os.WriteFile(seg, make([]byte, 64*1024), 0o600); err != nil {
-		t.Fatal(err)
-	}
+
+	write(t, index, []byte("#EXTM3U\n#EXTINF:2.0,\nseg_00000.ts\n#EXTINF:2.0,\nseg_00001.ts\n"))
+	write(t, seg1, make([]byte, 64*1024))
 	if !readyPlaylist(index, dir) {
-		t.Fatal("want ready for 2s + 64KB")
+		t.Fatal("want ready once a second segment lands")
 	}
 }
 

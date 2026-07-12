@@ -23,6 +23,7 @@ import (
 
 const (
 	minReadySegBytes   = 32 * 1024
+	minReadySegments   = 2
 	minReadyEXTINF     = 0.4
 	readyTimeoutLocal  = 45 * time.Second
 	readyTimeoutRemote = 55 * time.Second
@@ -122,20 +123,22 @@ func StartDashHLS(parent context.Context, opt DashOptions) (*DashJob, error) {
 		return nil, err
 	}
 
-	// Local filtered first (single video+audio). For live, FilterMPD keeps the full
-	// SegmentTimeline so first-segment times stay valid; trim caused HTTP 410 on 4K.
-	attempts := []packAttempt{{
+	local := packAttempt{
 		mode:  "local_filtered",
 		input: localMPD,
 		vMap:  "0:v:0",
 		aMap:  "0:a:0?",
 		note:  note,
-	}}
+	}
+	var attempts []packAttempt
 	if pick.Dynamic && resolvedURL != "" {
 		aMap := "0:a:0?"
 		if pick.AudioIndex >= 0 {
 			aMap = fmt.Sprintf("0:a:%d", pick.AudioIndex)
 		}
+		// Live first: a file: MPD is a snapshot ffmpeg can never refresh, so it
+		// starves once the snapshot's timeline runs out. Pin the ladder with -map
+		// instead and let ffmpeg poll the manifest itself.
 		attempts = append(attempts, packAttempt{
 			mode:  "remote_live",
 			input: resolvedURL,
@@ -146,6 +149,7 @@ func StartDashHLS(parent context.Context, opt DashOptions) (*DashJob, error) {
 			remote: true,
 		})
 	}
+	attempts = append(attempts, local)
 
 	var lastErr error
 	for i, att := range attempts {
@@ -407,6 +411,9 @@ func waitPlaylistReady(ctx context.Context, job *DashJob, workDir string, timeou
 	return fmt.Errorf("timeout waiting for hls playlist")
 }
 
+// A single segment only proves ffmpeg started, not that it is still fed: a
+// packager reading a stale manifest emits one segment and then starves. Require
+// a second one, which only a packager that is actually keeping up can produce.
 func readyPlaylist(index, workDir string) bool {
 	st, err := os.Stat(index)
 	if err != nil || st.Size() == 0 {
@@ -416,11 +423,16 @@ func readyPlaylist(index, workDir string) bool {
 	if err != nil {
 		return false
 	}
+	listed := 0
 	maxDur := 0.0
 	for _, m := range extinfRe.FindAllStringSubmatch(string(body), -1) {
+		listed++
 		if d, err := strconv.ParseFloat(m[1], 64); err == nil && d > maxDur {
 			maxDur = d
 		}
+	}
+	if listed < minReadySegments || maxDur < minReadyEXTINF {
+		return false
 	}
 	entries, err := os.ReadDir(workDir)
 	if err != nil {
@@ -440,13 +452,7 @@ func readyPlaylist(index, workDir string) bool {
 			best = info.Size()
 		}
 	}
-	if best >= minReadySegBytes && maxDur >= minReadyEXTINF {
-		return true
-	}
-	if best >= 200*1024 {
-		return true
-	}
-	return false
+	return best >= minReadySegBytes
 }
 
 func resolveMPD(ctx context.Context, opt DashOptions) (string, string, error) {
