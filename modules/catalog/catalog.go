@@ -5,7 +5,6 @@ import (
 	"net/url"
 	"path"
 	"strings"
-	"sync"
 
 	"github.com/babywbx/kiln/modules/apperr"
 	"github.com/babywbx/kiln/modules/config"
@@ -15,7 +14,6 @@ import (
 type Service struct {
 	cfg config.File
 	db  *store.DB
-	mu  sync.RWMutex
 }
 
 type ChannelView struct {
@@ -253,12 +251,12 @@ func (s *Service) M3U(channels []config.Channel, publicBase, playPathPrefix, tok
 		}
 		b.WriteString("#EXTINF:-1")
 		if ch.Group != "" {
-			b.WriteString(fmt.Sprintf(` group-title="%s"`, escapeAttr(ch.Group)))
+			fmt.Fprintf(&b, ` group-title="%s"`, escapeAttr(ch.Group))
 		}
 		if ch.LogoURL != "" {
-			b.WriteString(fmt.Sprintf(` tvg-logo="%s"`, escapeAttr(ch.LogoURL)))
+			fmt.Fprintf(&b, ` tvg-logo="%s"`, escapeAttr(ch.LogoURL))
 		}
-		b.WriteString(fmt.Sprintf(` tvg-id="%s",%s`, escapeAttr(ch.ID), title))
+		fmt.Fprintf(&b, ` tvg-id="%s",%s`, escapeAttr(ch.ID), title)
 		b.WriteByte('\n')
 		u := publicBase + playPathPrefix + ch.ID + "/index.m3u8"
 		if token != "" {

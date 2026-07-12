@@ -20,6 +20,7 @@ type File struct {
 	Channels  []Channel      `json:"channels" toml:"channels"`
 	Observe   Observe        `json:"observe" toml:"observe"`
 	FFmpeg    FFmpeg         `json:"ffmpeg" toml:"ffmpeg"`
+	Packager  Packager       `json:"packager" toml:"packager"`
 	Logging   Logging        `json:"logging" toml:"logging"`
 	Proxies   []ProxyProfile `json:"proxies" toml:"proxies"`
 	Egress    Egress         `json:"egress" toml:"egress"`
@@ -110,6 +111,8 @@ type Channel struct {
 	Headers          map[string]string `json:"headers" toml:"headers"`
 	RestartOnFailure bool              `json:"restart_on_failure" toml:"restart_on_failure"`
 	PreferHeight     int               `json:"prefer_height" toml:"prefer_height"`
+	// Packager overrides the global engine strategy for this channel.
+	Packager string `json:"packager" toml:"packager"`
 }
 
 type Observe struct {
@@ -144,6 +147,35 @@ type FFmpeg struct {
 	MaxStarts int `json:"max_starts" toml:"max_starts"`
 }
 
+// Packager configures the DASH execution engine. Engine, output container and
+// codec targets are separate axes on purpose: a single use_ffmpeg flag cannot
+// express "copy natively but transcode HEVC".
+type Packager struct {
+	// Engine is the default strategy: auto | native | ffmpeg.
+	Engine           string `json:"engine" toml:"engine"`
+	PlaylistSize     int    `json:"playlist_size" toml:"playlist_size"`
+	StartSegments    int    `json:"start_segments" toml:"start_segments"`
+	PrefetchSegments int    `json:"prefetch_segments" toml:"prefetch_segments"`
+	MaxSegmentBytes  int64  `json:"max_segment_bytes" toml:"max_segment_bytes"`
+	// GraceSec keeps a segment readable after it leaves the playlist, so a
+	// player holding the previous playlist does not get a hard 404.
+	GraceSec int `json:"grace_sec" toml:"grace_sec"`
+}
+
+const (
+	EngineAuto   = "auto"
+	EngineNative = "native"
+	EngineFFmpeg = "ffmpeg"
+)
+
+func ValidEngine(s string) bool {
+	switch s {
+	case EngineAuto, EngineNative, EngineFFmpeg:
+		return true
+	}
+	return false
+}
+
 func (f FFmpeg) Dependency() string {
 	if f.Mode.IsDocker() {
 		return "docker"
@@ -163,6 +195,18 @@ func (c File) TokenTTL() time.Duration {
 		h = 24
 	}
 	return time.Duration(h) * time.Hour
+}
+
+// EngineFor resolves the engine strategy for a channel, falling back to the
+// global default.
+func (c File) EngineFor(ch Channel) string {
+	if ValidEngine(ch.Packager) {
+		return ch.Packager
+	}
+	if ValidEngine(c.Packager.Engine) {
+		return c.Packager.Engine
+	}
+	return EngineAuto
 }
 
 func (c File) IdleTimeout(ch Channel) time.Duration {
@@ -287,7 +331,23 @@ func (c *File) applyDefaults() {
 	if c.FFmpeg.LogLevel == "" {
 		c.FFmpeg.LogLevel = "error"
 	}
-	if c.FFmpeg.PreferHeight == 0 {
+	if !ValidEngine(c.Packager.Engine) {
+		c.Packager.Engine = EngineAuto
+	}
+	if c.Packager.PlaylistSize <= 0 {
+		c.Packager.PlaylistSize = 8
+	}
+	if c.Packager.StartSegments <= 0 {
+		c.Packager.StartSegments = 3
+	}
+	if c.Packager.PrefetchSegments <= 0 {
+		c.Packager.PrefetchSegments = 3
+	}
+	if c.Packager.MaxSegmentBytes <= 0 {
+		c.Packager.MaxSegmentBytes = 32 << 20
+	}
+	if c.Packager.GraceSec <= 0 {
+		c.Packager.GraceSec = 30
 	}
 	c.Observe.Enabled = true
 	if c.Logging.Level == "" {
@@ -420,6 +480,9 @@ func (c File) validate() error {
 		}
 		if ch.Ingress == "dash" && !ch.Disabled && ch.KeysFile == "" {
 			return fmt.Errorf("channel %q dash ingress requires keys_file", ch.ID)
+		}
+		if ch.Packager != "" && !ValidEngine(ch.Packager) {
+			return fmt.Errorf("channel %q packager must be auto, native or ffmpeg", ch.ID)
 		}
 	}
 	proxyIDs := map[string]struct{}{"direct": {}}

@@ -234,8 +234,6 @@ func trimSegmentTimelines(mpd string, keep int) (string, int) {
 }
 
 func resolveBaseURL(mpd, mpdURL string) string {
-	if m := baseURLRe.FindStringSubmatch(mpd); len(m) == 1 {
-	}
 	inner := regexp.MustCompile(`(?i)<BaseURL>([^<]*)</BaseURL>`).FindStringSubmatch(mpd)
 	ref := ""
 	if len(inner) == 2 {

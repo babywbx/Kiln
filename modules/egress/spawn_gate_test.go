@@ -102,6 +102,7 @@ func TestSpawnGateDoesNotCoverReadinessWait(t *testing.T) {
 	const channels = 3
 	jobs := make([]*DashJob, channels)
 	errs := make([]error, channels)
+	took := make([]time.Duration, channels)
 	start := time.Now()
 
 	var wg sync.WaitGroup
@@ -109,6 +110,7 @@ func TestSpawnGateDoesNotCoverReadinessWait(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			began := time.Now()
 			jobs[i], errs[i] = StartDashHLS(context.Background(), DashOptions{
 				Binary:     binary,
 				FFmpegMode: config.FFmpegModeNative,
@@ -117,6 +119,7 @@ func TestSpawnGateDoesNotCoverReadinessWait(t *testing.T) {
 				WorkDir:    filepath.Join(t.TempDir(), "work"),
 				SpawnGate:  gate,
 			})
+			took[i] = time.Since(began)
 		}()
 	}
 	wg.Wait()
@@ -126,15 +129,24 @@ func TestSpawnGateDoesNotCoverReadinessWait(t *testing.T) {
 		if err != nil {
 			t.Fatalf("channel %d failed to start: %v", i, err)
 		}
-		defer jobs[i].Stop()
+		defer func() { _ = jobs[i].Stop() }()
 	}
 
 	// The launch itself is milliseconds; the readiness wait is not.
 	if hold := gate.longestHold(); hold >= readyDelay {
 		t.Errorf("gate was held for %v, which covers the readiness wait (%v)", hold, readyDelay)
 	}
-	if elapsed >= channels*readyDelay {
-		t.Errorf("%d cold starts took %v, i.e. they serialized behind the gate", channels, elapsed)
+
+	// Compare against the work actually done rather than a wall-clock constant:
+	// on a loaded machine every start is slow, but serialized starts still sum
+	// while overlapping ones do not.
+	var total time.Duration
+	for _, d := range took {
+		total += d
+	}
+	if elapsed > total/2 {
+		t.Errorf("%d cold starts took %v of a %v serial total: they did not overlap",
+			channels, elapsed, total)
 	}
 }
 

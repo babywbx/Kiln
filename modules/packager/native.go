@@ -73,8 +73,9 @@ type Native struct {
 	now  func() time.Time
 	log  *slog.Logger
 
-	pub  *hls.Publisher
-	plan Plan
+	pub      *hls.Publisher
+	plan     Plan
+	packMode string
 
 	cancel      context.CancelFunc
 	done        chan struct{}
@@ -143,7 +144,15 @@ func StartNative(ctx context.Context, opts Options) (*Native, error) {
 		return nil, err
 	}
 
-	n := &Native{opts: opts, now: opts.Now, log: opts.Log, pub: pub, plan: plan, done: make(chan struct{})}
+	n := &Native{
+		opts:     opts,
+		now:      opts.Now,
+		log:      opts.Log,
+		pub:      pub,
+		plan:     plan,
+		packMode: packMode(pres, plan),
+		done:     make(chan struct{}),
+	}
 	if err := n.registerTracks(videoInit, audioInit); err != nil {
 		return nil, err
 	}
@@ -452,8 +461,29 @@ func (n *Native) fail(err error) {
 	n.mu.Unlock()
 }
 
+// packMode is the native engine's internal mode. It is a different axis from
+// Engine, and deliberately does not reuse ffmpeg's remote_live/local_filtered
+// values, which are already exposed through the status API.
+func packMode(pres *mpd.Presentation, plan Plan) string {
+	kind := "static"
+	if pres.Dynamic {
+		kind = "dynamic"
+	}
+	switch plan.Video.Addressing.Mode {
+	case mpd.AddressingTemplateTimeline:
+		return kind + "_timeline"
+	case mpd.AddressingTemplateDuration:
+		return kind + "_duration"
+	case mpd.AddressingList:
+		return kind + "_list"
+	default:
+		return kind
+	}
+}
+
 func (n *Native) Publication() *hls.Publisher { return n.pub }
 func (n *Native) Engine() string              { return n.plan.Engine }
+func (n *Native) PackMode() string            { return n.packMode }
 func (n *Native) Done() <-chan struct{}       { return n.done }
 
 func (n *Native) Err() error {

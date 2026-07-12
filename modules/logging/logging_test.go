@@ -18,33 +18,33 @@ func TestConsoleFormat(t *testing.T) {
 
 	rec := slog.NewRecord(ts, slog.LevelInfo, "kiln starting", 0)
 	rec.Add("version", "0.1.0", "listen", "0.0.0.0:8080", "channels", 2)
-	if err := h.Handle(nil, rec); err != nil {
+	if err := h.Handle(context.TODO(), rec); err != nil {
 		t.Fatal(err)
 	}
 
 	rec = slog.NewRecord(ts, slog.LevelInfo, "listening", 0)
 	rec.Add("addr", "0.0.0.0:8080", "version", "0.1.0")
-	_ = h.Handle(nil, rec)
+	_ = h.Handle(context.TODO(), rec)
 
 	rec = slog.NewRecord(ts, slog.LevelInfo, "session started", 0)
 	rec.Add("channel", "channel-1", "ingress", "hls", "pack_mode", "copy")
-	_ = h.Handle(nil, rec)
+	_ = h.Handle(context.TODO(), rec)
 
 	rec = slog.NewRecord(ts, slog.LevelError, "session restart failed", 0)
 	rec.Add("channel", "movie-uhd", "err", "connection refused")
-	_ = h.Handle(nil, rec)
+	_ = h.Handle(context.TODO(), rec)
 
 	rec = slog.NewRecord(ts, slog.LevelInfo, "request", 0)
 	rec.Add("remote", "203.0.113.10", "method", "GET", "path", "/v1/me", "status", 200, "dur_ms", 18, "request_id", "abc")
-	_ = h.Handle(nil, rec)
+	_ = h.Handle(context.TODO(), rec)
 
 	rec = slog.NewRecord(ts, slog.LevelWarn, "session restarting", 0)
 	rec.Add("channel", "channel-1", "attempt", 1, "delay", "3s", "err", "ffmpeg exited")
-	_ = h.Handle(nil, rec)
+	_ = h.Handle(context.TODO(), rec)
 
 	rec = slog.NewRecord(ts, slog.LevelInfo, "request", 0)
 	rec.Add("remote", "10.0.0.1", "method", "GET", "path", "/v1/play/x/live/seg.ts", "status", 200, "dur_ms", 2)
-	_ = h.Handle(nil, rec)
+	_ = h.Handle(context.TODO(), rec)
 
 	out := buf.String()
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
@@ -73,7 +73,7 @@ func TestQuoteSpaces(t *testing.T) {
 	ts := time.Date(2026, 1, 2, 3, 4, 5, 0, time.Local)
 	rec := slog.NewRecord(ts, slog.LevelError, "ffmpeg exited", 0)
 	rec.Add("err", "signal: killed", "stderr", "line one")
-	_ = h.Handle(nil, rec)
+	_ = h.Handle(context.TODO(), rec)
 	got := strings.TrimSpace(buf.String())
 	want := `2026-01-02 03:04:05  ERROR  ffmpeg exited  err="signal: killed" stderr="line one"`
 	if got != want {
@@ -141,7 +141,7 @@ func TestWithAttrsChannel(t *testing.T) {
 	rec.Add("mode", "cenc")
 	// need handler that already has channel — use WithAttrs handler
 	h := base.WithAttrs([]slog.Attr{slog.String("channel", "news")})
-	_ = h.Handle(nil, rec)
+	_ = h.Handle(context.TODO(), rec)
 	got := strings.TrimSpace(buf.String())
 	want := "2026-07-11 00:00:00  INFO   [news] dash packager ready  mode=cenc"
 	if got != want {

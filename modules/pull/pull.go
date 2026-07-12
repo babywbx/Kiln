@@ -161,18 +161,27 @@ func (c *Client) Get(ctx context.Context, req Request) (Result, error) {
 }
 
 func (c *Client) GetBytes(ctx context.Context, req Request) ([]byte, string, error) {
+	return c.GetBytesLimit(ctx, req, c.maxPlaylist)
+}
+
+// GetBytesLimit reads at most max bytes. Media segments are far larger than
+// playlists, so they need their own ceiling rather than the playlist one.
+func (c *Client) GetBytesLimit(ctx context.Context, req Request, max int64) ([]byte, string, error) {
+	if max <= 0 {
+		max = c.maxPlaylist
+	}
 	res, err := c.Get(ctx, req)
 	if err != nil {
 		return nil, "", err
 	}
 	defer res.Body.Close()
-	limited := io.LimitReader(res.Body, c.maxPlaylist+1)
+	limited := io.LimitReader(res.Body, max+1)
 	b, err := io.ReadAll(limited)
 	if err != nil {
 		return nil, "", apperr.Wrap(apperr.CodeUpstream, 502, "read upstream body failed", err)
 	}
-	if int64(len(b)) > c.maxPlaylist {
-		return nil, "", apperr.New(apperr.CodeUpstream, 502, "upstream playlist too large")
+	if int64(len(b)) > max {
+		return nil, "", apperr.New(apperr.CodeUpstream, 502, "upstream response too large")
 	}
 	return b, res.FinalURL, nil
 }

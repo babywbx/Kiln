@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"sync"
@@ -11,11 +12,10 @@ import (
 	"github.com/babywbx/kiln/modules/apperr"
 	"github.com/babywbx/kiln/modules/catalog"
 	"github.com/babywbx/kiln/modules/config"
-	"github.com/babywbx/kiln/modules/egress"
 	"github.com/babywbx/kiln/modules/observe"
+	"github.com/babywbx/kiln/modules/packager"
 	"github.com/babywbx/kiln/modules/proxyegress"
 	"github.com/babywbx/kiln/modules/pull"
-	"github.com/babywbx/kiln/modules/version"
 )
 
 var ErrNotFound = apperr.New(apperr.CodeNotFound, 404, "channel not found")
@@ -58,6 +58,7 @@ type Manager struct {
 	ffmpeg  config.FFmpeg
 	log     *slog.Logger
 	spawn   spawnGate
+	pack    packager.Packager
 
 	mu       sync.Mutex
 	sessions map[string]*Session
@@ -83,19 +84,34 @@ type Session struct {
 	WorkDir   string
 	Errors    int
 	LastError string
-	PackMode  string
-	dash      *egress.DashJob
-	cancel    context.CancelFunc
-	ctx       context.Context
-	restarts  int
-	lastOK    time.Time
+	// Engine is the resolved engine; PackMode is that engine's internal mode.
+	// They are separate axes: reusing PackMode for both would silently change
+	// the values existing status API consumers already see.
+	Engine         string
+	PackMode       string
+	FallbackReason string
+
+	job      packager.Job
+	cancel   context.CancelFunc
+	ctx      context.Context
+	restarts int
+	lastOK   time.Time
+}
+
+// Publication exposes the published media. The HTTP layer goes through this
+// and never guesses the on-disk layout.
+func (s *Session) Publication() packager.Publication {
+	if s.job == nil {
+		return nil
+	}
+	return s.job.Publication()
 }
 
 func NewManager(cat *catalog.Service, pullClient *pull.Client, obs *observe.Service, dataDir string, ff config.FFmpeg, log *slog.Logger, egress *proxyegress.Router) *Manager {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Manager{
+	m := &Manager{
 		cat:      cat,
 		pull:     pullClient,
 		obs:      obs,
@@ -107,7 +123,31 @@ func NewManager(cat *catalog.Service, pullClient *pull.Client, obs *observe.Serv
 		sessions: map[string]*Session{},
 		inflight: map[string]*startWait{},
 	}
+	m.pack = m.newPackager()
+	return m
 }
+
+func (m *Manager) newPackager() packager.Packager {
+	cfg := m.cat.Config().Packager
+	onBytesIn := func(n int64) {
+		if m.obs != nil {
+			m.obs.AddBytesIn(n)
+		}
+	}
+	native := packager.NewNativeAdapter(
+		packager.NewPullFetcher(m.pull, cfg.MaxSegmentBytes),
+		cfg.PlaylistSize,
+		time.Duration(cfg.GraceSec)*time.Second,
+	)
+	native.StartSegments = cfg.StartSegments
+	native.Prefetch = cfg.PrefetchSegments
+	native.MaxSegmentBytes = cfg.MaxSegmentBytes
+	ffmpeg := packager.NewFFmpegAdapter(m.ffmpeg, m.egress, m.spawn, onBytesIn)
+	return packager.NewAdaptivePackager(native, ffmpeg, m.log)
+}
+
+// SetPackager replaces the engine, for tests that must not launch ffmpeg.
+func (m *Manager) SetPackager(p packager.Packager) { m.pack = p }
 
 func (m *Manager) Start(ctx context.Context) {
 	go m.reaper(ctx)
@@ -241,8 +281,8 @@ func (m *Manager) finishStart(channelID string, w *startWait, s *Session) (*Sess
 		delete(m.inflight, channelID)
 	}
 	if w.stopped || !current {
-		if s.dash != nil {
-			_ = s.dash.Stop()
+		if s.job != nil {
+			_ = s.job.Stop()
 		}
 		w.cancel()
 		w.err = context.Canceled
@@ -260,8 +300,8 @@ func (m *Manager) finishStart(channelID string, w *startWait, s *Session) (*Sess
 		return nil, startErr
 	}
 	if existing, ok := m.sessions[channelID]; ok {
-		if s.dash != nil {
-			_ = s.dash.Stop()
+		if s.job != nil {
+			_ = s.job.Stop()
 		}
 		w.cancel()
 		existing.LastTouch = time.Now()
@@ -285,62 +325,52 @@ func (m *Manager) startDash(s *Session) error {
 		return apperr.Wrap(apperr.CodeInvalid, 400, "load keys failed", err)
 	}
 	work := filepath.Join(m.dataDir, "sessions", s.Channel.ID)
-	if s.dash != nil {
-		_ = s.dash.Stop()
-		s.dash = nil
+	if s.job != nil {
+		_ = s.job.Stop()
+		s.job = nil
 	}
 	_ = os.RemoveAll(work)
-	headers := map[string]string{}
-	for k, v := range s.Upstream.Headers {
-		headers[k] = v
+	headers := maps.Clone(s.Upstream.Headers)
+	if headers == nil {
+		headers = map[string]string{}
 	}
-	for k, v := range s.Channel.Headers {
-		headers[k] = v
-	}
+	maps.Copy(headers, s.Channel.Headers)
+
 	prefer := m.ffmpeg.PreferHeight
 	if s.Channel.PreferHeight > 0 {
 		prefer = s.Channel.PreferHeight
 	}
-	job, err := egress.StartDashHLS(s.ctx, egress.DashOptions{
-		Binary:       m.ffmpeg.Binary,
-		FFmpegMode:   m.ffmpeg.Mode,
-		DockerImage:  m.ffmpeg.DockerImage,
+	job, err := m.pack.Start(s.ctx, packager.Request{
+		ChannelID:    s.Channel.ID,
 		SourceURL:    s.SourceURL,
-		UserAgent:    version.UserAgent(s.Channel.UserAgent),
-		Headers:      headers,
 		Keys:         keys,
+		Headers:      headers,
+		UserAgent:    s.Channel.UserAgent,
 		WorkDir:      work,
-		HLSTime:      m.ffmpeg.HLSTime,
-		HLSListSize:  m.ffmpeg.HLSListSize,
-		LogLevel:     m.ffmpeg.LogLevel,
 		PreferHeight: prefer,
-		LowLatency:   m.ffmpeg.LowLatency,
-		Logger:       m.log.With("channel", s.Channel.ID),
-		OnBytesIn: func(n int64) {
-			if m.obs != nil {
-				m.obs.AddBytesIn(n)
-			}
-		},
-		Egress:    m.egress,
-		ChannelID: s.Channel.ID,
-		SpawnGate: m.spawn,
+		Engine:       m.cat.Config().EngineFor(s.Channel),
+		Log:          m.log.With("channel", s.Channel.ID),
 	})
 	if err != nil {
 		s.LastError = err.Error()
 		return apperr.Wrap(apperr.CodeUpstream, 502, "dash packager failed", err)
 	}
-	s.dash = job
-	s.WorkDir = job.WorkDir()
-	s.PackMode = job.Mode()
+	s.job = job
+	s.WorkDir = work
+	s.Engine = job.Engine()
+	s.PackMode = job.PackMode()
+	s.FallbackReason = job.FallbackReason()
 	s.LastError = ""
 	s.lastOK = time.Now()
 	if s.Channel.RestartOnFailure {
-		go m.watchDash(s.Channel.ID, job)
+		go m.watchJob(s.Channel.ID, job)
 	}
 	return nil
 }
 
-func (m *Manager) watchDash(channelID string, job *egress.DashJob) {
+// watchJob owns restart policy for both engines. The adapters do not each
+// reimplement the restart budget, idle rules or backoff.
+func (m *Manager) watchJob(channelID string, job packager.Job) {
 	<-job.Done()
 	if job.IntentionalStop() {
 		return
@@ -348,7 +378,7 @@ func (m *Manager) watchDash(channelID string, job *egress.DashJob) {
 
 	m.mu.Lock()
 	s, ok := m.sessions[channelID]
-	if !ok || s.dash != job {
+	if !ok || s.job != job {
 		m.mu.Unlock()
 		return
 	}
@@ -410,8 +440,8 @@ func (m *Manager) watchDash(channelID string, job *egress.DashJob) {
 	}
 	m.mu.Lock()
 	if cur, ok := m.sessions[channelID]; !ok || cur != s {
-		if s.dash != nil {
-			_ = s.dash.Stop()
+		if s.job != nil {
+			_ = s.job.Stop()
 		}
 		m.mu.Unlock()
 		return
@@ -524,9 +554,9 @@ func (m *Manager) Shutdown() {
 }
 
 func (m *Manager) stopLocked(id string, s *Session) {
-	if s.dash != nil {
-		_ = s.dash.Stop()
-		s.dash = nil
+	if s.job != nil {
+		_ = s.job.Stop()
+		s.job = nil
 	}
 	if s.cancel != nil {
 		s.cancel()
@@ -559,14 +589,16 @@ func (m *Manager) StopChannel(channelID string) bool {
 
 func (m *Manager) publish(s *Session, state string) {
 	m.obs.UpsertSession(observe.SessionStat{
-		ChannelID: s.Channel.ID,
-		Mode:      s.Mode,
-		PackMode:  s.PackMode,
-		StartedAt: s.StartedAt,
-		LastTouch: s.LastTouch,
-		State:     state,
-		Errors:    s.Errors,
-		LastError: s.LastError,
+		ChannelID:      s.Channel.ID,
+		Mode:           s.Mode,
+		Engine:         s.Engine,
+		PackMode:       s.PackMode,
+		FallbackReason: s.FallbackReason,
+		StartedAt:      s.StartedAt,
+		LastTouch:      s.LastTouch,
+		State:          state,
+		Errors:         s.Errors,
+		LastError:      s.LastError,
 	})
 }
 

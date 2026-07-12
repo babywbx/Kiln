@@ -25,6 +25,10 @@ const (
 	ReasonKIDMismatch    = "manifest_kid_conflicts_with_tenc"
 	ReasonMissingKey     = "missing_key_for_kid"
 	ReasonMultiKIDNoFall = "multi_kid_cannot_fall_back"
+	// ReasonNativeStartFailed covers failures that are not about capability at
+	// all, such as an unreachable manifest. ffmpeg resolves the manifest on a
+	// different path, so it is still worth trying.
+	ReasonNativeStartFailed = "native_start_failed"
 )
 
 // Plan is the one-shot capability decision. Engine selection happens at

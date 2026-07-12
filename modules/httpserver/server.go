@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -454,36 +453,29 @@ func (s *Server) shouldRewrite(channelID string) egress.RewriteDecision {
 }
 
 func (s *Server) serveDashIndex(w http.ResponseWriter, r *http.Request, sess *session.Session) {
-	index := filepath.Join(sess.WorkDir, "index.m3u8")
-	b, err := os.ReadFile(index)
-	if err != nil {
+	pub := sess.Publication()
+	if pub == nil {
 		s.deps.Observe.IncError()
 		writeAppErr(w, apperr.New(apperr.CodeNotReady, 502, "playlist not ready"))
 		return
 	}
-	livePrefix := playLivePrefix(r, sess.Channel.ID)
-	token := extractToken(r)
-	lines := strings.Split(string(b), "\n")
-	for i, line := range lines {
-		trim := strings.TrimSpace(line)
-		if trim == "" || strings.HasPrefix(trim, "#") {
-			continue
-		}
-		seg := path.Base(trim)
-		if !safeFileName(seg) {
-			continue
-		}
-		u := livePrefix + seg
-		if token != "" && !strings.HasPrefix(livePrefix, "/p/") {
-			u += "?token=" + url.QueryEscape(token)
-		}
-		lines[i] = u
+	body, ok := pub.Playlist(pub.Master())
+	if !ok {
+		s.deps.Observe.IncError()
+		writeAppErr(w, apperr.New(apperr.CodeNotReady, 502, "playlist not ready"))
+		return
 	}
-	out := strings.Join(lines, "\n")
+	s.writePlaylist(w, r, sess, body)
+}
+
+// writePlaylist serves a published playlist with every reference rewritten to
+// this server. Playlists are a moving window, so they stay uncacheable.
+func (s *Server) writePlaylist(w http.ResponseWriter, r *http.Request, sess *session.Session, body []byte) {
+	out := rewriteLocalPlaylist(body, playLivePrefix(r, sess.Channel.ID), extractToken(r))
 	s.deps.Observe.AddBytesOut(int64(len(out)))
 	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 	w.Header().Set("Cache-Control", "no-store")
-	_, _ = w.Write([]byte(out))
+	_, _ = w.Write(out)
 }
 
 func playLivePrefix(r *http.Request, channelID string) string {
@@ -493,6 +485,10 @@ func playLivePrefix(r *http.Request, channelID string) string {
 	return "/v1/play/" + channelID + "/live/"
 }
 
+// handlePlayLiveFile serves published playlists and media assets. It never
+// starts a session: a late segment request used to be able to bring a whole
+// channel back up, which meant an idle-stopped channel could be revived by a
+// player that had not even re-read the playlist. Only the playlist acquires.
 func (s *Server) handlePlayLiveFile(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	file := path.Base(r.PathValue("file"))
@@ -508,20 +504,35 @@ func (s *Server) handlePlayLiveFile(w http.ResponseWriter, r *http.Request) {
 	}
 	sess, ok := s.deps.Sessions.Get(id)
 	if !ok {
-		var err error
-		sess, err = s.deps.Sessions.Acquire(id)
-		if err != nil {
-			writeAppErr(w, err)
-			return
-		}
+		// Gone, not Not Found: the player should go back to the playlist and
+		// renegotiate, which is what restarts an on-demand channel.
+		writeAppErr(w, apperr.New(apperr.CodeNotFound, 410, "session is not running"))
+		return
 	}
 	s.deps.Sessions.Touch(id)
-	fp := filepath.Join(sess.WorkDir, file)
-	if !strings.HasPrefix(filepath.Clean(fp), filepath.Clean(sess.WorkDir)+string(os.PathSeparator)) && filepath.Clean(fp) != filepath.Clean(sess.WorkDir) {
+
+	pub := sess.Publication()
+	if pub == nil {
 		writeAppErr(w, apperr.ErrNotFound)
 		return
 	}
-	f, err := os.Open(fp)
+
+	if strings.HasSuffix(file, ".m3u8") {
+		body, ok := pub.Playlist(file)
+		if !ok {
+			writeAppErr(w, apperr.ErrNotFound)
+			return
+		}
+		s.writePlaylist(w, r, sess, body)
+		return
+	}
+
+	asset, ok := pub.Asset(file)
+	if !ok {
+		writeAppErr(w, apperr.ErrNotFound)
+		return
+	}
+	f, err := os.Open(asset.Path)
 	if err != nil {
 		writeAppErr(w, apperr.ErrNotFound)
 		return
@@ -533,9 +544,25 @@ func (s *Server) handlePlayLiveFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", contentTypeFor(file))
-	w.Header().Set("Cache-Control", "no-cache")
-	http.ServeContent(w, r, file, st.ModTime(), f)
+	setAssetCacheHeaders(w, asset.Immutable)
+	http.ServeContent(w, r, file, asset.ModTime, f)
 	s.deps.Observe.AddBytesOut(st.Size())
+}
+
+// setAssetCacheHeaders overrides the global no-store for published media.
+// Without this, a hundred players mean a hundred full re-reads and the shared
+// upstream fetch buys nothing at the HTTP layer. The exemption is opt-in per
+// route so it never widens the caching of admin or status responses.
+//
+// private, not public: these URLs can carry an access token, and a shared cache
+// holding them would widen where that token is exposed.
+func setAssetCacheHeaders(w http.ResponseWriter, immutable bool) {
+	w.Header().Del("Pragma")
+	if !immutable {
+		w.Header().Set("Cache-Control", "no-cache")
+		return
+	}
+	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
 }
 
 func (s *Server) handlePlayUpstream(w http.ResponseWriter, r *http.Request) {
@@ -708,6 +735,8 @@ func contentTypeFor(name string) string {
 		return "video/mp4"
 	case strings.HasSuffix(n, ".aac"):
 		return "audio/aac"
+	case strings.HasSuffix(n, ".vtt"):
+		return "text/vtt"
 	default:
 		return "application/octet-stream"
 	}

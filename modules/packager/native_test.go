@@ -179,7 +179,7 @@ func TestNativeFetchesEachSegmentOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartNative: %v", err)
 	}
-	defer job.Stop()
+	defer func() { _ = job.Stop() }()
 
 	select {
 	case <-job.Done():

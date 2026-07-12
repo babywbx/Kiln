@@ -5,7 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
-	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -185,12 +185,7 @@ func (s *Service) CanAccessChannel(c Claims, channelID string) bool {
 	if c.Role == "admin" || len(c.ChannelIDs) == 0 {
 		return true
 	}
-	for _, id := range c.ChannelIDs {
-		if id == channelID {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(c.ChannelIDs, channelID)
 }
 
 func randomJTI() (string, error) {
@@ -222,5 +217,5 @@ func FormatUserError(err error) string {
 	if errors.Is(err, ErrForbiddenChannel) {
 		return "channel not allowed"
 	}
-	return fmt.Sprintf("auth error")
+	return "auth error"
 }

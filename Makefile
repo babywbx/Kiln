@@ -1,4 +1,4 @@
-.PHONY: build test run tidy hash keys ci audit-admin-ui \
+.PHONY: build test coverage run tidy hash keys fmt vet lint vuln ci clean audit-admin-ui \
         docker docker-multiarch docker-verify docker-smoke docker-reap fixtures
 
 VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
@@ -11,11 +11,19 @@ BUILD_ARGS = --build-arg VERSION=$(VERSION) \
              --build-arg COMMIT=$(COMMIT) \
              --build-arg BUILT_AT=$(BUILT_AT)
 
+LDFLAGS = -X github.com/babywbx/kiln/modules/version.Version=$(VERSION) \
+          -X github.com/babywbx/kiln/modules/version.Commit=$(COMMIT) \
+          -X github.com/babywbx/kiln/modules/version.BuiltAt=$(BUILT_AT)
+
 build:
-	go build -o dist/kiln ./apps/server
+	go build -o dist/kiln -ldflags="$(LDFLAGS)" ./apps/server
 
 test:
-	go test ./...
+	go test -race ./...
+
+coverage:
+	go test -race -coverprofile=coverage.out ./...
+	go tool cover -func=coverage.out | tail -1
 
 tidy:
 	go mod tidy
@@ -29,11 +37,24 @@ hash:
 keys:
 	@go run scripts/gen-jwt-keys.go $(or $(DIR),./secrets)
 
-ci:
+fmt:
 	@test -z "$$(gofmt -l .)" || { echo "not gofmt'd:"; gofmt -l .; exit 1; }
+
+vet:
 	go vet ./...
-	go build ./...
-	go test -race ./...
+
+lint:
+	@command -v golangci-lint >/dev/null 2>&1 || { echo "golangci-lint not found: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest"; exit 1; }
+	golangci-lint run ./...
+
+vuln:
+	@command -v govulncheck >/dev/null 2>&1 || { echo "govulncheck not found: go install golang.org/x/vuln/cmd/govulncheck@latest"; exit 1; }
+	govulncheck ./...
+
+ci: fmt vet lint build test vuln
+
+clean:
+	rm -rf dist coverage.out
 
 audit-admin-ui:
 	./scripts/audit-admin-ui.sh $(or $(URL),http://127.0.0.1:8080/admin)

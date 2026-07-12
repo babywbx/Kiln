@@ -18,14 +18,20 @@ type Service struct {
 }
 
 type SessionStat struct {
-	ChannelID string    `json:"channel_id"`
-	Mode      string    `json:"mode"`
-	PackMode  string    `json:"pack_mode,omitempty"`
-	StartedAt time.Time `json:"started_at"`
-	LastTouch time.Time `json:"last_touch"`
-	State     string    `json:"state"`
-	Errors    int       `json:"errors"`
-	LastError string    `json:"last_error,omitempty"`
+	ChannelID string `json:"channel_id"`
+	Mode      string `json:"mode"`
+	// Engine is the resolved engine (native_rewrite, ffmpeg_copy, ...).
+	// PackMode stays the engine's internal mode and keeps its existing ffmpeg
+	// values (remote_live, local_filtered), so existing consumers do not
+	// silently start seeing a different value domain.
+	Engine         string    `json:"engine,omitempty"`
+	PackMode       string    `json:"pack_mode,omitempty"`
+	FallbackReason string    `json:"fallback_reason,omitempty"`
+	StartedAt      time.Time `json:"started_at"`
+	LastTouch      time.Time `json:"last_touch"`
+	State          string    `json:"state"`
+	Errors         int       `json:"errors"`
+	LastError      string    `json:"last_error,omitempty"`
 }
 
 type Snapshot struct {

@@ -17,15 +17,16 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: gofmt
+      - name: Install lint/vuln tools
         run: |
-          unformatted=$(gofmt -l .)
-          if [ -n "$unformatted" ]; then
-            echo "not gofmt'd:"; echo "$unformatted"; exit 1
-          fi
-      - run: go vet ./...
-      - run: go build ./...
-      - run: go test -race ./...
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+          go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
+      - run: make fmt
+      - run: make vet
+      - run: make lint
+      - run: make build
+      - run: make test
+      - run: make vuln
 
   docker:
     runs-on: ubuntu-latest
