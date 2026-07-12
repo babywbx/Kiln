@@ -527,7 +527,6 @@ func resolveOriginToCDN(ctx context.Context, opt DashOptions) (cdnURL string, bo
 			}
 			abs = base.ResolveReference(abs)
 		}
-		forceHTTPSForUpstream(abs)
 		return abs.String(), "", nil
 	}
 	if resp.StatusCode >= 400 {
@@ -540,14 +539,30 @@ func resolveOriginToCDN(ctx context.Context, opt DashOptions) (cdnURL string, bo
 	return "", "", fmt.Errorf("origin did not return redirect or MPD")
 }
 
+// Some CDNs 403 plain http and expect the caller to upgrade the scheme.
 func fetchMPD(ctx context.Context, opt DashOptions, mpdURL string) (string, string, error) {
+	final, body, err := fetchMPDOnce(ctx, opt, mpdURL)
+	if err == nil {
+		return final, body, nil
+	}
+	if u, e := url.Parse(mpdURL); e == nil && u.Scheme == "http" {
+		u.Scheme = "https"
+		f, b, e2 := fetchMPDOnce(ctx, opt, u.String())
+		if e2 == nil {
+			return f, b, nil
+		}
+		return "", "", fmt.Errorf("%w (https retry: %v)", err, e2)
+	}
+	return "", "", err
+}
+
+func fetchMPDOnce(ctx context.Context, opt DashOptions, mpdURL string) (string, string, error) {
 	client := &http.Client{
 		Timeout: 25 * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
 				return fmt.Errorf("too many redirects")
 			}
-			forceHTTPSForUpstream(req.URL)
 			return nil
 		},
 	}
@@ -581,9 +596,6 @@ func fetchMPD(ctx context.Context, opt DashOptions, mpdURL string) (string, stri
 		opt.OnBytesIn(int64(len(body)))
 	}
 	final := resp.Request.URL.String()
-	if strings.HasPrefix(final, "https://") && strings.Contains(final, ":80/") {
-		final = "http://" + strings.TrimPrefix(final, "https://")
-	}
 	if !strings.Contains(string(body), "<MPD") && !strings.Contains(string(body), "<mpd") {
 		return "", "", fmt.Errorf("resolved url did not return MPD")
 	}
@@ -599,26 +611,6 @@ func applyMPDHeaders(req *http.Request, opt DashOptions) {
 			req.Header.Set(k, v)
 		}
 	}
-}
-
-func forceHTTPSForUpstream(u *url.URL) {
-	if u == nil || u.Scheme != "http" {
-		return
-	}
-	host := strings.ToLower(u.Hostname())
-	if strings.Contains(host, "origin.example.com") || strings.HasSuffix(host, ".example.com") {
-		u.Scheme = "https"
-		if p := u.Port(); p == "80" || p == "443" {
-			u.Host = u.Hostname()
-		}
-	}
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 func selectKey(keys []config.KeyPair, mpd string) string {

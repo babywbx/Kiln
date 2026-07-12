@@ -1,11 +1,9 @@
 package proxyegress
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -232,61 +230,16 @@ type routingTransport struct {
 	channelID string
 }
 
+// Each hop is routed on its own host, so redirects to a CDN pick up that
+// host's rule. The request is forwarded verbatim: rewriting an upstream URL
+// (scheme, port, host) invalidates session-bound CDN links.
 func (t *routingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	return t.roundTripOnce(req, true)
-}
-
-func (t *routingTransport) roundTripOnce(req *http.Request, allowHTTPSUpgrade bool) (*http.Response, error) {
 	d := t.router.Resolve(req.URL.String(), t.channelID)
-	if d.ProxyID != Direct && d.ProxyURL != nil && req.URL.Scheme == "http" && allowHTTPSUpgrade {
-		if shouldPreferHTTPS(req.URL) {
-			req = cloneAsHTTPS(req)
-			d = t.router.Resolve(req.URL.String(), t.channelID)
-		}
-	}
 	c, err := t.router.fixedClient(d)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.Transport.RoundTrip(req)
-	if err != nil {
-		return nil, err
-	}
-	if allowHTTPSUpgrade && req.URL.Scheme == "http" && resp.StatusCode == http.StatusForbidden {
-		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		_ = resp.Body.Close()
-		if looksLikeForceHTTPS(snippet) {
-			req2 := cloneAsHTTPS(req)
-			return t.roundTripOnce(req2, false)
-		}
-		resp.Body = io.NopCloser(bytes.NewReader(snippet))
-	}
-	return resp, nil
-}
-
-func shouldPreferHTTPS(u *url.URL) bool {
-	if u == nil || u.Scheme != "http" {
-		return false
-	}
-	host := strings.ToLower(u.Hostname())
-	return strings.Contains(host, "origin.example.com") || strings.HasSuffix(host, ".example.com")
-}
-
-func looksLikeForceHTTPS(b []byte) bool {
-	s := strings.ToLower(string(b))
-	return strings.Contains(s, "https") && (strings.Contains(s, "redirect") || strings.Contains(s, "manually"))
-}
-
-func cloneAsHTTPS(req *http.Request) *http.Request {
-	req2 := req.Clone(req.Context())
-	u := *req.URL
-	u.Scheme = "https"
-	if p := u.Port(); p == "80" || p == "443" {
-		u.Host = u.Hostname()
-	}
-	req2.URL = &u
-	req2.Host = u.Host
-	return req2
+	return c.Transport.RoundTrip(req)
 }
 
 func (r *Router) fixedClient(d Decision) (*http.Client, error) {
@@ -323,8 +276,6 @@ func buildClient(proxyURL *url.URL, _ time.Duration) (*http.Client, error) {
 	}
 	if proxyURL != nil {
 		compatTLSForProxy(tr)
-		// Proxied TLS to some CDNs is flaky with keep-alive reuse; prefer fresh dials.
-		tr.DisableKeepAlives = true
 		scheme := strings.ToLower(proxyURL.Scheme)
 		switch scheme {
 		case "http", "https":
@@ -353,17 +304,12 @@ func buildClient(proxyURL *url.URL, _ time.Duration) (*http.Client, error) {
 	return &http.Client{Transport: tr}, nil
 }
 
-// Prefer HTTP/1.1 via proxy; allow TLS 1.2–1.3 (some CDN edges reject 1.2-only).
+// HTTP/1.1 over the CONNECT tunnel: HTTP/2 through a proxy is poorly supported
+// by consumer proxies. TLS version negotiation is left to the peer.
 func compatTLSForProxy(tr *http.Transport) {
 	tr.ForceAttemptHTTP2 = false
-	// Empty TLSNextProto disables HTTP/2 without constraining ALPN the way
-	// NextProtos: ["http/1.1"] can — that form causes handshake failures on
-	// some origin.example.com peers behind HTTP CONNECT proxies.
 	tr.TLSNextProto = map[string]func(authority string, c *tls.Conn) http.RoundTripper{}
-	tr.TLSClientConfig = &tls.Config{
-		MinVersion: tls.VersionTLS12,
-		MaxVersion: tls.VersionTLS13,
-	}
+	tr.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 }
 
 // EnvForFFmpeg returns the proxy environment ffmpeg needs to fetch targetURL,

@@ -1,9 +1,12 @@
 package proxyegress
 
 import (
+	"crypto/tls"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/babywbx/kiln/modules/config"
 	"github.com/babywbx/kiln/modules/store"
@@ -60,18 +63,44 @@ func TestResolveHostAndChannel(t *testing.T) {
 	}
 }
 
-func TestPreferHTTPSHosts(t *testing.T) {
-	u, _ := url.Parse("http://origin.example.com/session/x")
-	if !shouldPreferHTTPS(u) {
-		t.Fatal("expected prefer https")
+// Upstream URLs must reach the proxy byte-for-byte. Rewriting http→https for
+// a CDN broke DASH: the edge served the manifest but 403'd every segment.
+func TestRoutingTransportDoesNotRewriteUpstreamURL(t *testing.T) {
+	var seen []string
+	proxySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.URL.String())
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte("Please manually redirect to HTTPS."))
+	}))
+	defer proxySrv.Close()
+
+	r, err := NewRouter(Config{
+		Default:  Direct,
+		Profiles: []Profile{{ID: "p", URL: proxySrv.URL}},
+		Rules:    []Rule{{Priority: 10, Kind: KindHostSuffix, Pattern: "origin.example.com", ProxyID: "p"}},
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	u2, _ := url.Parse("https://origin.example.com/session/x")
-	if shouldPreferHTTPS(u2) {
-		t.Fatal("already https")
+	c, err := r.ClientForChannel("", "ch", 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
 	}
-	u3, _ := url.Parse("http://cdn.example.com/v")
-	if shouldPreferHTTPS(u3) {
-		t.Fatal("unmatched channel should not force https")
+	const target = "http://origin.example.com/session/x/index.mpd"
+	resp, err := c.Get(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if len(seen) != 1 {
+		t.Fatalf("want exactly one upstream request, got %d: %v", len(seen), seen)
+	}
+	if seen[0] != target {
+		t.Fatalf("proxy saw a rewritten URL\n want: %s\n got:  %s", target, seen[0])
+	}
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("403 must surface to the caller, got %d", resp.StatusCode)
 	}
 }
 
@@ -91,16 +120,17 @@ func TestProxyTLSCompat(t *testing.T) {
 		t.Fatal("TLSNextProto should be set to disable h2")
 	}
 	if tr.TLSClientConfig == nil {
-		t.Fatal("TLSClientConfig required for proxy CDN compat")
+		t.Fatal("TLSClientConfig required for proxy compat")
 	}
-	if tr.TLSClientConfig.MinVersion != 0x0303 {
+	if tr.TLSClientConfig.MinVersion != tls.VersionTLS12 {
 		t.Fatalf("MinVersion want TLS1.2 got %x", tr.TLSClientConfig.MinVersion)
 	}
-	if tr.TLSClientConfig.MaxVersion != 0x0304 {
-		t.Fatalf("MaxVersion want TLS1.3 got %x", tr.TLSClientConfig.MaxVersion)
+	// Pinning MaxVersion or ALPN caused handshake failures against some edges.
+	if tr.TLSClientConfig.MaxVersion != 0 {
+		t.Fatalf("MaxVersion must stay unpinned, got %x", tr.TLSClientConfig.MaxVersion)
 	}
 	if len(tr.TLSClientConfig.NextProtos) != 0 {
-		t.Fatalf("NextProtos should be empty for proxy CDN compat, got %v", tr.TLSClientConfig.NextProtos)
+		t.Fatalf("NextProtos must stay unpinned, got %v", tr.TLSClientConfig.NextProtos)
 	}
 }
 
