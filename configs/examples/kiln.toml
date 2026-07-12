@@ -6,6 +6,10 @@ public_base_url = "http://127.0.0.1:8080"
 data_dir = "./data"
 read_timeout_sec = 15
 idle_timeout_sec = 120
+# Go's soft memory limit. Without it the runtime keeps freed pages mapped, so
+# resident memory tracks the peak rather than what is live. Soft: the process is
+# never killed for exceeding it. 0 leaves the runtime default.
+memory_limit_mb = 128
 
 [logging]
 level = "info"       # debug | info | warn | error
@@ -46,6 +50,10 @@ start_segments = 3
 prefetch_segments = 3
 max_segment_bytes = 33554432
 grace_sec = 30
+# Segment bytes held in memory across all channels at once. This is what decides
+# peak memory: a 4K segment is tens of megabytes, so a limit counted in segments
+# instead of bytes would make memory a function of the source's bitrate.
+inflight_bytes = 100663296
 # How far, in media seconds, audio may run ahead of video. Not an A/V sync knob:
 # it stops audio from sliding its playlist window past what a player stalled on
 # video still needs.

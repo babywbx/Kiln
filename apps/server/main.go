@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"syscall"
 	"time"
 
@@ -43,6 +44,12 @@ func main() {
 		Color:  cfg.Logging.Color,
 	})
 	slog.SetDefault(log)
+
+	// GOMEMLIMIT set by the environment wins, so an operator can always override
+	// the file without editing it.
+	if cfg.Server.MemoryLimitMB > 0 && os.Getenv("GOMEMLIMIT") == "" {
+		debug.SetMemoryLimit(int64(cfg.Server.MemoryLimitMB) << 20)
+	}
 
 	if err := os.MkdirAll(cfg.Server.DataDir, 0o750); err != nil {
 		log.Error("create data dir failed", "err", err, "path", cfg.Server.DataDir)

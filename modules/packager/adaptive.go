@@ -28,10 +28,23 @@ type NativeAdapter struct {
 	playlistSize int
 	grace        time.Duration
 	now          func() time.Time
+	// gate is shared by every channel this adapter starts, so peak memory is
+	// bounded for the process rather than per channel.
+	gate *byteGate
 }
 
 func NewNativeAdapter(newFetcher func(req Request) Fetcher, playlistSize int, grace time.Duration) *NativeAdapter {
-	return &NativeAdapter{newFetcher: newFetcher, playlistSize: playlistSize, grace: grace}
+	return &NativeAdapter{
+		newFetcher:   newFetcher,
+		playlistSize: playlistSize,
+		grace:        grace,
+		gate:         newByteGate(defaultInflightBytes),
+	}
+}
+
+// SetInflightBytes bounds the segment bytes held in memory across all channels.
+func (a *NativeAdapter) SetInflightBytes(limit int64) {
+	a.gate = newByteGate(limit)
 }
 
 func (a *NativeAdapter) Start(ctx context.Context, req Request) (Job, error) {
@@ -50,6 +63,7 @@ func (a *NativeAdapter) Start(ctx context.Context, req Request) (Job, error) {
 		Prefetch:         a.Prefetch,
 		MaxSegmentBytes:  a.MaxSegmentBytes,
 		PrimaryTrackHold: a.PrimaryTrackHold,
+		Gate:             a.gate,
 		Grace:            a.grace,
 		Now:              a.now,
 		Log:              req.Log,

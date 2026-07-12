@@ -2,33 +2,21 @@ package hls
 
 import (
 	"fmt"
-	"math"
 	"strings"
 )
 
 // MasterName is the entry playlist every player starts from.
 const MasterName = "master.m3u8"
 
-// targetDuration is the rounded-up maximum segment duration in the window, as
-// RFC 8216 requires; a too-small value makes players stall.
-func targetDuration(segs []segment) int {
-	var max float64
-	for _, s := range segs {
-		if s.Duration > max {
-			max = s.Duration
-		}
-	}
-	if max <= 0 {
-		return 1
-	}
-	return int(math.Ceil(max - 0.001))
-}
-
 func mediaPlaylist(t *track, endList bool) []byte {
+	target := t.target
+	if target == 0 {
+		target = 1
+	}
 	var b strings.Builder
 	b.WriteString("#EXTM3U\n")
 	b.WriteString("#EXT-X-VERSION:7\n")
-	fmt.Fprintf(&b, "#EXT-X-TARGETDURATION:%d\n", targetDuration(t.segments))
+	fmt.Fprintf(&b, "#EXT-X-TARGETDURATION:%d\n", target)
 	fmt.Fprintf(&b, "#EXT-X-MEDIA-SEQUENCE:%d\n", t.mediaSequence)
 	fmt.Fprintf(&b, "#EXT-X-DISCONTINUITY-SEQUENCE:%d\n", t.discontinuitySequence)
 

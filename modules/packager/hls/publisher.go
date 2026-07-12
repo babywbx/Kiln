@@ -5,6 +5,7 @@ package hls
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sync"
@@ -38,7 +39,11 @@ type Config struct {
 	Grace time.Duration
 	// Static emits EXT-X-ENDLIST and never expires segments.
 	Static bool
-	Now    func() time.Time
+	// MaxSegmentDuration is what the source says its longest segment is. HLS
+	// forbids changing EXT-X-TARGETDURATION once a playlist is live, so the
+	// value has to be known up front rather than read off the current window.
+	MaxSegmentDuration time.Duration
+	Now                func() time.Time
 }
 
 type segment struct {
@@ -65,6 +70,28 @@ type track struct {
 	// a late segment from before it is dropped, never re-inserted.
 	frontier    uint64
 	hasFrontier bool
+	// target is EXT-X-TARGETDURATION. HLS says it must not change once players
+	// are reading the playlist, so it is settled on the first publish and only
+	// ever forced upward, by a segment that would otherwise exceed it.
+	target int
+}
+
+// setTarget fixes the target duration. A value below the longest segment is the
+// worse failure of the two, so an oversized segment still raises it, loudly.
+func (t *track) setTarget(hint int, dur float64) {
+	need := ceilSeconds(dur)
+	if t.target == 0 {
+		t.target = max(hint, need)
+		return
+	}
+	t.target = max(t.target, need)
+}
+
+func ceilSeconds(d float64) int {
+	if d <= 0 {
+		return 1
+	}
+	return int(math.Ceil(d - 0.001))
 }
 
 func (t *track) playlistName() string { return t.Name + ".m3u8" }
@@ -156,26 +183,46 @@ func (p *Publisher) PublishInit(name string, data []byte) error {
 // the frontier is a late arrival and is discarded rather than reordering a
 // window players may already have fetched.
 func (p *Publisher) PublishSegment(name string, seq uint64, duration float64, data []byte, discontinuity bool) error {
+	staged, err := p.Stage(data)
+	if err != nil {
+		return err
+	}
+	return p.PublishStaged(name, seq, duration, staged, discontinuity)
+}
+
+// PublishStaged publishes a file already written by Stage. The staged file is
+// always consumed: it is moved into place, or removed if the segment turns out
+// to be behind the frontier.
+func (p *Publisher) PublishStaged(name string, seq uint64, duration float64, staged string, discontinuity bool) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	t, ok := p.tracks[name]
 	if !ok {
+		p.Discard(staged)
 		return fmt.Errorf("hls: unknown track %s", name)
 	}
 	if !t.initReady {
+		p.Discard(staged)
 		return fmt.Errorf("hls: track %s has no init segment", name)
 	}
 	if t.hasFrontier && seq <= t.frontier {
+		p.Discard(staged)
 		return nil
 	}
 	if duration <= 0 {
+		p.Discard(staged)
 		return fmt.Errorf("hls: track %s segment %d has zero duration", name, seq)
 	}
 
 	file := segmentName(name, seq)
-	if err := p.writeAsset(file, data); err != nil {
+	if err := p.moveIntoPlace(file, staged); err != nil {
 		return err
 	}
+	var hint int
+	if p.cfg.MaxSegmentDuration > 0 {
+		hint = ceilSeconds(p.cfg.MaxSegmentDuration.Seconds())
+	}
+	t.setTarget(hint, duration)
 	t.segments = append(t.segments, segment{
 		Name:          file,
 		Seq:           seq,
@@ -253,35 +300,58 @@ func (p *Publisher) refresh() {
 	}
 }
 
-// writeAsset publishes bytes under a name only after the full content is on
-// disk, so a reader can never observe a partial segment.
-func (p *Publisher) writeAsset(name string, data []byte) error {
-	final := filepath.Join(p.cfg.Dir, name)
+// Stage puts segment bytes on disk without making them visible, and takes no
+// lock: the caller is free to drop the buffer as soon as it returns. Holding
+// decrypted segments in memory until the whole batch is ready is what makes a
+// 4K channel expensive, since each one is tens of megabytes.
+//
+// A staged file that is never published must be handed to Discard.
+func (p *Publisher) Stage(data []byte) (string, error) {
 	tmp, err := os.CreateTemp(p.cfg.Dir, ".tmp-*")
 	if err != nil {
-		return fmt.Errorf("hls: create temp asset: %w", err)
+		return "", fmt.Errorf("hls: create temp asset: %w", err)
 	}
-	tmpName := tmp.Name()
-	defer func() {
-		if tmpName != "" {
-			_ = os.Remove(tmpName)
-		}
-	}()
+	name := tmp.Name()
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
-		return fmt.Errorf("hls: write asset %s: %w", name, err)
+		_ = os.Remove(name)
+		return "", fmt.Errorf("hls: stage asset: %w", err)
 	}
 	if err := tmp.Sync(); err != nil {
 		tmp.Close()
-		return fmt.Errorf("hls: sync asset %s: %w", name, err)
+		_ = os.Remove(name)
+		return "", fmt.Errorf("hls: sync asset: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("hls: close asset %s: %w", name, err)
+		_ = os.Remove(name)
+		return "", fmt.Errorf("hls: close asset: %w", err)
 	}
-	if err := os.Rename(tmpName, final); err != nil {
+	return name, nil
+}
+
+// Discard drops a staged file that will not be published.
+func (p *Publisher) Discard(staged string) {
+	if staged != "" {
+		_ = os.Remove(staged)
+	}
+}
+
+// writeAsset publishes bytes under a name only after the full content is on
+// disk, so a reader can never observe a partial segment.
+func (p *Publisher) writeAsset(name string, data []byte) error {
+	staged, err := p.Stage(data)
+	if err != nil {
+		return err
+	}
+	return p.moveIntoPlace(name, staged)
+}
+
+func (p *Publisher) moveIntoPlace(name, staged string) error {
+	final := filepath.Join(p.cfg.Dir, name)
+	if err := os.Rename(staged, final); err != nil {
+		_ = os.Remove(staged)
 		return fmt.Errorf("hls: publish asset %s: %w", name, err)
 	}
-	tmpName = ""
 	p.assets[name] = final
 	return nil
 }

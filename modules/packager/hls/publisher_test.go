@@ -139,7 +139,9 @@ func TestExpiredSegmentSurvivesGracePeriod(t *testing.T) {
 	}
 }
 
-// TARGETDURATION must round up from the longest segment actually in the window.
+// A target duration below the longest segment makes players stall, so an
+// oversized segment still forces it up even though HLS would rather it never
+// moved.
 func TestTargetDurationRoundsUp(t *testing.T) {
 	p, _, _ := newTestPublisher(t, 4, time.Minute)
 	publish(t, p, "audio-main", 1, 2)
@@ -149,6 +151,45 @@ func TestTargetDurationRoundsUp(t *testing.T) {
 	pl, _ := p.Playlist("video-main.m3u8")
 	if !strings.Contains(string(pl), "#EXT-X-TARGETDURATION:3") {
 		t.Errorf("target duration should round 2.08 up to 3:\n%s", pl)
+	}
+}
+
+// HLS forbids changing EXT-X-TARGETDURATION under a player that is already
+// reading the playlist. Deriving it from the current window breaks that as soon
+// as a longer segment slides in, which real sources do: one origin declares 12 s
+// but mostly ships 8 s. The declared maximum is what gets published, from the
+// first playlist on.
+func TestTargetDurationIsPinnedToTheDeclaredMaximum(t *testing.T) {
+	c := &clock{t: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	p, err := New(Config{
+		Dir:                t.TempDir(),
+		PlaylistSize:       4,
+		Grace:              time.Minute,
+		MaxSegmentDuration: 12 * time.Second,
+		Now:                c.now,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := p.AddTrack(Track{Name: "video-main", Kind: KindVideo, Codec: "hvc1.1.6.L60.90"}); err != nil {
+		t.Fatalf("AddTrack: %v", err)
+	}
+	if err := p.PublishInit("video-main", []byte("video-init")); err != nil {
+		t.Fatalf("PublishInit: %v", err)
+	}
+
+	// The window only ever holds 8 s segments, until an 11.5 s one arrives.
+	for seq := uint64(1); seq <= 3; seq++ {
+		publish(t, p, "video-main", seq, 8)
+		pl, _ := p.Playlist("video-main.m3u8")
+		if !strings.Contains(string(pl), "#EXT-X-TARGETDURATION:12") {
+			t.Fatalf("target duration must be the declared 12 from the start:\n%s", pl)
+		}
+	}
+	publish(t, p, "video-main", 4, 11.5)
+	pl, _ := p.Playlist("video-main.m3u8")
+	if !strings.Contains(string(pl), "#EXT-X-TARGETDURATION:12") {
+		t.Errorf("a segment within the declared maximum must not move the target:\n%s", pl)
 	}
 }
 

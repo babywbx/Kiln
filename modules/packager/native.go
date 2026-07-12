@@ -49,8 +49,12 @@ type Options struct {
 	// paired by number, but audio must not run away: it would slide its own
 	// playlist window past the segments a player stalled on video still needs.
 	PrimaryTrackHold time.Duration
-	Now              func() time.Time
-	Log              *slog.Logger
+	// Gate bounds the segment bytes held in memory. It is shared across every
+	// channel, so peak memory is a property of the process, not of how many
+	// channels happen to be running. A nil Gate gets a private default one.
+	Gate *byteGate
+	Now  func() time.Time
+	Log  *slog.Logger
 }
 
 const (
@@ -60,6 +64,14 @@ const (
 	defaultReanchorAfter    = 30 * time.Second
 	defaultPrimaryTrackHold = 12 * time.Second
 	defaultRefreshInterval  = 2 * time.Second
+	// defaultInflightBytes bounds the segment bytes held in memory across every
+	// channel at once. It is the knob that decides peak memory, and it is set
+	// for latency: measured on a 4K source, 96 MB is where time-to-first-playlist
+	// stops improving, so a larger budget buys memory cost and nothing else.
+	defaultInflightBytes = 96 << 20
+	// initialSegmentEstimate is what a segment is assumed to cost before one has
+	// been seen. It only affects the very first fetches.
+	initialSegmentEstimate = 4 << 20
 )
 
 func (o *Options) applyDefaults() {
@@ -77,6 +89,9 @@ func (o *Options) applyDefaults() {
 	}
 	if o.PrimaryTrackHold <= 0 {
 		o.PrimaryTrackHold = defaultPrimaryTrackHold
+	}
+	if o.Gate == nil {
+		o.Gate = newByteGate(defaultInflightBytes)
 	}
 	if o.Now == nil {
 		o.Now = time.Now
@@ -115,12 +130,47 @@ type trackState struct {
 	// the manifest's timeline. It is the watermark the other track reads, so it
 	// is atomic; -1 means nothing is published yet.
 	readyMillis atomic.Int64
+	// segBytes is the last segment size seen on this track, which is what the
+	// next one is budgeted against. Rewritten from the fetch goroutines.
+	segBytes atomic.Int64
 }
 
 func newTrackState(name string, rep mpd.Representation, init *cmaf.Init, now time.Time) *trackState {
 	ts := &trackState{name: name, rep: rep, init: init, nextSeq: 1, lastProgress: now}
 	ts.readyMillis.Store(-1)
 	return ts
+}
+
+// estimate is how much memory the next segment on this track will cost:
+// ciphertext and plaintext are both live across the decrypt.
+//
+// Before a segment has been seen, the manifest already says: bandwidth times
+// segment duration is the segment size. Guessing small here would be the whole
+// bug it is meant to prevent, since every fetch of the opening window starts
+// before any of them has reported a size.
+func (ts *trackState) estimate(segmentSeconds float64) int64 {
+	n := ts.segBytes.Load()
+	if n <= 0 {
+		n = declaredSize(ts.rep.Bandwidth, segmentSeconds)
+	}
+	return 2 * n
+}
+
+func declaredSize(bandwidth int, seconds float64) int64 {
+	if bandwidth <= 0 || seconds <= 0 {
+		return initialSegmentEstimate
+	}
+	n := int64(float64(bandwidth) / 8 * seconds)
+	if n < initialSegmentEstimate {
+		return initialSegmentEstimate
+	}
+	return n
+}
+
+func (ts *trackState) observe(size int) {
+	if size > 0 {
+		ts.segBytes.Store(int64(size))
+	}
 }
 
 // Native is a running native_rewrite publication.
@@ -132,6 +182,7 @@ type Native struct {
 	pub      *hls.Publisher
 	plan     Plan
 	packMode string
+	gate     *byteGate
 	// refresh is the manifest URL to re-read. Only the run goroutine touches it.
 	refresh string
 
@@ -223,11 +274,12 @@ func StartNative(ctx context.Context, opts Options) (*Native, error) {
 	}
 
 	pub, err := hls.New(hls.Config{
-		Dir:          opts.Dir,
-		PlaylistSize: opts.PlaylistSize,
-		Grace:        opts.Grace,
-		Static:       !pres.Dynamic,
-		Now:          opts.Now,
+		Dir:                opts.Dir,
+		PlaylistSize:       opts.PlaylistSize,
+		Grace:              opts.Grace,
+		Static:             !pres.Dynamic,
+		MaxSegmentDuration: pres.MaxSegmentDuration,
+		Now:                opts.Now,
 	})
 	if err != nil {
 		return nil, noFallback(plan, err)
@@ -241,6 +293,7 @@ func StartNative(ctx context.Context, opts Options) (*Native, error) {
 		pub:      pub,
 		plan:     plan,
 		packMode: packMode(pres, plan),
+		gate:     opts.Gate,
 		refresh:  pres.Refresh,
 		done:     make(chan struct{}),
 		video:    newTrackState(trackVideo, plan.Video, videoInit, now),
@@ -422,8 +475,12 @@ func (n *Native) startWindow(pres *mpd.Presentation, segs []mpd.Segment) []mpd.S
 	return segs
 }
 
+// prepared is a decrypted segment that is already on disk. It deliberately
+// carries no media bytes: keeping a batch of decrypted 4K segments in memory
+// until the last one arrives is what made a single channel cost a hundred
+// megabytes.
 type prepared struct {
-	data     []byte
+	staged   string
 	dur      float64
 	baseTime uint64
 	duration uint64
@@ -457,15 +514,21 @@ func (n *Native) publishSegments(ctx context.Context, ts *trackState, segs []mpd
 	}
 	wg.Wait()
 
+	var err error
 	for i, seg := range segs {
+		if err != nil {
+			// Everything after the first failure is dropped, so its staged file
+			// would otherwise linger in the work directory forever.
+			n.pub.Discard(results[i].staged)
+			continue
+		}
 		if results[i].err != nil {
-			return results[i].err
+			err = results[i].err
+			continue
 		}
-		if err := n.commit(ts, seg, results[i]); err != nil {
-			return err
-		}
+		err = n.commit(ts, seg, results[i])
 	}
-	return nil
+	return err
 }
 
 // commit publishes one prepared segment and advances the track's position.
@@ -479,7 +542,7 @@ func (n *Native) commit(ts *trackState, seg mpd.Segment, p prepared) error {
 			"track", ts.name, "expected_dts", ts.expectedDTS, "got_dts", p.baseTime)
 	}
 
-	if err := n.pub.PublishSegment(ts.name, ts.nextSeq, p.dur, p.data, discontinuity); err != nil {
+	if err := n.pub.PublishStaged(ts.name, ts.nextSeq, p.dur, p.staged, discontinuity); err != nil {
 		return err
 	}
 	n.segmentsPublished.Add(1)
@@ -518,7 +581,18 @@ func continuous(expected, got uint64, timescale uint32) bool {
 	return expected-got <= tolerance
 }
 
+// prepare fetches, decrypts and puts one segment on disk. It holds the media in
+// memory only for as long as it takes to decrypt it, and reserves that much of
+// the process-wide budget first, so a 4K channel throttles itself instead of
+// letting three fourteen-megabyte segments and their plaintext pile up at once.
 func (n *Native) prepare(ctx context.Context, ts *trackState, seg mpd.Segment) (res prepared) {
+	held, err := n.gate.acquire(ctx, ts.estimate(seg.Seconds(ts.rep.Addressing.Timescale)))
+	if err != nil {
+		res.err = err
+		return res
+	}
+	defer n.gate.release(held)
+
 	n.segmentsFetched.Add(1)
 	raw, _, err := n.opts.Fetcher.Fetch(ctx, seg.URL)
 	if err != nil {
@@ -531,9 +605,12 @@ func (n *Native) prepare(ctx context.Context, ts *trackState, seg mpd.Segment) (
 		res.err = fmt.Errorf("segment %s#%d is %d bytes, over the limit", ts.rep.ID, seg.Number, len(raw))
 		return res
 	}
+	ts.observe(len(raw))
+
 	started := time.Now()
 	clear, err := ts.init.Decrypt(raw, n.opts.Keys)
 	n.decryptNanos.Add(int64(time.Since(started)))
+	raw = nil
 	if err != nil {
 		if u, ok := cmaf.Unsupported(err); ok && u.Reason == cmaf.ReasonMissingKey {
 			n.keyMismatches.Add(1)
@@ -541,12 +618,16 @@ func (n *Native) prepare(ctx context.Context, ts *trackState, seg mpd.Segment) (
 		res.err = fmt.Errorf("decrypt segment %s#%d: %w", ts.rep.ID, seg.Number, err)
 		return res
 	}
-	res.data = clear.Clear
+
 	res.baseTime = clear.BaseTime
 	res.duration = clear.Duration
 	res.dur = seg.Seconds(ts.rep.Addressing.Timescale)
 	if clear.Duration > 0 && ts.init.Track.Timescale > 0 {
 		res.dur = float64(clear.Duration) / float64(ts.init.Track.Timescale)
+	}
+	res.staged, err = n.pub.Stage(clear.Clear)
+	if err != nil {
+		res.err = err
 	}
 	return res
 }

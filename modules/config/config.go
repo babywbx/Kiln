@@ -56,6 +56,12 @@ type Server struct {
 	ReadTimeout   int    `json:"read_timeout_sec" toml:"read_timeout_sec"`
 	WriteTimeout  int    `json:"write_timeout_sec" toml:"write_timeout_sec"`
 	IdleTimeout   int    `json:"idle_timeout_sec" toml:"idle_timeout_sec"`
+	// MemoryLimitMB is Go's soft memory limit. Without it the runtime keeps
+	// freed pages mapped, so resident memory tracks the peak rather than what is
+	// actually live, which for a 4K channel is a large difference. It is soft:
+	// the process is never killed for exceeding it, the collector just works
+	// harder. 0 leaves the runtime default.
+	MemoryLimitMB int `json:"memory_limit_mb" toml:"memory_limit_mb"`
 }
 
 type Auth struct {
@@ -165,6 +171,11 @@ type Packager struct {
 	// boundaries. It stops audio from sliding its playlist window past what a
 	// player stalled on video still needs.
 	PrimaryTrackHoldSec int `json:"primary_track_hold_sec" toml:"primary_track_hold_sec"`
+	// InflightBytes bounds the segment bytes held in memory across every channel
+	// at once. This is what decides peak RSS: a 4K segment is tens of megabytes,
+	// so limiting prefetch by segment count instead would make memory a function
+	// of the source's bitrate.
+	InflightBytes int64 `json:"inflight_bytes" toml:"inflight_bytes"`
 }
 
 const (
@@ -356,6 +367,9 @@ func (c *File) applyDefaults() {
 	}
 	if c.Packager.PrimaryTrackHoldSec <= 0 {
 		c.Packager.PrimaryTrackHoldSec = 12
+	}
+	if c.Packager.InflightBytes <= 0 {
+		c.Packager.InflightBytes = 96 << 20
 	}
 	c.Observe.Enabled = true
 	if c.Logging.Level == "" {
