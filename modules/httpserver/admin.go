@@ -79,6 +79,9 @@ func (s *Server) handleAdminGetChannel(w http.ResponseWriter, r *http.Request) {
 		masked[key] = value
 	}
 	ch.Headers = masked
+	// The KID is public, the key is not. The form shows which keys are set
+	// without the page ever holding one.
+	ch.Keys = config.MaskKeys(ch.Keys)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"channel":              ch,
 		"effective_user_agent": version.UserAgent(ch.UserAgent),
@@ -129,6 +132,17 @@ func (s *Server) handleAdminUpsertChannel(w http.ResponseWriter, r *http.Request
 					ch.Headers[key] = value
 				}
 			}
+			// The form only ever received the masked keys, so handing them back
+			// unchanged means "leave them alone", not "set them to asterisks".
+			if config.KeysUnchanged(ch.Keys) {
+				ch.Keys = existing.Keys
+			}
+		}
+	}
+	if ch.Keys != "" {
+		if _, err := config.ParseKeys(ch.Keys); err != nil {
+			writeAppErr(w, apperr.Wrap(apperr.CodeInvalid, 400, "invalid keys", err))
+			return
 		}
 	}
 	expected := expectedRevision(r)
@@ -524,6 +538,7 @@ type importM3UReq struct {
 	DefaultUpstream string                   `json:"default_upstream"`
 	DefaultIngress  string                   `json:"default_ingress"`
 	DefaultKeysFile string                   `json:"default_keys_file"`
+	DefaultKeys     string                   `json:"default_keys"`
 	PreferHeight    int                      `json:"prefer_height"`
 	Apply           bool                     `json:"apply"`
 	Entries         []catalog.ParsedM3UEntry `json:"entries"`
@@ -599,7 +614,7 @@ func (s *Server) handleAdminImportM3U(w http.ResponseWriter, r *http.Request) {
 		if !exists {
 			ch = config.Channel{
 				ID: id, OnDemand: true, IdleTimeoutSec: 90,
-				KeysFile: req.DefaultKeysFile, PreferHeight: req.PreferHeight,
+				KeysFile: req.DefaultKeysFile, Keys: req.DefaultKeys, PreferHeight: req.PreferHeight,
 			}
 		}
 		if e.Title != "" {
@@ -614,7 +629,7 @@ func (s *Server) handleAdminImportM3U(w http.ResponseWriter, r *http.Request) {
 		ch.Upstream = up
 		ch.Path = e.SuggestedPath
 		ch.Ingress = ing
-		if ch.Ingress == "dash" && ch.KeysFile == "" {
+		if ch.Ingress == "dash" && ch.KeysFile == "" && ch.Keys == "" {
 			skipped++
 			continue
 		}

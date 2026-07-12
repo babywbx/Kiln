@@ -28,6 +28,9 @@ type ChannelView struct {
 	Path      string `json:"path,omitempty"`
 	Disabled  bool   `json:"disabled,omitempty"`
 	KeysFile  string `json:"keys_file,omitempty"`
+	// Keys is the masked form: the KID, which is public, and a placeholder in
+	// place of the key, which never leaves the server.
+	Keys      string `json:"keys,omitempty"`
 	PreferH   int    `json:"prefer_height,omitempty"`
 	SortOrder int    `json:"sort_order"`
 	Revision  int64  `json:"revision,omitempty"`
@@ -76,7 +79,8 @@ func (s *Service) ListViews(publicBase string, includeDisabled bool) ([]ChannelV
 			view := ChannelView{
 				ID: ch.ID, Title: title, Group: ch.Group, LogoURL: ch.LogoURL,
 				Ingress: ch.Ingress, OnDemand: ch.OnDemand, Autostart: ch.Autostart, Upstream: ch.Upstream,
-				Path: ch.Path, Disabled: ch.Disabled, KeysFile: ch.KeysFile, PreferH: ch.PreferHeight,
+				Path: ch.Path, Disabled: ch.Disabled, KeysFile: ch.KeysFile,
+				Keys: config.MaskKeys(ch.Keys), PreferH: ch.PreferHeight,
 				SortOrder: row.SortOrder, Revision: row.Revision,
 			}
 			if publicBase != "" && !ch.Disabled {
@@ -99,7 +103,8 @@ func (s *Service) ListViews(publicBase string, includeDisabled bool) ([]ChannelV
 		view := ChannelView{
 			ID: ch.ID, Title: title, Group: ch.Group, LogoURL: ch.LogoURL,
 			Ingress: ch.Ingress, OnDemand: ch.OnDemand, Autostart: ch.Autostart, Upstream: ch.Upstream,
-			Path: ch.Path, Disabled: ch.Disabled, KeysFile: ch.KeysFile, PreferH: ch.PreferHeight,
+			Path: ch.Path, Disabled: ch.Disabled, KeysFile: ch.KeysFile,
+			Keys: config.MaskKeys(ch.Keys), PreferH: ch.PreferHeight,
 			SortOrder: i,
 		}
 		if publicBase != "" && !ch.Disabled {

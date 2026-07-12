@@ -9,7 +9,7 @@ import { previewChannel } from "/admin/assets/views/preview.js";
 const BLANK = {
   id: "", title: "", group: "", logo_url: "", upstream: "", path: "", ingress: "hls",
   disabled: false, on_demand: true, autostart: false, idle_timeout_sec: 90,
-  keys_file: "", user_agent: "", headers: {}, restart_on_failure: false, prefer_height: 0,
+  keys: "", keys_file: "", user_agent: "", headers: {}, restart_on_failure: false, prefer_height: 0,
   packager: "",
 };
 
@@ -118,7 +118,15 @@ function buildEditor(ctx, channel, revision, isNew) {
     ["native", "仅原生（不支持则失败）"],
     ["ffmpeg", "仅 ffmpeg"],
   ], channel.packager || "");
-  const keysInput = input("keys_file", channel.keys_file, { placeholder: "/data/keys.txt" });
+  const keysInput = h("textarea", {
+    name: "keys",
+    rows: 3,
+    spellcheck: "false",
+    autocomplete: "off",
+    placeholder: "ffeeddccbbaa99887766554433221100:00112233445566778899aabbccddeeff",
+    value: channel.keys || "",
+  });
+  keysInput.classList.add("mono");
   const userAgentInput = input("user_agent", channel.user_agent, { placeholder: `自动使用 Kiln/${store.version || "当前版本"}` });
   const restartSelect = select("restart_on_failure", [["false", "不自动重启"], ["true", "失败后自动重启"]], String(Boolean(channel.restart_on_failure)));
   const headersInput = h("textarea", {
@@ -135,7 +143,11 @@ function buildEditor(ctx, channel, revision, isNew) {
   upstreamSelect.addEventListener("change", syncSource);
   pathInput.addEventListener("input", syncSource);
 
-  const keysPanel = h("div", { class: "panel span-all" }, field("DRM 密钥文件", keysInput, "DASH 频道必填。填写服务器上的本地文件路径；页面不会读取或显示密钥内容。"));
+  const keysPanel = h("div", { class: "panel span-all" }, field(
+    "DRM 密钥",
+    keysInput,
+    "DASH 频道必填。每行一组 KID:KEY，均为 32 位十六进制。密钥保存后不再回传，页面只显示 KID；不改动此处即保留原有密钥。",
+  ));
   const packagerField = field("封装引擎", packagerSelect, "仅对 DASH 频道生效。原生引擎不启动外部进程，直接输出 HLS fMP4。");
   const syncIngress = () => {
     const isDash = ingressSelect.value === "dash";
@@ -184,7 +196,8 @@ function buildEditor(ctx, channel, revision, isNew) {
       idle_timeout_sec: Number(idleInput.value || 90),
       prefer_height: Number(heightInput.value || 0),
       packager: ingress === "dash" ? packagerSelect.value : "",
-      keys_file: keysInput.value.trim(),
+      keys: keysInput.value.trim(),
+      keys_file: channel.keys_file || "",
       user_agent: userAgentInput.value.trim(),
       headers,
       restart_on_failure: ingress === "dash" || restartSelect.value === "true",
@@ -195,7 +208,7 @@ function buildEditor(ctx, channel, revision, isNew) {
       [titleInput, body.title],
       [upstreamSelect, body.upstream],
       [pathInput, body.path],
-      [keysInput, ingress !== "dash" || body.keys_file],
+      [keysInput, ingress !== "dash" || body.keys || body.keys_file],
     ];
     for (const [control] of required) control.removeAttribute("aria-invalid");
     const missing = required.filter(([, value]) => !value);

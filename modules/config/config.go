@@ -100,19 +100,23 @@ type Upstream struct {
 }
 
 type Channel struct {
-	ID               string            `json:"id" toml:"id"`
-	Title            string            `json:"title" toml:"title"`
-	Group            string            `json:"group" toml:"group"`
-	LogoURL          string            `json:"logo_url" toml:"logo_url"`
-	Upstream         string            `json:"upstream" toml:"upstream"`
-	Path             string            `json:"path" toml:"path"`
-	Ingress          string            `json:"ingress" toml:"ingress"`
-	Disabled         bool              `json:"disabled" toml:"disabled"`
-	OnDemand         bool              `json:"on_demand" toml:"on_demand"`
-	Autostart        bool              `json:"autostart" toml:"autostart"`
-	IdleTimeoutSec   int               `json:"idle_timeout_sec" toml:"idle_timeout_sec"`
-	MaxViewers       int               `json:"max_viewers" toml:"max_viewers"`
-	KeysFile         string            `json:"keys_file" toml:"keys_file"`
+	ID             string `json:"id" toml:"id"`
+	Title          string `json:"title" toml:"title"`
+	Group          string `json:"group" toml:"group"`
+	LogoURL        string `json:"logo_url" toml:"logo_url"`
+	Upstream       string `json:"upstream" toml:"upstream"`
+	Path           string `json:"path" toml:"path"`
+	Ingress        string `json:"ingress" toml:"ingress"`
+	Disabled       bool   `json:"disabled" toml:"disabled"`
+	OnDemand       bool   `json:"on_demand" toml:"on_demand"`
+	Autostart      bool   `json:"autostart" toml:"autostart"`
+	IdleTimeoutSec int    `json:"idle_timeout_sec" toml:"idle_timeout_sec"`
+	MaxViewers     int    `json:"max_viewers" toml:"max_viewers"`
+	KeysFile       string `json:"keys_file" toml:"keys_file"`
+	// Keys holds kid:key lines inline. A deployed server often has no convenient
+	// path to drop a file at, so the admin form writes them here instead. It
+	// takes precedence over KeysFile when both are set.
+	Keys             string            `json:"keys" toml:"keys"`
 	UserAgent        string            `json:"user_agent" toml:"user_agent"`
 	Headers          map[string]string `json:"headers" toml:"headers"`
 	RestartOnFailure bool              `json:"restart_on_failure" toml:"restart_on_failure"`
@@ -500,8 +504,13 @@ func (c File) validate() error {
 		if ch.Path == "" {
 			return fmt.Errorf("channel %q path is required", ch.ID)
 		}
-		if ch.Ingress == "dash" && !ch.Disabled && ch.KeysFile == "" {
-			return fmt.Errorf("channel %q dash ingress requires keys_file", ch.ID)
+		if ch.Ingress == "dash" && !ch.Disabled && ch.KeysFile == "" && ch.Keys == "" {
+			return fmt.Errorf("channel %q dash ingress requires keys or keys_file", ch.ID)
+		}
+		if ch.Keys != "" {
+			if _, err := ParseKeys(ch.Keys); err != nil {
+				return fmt.Errorf("channel %q keys: %w", ch.ID, err)
+			}
 		}
 		if ch.Packager != "" && !ValidEngine(ch.Packager) {
 			return fmt.Errorf("channel %q packager must be auto, native or ffmpeg", ch.ID)

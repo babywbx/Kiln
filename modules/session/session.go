@@ -322,8 +322,17 @@ func (m *Manager) finishStart(channelID string, w *startWait, s *Session) (*Sess
 	return s, nil
 }
 
+// channelKeys prefers the keys typed into the channel over a file on disk. A
+// deployed server often has no path an operator can reach to drop a file at.
+func channelKeys(ch config.Channel) ([]config.KeyPair, error) {
+	if ch.Keys != "" {
+		return config.ParseKeys(ch.Keys)
+	}
+	return config.LoadKeysFile(ch.KeysFile)
+}
+
 func (m *Manager) startDash(s *Session) error {
-	keys, err := config.LoadKeysFile(s.Channel.KeysFile)
+	keys, err := channelKeys(s.Channel)
 	if err != nil {
 		return apperr.Wrap(apperr.CodeInvalid, 400, "load keys failed", err)
 	}

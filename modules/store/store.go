@@ -22,7 +22,7 @@ type DB struct {
 
 var ErrRevisionConflict = errors.New("store revision conflict")
 
-const currentSchemaVersion = 5
+const currentSchemaVersion = 6
 
 func Open(dataDir string) (*DB, error) {
 	if err := os.MkdirAll(dataDir, 0o750); err != nil {
@@ -98,6 +98,9 @@ func applyMigration(tx *sql.Tx, version int) error {
 		return err
 	case 5:
 		_, err := tx.Exec(schemaV5)
+		return err
+	case 6:
+		_, err := tx.Exec(schemaV6)
 		return err
 	default:
 		return fmt.Errorf("unknown schema version %d", version)
@@ -205,6 +208,12 @@ VALUES ('runtime_settings_revision', '1', 1, unixepoch());
 // behaving exactly as they did.
 const schemaV5 = `
 ALTER TABLE channels ADD COLUMN packager TEXT NOT NULL DEFAULT '';
+`
+
+// Keys can now be typed in rather than dropped in a file the operator may have
+// no way to reach on a deployed host. Existing rows keep their keys_file.
+const schemaV6 = `
+ALTER TABLE channels ADD COLUMN keys TEXT NOT NULL DEFAULT '';
 `
 
 func (db *DB) SeedFromConfig(cfg config.File) error {
@@ -619,11 +628,11 @@ func insertChannelTx(tx *sql.Tx, ch config.Channel, sort int, now int64) error {
 	}
 	_, err := tx.Exec(`INSERT INTO channels(
 		id, title, group_name, logo_url, upstream, path, ingress, disabled, on_demand, autostart,
-		idle_timeout_sec, max_viewers, keys_file, user_agent, headers_json, restart_on_failure, prefer_height, packager, sort_order, updated_at
-	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		idle_timeout_sec, max_viewers, keys_file, keys, user_agent, headers_json, restart_on_failure, prefer_height, packager, sort_order, updated_at
+	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		ch.ID, ch.Title, ch.Group, ch.LogoURL, ch.Upstream, ch.Path, ch.Ingress,
 		boolInt(ch.Disabled), boolInt(ch.OnDemand), boolInt(ch.Autostart),
-		ch.IdleTimeoutSec, ch.MaxViewers, ch.KeysFile, ch.UserAgent, string(hj),
+		ch.IdleTimeoutSec, ch.MaxViewers, ch.KeysFile, ch.Keys, ch.UserAgent, string(hj),
 		boolInt(ch.RestartOnFailure), ch.PreferHeight, ch.Packager, sort, now,
 	)
 	return err
@@ -684,7 +693,7 @@ func scanChannelRow(row interface {
 	var sort, revision, updated int64
 	err := row.Scan(
 		&ch.ID, &ch.Title, &ch.Group, &ch.LogoURL, &ch.Upstream, &ch.Path, &ch.Ingress,
-		&disabled, &onDemand, &autostart, &ch.IdleTimeoutSec, &ch.MaxViewers, &ch.KeysFile, &ch.UserAgent,
+		&disabled, &onDemand, &autostart, &ch.IdleTimeoutSec, &ch.MaxViewers, &ch.KeysFile, &ch.Keys, &ch.UserAgent,
 		&headers, &restart, &ch.PreferHeight, &ch.Packager, &sort, &revision, &updated,
 	)
 	if err != nil {
@@ -702,7 +711,7 @@ func (db *DB) ListChannelRows(includeDisabled bool) ([]ChannelRow, error) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	q := `SELECT id, title, group_name, logo_url, upstream, path, ingress, disabled, on_demand, autostart,
-		idle_timeout_sec, max_viewers, keys_file, user_agent, headers_json, restart_on_failure, prefer_height, packager, sort_order, revision, updated_at
+		idle_timeout_sec, max_viewers, keys_file, keys, user_agent, headers_json, restart_on_failure, prefer_height, packager, sort_order, revision, updated_at
 		FROM channels`
 	if !includeDisabled {
 		q += ` WHERE disabled = 0`
@@ -745,7 +754,7 @@ func (db *DB) GetChannelRow(id string) (ChannelRow, bool, error) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	row := db.sql.QueryRow(`SELECT id, title, group_name, logo_url, upstream, path, ingress, disabled, on_demand, autostart,
-		idle_timeout_sec, max_viewers, keys_file, user_agent, headers_json, restart_on_failure, prefer_height, packager, sort_order, revision, updated_at
+		idle_timeout_sec, max_viewers, keys_file, keys, user_agent, headers_json, restart_on_failure, prefer_height, packager, sort_order, revision, updated_at
 		FROM channels WHERE id = ?`, id)
 	ch, err := scanChannelRow(row)
 	if err == sql.ErrNoRows {
@@ -793,10 +802,10 @@ func (db *DB) UpsertChannelsIfRevisions(channels []config.Channel, revisions map
 		}
 		result, err := tx.Exec(`UPDATE channels SET
 			title=?, group_name=?, logo_url=?, upstream=?, path=?, ingress=?, disabled=?, on_demand=?, autostart=?,
-			idle_timeout_sec=?, max_viewers=?, keys_file=?, user_agent=?, headers_json=?, restart_on_failure=?,
+			idle_timeout_sec=?, max_viewers=?, keys_file=?, keys=?, user_agent=?, headers_json=?, restart_on_failure=?,
 			prefer_height=?, packager=?, revision=revision+1, updated_at=? WHERE id=? AND revision=?`,
 			ch.Title, ch.Group, ch.LogoURL, ch.Upstream, ch.Path, ch.Ingress, boolInt(ch.Disabled),
-			boolInt(ch.OnDemand), boolInt(ch.Autostart), ch.IdleTimeoutSec, ch.MaxViewers, ch.KeysFile,
+			boolInt(ch.OnDemand), boolInt(ch.Autostart), ch.IdleTimeoutSec, ch.MaxViewers, ch.KeysFile, ch.Keys,
 			ch.UserAgent, encodeHeaders(ch.Headers), boolInt(ch.RestartOnFailure), ch.PreferHeight,
 			ch.Packager, now, ch.ID, expected)
 		if err != nil {
@@ -814,12 +823,12 @@ func (db *DB) upsertChannel(ch config.Channel, expectedRevision int64) error {
 	if expectedRevision > 0 {
 		result, err := db.sql.Exec(`UPDATE channels SET
 			title=?, group_name=?, logo_url=?, upstream=?, path=?, ingress=?, disabled=?, on_demand=?, autostart=?,
-			idle_timeout_sec=?, max_viewers=?, keys_file=?, user_agent=?, headers_json=?, restart_on_failure=?,
+			idle_timeout_sec=?, max_viewers=?, keys_file=?, keys=?, user_agent=?, headers_json=?, restart_on_failure=?,
 			prefer_height=?, packager=?, revision=revision+1, updated_at=?
 			WHERE id=? AND revision=?`,
 			ch.Title, ch.Group, ch.LogoURL, ch.Upstream, ch.Path, ch.Ingress,
 			boolInt(ch.Disabled), boolInt(ch.OnDemand), boolInt(ch.Autostart),
-			ch.IdleTimeoutSec, ch.MaxViewers, ch.KeysFile, ch.UserAgent, encodeHeaders(ch.Headers),
+			ch.IdleTimeoutSec, ch.MaxViewers, ch.KeysFile, ch.Keys, ch.UserAgent, encodeHeaders(ch.Headers),
 			boolInt(ch.RestartOnFailure), ch.PreferHeight, ch.Packager, now, ch.ID, expectedRevision,
 		)
 		if err != nil {
@@ -831,20 +840,20 @@ func (db *DB) upsertChannel(ch config.Channel, expectedRevision int64) error {
 	_ = db.sql.QueryRow(`SELECT COALESCE(MAX(sort_order), -1) FROM channels`).Scan(&maxSort)
 	_, err := db.sql.Exec(`INSERT INTO channels(
 		id, title, group_name, logo_url, upstream, path, ingress, disabled, on_demand, autostart,
-		idle_timeout_sec, max_viewers, keys_file, user_agent, headers_json, restart_on_failure, prefer_height, packager, sort_order, updated_at
-	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		idle_timeout_sec, max_viewers, keys_file, keys, user_agent, headers_json, restart_on_failure, prefer_height, packager, sort_order, updated_at
+	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 	ON CONFLICT(id) DO UPDATE SET
 		title=excluded.title, group_name=excluded.group_name, logo_url=excluded.logo_url,
 		upstream=excluded.upstream, path=excluded.path, ingress=excluded.ingress,
 		disabled=excluded.disabled, on_demand=excluded.on_demand, autostart=excluded.autostart,
 		idle_timeout_sec=excluded.idle_timeout_sec, max_viewers=excluded.max_viewers,
-		keys_file=excluded.keys_file, user_agent=excluded.user_agent, headers_json=excluded.headers_json,
+		keys_file=excluded.keys_file, keys=excluded.keys, user_agent=excluded.user_agent, headers_json=excluded.headers_json,
 		restart_on_failure=excluded.restart_on_failure, prefer_height=excluded.prefer_height,
 		packager=excluded.packager,
 		revision=channels.revision+1, updated_at=excluded.updated_at`,
 		ch.ID, ch.Title, ch.Group, ch.LogoURL, ch.Upstream, ch.Path, ch.Ingress,
 		boolInt(ch.Disabled), boolInt(ch.OnDemand), boolInt(ch.Autostart),
-		ch.IdleTimeoutSec, ch.MaxViewers, ch.KeysFile, ch.UserAgent, encodeHeaders(ch.Headers),
+		ch.IdleTimeoutSec, ch.MaxViewers, ch.KeysFile, ch.Keys, ch.UserAgent, encodeHeaders(ch.Headers),
 		boolInt(ch.RestartOnFailure), ch.PreferHeight, ch.Packager, maxSort+1, now,
 	)
 	return err
@@ -1259,8 +1268,13 @@ func ValidateChannel(ch config.Channel, upstreams []config.Upstream) error {
 	if ch.Path == "" {
 		return fmt.Errorf("path required")
 	}
-	if ch.Ingress == "dash" && !ch.Disabled && ch.KeysFile == "" {
-		return fmt.Errorf("dash requires keys_file")
+	if ch.Ingress == "dash" && !ch.Disabled && ch.KeysFile == "" && ch.Keys == "" {
+		return fmt.Errorf("dash requires keys")
+	}
+	if ch.Keys != "" {
+		if _, err := config.ParseKeys(ch.Keys); err != nil {
+			return fmt.Errorf("keys: %w", err)
+		}
 	}
 	return nil
 }
