@@ -117,18 +117,23 @@ export function confirmDialog({ title, description, confirmLabel, tone = "danger
   });
 }
 
+let menuSeq = 0;
+
 // Native popover gives light-dismiss (outside click + Escape) for free — the
-// old hand-rolled menu leaked open state on every stray click.
+// old hand-rolled menu leaked open state on every stray click. popovertarget
+// establishes the invoker link; arrow-key navigation is ours to own.
 export function attachMenu(anchor, items) {
+  const id = `menu-${++menuSeq}`;
   const menu = h(
     "div",
-    { class: "menu", role: "menu", popover: "auto" },
+    { class: "menu", id, role: "menu", popover: "auto" },
     items.map((item) =>
       h(
         "button",
         {
           type: "button",
           role: "menuitem",
+          tabindex: "-1",
           class: item.tone === "danger" ? "menu-item is-danger" : "menu-item",
           onClick: () => {
             menu.hidePopover();
@@ -142,16 +147,55 @@ export function attachMenu(anchor, items) {
   );
   document.body.append(menu);
 
+  const entries = () => [...menu.querySelectorAll(".menu-item")];
+  const dismiss = () => {
+    menu.hidePopover();
+    anchor.focus();
+  };
+  let landing = "first";
+
+  anchor.setAttribute("popovertarget", id);
   anchor.setAttribute("aria-haspopup", "menu");
   anchor.setAttribute("aria-expanded", "false");
-  anchor.addEventListener("click", () => {
+
+  anchor.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    if (menu.matches(":popover-open")) return;
+    event.preventDefault();
+    landing = event.key === "ArrowUp" ? "last" : "first";
+    menu.showPopover();
+  });
+
+  menu.addEventListener("beforetoggle", (event) => {
+    if (event.newState !== "open") return;
     const box = anchor.getBoundingClientRect();
     menu.style.top = `${Math.round(box.bottom + 8)}px`;
     menu.style.right = `${Math.round(window.innerWidth - box.right)}px`;
-    menu.togglePopover();
   });
+
   menu.addEventListener("toggle", (event) => {
-    anchor.setAttribute("aria-expanded", String(event.newState === "open"));
+    const open = event.newState === "open";
+    anchor.setAttribute("aria-expanded", String(open));
+    if (open) {
+      const all = entries();
+      (landing === "last" ? all.at(-1) : all[0])?.focus();
+    }
+    landing = "first";
+  });
+
+  menu.addEventListener("keydown", (event) => {
+    const all = entries();
+    const at = all.indexOf(document.activeElement);
+    const move = (next) => {
+      event.preventDefault();
+      all[(next + all.length) % all.length]?.focus();
+    };
+    if (event.key === "ArrowDown") move(at + 1);
+    else if (event.key === "ArrowUp") move(at - 1);
+    else if (event.key === "Home") move(0);
+    else if (event.key === "End") move(all.length - 1);
+    // Tab must not preventDefault — the browser resumes the tab order from the anchor.
+    else if (event.key === "Escape" || event.key === "Tab") dismiss();
   });
 
   return { close: () => menu.hidePopover() };

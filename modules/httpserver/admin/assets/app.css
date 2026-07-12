@@ -812,8 +812,9 @@ td .empty-state { min-height: 200px; }
   text-align: left;
 }
 .menu-item:hover { background: var(--surface-hover); }
+.menu-item:focus-visible { background: var(--surface-hover); outline-offset: -2px; }
 .menu-item.is-danger { color: var(--danger); }
-.menu-item.is-danger:hover { background: var(--danger-bg); }
+.menu-item.is-danger:hover, .menu-item.is-danger:focus-visible { background: var(--danger-bg); }
 
 dialog { color: var(--fg); }
 dialog::backdrop { background: rgb(10 10 9 / 48%); backdrop-filter: blur(3px); }
