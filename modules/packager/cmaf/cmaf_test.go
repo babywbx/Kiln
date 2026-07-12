@@ -2,6 +2,7 @@ package cmaf
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,11 @@ import (
 const (
 	fixtureKey = "00112233445566778899aabbccddeeff"
 	fixtureKID = "ffeeddccbbaa99887766554433221100"
+
+	multiVideoKey = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	multiVideoKID = "11111111111111111111111111111111"
+	multiAudioKey = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	multiAudioKID = "22222222222222222222222222222222"
 )
 
 type fixture struct {
@@ -37,6 +43,22 @@ var fixtures = []fixture{
 	{
 		name:   "hevc_audio",
 		dir:    "hevc",
+		init:   "init-stream1.m4s",
+		chunks: []string{"chunk-stream1-00001.m4s", "chunk-stream1-00002.m4s"},
+		codec:  "mp4a.40.2",
+		kind:   KindAudio,
+	},
+	{
+		name:   "hev1_video",
+		dir:    "hev1",
+		init:   "init-stream0.m4s",
+		chunks: []string{"chunk-stream0-00001.m4s", "chunk-stream0-00002.m4s", "chunk-stream0-00003.m4s"},
+		codec:  "hvc1.1.6.L60.90",
+		kind:   KindVideo,
+	},
+	{
+		name:   "hev1_audio",
+		dir:    "hev1",
 		init:   "init-stream1.m4s",
 		chunks: []string{"chunk-stream1-00001.m4s", "chunk-stream1-00002.m4s"},
 		codec:  "mp4a.40.2",
@@ -180,10 +202,10 @@ func TestDecryptStrictKIDRefusesWrongKey(t *testing.T) {
 	}
 }
 
-// hev1 with parameter sets in hvcC is rewritten to hvc1; Safari needs hvc1.
-func TestHev1WithParameterSetsBecomesHvc1(t *testing.T) {
-	raw := retypeVideoEntry(t, readFixture(t, "hevc", "init-stream0.m4s"), "hev1", false)
-	init, err := ParseInit(raw)
+// The hev1 fixture is a real hev1-tagged source. Safari and AVPlayer reject
+// hev1 in fMP4, so it has to come out of the rewrite as hvc1.
+func TestHev1BecomesHvc1(t *testing.T) {
+	init, err := ParseInit(readFixture(t, "hev1", "init-stream0.m4s"))
 	if err != nil {
 		t.Fatalf("ParseInit: %v", err)
 	}
@@ -200,9 +222,10 @@ func TestHev1WithParameterSetsBecomesHvc1(t *testing.T) {
 }
 
 // hev1 carrying its parameter sets inband only cannot be rewritten without
-// touching samples, so it must be reported as unsupported, not mangled.
+// touching samples, so it must be reported as unsupported, not mangled. ffmpeg
+// always writes them into hvcC, so this one input has to be synthesized.
 func TestHev1WithInbandParameterSetsIsUnsupported(t *testing.T) {
-	raw := retypeVideoEntry(t, readFixture(t, "hevc", "init-stream0.m4s"), "hev1", true)
+	raw := stripParameterSets(t, readFixture(t, "hev1", "init-stream0.m4s"))
 	_, err := ParseInit(raw)
 	u, ok := Unsupported(err)
 	if !ok || u.Reason != ReasonInbandParamSets {
@@ -210,10 +233,7 @@ func TestHev1WithInbandParameterSetsIsUnsupported(t *testing.T) {
 	}
 }
 
-// retypeVideoEntry rebuilds an init segment with a different video fourcc,
-// optionally stripping the parameter sets out of hvcC. The fixtures only ship
-// hvc1, so the hev1 branches have to be synthesized until a real source lands.
-func retypeVideoEntry(t *testing.T, raw []byte, fourcc string, stripParamSets bool) []byte {
+func stripParameterSets(t *testing.T, raw []byte) []byte {
 	t.Helper()
 	f, err := mp4.DecodeFile(bytes.NewReader(raw))
 	if err != nil {
@@ -224,22 +244,62 @@ func retypeVideoEntry(t *testing.T, raw []byte, fourcc string, stripParamSets bo
 	if entry == nil {
 		entry = stsd.HvcX
 	}
-	if entry == nil {
-		t.Fatal("no video sample entry in fixture")
+	if entry == nil || entry.HvcC == nil {
+		t.Fatal("no hevc sample entry in fixture")
 	}
-	if entry.Sinf != nil {
-		entry.Sinf.Frma.DataFormat = fourcc
-	} else {
-		entry.SetType(fourcc)
-	}
-	if stripParamSets {
-		entry.HvcC.NaluArrays = nil
-	}
+	entry.HvcC.NaluArrays = nil
 	var buf bytes.Buffer
 	if err := f.Init.Encode(&buf); err != nil {
 		t.Fatalf("encode init: %v", err)
 	}
 	return buf.Bytes()
+}
+
+// A stream whose tracks carry different KIDs is the case only the native path
+// can serve: each track has to be decrypted with its own key.
+func TestMultiKIDDecryptsEachTrackWithItsOwnKey(t *testing.T) {
+	keys, err := NewKeySet(map[string]string{
+		multiVideoKID: multiVideoKey,
+		multiAudioKID: multiAudioKey,
+	})
+	if err != nil {
+		t.Fatalf("NewKeySet: %v", err)
+	}
+	for _, tc := range []struct {
+		stream int
+		kid    string
+	}{{0, multiVideoKID}, {1, multiAudioKID}} {
+		initRaw := readFixture(t, "multikid", fmt.Sprintf("init-stream%d.m4s", tc.stream))
+		init, err := ParseInit(initRaw)
+		if err != nil {
+			t.Fatalf("ParseInit stream%d: %v", tc.stream, err)
+		}
+		if init.Track.KID != tc.kid {
+			t.Fatalf("stream%d KID = %s, want %s", tc.stream, init.Track.KID, tc.kid)
+		}
+		chunk := readFixture(t, "multikid", fmt.Sprintf("chunk-stream%d-00001.m4s", tc.stream))
+		if _, err := init.Decrypt(chunk, keys); err != nil {
+			t.Fatalf("Decrypt stream%d: %v", tc.stream, err)
+		}
+	}
+}
+
+// Handing only one of the two keys must fail loudly. This is precisely where
+// ffmpeg would quietly use the key it has and emit garbage.
+func TestMultiKIDRefusesAPartialKeySet(t *testing.T) {
+	keys, err := NewKeySet(map[string]string{multiVideoKID: multiVideoKey})
+	if err != nil {
+		t.Fatalf("NewKeySet: %v", err)
+	}
+	init, err := ParseInit(readFixture(t, "multikid", "init-stream1.m4s"))
+	if err != nil {
+		t.Fatalf("ParseInit: %v", err)
+	}
+	_, err = init.Decrypt(readFixture(t, "multikid", "chunk-stream1-00001.m4s"), keys)
+	u, ok := Unsupported(err)
+	if !ok || u.Reason != ReasonMissingKey {
+		t.Fatalf("err = %v, want reason %s", err, ReasonMissingKey)
+	}
 }
 
 // TestDecryptMatchesFFmpeg is the correctness anchor: our decrypted output and

@@ -74,6 +74,28 @@ check_negative() {
   fi
 }
 
+# The native packager refuses to hand a multi-KID stream to ffmpeg instead of
+# falling back. That refusal is only justified while this holds: ffmpeg takes a
+# single -cenc_decryption_key, garbles the track whose KID does not match, and
+# still exits 0. If this check ever passes cleanly, the hard-fail is over-strict.
+check_multikid() {
+  d="$FIXTURES/multikid"
+  [ -d "$d" ] || { bad "multikid: fixture missing"; return; }
+  vkey=$(head -1 "$d/keys.txt" | cut -d: -f2)
+  out="$WORK/multikid"
+  mkdir -p "$out"
+  "$FF" -hide_banner -v error -nostdin -y \
+    -protocol_whitelist file,http,https,tcp,tls,crypto \
+    -cenc_decryption_key "$vkey" -i "$(cd "$d" && pwd)/stream.mpd" \
+    -map 0:a:0 -f null - >"$out/log" 2>&1 || true
+  errs=$(grep -c . "$out/log" || true)
+  if [ "$errs" -eq 0 ]; then
+    bad "multikid: ffmpeg decoded the other KID's track cleanly with one key"
+  else
+    ok "multikid: ffmpeg garbles the track it has no key for ($errs error lines)"
+  fi
+}
+
 echo "== DASH + CENC -> HLS/TS smoke =="
 "$FF" -hide_banner -version | head -1
 echo "-- local MPD (file protocol) --"
@@ -85,6 +107,9 @@ echo "-- encryption is real (must fail without the key) --"
 for codec in h264 hevc; do
   check_negative "$codec" "$(cd "$FIXTURES/$codec" && pwd)/stream.mpd"
 done
+
+echo "-- multi-KID is out of ffmpeg's reach --"
+check_multikid
 
 if [ -n "$ORIGIN_URL" ]; then
   echo "-- remote MPD over HTTP ($ORIGIN_URL) --"
