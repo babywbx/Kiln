@@ -25,6 +25,7 @@ type ChannelView struct {
 	LogoURL   string `json:"logo_url,omitempty"`
 	Ingress   string `json:"ingress"`
 	OnDemand  bool   `json:"on_demand"`
+	Autostart bool   `json:"autostart"`
 	Upstream  string `json:"upstream"`
 	Path      string `json:"path,omitempty"`
 	Disabled  bool   `json:"disabled,omitempty"`
@@ -76,7 +77,7 @@ func (s *Service) ListViews(publicBase string, includeDisabled bool) ([]ChannelV
 			}
 			view := ChannelView{
 				ID: ch.ID, Title: title, Group: ch.Group, LogoURL: ch.LogoURL,
-				Ingress: ch.Ingress, OnDemand: ch.OnDemand, Upstream: ch.Upstream,
+				Ingress: ch.Ingress, OnDemand: ch.OnDemand, Autostart: ch.Autostart, Upstream: ch.Upstream,
 				Path: ch.Path, Disabled: ch.Disabled, KeysFile: ch.KeysFile, PreferH: ch.PreferHeight,
 				SortOrder: row.SortOrder, Revision: row.Revision,
 			}
@@ -99,7 +100,7 @@ func (s *Service) ListViews(publicBase string, includeDisabled bool) ([]ChannelV
 		}
 		view := ChannelView{
 			ID: ch.ID, Title: title, Group: ch.Group, LogoURL: ch.LogoURL,
-			Ingress: ch.Ingress, OnDemand: ch.OnDemand, Upstream: ch.Upstream,
+			Ingress: ch.Ingress, OnDemand: ch.OnDemand, Autostart: ch.Autostart, Upstream: ch.Upstream,
 			Path: ch.Path, Disabled: ch.Disabled, KeysFile: ch.KeysFile, PreferH: ch.PreferHeight,
 			SortOrder: i,
 		}
