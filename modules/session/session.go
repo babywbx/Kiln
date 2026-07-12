@@ -315,7 +315,8 @@ func (m *Manager) finishStart(channelID string, w *startWait, s *Session) (*Sess
 	m.publish(s, "running")
 	close(w.done)
 	m.mu.Unlock()
-	m.log.Info("session started", "channel", channelID, "ingress", s.Channel.Ingress, "pack_mode", s.PackMode)
+	m.log.Info("session started", "channel", channelID, "ingress", s.Channel.Ingress,
+		"engine", s.Engine, "pack_mode", s.PackMode, "fallback_reason", s.FallbackReason)
 	return s, nil
 }
 

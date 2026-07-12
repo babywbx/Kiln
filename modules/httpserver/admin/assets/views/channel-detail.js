@@ -10,6 +10,7 @@ const BLANK = {
   id: "", title: "", group: "", logo_url: "", upstream: "", path: "", ingress: "hls",
   disabled: false, on_demand: true, autostart: false, idle_timeout_sec: 90,
   keys_file: "", user_agent: "", headers: {}, restart_on_failure: false, prefer_height: 0,
+  packager: "",
 };
 
 export async function renderChannelDetail(ctx) {
@@ -111,6 +112,12 @@ function buildEditor(ctx, channel, revision, isNew) {
   ], strategy);
   const idleInput = input("idle_timeout_sec", channel.idle_timeout_sec || 90, { type: "number", min: 10 });
   const heightInput = input("prefer_height", channel.prefer_height || 0, { type: "number", min: 0 });
+  const packagerSelect = select("packager", [
+    ["", "跟随全局设置"],
+    ["auto", "自动选择（优先原生）"],
+    ["native", "仅原生（不支持则失败）"],
+    ["ffmpeg", "仅 ffmpeg"],
+  ], channel.packager || "");
   const keysInput = input("keys_file", channel.keys_file, { placeholder: "/data/keys.txt" });
   const userAgentInput = input("user_agent", channel.user_agent, { placeholder: `自动使用 Kiln/${store.version || "当前版本"}` });
   const restartSelect = select("restart_on_failure", [["false", "不自动重启"], ["true", "失败后自动重启"]], String(Boolean(channel.restart_on_failure)));
@@ -129,9 +136,11 @@ function buildEditor(ctx, channel, revision, isNew) {
   pathInput.addEventListener("input", syncSource);
 
   const keysPanel = h("div", { class: "panel span-all" }, field("DRM 密钥文件", keysInput, "DASH 频道必填。填写服务器上的本地文件路径；页面不会读取或显示密钥内容。"));
+  const packagerField = field("封装引擎", packagerSelect, "仅对 DASH 频道生效。原生引擎不启动外部进程，直接输出 HLS fMP4。");
   const syncIngress = () => {
     const isDash = ingressSelect.value === "dash";
     keysPanel.hidden = !isDash;
+    packagerField.hidden = !isDash;
     restartSelect.disabled = isDash;
     if (isDash) restartSelect.value = "true";
     pathInput.placeholder = isDash ? "/live/channel/manifest.mpd" : "/live/channel/index.m3u8";
@@ -174,6 +183,7 @@ function buildEditor(ctx, channel, revision, isNew) {
       autostart: strategyValue !== "ondemand",
       idle_timeout_sec: Number(idleInput.value || 90),
       prefer_height: Number(heightInput.value || 0),
+      packager: ingress === "dash" ? packagerSelect.value : "",
       keys_file: keysInput.value.trim(),
       user_agent: userAgentInput.value.trim(),
       headers,
@@ -237,6 +247,7 @@ function buildEditor(ctx, channel, revision, isNew) {
         field("运行方式", strategySelect),
         field("无观众后停止（秒）", idleInput, "仅在允许自动停止时生效。"),
         field("首选视频高度", heightInput, "0 表示使用系统默认值。"),
+        packagerField,
         keysPanel,
       ),
     ),

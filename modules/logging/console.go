@@ -167,7 +167,7 @@ func levelTag(l slog.Level) string {
 // Preferred field order for common keys; remaining keys sorted alphabetically.
 var fieldOrder = []string{
 	"remote", "method", "path", "status", "dur_ms", "request_id",
-	"ingress", "pack_mode", "mode", "attempt", "restarts", "delay", "reason",
+	"ingress", "engine", "pack_mode", "fallback_reason", "mode", "attempt", "restarts", "delay", "reason",
 	"addr", "listen", "version", "channels", "config", "db", "admin",
 	"proxies", "egress_default", "playlist_policy",
 	"detail", "prefer_height", "input", "mpd_ms", "total_ms",

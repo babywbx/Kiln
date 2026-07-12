@@ -36,6 +36,17 @@ allowed_hosts = []
 max_playlist_bytes = 8388608
 max_body_bytes = 1048576
 
+[packager]
+# auto  = native fast path when the source supports it, ffmpeg otherwise
+# native = native only; an unsupported source fails instead of falling back
+# ffmpeg = always ffmpeg
+engine = "auto"
+playlist_size = 8
+start_segments = 3
+prefetch_segments = 3
+max_segment_bytes = 33554432
+grace_sec = 30
+
 [ffmpeg]
 mode = "native"       # native | docker
 binary = "ffmpeg"
@@ -45,6 +56,9 @@ hls_list_size = 4
 log_level = "error"
 prefer_height = 1080
 low_latency = true
+# Bounds concurrent ffmpeg launches. It does not cover the readiness wait, so a
+# slow source no longer blocks every other channel's cold start.
+max_starts = 1
 
 [observe]
 enabled = true

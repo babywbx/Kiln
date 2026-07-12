@@ -4,6 +4,21 @@ import { loadCatalog, refreshStatus, store } from "/admin/assets/core/store.js";
 import { badge, button, card, emptyState, linkButton, pageHead, table } from "/admin/assets/ui/kit.js";
 import { confirmDialog, toast, toastError } from "/admin/assets/ui/overlay.js";
 
+const ENGINE_LABELS = {
+  native_rewrite: "原生",
+  native_remux: "原生重封装",
+  ffmpeg_copy: "ffmpeg 转封装",
+  ffmpeg_transcode: "ffmpeg 转码",
+};
+
+// A channel that fell back to ffmpeg should say so, and say why: an engine
+// label alone hides the fact that the native path declined the source.
+function engineLabel(session) {
+  const name = ENGINE_LABELS[session.engine] || session.engine || "—";
+  if (!session.fallback_reason) return name;
+  return `${name}（回退：${session.fallback_reason}）`;
+}
+
 const METRICS = [
   { key: "uptime_sec", label: "运行时间", meta: "当前进程", format: formatDuration },
   { key: "requests", label: "累计请求", meta: "HTTP 请求总数", format: formatNumber },
@@ -88,12 +103,13 @@ export async function renderOverview(ctx) {
         h("td", {}, h("a", { class: "cell-link mono", href: `/admin/channels/${encodeURIComponent(session.channel_id)}`, "data-route": true, text: session.channel_id })),
         h("td", {}, sessionStateBadge(session.state)),
         h("td", { text: (session.mode || "—").toUpperCase() }),
+        h("td", { class: "mono muted", text: engineLabel(session) }),
         h("td", { class: "mono muted", text: session.pack_mode || "—" }),
         h("td", { class: "muted truncate", text: session.last_error || "—" }),
         h("td", {}, h("div", { class: "row-actions" }, button("停止", { kind: "danger", size: "small", onClick: () => stop(session.channel_id) }))),
       ),
     );
-    sessionBody.replaceChildren(table(["频道", "状态", "类型", "打包模式", "最近错误", ""], rows));
+    sessionBody.replaceChildren(table(["频道", "状态", "类型", "引擎", "打包模式", "最近错误", ""], rows));
   };
 
   paint();
