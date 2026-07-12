@@ -32,6 +32,23 @@ type liveOrigin struct {
 	audioChunks []string
 	videoInit   string
 	audioInit   string
+	// audios is the audio adaptation sets on offer. Every one of them serves the
+	// same media: what is under test is the topology, not the content.
+	audios []audioSet
+}
+
+// audioSet is one audio adaptation set. prefix is the path its segments live
+// under, so each set is addressable on its own.
+type audioSet struct {
+	prefix string
+	lang   string
+	reps   []audioRep
+}
+
+type audioRep struct {
+	id        string
+	bandwidth int
+	codecs    string
 }
 
 const (
@@ -51,6 +68,7 @@ func newLiveOrigin(t *testing.T) *liveOrigin {
 		audioInit:     "init-stream1.m4s",
 		videoChunks:   []string{"chunk-stream0-00001.m4s", "chunk-stream0-00002.m4s", "chunk-stream0-00003.m4s"},
 		audioChunks:   []string{"chunk-stream1-00001.m4s", "chunk-stream1-00002.m4s", "chunk-stream1-00002.m4s"},
+		audios:        []audioSet{{prefix: "a", reps: []audioRep{{id: "a0", bandwidth: 32000}}}},
 	}
 }
 
@@ -64,7 +82,7 @@ func (o *liveOrigin) manifest() []byte {
 func (o *liveOrigin) manifestFrom(start uint64) []byte {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	return fmt.Appendf(nil, `<?xml version="1.0"?>
+	out := fmt.Appendf(nil, `<?xml version="1.0"?>
 <MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="dynamic"
      availabilityStartTime="2026-01-01T00:00:00Z"
      minimumUpdatePeriod="PT1S" timeShiftBufferDepth="PT60S">
@@ -75,18 +93,35 @@ func (o *liveOrigin) manifestFrom(start uint64) []byte {
         <SegmentTimeline><S t="%d" d="%d" r="%d"/></SegmentTimeline>
       </SegmentTemplate>
       <Representation id="v0" bandwidth="120000" width="320" height="180"/>
-    </AdaptationSet>
-    <AdaptationSet contentType="audio" mimeType="audio/mp4" codecs="mp4a.40.2">
+    </AdaptationSet>`,
+		liveTimescale, start, liveSegTicks, o.videoCount-1)
+
+	for i, set := range o.audios {
+		out = fmt.Appendf(out, `
+    <AdaptationSet id="%d" contentType="audio" mimeType="audio/mp4" codecs="mp4a.40.2" lang="%s">
       <ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011" value="cenc"/>
-      <SegmentTemplate timescale="%d" initialization="a/init.m4s" media="a/seg-$Number$.m4s" startNumber="1">
+      <SegmentTemplate timescale="%d" initialization="%s/init.m4s" media="%s/seg-$Number$.m4s" startNumber="1">
         <SegmentTimeline><S t="%d" d="%d" r="%d"/></SegmentTimeline>
-      </SegmentTemplate>
-      <Representation id="a0" bandwidth="32000"/>
-    </AdaptationSet>
-  </Period>
-</MPD>`,
-		liveTimescale, start, liveSegTicks, o.videoCount-1,
-		liveTimescale, start, liveSegTicks, o.audioCount-1)
+      </SegmentTemplate>`,
+			i+1, set.lang, liveTimescale, set.prefix, set.prefix, start, liveSegTicks, o.audioCount-1)
+		for _, rep := range set.reps {
+			if rep.codecs != "" {
+				out = fmt.Appendf(out, "\n      <Representation id=%q bandwidth=\"%d\" codecs=%q/>", rep.id, rep.bandwidth, rep.codecs)
+				continue
+			}
+			out = fmt.Appendf(out, "\n      <Representation id=%q bandwidth=\"%d\"/>", rep.id, rep.bandwidth)
+		}
+		out = append(out, "\n    </AdaptationSet>"...)
+	}
+	return append(out, "\n  </Period>\n</MPD>"...)
+}
+
+// grow extends every timeline, which is what the origin does as time passes.
+func (o *liveOrigin) grow(segments int) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.videoCount += segments
+	o.audioCount += segments
 }
 
 // stallVideo keeps the audio timeline growing while the video timeline stops,
@@ -107,26 +142,27 @@ func (o *liveOrigin) Fetch(_ context.Context, url string) ([]byte, string, error
 	defer o.mu.Unlock()
 
 	base := url[strings.LastIndex(url, "/live/")+len("/live/"):]
-	switch {
-	case base == "v/init.m4s":
-		return o.read(o.videoInit), url, nil
-	case base == "a/init.m4s":
-		return o.read(o.audioInit), url, nil
-	}
-
 	kind, name, ok := strings.Cut(base, "/")
 	if !ok {
 		return nil, "", fmt.Errorf("unexpected url %s", url)
 	}
+	video := kind == "v"
+	if name == "init.m4s" {
+		if video {
+			return o.read(o.videoInit), url, nil
+		}
+		return o.read(o.audioInit), url, nil
+	}
+
 	var index int
 	if _, err := fmt.Sscanf(name, "seg-%d.m4s", &index); err != nil {
 		return nil, "", fmt.Errorf("unexpected url %s", url)
 	}
 	// Segment numbers start at 1 and the timeline can be re-anchored, so wrap
 	// onto the available fixture chunks rather than running off the end.
-	chunks := o.videoChunks
-	if kind == "a" {
-		chunks = o.audioChunks
+	chunks := o.audioChunks
+	if video {
+		chunks = o.videoChunks
 	}
 	return o.read(chunks[(index-1)%len(chunks)]), url, nil
 }
@@ -307,7 +343,7 @@ func TestAudioIsHeldBehindAStalledVideo(t *testing.T) {
 		t.Fatal("the hold must not be a re-anchor in disguise")
 	}
 	video := n.video.readyMillis.Load()
-	audio := n.audio.readyMillis.Load()
+	audio := n.audios[0].readyMillis.Load()
 	limit := video + defaultPrimaryTrackHold.Milliseconds() + liveSegTicks
 	if audio > limit {
 		t.Fatalf("audio ran to %d ms while video is stuck at %d ms (limit %d)", audio, video, limit)

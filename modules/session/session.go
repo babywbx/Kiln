@@ -640,6 +640,7 @@ func packagerStat(job packager.Job) *observe.PackagerStat {
 		CacheItems:        st.CacheItems,
 		VideoFrontier:     st.VideoFrontier,
 		AudioFrontier:     st.AudioFrontier,
+		AudioTracks:       st.AudioTracks,
 	}
 }
 

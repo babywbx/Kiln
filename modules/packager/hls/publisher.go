@@ -20,8 +20,10 @@ const (
 )
 
 type Track struct {
-	Name      string
-	Kind      Kind
+	Name string
+	Kind Kind
+	// Label is what a player shows for this rendition. It defaults to Name.
+	Label     string
 	Codec     string
 	Bandwidth int
 	Width     int

@@ -20,14 +20,19 @@ func normalizePeriod(xp xmlPeriod, mpdBase *url.URL) (Period, error) {
 	}
 	periodBase := resolveAll(mpdBase, xp.BaseURL)
 
-	for _, as := range xp.AdaptationSets {
+	for i, as := range xp.AdaptationSets {
 		asBase := resolveAll(periodBase, as.BaseURL)
 		tmpl := mergeTemplate(xp.SegmentTemplate, as.SegmentTemplate)
+		group := as.ID
+		if group == "" {
+			group = strconv.Itoa(i)
+		}
 		for _, xr := range as.Representations {
 			rep, err := normalizeRepresentation(xr, as, tmpl, asBase)
 			if err != nil {
 				return Period{}, err
 			}
+			rep.Group = group
 			period.Representations = append(period.Representations, rep)
 		}
 	}

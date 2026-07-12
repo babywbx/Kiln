@@ -55,6 +55,7 @@ type PackagerStat struct {
 	CacheItems        int     `json:"cache_items,omitempty"`
 	VideoFrontier     uint64  `json:"video_frontier,omitempty"`
 	AudioFrontier     uint64  `json:"audio_frontier,omitempty"`
+	AudioTracks       int     `json:"audio_tracks,omitempty"`
 }
 
 type Snapshot struct {

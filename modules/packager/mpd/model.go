@@ -43,7 +43,11 @@ const (
 )
 
 type Representation struct {
-	ID            string
+	ID string
+	// Group is the adaptation set this representation came from. Renditions of
+	// one track share it: two audio representations in the same group are the
+	// same audio in two bitrates, while two groups are two different audios.
+	Group         string
 	Type          ContentType
 	MimeType      string
 	Codecs        string

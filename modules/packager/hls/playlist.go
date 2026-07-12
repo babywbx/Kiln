@@ -68,8 +68,12 @@ func masterPlaylist(tracks []*track, independent bool) []byte {
 		if lang == "" {
 			lang = "und"
 		}
+		label := a.Label
+		if label == "" {
+			label = a.Name
+		}
 		fmt.Fprintf(&b, "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=%q,NAME=%q,LANGUAGE=%q,DEFAULT=%s,AUTOSELECT=YES,CHANNELS=%q,URI=%q\n",
-			audioGroup, a.Name, lang, yesNo(i == 0), fmt.Sprintf("%d", maxInt(a.Channels, 2)), a.playlistName())
+			audioGroup, label, lang, yesNo(i == 0), fmt.Sprintf("%d", maxInt(a.Channels, 2)), a.playlistName())
 	}
 
 	if video == nil {

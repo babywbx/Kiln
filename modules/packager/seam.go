@@ -78,9 +78,12 @@ type Stats struct {
 	CacheBytes     int64   `json:"cache_bytes,omitempty"`
 	CacheItems     int     `json:"cache_items,omitempty"`
 	// VideoFrontier and AudioFrontier are the highest published sequence per
-	// track. They only ever move forward.
+	// track. They only ever move forward. AudioFrontier is the default audio
+	// rendition's; the others advance on their own.
 	VideoFrontier uint64 `json:"video_frontier,omitempty"`
 	AudioFrontier uint64 `json:"audio_frontier,omitempty"`
+	// AudioTracks is how many audio renditions the publication carries.
+	AudioTracks int `json:"audio_tracks,omitempty"`
 }
 
 // Publication is the only way the HTTP layer sees media. It hands out named

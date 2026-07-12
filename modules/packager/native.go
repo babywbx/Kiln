@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -26,6 +27,37 @@ const (
 	trackVideo = "video-main"
 	trackAudio = "audio-main"
 )
+
+// audioTrackName names an audio rendition. The first one keeps a fixed name: it
+// is the default rendition, and the name is part of the published URL, so it
+// must not move when the source reorders its languages. The rest are named after
+// the language they carry, which is what a player shows.
+func audioTrackName(i int, rep mpd.Representation, taken map[string]struct{}) string {
+	if i == 0 {
+		return trackAudio
+	}
+	name := "audio-" + slug(rep.Lang)
+	if slug(rep.Lang) == "" {
+		name = "audio-" + slug(rep.ID)
+	}
+	if _, clash := taken[name]; clash || name == "audio-" {
+		name = fmt.Sprintf("audio-%d", i+1)
+	}
+	return name
+}
+
+func slug(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(s) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '-' || r == '_':
+			b.WriteByte('-')
+		}
+	}
+	return b.String()
+}
 
 type Options struct {
 	ManifestURL  string
@@ -187,7 +219,10 @@ type Native struct {
 	refresh string
 
 	video *trackState
-	audio *trackState
+	// audios is every audio rendition the source offers, in manifest order. They
+	// share the video's timeline but keep their own segment boundaries and their
+	// own position in it.
+	audios []*trackState
 
 	cancel      context.CancelFunc
 	done        chan struct{}
@@ -211,6 +246,7 @@ func (n *Native) Stats() Stats {
 	bytes, items := n.pub.CacheUsage()
 	frontier := n.pub.Frontier()
 	return Stats{
+		AudioTracks:       len(n.audios),
 		SegmentsPublished: n.segmentsPublished.Load(),
 		SegmentsFetched:   n.segmentsFetched.Load(),
 		SegmentFetchErrs:  n.segmentFetchErrs.Load(),
@@ -265,12 +301,20 @@ func StartNative(ctx context.Context, opts Options) (*Native, error) {
 			Err: errors.New("manifest is outside the native support matrix")}
 	}
 
-	videoInit, audioInit, err := fetchInits(ctx, opts, plan)
+	videoInit, audioInits, err := fetchInits(ctx, opts, plan)
 	if err != nil {
 		return nil, err
 	}
-	if err := VerifyTracks(&plan, videoInit.Track, audioInit.Track, opts.Keys); err != nil {
+	audioTracks := make([]cmaf.Track, len(audioInits))
+	for i, init := range audioInits {
+		audioTracks[i] = init.Track
+	}
+	if err := VerifyTracks(&plan, videoInit.Track, audioTracks, opts.Keys); err != nil {
 		return nil, &FallbackError{Reason: plan.Reason, Allowed: plan.FallbackAllowed, Err: err}
+	}
+	if len(plan.SkippedAudios) > 0 {
+		opts.Log.Warn("audio renditions left out of the publication",
+			"skipped", plan.SkippedAudios, "carried", len(plan.Audios))
 	}
 
 	pub, err := hls.New(hls.Config{
@@ -297,7 +341,12 @@ func StartNative(ctx context.Context, opts Options) (*Native, error) {
 		refresh:  pres.Refresh,
 		done:     make(chan struct{}),
 		video:    newTrackState(trackVideo, plan.Video, videoInit, now),
-		audio:    newTrackState(trackAudio, plan.Audio, audioInit, now),
+	}
+	taken := map[string]struct{}{}
+	for i, rep := range plan.Audios {
+		name := audioTrackName(i, rep, taken)
+		taken[name] = struct{}{}
+		n.audios = append(n.audios, newTrackState(name, rep, audioInits[i], now))
 	}
 	if err := n.registerTracks(); err != nil {
 		return nil, noFallback(plan, err)
@@ -356,34 +405,40 @@ func refreshURL(pres *mpd.Presentation, finalURL string) string {
 	return finalURL
 }
 
-func fetchInits(ctx context.Context, opts Options, plan Plan) (*cmaf.Init, *cmaf.Init, error) {
-	type result struct {
-		init *cmaf.Init
-		err  error
-	}
-	get := func(rep mpd.Representation) result {
-		init, err := loadInit(ctx, opts, rep)
-		return result{init: init, err: err}
-	}
+// fetchInits reads every track's init segment at once. They are small, and the
+// publication cannot start until all of them are in.
+func fetchInits(ctx context.Context, opts Options, plan Plan) (*cmaf.Init, []*cmaf.Init, error) {
+	reps := append([]mpd.Representation{plan.Video}, plan.Audios...)
+	inits := make([]*cmaf.Init, len(reps))
+	errs := make([]error, len(reps))
 
-	var video, audio result
 	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() { defer wg.Done(); video = get(plan.Video) }()
-	go func() { defer wg.Done(); audio = get(plan.Audio) }()
+	for i, rep := range reps {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			inits[i], errs[i] = loadInit(ctx, opts, rep)
+		}()
+	}
 	wg.Wait()
+	if err := errors.Join(errs...); err != nil {
+		return nil, nil, err
+	}
 
-	if video.err != nil {
-		return nil, nil, video.err
+	if inits[0].Track.Kind != cmaf.KindVideo {
+		return nil, nil, mismatchedInit()
 	}
-	if audio.err != nil {
-		return nil, nil, audio.err
+	for _, init := range inits[1:] {
+		if init.Track.Kind != cmaf.KindAudio {
+			return nil, nil, mismatchedInit()
+		}
 	}
-	if video.init.Track.Kind != cmaf.KindVideo || audio.init.Track.Kind != cmaf.KindAudio {
-		return nil, nil, &FallbackError{Reason: cmaf.ReasonSampleEntry, Allowed: true,
-			Err: errors.New("init segments do not match the manifest content types")}
-	}
-	return video.init, audio.init, nil
+	return inits[0], inits[1:], nil
+}
+
+func mismatchedInit() error {
+	return &FallbackError{Reason: cmaf.ReasonSampleEntry, Allowed: true,
+		Err: errors.New("init segments do not match the manifest content types")}
 }
 
 func loadInit(ctx context.Context, opts Options, rep mpd.Representation) (*cmaf.Init, error) {
@@ -416,29 +471,49 @@ func (n *Native) registerTracks() error {
 	}); err != nil {
 		return err
 	}
-	if err := n.pub.AddTrack(hls.Track{
-		Name:      trackAudio,
-		Kind:      hls.KindAudio,
-		Codec:     n.audio.init.Track.Codec,
-		Bandwidth: n.plan.Audio.Bandwidth,
-		Channels:  n.plan.Audio.AudioChannels,
-		Lang:      n.plan.Audio.Lang,
-	}); err != nil {
-		return err
+	for _, ts := range n.audios {
+		if err := n.pub.AddTrack(hls.Track{
+			Name:      ts.name,
+			Kind:      hls.KindAudio,
+			Codec:     ts.init.Track.Codec,
+			Bandwidth: ts.rep.Bandwidth,
+			Channels:  ts.rep.AudioChannels,
+			Lang:      ts.rep.Lang,
+			Label:     audioLabel(ts.rep),
+		}); err != nil {
+			return err
+		}
 	}
-	if err := n.pub.PublishInit(trackVideo, n.video.init.Clear); err != nil {
-		return err
+	for _, ts := range n.tracks() {
+		if err := n.pub.PublishInit(ts.name, ts.init.Clear); err != nil {
+			return err
+		}
 	}
-	return n.pub.PublishInit(trackAudio, n.audio.init.Clear)
+	return nil
+}
+
+// tracks is every published track, video first. Audio is fanned out over the
+// same code as video: they differ only in the hold, not in how they are carried.
+func (n *Native) tracks() []*trackState {
+	return append([]*trackState{n.video}, n.audios...)
+}
+
+// audioLabel is what a player shows in its audio menu.
+func audioLabel(rep mpd.Representation) string {
+	if rep.Lang != "" {
+		return rep.Lang
+	}
+	return rep.ID
 }
 
 // publishFirst gets to playable without waiting for anything the origin has
 // not published yet: it takes the opening window of segments that already
 // exist and fetches them in parallel across both tracks.
 func (n *Native) publishFirst(ctx context.Context, pres *mpd.Presentation) error {
-	errs := make([]error, 2)
+	tracks := n.tracks()
+	errs := make([]error, len(tracks))
 	var wg sync.WaitGroup
-	for i, ts := range []*trackState{n.video, n.audio} {
+	for i, ts := range tracks {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -720,7 +795,7 @@ func (e *fatalError) Unwrap() error { return e.err }
 // Each track's addressing, including its timeline, lives on the representation,
 // so skipping this would keep scheduling against a stale window.
 func (n *Native) refreshPlan(pres *mpd.Presentation) error {
-	for _, ts := range []*trackState{n.video, n.audio} {
+	for _, ts := range n.tracks() {
 		rep, ok := findRepresentation(pres, ts.rep.ID)
 		if !ok {
 			return &fatalError{fmt.Errorf("representation %s disappeared from the manifest", ts.rep.ID)}
@@ -750,9 +825,10 @@ func (n *Native) advance(ctx context.Context, pres *mpd.Presentation) error {
 	if err := n.refreshPlan(pres); err != nil {
 		return err
 	}
-	errs := make([]error, 2)
+	tracks := n.tracks()
+	errs := make([]error, len(tracks))
 	var wg sync.WaitGroup
-	for i, ts := range []*trackState{n.video, n.audio} {
+	for i, ts := range tracks {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -787,8 +863,8 @@ func (n *Native) advanceTrack(ctx context.Context, pres *mpd.Presentation, ts *t
 			pending = append(pending, seg)
 		}
 	}
-	if ts == n.audio {
-		pending = n.holdBehindVideo(pending)
+	if ts != n.video {
+		pending = n.holdBehindVideo(ts, pending)
 	}
 	return n.publishSegments(ctx, ts, pending)
 }
@@ -800,17 +876,17 @@ func (n *Native) advanceTrack(ctx context.Context, pres *mpd.Presentation, ts *t
 // The hold cannot deadlock. It only engages while video is not advancing, and a
 // video that stops advancing hits the no-progress re-anchor on its own, which
 // relocates both tracks to the live edge.
-func (n *Native) holdBehindVideo(pending []mpd.Segment) []mpd.Segment {
+func (n *Native) holdBehindVideo(ts *trackState, pending []mpd.Segment) []mpd.Segment {
 	watermark := n.video.readyMillis.Load()
 	if watermark < 0 || len(pending) == 0 {
 		return pending
 	}
 	limit := watermark + n.opts.PrimaryTrackHold.Milliseconds()
-	timescale := n.audio.rep.Addressing.Timescale
+	timescale := ts.rep.Addressing.Timescale
 	for i, seg := range pending {
 		if start := millis(seg.Time, timescale); start >= 0 && start > limit {
 			n.trackHolds.Add(1)
-			n.log.Info("holding audio behind the video watermark",
+			n.log.Info("holding audio behind the video watermark", "track", ts.name,
 				"video_ready_ms", watermark, "audio_start_ms", start, "held", len(pending)-i)
 			return pending[:i]
 		}
