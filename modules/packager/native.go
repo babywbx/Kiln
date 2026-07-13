@@ -148,14 +148,6 @@ func newTrackState(name string, rep mpd.Representation, init *cmaf.Init, now tim
 	return ts
 }
 
-func (ts *trackState) estimate(segmentSeconds float64) int64 {
-	n := ts.segBytes.Load()
-	if n <= 0 {
-		n = declaredSize(ts.rep.Bandwidth, segmentSeconds)
-	}
-	return n
-}
-
 func declaredSize(bandwidth int, seconds float64) int64 {
 	if bandwidth <= 0 || seconds <= 0 {
 		return initialSegmentEstimate
@@ -169,6 +161,10 @@ func declaredSize(bandwidth int, seconds float64) int64 {
 		return initialSegmentEstimate
 	}
 	return n
+}
+
+func segmentWorkingSet(n int64) int64 {
+	return addBytes(n, addBytes(n, n))
 }
 
 func addBytes(a, b int64) int64 {
@@ -652,7 +648,11 @@ func (n *Native) observeBudget(phase string) {
 }
 
 func (n *Native) prepare(ctx context.Context, ts *trackState, seg mpd.Segment) (res prepared) {
-	reservation, err := n.gate.acquire(ctx, ts.estimate(seg.Seconds(ts.rep.Addressing.Timescale)))
+	reservationBytes := n.gate.capacity()
+	if n.opts.MaxSegmentBytes > 0 {
+		reservationBytes = segmentWorkingSet(n.opts.MaxSegmentBytes)
+	}
+	reservation, err := n.gate.acquire(ctx, reservationBytes)
 	if err != nil {
 		res.err = err
 		return res
@@ -673,10 +673,7 @@ func (n *Native) prepare(ctx context.Context, ts *trackState, seg mpd.Segment) (
 		return res
 	}
 	ciphertextBytes := int64(len(raw))
-	if err := reservation.resize(ctx, ciphertextBytes); err != nil {
-		res.err = err
-		return res
-	}
+	reservation.shrink(segmentWorkingSet(ciphertextBytes))
 	n.observeBudget("ciphertext")
 	ts.observe(len(raw))
 
@@ -690,10 +687,7 @@ func (n *Native) prepare(ctx context.Context, ts *trackState, seg mpd.Segment) (
 		res.err = fmt.Errorf("decrypt segment %s#%d: %w", ts.rep.ID, seg.Number, err)
 		return res
 	}
-	if err := reservation.resize(ctx, addBytes(ciphertextBytes, int64(len(clear.Clear)))); err != nil {
-		res.err = err
-		return res
-	}
+	reservation.shrink(addBytes(ciphertextBytes, int64(len(clear.Clear))))
 	n.observeBudget("plaintext")
 
 	res.baseTime = clear.BaseTime

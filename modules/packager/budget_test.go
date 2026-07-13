@@ -122,46 +122,19 @@ func TestByteGateFIFO(t *testing.T) {
 	}
 }
 
-func TestByteReservationResizeReleasesOldBudget(t *testing.T) {
+func TestByteReservationShrinkKeepsLiveBudgetCovered(t *testing.T) {
 	g := newByteGate(10)
-	first, err := g.acquire(context.Background(), 6)
+	reservation, err := g.acquire(context.Background(), 8)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := g.acquire(context.Background(), 4)
-	if err != nil {
-		t.Fatal(err)
+	reservation.shrink(6)
+	if got := g.usage(); got != 6 {
+		t.Fatalf("usage = %d, want 6", got)
 	}
-	done := make(chan error, 1)
-	go func() { done <- first.resize(context.Background(), 8) }()
-	deadline := time.Now().Add(time.Second)
-	for g.usage() != 4 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if got := g.usage(); got != 4 {
-		t.Fatalf("usage while resizing = %d, want only the other reservation", got)
-	}
-	second.release()
-	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
-	first.release()
-	first.release()
-	if got := g.usage(); got != 0 {
-		t.Fatalf("usage = %d, want 0", got)
-	}
-}
-
-func TestByteGateCancelledResizeReleasesReservation(t *testing.T) {
-	g := newByteGate(1)
-	reservation, err := g.acquire(context.Background(), 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if err := reservation.resize(ctx, 2); err == nil {
-		t.Fatal("cancelled resize succeeded")
+	reservation.shrink(9)
+	if got := g.usage(); got != 6 {
+		t.Fatalf("growth changed usage to %d", got)
 	}
 	reservation.release()
 	if got := g.usage(); got != 0 {

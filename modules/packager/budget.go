@@ -95,27 +95,23 @@ func (g *byteGate) usage() int64 {
 	return g.used
 }
 
-func (r *byteReservation) resize(ctx context.Context, n int64) error {
+func (g *byteGate) capacity() int64 {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.limit
+}
+
+func (r *byteReservation) shrink(n int64) {
 	n = normalizedBytes(n)
 	r.mu.Lock()
-	if r.released {
+	if r.released || n >= r.n {
 		r.mu.Unlock()
-		return nil
+		return
 	}
-	gate := r.gate
-	old := r.n
-	r.n = 0
-	gate.release(old)
-	resized, err := gate.acquire(ctx, n)
-	if err != nil {
-		r.released = true
-		r.mu.Unlock()
-		return err
-	}
-	r.n = resized.n
-	resized.released = true
+	delta := r.n - n
+	r.n = n
 	r.mu.Unlock()
-	return nil
+	r.gate.release(delta)
 }
 
 func (r *byteReservation) release() {

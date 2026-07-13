@@ -385,7 +385,7 @@ func pipelineNative(t *testing.T, prefetch int, fetcher Fetcher) (*Native, *trac
 		t.Fatal(err)
 	}
 	rep := mpd.Representation{ID: "video", Addressing: mpd.Addressing{Timescale: 1}}
-	n := &Native{opts: Options{Prefetch: prefetch, Fetcher: fetcher, Keys: keys(t), MaxSegmentBytes: defaultMaxSegmentBytes}, pub: pub, gate: newByteGate(defaultInflightBytes), now: time.Now, log: slog.Default()}
+	n := &Native{opts: Options{Prefetch: prefetch, Fetcher: fetcher, Keys: keys(t), MaxSegmentBytes: defaultMaxSegmentBytes}, pub: pub, gate: newByteGate(segmentWorkingSet(defaultMaxSegmentBytes) * int64(prefetch)), now: time.Now, log: slog.Default()}
 	ts := newTrackState(trackVideo, rep, init, time.Now())
 	segs := make([]mpd.Segment, 6)
 	for i := range segs {
@@ -419,6 +419,7 @@ func TestPrepareAccountsActualWorkingSetAndReleasesAfterStage(t *testing.T) {
 	f := &controlledSegmentFetcher{data: data, starts: make(chan string, 1), release: map[string]chan struct{}{}, errs: map[string]error{}}
 	n, ts, segs, _ := pipelineNative(t, 1, f)
 	n.gate = newByteGate(int64(len(data)) * 4)
+	n.opts.MaxSegmentBytes = int64(len(data))
 	ts.segBytes.Store(1)
 	observed := map[string]int64{}
 	n.budgetObserved = func(phase string, usage int64) { observed[phase] = usage }
@@ -426,14 +427,14 @@ func TestPrepareAccountsActualWorkingSetAndReleasesAfterStage(t *testing.T) {
 	if result.err != nil {
 		t.Fatal(result.err)
 	}
-	if observed["estimate"] != 1 {
-		t.Fatalf("estimated usage = %d, want 1", observed["estimate"])
+	if observed["estimate"] != segmentWorkingSet(int64(len(data))) {
+		t.Fatalf("estimated usage = %d, want %d", observed["estimate"], segmentWorkingSet(int64(len(data))))
 	}
-	if observed["ciphertext"] != int64(len(data)) {
-		t.Fatalf("ciphertext usage = %d, want %d", observed["ciphertext"], len(data))
+	if observed["ciphertext"] != segmentWorkingSet(int64(len(data))) {
+		t.Fatalf("ciphertext usage = %d, want %d", observed["ciphertext"], segmentWorkingSet(int64(len(data))))
 	}
-	if observed["plaintext"] <= observed["ciphertext"] {
-		t.Fatalf("plaintext usage = %d, want above ciphertext %d", observed["plaintext"], observed["ciphertext"])
+	if observed["plaintext"] <= int64(len(data)) {
+		t.Fatalf("plaintext usage = %d, want above raw %d", observed["plaintext"], len(data))
 	}
 	if observed["staged"] != 0 || n.gate.usage() != 0 {
 		t.Fatalf("usage after Stage = %d, final = %d", observed["staged"], n.gate.usage())
@@ -482,14 +483,15 @@ func TestPrepareActualCiphertextSerializesUnderestimatedTasks(t *testing.T) {
 	block := make(chan struct{})
 	f := &controlledSegmentFetcher{data: data, starts: make(chan string, 2), release: map[string]chan struct{}{}, errs: map[string]error{}}
 	n, ts, segs, _ := pipelineNative(t, 2, f)
-	n.gate = newByteGate(int64(len(data)) * 2)
+	n.gate = newByteGate(segmentWorkingSet(int64(len(data))))
+	n.opts.MaxSegmentBytes = int64(len(data))
 	ts.segBytes.Store(1)
 	var plaintext atomic.Int64
 	n.budgetObserved = func(phase string, usage int64) {
 		if phase == "plaintext" && plaintext.Add(1) == 1 {
 			<-block
 		}
-		if usage > int64(len(data))*2 {
+		if usage > segmentWorkingSet(int64(len(data))) {
 			t.Errorf("usage = %d exceeds limit", usage)
 		}
 	}
@@ -497,8 +499,11 @@ func TestPrepareActualCiphertextSerializesUnderestimatedTasks(t *testing.T) {
 	go func() { done <- n.prepare(context.Background(), ts, segs[0]) }()
 	go func() { done <- n.prepare(context.Background(), ts, segs[1]) }()
 	<-f.starts
-	<-f.starts
-	time.Sleep(10 * time.Millisecond)
+	select {
+	case <-f.starts:
+		t.Fatal("second worker fetched before the first released its reservation")
+	case <-time.After(10 * time.Millisecond):
+	}
 	if got := plaintext.Load(); got != 1 {
 		t.Fatalf("plaintext workers = %d, want 1", got)
 	}
@@ -522,6 +527,8 @@ func TestPublishSegmentsStartsAtMostPrefetchTasks(t *testing.T) {
 		f.release[fmt.Sprintf("segment-%d", i)] = block
 	}
 	n, ts, segs, out := pipelineNative(t, 3, f)
+	n.opts.MaxSegmentBytes = int64(len(f.data))
+	n.gate = newByteGate(segmentWorkingSet(int64(len(f.data))) * 3)
 	done := make(chan error, 1)
 	go func() { done <- n.publishSegments(context.Background(), ts, segs) }()
 	for range 3 {
