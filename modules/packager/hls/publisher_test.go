@@ -1,6 +1,7 @@
 package hls
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -250,6 +251,132 @@ func TestUnchangedInitDoesNotRepeatTheMap(t *testing.T) {
 	pl, _ := p.Playlist("video-main.m3u8")
 	if got := strings.Count(string(pl), "#EXT-X-MAP:"); got != 1 {
 		t.Errorf("playlist has %d maps, want 1:\n%s", got, pl)
+	}
+}
+
+func TestInitAssetsFollowDynamicReachability(t *testing.T) {
+	p, c, dir := newTestPublisher(t, 2, 30*time.Second)
+	publish(t, p, "audio-main", 1, 2)
+	publish(t, p, "video-main", 1, 2)
+	if err := p.PublishInit("video-main", []byte("init-2")); err != nil {
+		t.Fatalf("PublishInit: %v", err)
+	}
+	publish(t, p, "video-main", 2, 2)
+	if err := p.PublishInit("video-main", []byte("init-3")); err != nil {
+		t.Fatalf("PublishInit: %v", err)
+	}
+	publish(t, p, "video-main", 3, 2)
+
+	if _, ok := p.Asset("video-main-init.mp4"); !ok {
+		t.Fatal("tombstone init was reaped during grace")
+	}
+	if _, ok := p.Asset("video-main-init-2.mp4"); !ok {
+		t.Fatal("active init was reaped")
+	}
+	if _, ok := p.Asset("video-main-init-3.mp4"); !ok {
+		t.Fatal("current init was reaped")
+	}
+
+	c.add(31 * time.Second)
+	publish(t, p, "video-main", 4, 2)
+	if _, ok := p.Asset("video-main-init.mp4"); ok {
+		t.Error("unreachable init still resolves")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "video-main-init.mp4")); !os.IsNotExist(err) {
+		t.Errorf("unreachable init remains on disk: %v", err)
+	}
+}
+
+func TestRepeatedInitChangesRemainBounded(t *testing.T) {
+	p, c, _ := newTestPublisher(t, 2, time.Second)
+	publish(t, p, "audio-main", 1, 2)
+	for seq := uint64(1); seq <= 12; seq++ {
+		if err := p.PublishInit("video-main", []byte{byte(seq)}); err != nil {
+			t.Fatalf("PublishInit: %v", err)
+		}
+		publish(t, p, "video-main", seq, 2)
+		c.add(2 * time.Second)
+	}
+	count := 0
+	for name := range p.assets {
+		if strings.HasPrefix(name, "video-main-init") {
+			count++
+		}
+	}
+	if count > 3 {
+		t.Errorf("dynamic init assets grew to %d, want at most 3", count)
+	}
+}
+
+func TestInitRemovalFailureDoesNotBreakPublication(t *testing.T) {
+	p, c, dir := newTestPublisher(t, 1, time.Second)
+	publish(t, p, "audio-main", 1, 2)
+	publish(t, p, "video-main", 1, 2)
+	oldInit := filepath.Join(dir, "video-main-init.mp4")
+	if err := os.Remove(oldInit); err != nil {
+		t.Fatalf("remove init: %v", err)
+	}
+	if err := os.Mkdir(oldInit, 0o750); err != nil {
+		t.Fatalf("replace init with directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(oldInit, "child"), []byte("x"), 0o600); err != nil {
+		t.Fatalf("write child: %v", err)
+	}
+	if err := p.PublishInit("video-main", []byte("init-2")); err != nil {
+		t.Fatalf("PublishInit: %v", err)
+	}
+	publish(t, p, "video-main", 2, 2)
+	c.add(2 * time.Second)
+	publish(t, p, "video-main", 3, 2)
+	if _, ok := p.Asset("video-main-init.mp4"); ok {
+		t.Fatal("failed removal left init resolvable")
+	}
+	if _, err := os.Stat(oldInit); err != nil {
+		t.Fatalf("failed removal did not leave init on disk: %v", err)
+	}
+	if err := os.Remove(filepath.Join(oldInit, "child")); err != nil {
+		t.Fatalf("remove child: %v", err)
+	}
+	if err := os.Remove(oldInit); err != nil {
+		t.Fatalf("restore removable init: %v", err)
+	}
+	if err := os.WriteFile(oldInit, []byte("old-init"), 0o600); err != nil {
+		t.Fatalf("restore init file: %v", err)
+	}
+	publish(t, p, "video-main", 4, 2)
+	if _, ok := p.Asset("video-main-init.mp4"); ok {
+		t.Error("retried removal made init resolvable")
+	}
+	if _, err := os.Stat(oldInit); !os.IsNotExist(err) {
+		t.Errorf("retried removal left init on disk: %v", err)
+	}
+	if _, ok := p.Asset("video-main-000004.m4s"); !ok {
+		t.Error("publication stopped after init removal failed")
+	}
+}
+
+func TestStaticPublicationKeepsEveryInitAsset(t *testing.T) {
+	p, err := New(Config{Dir: t.TempDir(), PlaylistSize: 2, Static: true})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := p.AddTrack(Track{Name: "video-main", Kind: KindVideo}); err != nil {
+		t.Fatalf("AddTrack: %v", err)
+	}
+	for seq := uint64(1); seq <= 12; seq++ {
+		if err := p.PublishInit("video-main", []byte{byte(seq)}); err != nil {
+			t.Fatalf("PublishInit: %v", err)
+		}
+		publish(t, p, "video-main", seq, 2)
+	}
+	for n := 1; n <= 12; n++ {
+		name := "video-main-init.mp4"
+		if n > 1 {
+			name = fmt.Sprintf("video-main-init-%d.mp4", n)
+		}
+		if _, ok := p.Asset(name); !ok {
+			t.Errorf("static init %s was removed", name)
+		}
 	}
 }
 

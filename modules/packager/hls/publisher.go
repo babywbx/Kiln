@@ -65,6 +65,7 @@ type segment struct {
 type track struct {
 	Track
 	initName              string
+	initAssets            map[string]struct{}
 	initCount             int
 	initReady             bool
 	segments              []segment
@@ -148,7 +149,7 @@ func (p *Publisher) AddTrack(t Track) error {
 	if p.playable {
 		return fmt.Errorf("hls: cannot add track %s after publishing", t.Name)
 	}
-	p.tracks[t.Name] = &track{Track: t}
+	p.tracks[t.Name] = &track{Track: t, initAssets: map[string]struct{}{}}
 	p.order = append(p.order, t.Name)
 	return nil
 }
@@ -168,6 +169,7 @@ func (p *Publisher) PublishInit(name string, data []byte) error {
 		return err
 	}
 	t.initName = assetName
+	t.initAssets[assetName] = struct{}{}
 	t.initCount++
 	t.initReady = true
 	return nil
@@ -251,10 +253,31 @@ func (p *Publisher) reap(t *track) {
 			kept = append(kept, s)
 			continue
 		}
-		delete(p.assets, s.Name)
-		_ = os.Remove(filepath.Join(p.cfg.Dir, s.Name))
+		p.removeAsset(s.Name)
 	}
 	t.tombstones = kept
+
+	reachable := map[string]struct{}{t.initName: {}}
+	for _, s := range t.segments {
+		reachable[s.InitName] = struct{}{}
+	}
+	for _, s := range t.tombstones {
+		reachable[s.InitName] = struct{}{}
+	}
+	for name := range t.initAssets {
+		if _, ok := reachable[name]; ok {
+			continue
+		}
+		if p.removeAsset(name) {
+			delete(t.initAssets, name)
+		}
+	}
+}
+
+func (p *Publisher) removeAsset(name string) bool {
+	delete(p.assets, name)
+	err := os.Remove(filepath.Join(p.cfg.Dir, name))
+	return err == nil || os.IsNotExist(err)
 }
 
 func (p *Publisher) refresh() {
