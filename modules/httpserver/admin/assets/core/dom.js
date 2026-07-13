@@ -36,19 +36,30 @@ export function frag(...children) {
   return f;
 }
 
+const iconTemplates = new Map();
+
+function iconTemplate(name) {
+  let svg = iconTemplates.get(name);
+  if (!svg) {
+    svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("class", "icon");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "2");
+    svg.setAttribute("stroke-linecap", "round");
+    svg.setAttribute("stroke-linejoin", "round");
+    svg.setAttribute("aria-hidden", "true");
+    svg.innerHTML = lucideIcons[name] || "";
+    iconTemplates.set(name, svg);
+  }
+  return svg;
+}
+
 export function icon(name, size = 20) {
-  const svg = document.createElementNS(SVG_NS, "svg");
-  svg.setAttribute("class", "icon");
-  svg.setAttribute("viewBox", "0 0 24 24");
+  const svg = iconTemplate(name).cloneNode(true);
   svg.setAttribute("width", String(size));
   svg.setAttribute("height", String(size));
-  svg.setAttribute("fill", "none");
-  svg.setAttribute("stroke", "currentColor");
-  svg.setAttribute("stroke-width", "2");
-  svg.setAttribute("stroke-linecap", "round");
-  svg.setAttribute("stroke-linejoin", "round");
-  svg.setAttribute("aria-hidden", "true");
-  svg.innerHTML = lucideIcons[name] || "";
   return svg;
 }
 
@@ -64,8 +75,10 @@ export function clear(node) {
   node.replaceChildren();
 }
 
+const numberFormat = new Intl.NumberFormat("zh-Hans");
+
 export function formatNumber(value) {
-  return new Intl.NumberFormat("zh-Hans").format(Number(value || 0));
+  return numberFormat.format(Number(value || 0));
 }
 
 export function formatBytes(value) {
@@ -105,8 +118,10 @@ export function formatISOTime(value) {
   return dateFormat.format(new Date(stamp));
 }
 
+const clockFormat = new Intl.DateTimeFormat("zh-Hans", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
 export function formatClock(date = new Date()) {
-  return date.toLocaleTimeString("zh-Hans", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  return clockFormat.format(date);
 }
 
 export function initials(text) {
