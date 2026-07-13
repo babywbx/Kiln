@@ -149,6 +149,61 @@ export function table(headers, rows) {
   );
 }
 
+const DIGIT_RE = /^[0-9]$/;
+
+// Reels are decorative; the sr-only label carries the value.
+export function numberRoll() {
+  const label = h("span", { class: "sr-only" });
+  const track = h("span", { class: "roll-track", "aria-hidden": "true" });
+  const node = h("span", { class: "roll" }, label, track);
+  let slots = [];
+
+  const digitSlot = () => {
+    const reel = h("span", { class: "roll-reel" }, [..."0123456789"].map((step) => h("span", { class: "roll-step", text: step })));
+    return { reel, cell: h("span", { class: "roll-cell" }, reel), value: -1 };
+  };
+
+  const charSlot = (ch) => ({ reel: null, cell: h("span", { class: "roll-cell", text: ch }), value: ch });
+
+  const spin = (slot, digit) => {
+    if (slot.value === digit) return;
+    const fresh = slot.value === -1;
+    slot.value = digit;
+    if (fresh) {
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        slot.reel.style.transform = `translateY(${-slot.value}em)`;
+      }));
+    } else {
+      slot.reel.style.transform = `translateY(${-digit}em)`;
+    }
+  };
+
+  const set = (text) => {
+    const value = String(text ?? "");
+    label.textContent = value;
+    const chars = [...value];
+
+    if (chars.length !== slots.length) {
+      slots = chars.map((ch) => (DIGIT_RE.test(ch) ? digitSlot() : charSlot(ch)));
+      track.replaceChildren(...slots.map((slot) => slot.cell));
+    } else {
+      slots = slots.map((slot, index) => {
+        const ch = chars[index];
+        if (DIGIT_RE.test(ch) ? slot.reel : slot.value === ch) return slot;
+        const next = DIGIT_RE.test(ch) ? digitSlot() : charSlot(ch);
+        slot.cell.replaceWith(next.cell);
+        return next;
+      });
+    }
+
+    slots.forEach((slot, index) => {
+      if (slot.reel) spin(slot, Number(chars[index]));
+    });
+  };
+
+  return { node, set };
+}
+
 export function channelAvatar(channel, size = 38) {
   const box = h("span", { class: "avatar avatar-channel", style: { width: `${size}px`, height: `${size}px` } });
   box.textContent = initials(channel.title || channel.id);

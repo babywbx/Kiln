@@ -138,6 +138,16 @@ h1, h2, h3, p { margin: 0; }
 }
 .muted { color: var(--muted); }
 .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 
 /* ---------------------------------------------------------------- brand */
 
@@ -278,6 +288,14 @@ input:disabled, select:disabled { color: var(--muted); background: var(--surface
 .dot { width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; background: var(--warning); }
 .dot.is-ok { background: var(--success); }
 .dot.is-bad { background: var(--danger); }
+
+/* ---------------------------------------------------------------- rolling digits */
+
+.roll { position: relative; display: inline-flex; }
+.roll-track { display: inline-flex; overflow: hidden; line-height: 1; white-space: pre; }
+.roll-cell { display: block; height: 1em; overflow: hidden; }
+.roll-reel { display: block; transition: transform 520ms var(--ease); will-change: transform; }
+.roll-step { display: block; height: 1em; }
 
 .avatar {
   display: inline-grid;

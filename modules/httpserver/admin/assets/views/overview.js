@@ -1,7 +1,7 @@
 import { formatBytes, formatClock, formatDuration, formatNumber, frag, h } from "/admin/assets/core/dom.js";
 import { endpoints } from "/admin/assets/core/api.js";
 import { loadCatalog, refreshStatus, store } from "/admin/assets/core/store.js";
-import { badge, button, card, emptyState, linkButton, pageHead, sessionStateBadge, table } from "/admin/assets/ui/kit.js";
+import { badge, button, card, emptyState, linkButton, numberRoll, pageHead, sessionStateBadge, table } from "/admin/assets/ui/kit.js";
 import { confirmDialog, toast, toastError } from "/admin/assets/ui/overlay.js";
 
 const ENGINE_LABELS = {
@@ -33,21 +33,23 @@ export async function renderOverview(ctx) {
 
   const metricValues = new Map();
   const metricCards = METRICS.map(({ key, label, meta, format }) => {
-    const value = h("strong", { class: "metric-value", text: format(store.status?.[key]) });
-    metricValues.set(key, { node: value, format });
+    const value = numberRoll();
+    metricValues.set(key, { roll: value, format });
     return h(
       "article",
       { class: "metric" },
       h("span", { class: "metric-label", text: label }),
-      value,
+      h("strong", { class: "metric-value" }, value.node),
       h("span", { class: "metric-meta", text: meta }),
     );
   });
 
   const sessionBody = h("div", {});
   const sessionCount = h("p", { text: "" });
-  const goroutines = h("strong", { class: "mono", text: "—" });
-  const syncedAt = h("strong", { class: "mono", text: "—" });
+  const goroutinesRoll = numberRoll();
+  const syncedRoll = numberRoll();
+  const goroutines = h("strong", { class: "mono" }, goroutinesRoll.node);
+  const syncedAt = h("strong", { class: "mono" }, syncedRoll.node);
   const httpDetail = h("small", { text: "健康检查通过" });
   const httpBadge = h("span", { class: "state-slot" });
   const healthTone = h(
@@ -79,9 +81,9 @@ export async function renderOverview(ctx) {
   const paint = () => {
     if (!ctx.alive()) return;
     const status = store.status;
-    for (const [key, { node, format }] of metricValues) node.textContent = format(status?.[key]);
-    goroutines.textContent = formatNumber(status?.goroutines);
-    syncedAt.textContent = store.lastSyncAt ? formatClock(new Date(store.lastSyncAt)) : "—";
+    for (const [key, { roll, format }] of metricValues) roll.set(format(status?.[key]));
+    goroutinesRoll.set(formatNumber(status?.goroutines));
+    syncedRoll.set(store.lastSyncAt ? formatClock(new Date(store.lastSyncAt)) : "—");
 
     if (store.online !== lastOnline) {
       lastOnline = store.online;
