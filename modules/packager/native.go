@@ -695,7 +695,6 @@ func (n *Native) prepare(ctx context.Context, ts *trackState, seg mpd.Segment) (
 		return res
 	}
 	n.observeBudget("plaintext")
-	raw = nil
 
 	res.baseTime = clear.BaseTime
 	res.duration = clear.Duration

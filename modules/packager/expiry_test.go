@@ -22,7 +22,7 @@ type expiringOrigin struct {
 
 func newExpiringOrigin(t *testing.T) *expiringOrigin {
 	o := &expiringOrigin{liveOrigin: newLiveOrigin(t), session: 1, live: 1}
-	o.liveOrigin.prefix = "s1/"
+	o.prefix = "s1/"
 	return o
 }
 
@@ -45,10 +45,10 @@ func (o *expiringOrigin) Fetch(ctx context.Context, url string) ([]byte, string,
 		}
 		o.smu.Unlock()
 
-		o.liveOrigin.mu.Lock()
-		o.liveOrigin.prefix = fmt.Sprintf("s%d/", session)
-		o.liveOrigin.mu.Unlock()
-		return o.liveOrigin.manifest(), fmt.Sprintf("%s?session=%d", entryURL, session), nil
+		o.mu.Lock()
+		o.prefix = fmt.Sprintf("s%d/", session)
+		o.mu.Unlock()
+		return o.manifest(), fmt.Sprintf("%s?session=%d", entryURL, session), nil
 	}
 
 	var session int
