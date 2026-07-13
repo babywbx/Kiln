@@ -15,28 +15,27 @@ const BLANK = {
 };
 
 export async function renderChannelDetail(ctx) {
-  await loadCatalog({ signal: ctx.signal });
   const isNew = ctx.id === "new";
+  const [, detail, matchData, sourceData] = await Promise.all([
+    loadCatalog({ signal: ctx.signal }),
+    isNew ? null : endpoints.channel(ctx.id, ctx.signal),
+    endpoints.epgMatches(ctx.signal),
+    endpoints.epgSources(ctx.signal),
+    refreshStatus(),
+  ]);
+  if (!ctx.alive()) return frag();
 
   let channel = { ...BLANK, upstream: store.upstreams.length === 1 ? store.upstreams[0].id : "" };
   let revision = 0;
-
-  if (!isNew) {
-    const detail = await endpoints.channel(ctx.id, ctx.signal);
-    if (!ctx.alive()) return frag();
+  if (detail) {
     channel = { ...BLANK, ...detail.channel };
     revision = detail.revision || 0;
   }
 
-  const [matchData, sourceData] = await Promise.all([endpoints.epgMatches(ctx.signal), endpoints.epgSources(ctx.signal)]);
-  if (!ctx.alive()) return frag();
   const epg = {
     match: (matchData.matches || []).find((item) => item.channel_id === channel.id) || null,
     sources: (sourceData.sources || []).map((item) => item.source),
   };
-
-  await refreshStatus();
-  if (!ctx.alive()) return frag();
 
   const editor = buildEditor(ctx, channel, revision, isNew, epg);
   return frag(

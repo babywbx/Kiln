@@ -28,8 +28,7 @@ const METRICS = [
 ];
 
 export async function renderOverview(ctx) {
-  await loadCatalog({ signal: ctx.signal });
-  await refreshStatus();
+  await Promise.all([loadCatalog({ signal: ctx.signal }), refreshStatus()]);
   if (!ctx.alive()) return frag();
 
   const metricValues = new Map();

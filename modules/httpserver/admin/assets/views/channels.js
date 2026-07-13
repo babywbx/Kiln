@@ -14,9 +14,11 @@ export function matchesQuery(channel, query) {
 }
 
 export async function renderChannels(ctx) {
-  await loadCatalog({ force: true, signal: ctx.signal });
-  const matchData = await endpoints.epgMatches(ctx.signal);
-  await refreshStatus();
+  const [, matchData] = await Promise.all([
+    loadCatalog({ force: true, signal: ctx.signal }),
+    endpoints.epgMatches(ctx.signal),
+    refreshStatus(),
+  ]);
   if (!ctx.alive()) return frag();
 
   const matches = matchMap(matchData.matches);
