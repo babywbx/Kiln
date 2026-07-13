@@ -13,15 +13,6 @@ import { renderAccess } from "/admin/assets/views/access.js";
 import { renderEgress } from "/admin/assets/views/egress.js";
 import { renderSettings } from "/admin/assets/views/settings.js";
 
-const NAV_ICONS = {
-  overview: "layout-dashboard",
-  channels: "tv",
-  epg: "list",
-  access: "key-round",
-  egress: "network",
-  settings: "settings",
-};
-
 const root = document.getElementById("root");
 const compactMedia = matchMedia("(max-width: 1080px)");
 
@@ -48,12 +39,12 @@ function buildShell() {
   const nav = h(
     "nav",
     { class: "nav" },
-    Object.entries(SECTIONS).map(([section, label]) =>
+    Object.entries(SECTIONS).map(([section, meta]) =>
       h(
         "a",
         { class: "nav-item", href: `/admin/${section}`, "data-route": true, "data-nav": section },
-        icon(NAV_ICONS[section], 20),
-        h("span", { class: "nav-label", text: label }),
+        icon(meta.icon, 20),
+        h("span", { class: "nav-label", text: meta.label }),
       ),
     ),
   );
@@ -174,7 +165,7 @@ function onAfterRender(route) {
     if (link.dataset.nav === route.section) link.setAttribute("aria-current", "page");
     else link.removeAttribute("aria-current");
   }
-  const label = SECTIONS[route.section] || "控制台";
+  const label = SECTIONS[route.section]?.label || "控制台";
   shell.pageTitle.textContent = label;
   document.title = `${label} · Kiln`;
 }

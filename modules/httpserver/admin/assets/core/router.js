@@ -1,12 +1,12 @@
 import { subscribe } from "/admin/assets/core/store.js";
 
 export const SECTIONS = {
-  overview: "总览",
-  channels: "频道",
-  epg: "节目单",
-  access: "访问控制",
-  egress: "网络出口",
-  settings: "系统设置",
+  overview: { label: "总览", icon: "layout-dashboard" },
+  channels: { label: "频道", icon: "tv" },
+  epg: { label: "节目单", icon: "list" },
+  access: { label: "访问控制", icon: "key-round" },
+  egress: { label: "网络出口", icon: "network" },
+  settings: { label: "系统设置", icon: "settings" },
 };
 
 const DEFAULT_SECTION = "overview";
