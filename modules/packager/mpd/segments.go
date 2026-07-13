@@ -1,20 +1,45 @@
 package mpd
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"time"
 )
 
-// maxTimelineExpansion bounds an @r=-1 run so a bogus availabilityStartTime
-// cannot make us allocate forever.
 const maxTimelineExpansion = 100000
 
-// AvailableSegments returns the segments of rep that the origin should already
-// be serving at wall-clock time now, trimmed to the time-shift buffer.
-//
-// A segment counts as available once its last sample is published, i.e. once
-// availabilityStartTime + periodStart + (t + d - pto)/timescale <= now.
+var ErrExpansionLimit = errors.New("segment expansion limit exceeded")
+var ErrAddressingOverflow = errors.New("segment addressing overflow")
+
+type expansionBudget struct{ remaining uint64 }
+
+func (b *expansionBudget) take(count uint64) error {
+	if count > b.remaining {
+		return ErrExpansionLimit
+	}
+	b.remaining -= count
+	return nil
+}
+
+func checkedAdd(a, b uint64) (uint64, error) {
+	if b > math.MaxUint64-a {
+		return 0, ErrAddressingOverflow
+	}
+	return a + b, nil
+}
+
+func checkedMul(a, b uint64) (uint64, error) {
+	if a != 0 && b > math.MaxUint64/a {
+		return 0, ErrAddressingOverflow
+	}
+	return a * b, nil
+}
+
+func addressingError(repID, operation string, err error) error {
+	return fmt.Errorf("representation %s: %s: %w", repID, operation, err)
+}
+
 func (p *Presentation) AvailableSegments(periodIdx int, rep Representation, now time.Time) ([]Segment, error) {
 	if periodIdx < 0 || periodIdx >= len(p.Periods) {
 		return nil, fmt.Errorf("period index %d out of range", periodIdx)
@@ -24,24 +49,31 @@ func (p *Presentation) AvailableSegments(periodIdx int, rep Representation, now 
 	if addr.Timescale == 0 {
 		return nil, fmt.Errorf("representation %s has zero timescale", rep.ID)
 	}
-
-	edge, bounded := p.liveEdgeTicks(period, addr, now)
+	edge, bounded, err := p.liveEdgeTicks(period, addr, now)
+	if err != nil {
+		return nil, addressingError(rep.ID, "presentationTimeOffset+ticks", err)
+	}
 	horizon := uint64(math.MaxUint64)
 	if bounded {
 		horizon = edge
-	} else if d := p.staticEndTicks(period, addr); d > 0 {
-		horizon = d
+	} else {
+		end, endErr := p.staticEndTicks(period, addr)
+		if endErr != nil {
+			return nil, addressingError(rep.ID, "presentationTimeOffset+ticks", endErr)
+		}
+		if end > 0 {
+			horizon = end
+		}
 	}
-
+	budget := expansionBudget{remaining: maxTimelineExpansion}
 	var segs []Segment
-	var err error
 	switch addr.Mode {
 	case AddressingTemplateTimeline:
-		segs, err = timelineSegments(rep, horizon)
+		segs, err = timelineSegments(rep, horizon, &budget)
 	case AddressingTemplateDuration:
-		segs, err = durationSegments(rep, horizon)
+		segs, err = durationSegments(rep, horizon, &budget)
 	case AddressingList:
-		segs, err = listSegments(rep)
+		segs, err = listSegments(rep, &budget)
 	default:
 		return nil, fmt.Errorf("addressing mode %s is not supported", addr.Mode)
 	}
@@ -54,71 +86,110 @@ func (p *Presentation) AvailableSegments(periodIdx int, rep Representation, now 
 	return segs, nil
 }
 
-// liveEdgeTicks converts now into this representation's media timeline. The
-// second result is false for static manifests, which have no live edge.
-func (p *Presentation) liveEdgeTicks(period Period, addr Addressing, now time.Time) (uint64, bool) {
+func (p *Presentation) liveEdgeTicks(period Period, addr Addressing, now time.Time) (uint64, bool, error) {
 	if !p.Dynamic || p.AvailabilityStartTime.IsZero() {
-		return 0, false
+		return 0, false, nil
 	}
 	elapsed := now.Sub(p.AvailabilityStartTime) - period.Start
 	if elapsed <= 0 {
-		return addr.PresentationTimeOffset, true
+		return addr.PresentationTimeOffset, true, nil
 	}
 	ticks := float64(elapsed) / float64(time.Second) * float64(addr.Timescale)
 	if ticks < 0 || ticks > math.MaxUint64 {
-		return addr.PresentationTimeOffset, true
+		return 0, true, ErrAddressingOverflow
 	}
-	return uint64(ticks) + addr.PresentationTimeOffset, true
+	edge, err := checkedAdd(uint64(ticks), addr.PresentationTimeOffset)
+	return edge, true, err
 }
 
-func (p *Presentation) staticEndTicks(period Period, addr Addressing) uint64 {
+func (p *Presentation) staticEndTicks(period Period, addr Addressing) (uint64, error) {
 	d := period.Duration
 	if d == 0 {
 		d = p.MediaPresentationDuration
 	}
 	if d <= 0 {
-		return 0
+		return 0, nil
 	}
-	return uint64(float64(d)/float64(time.Second)*float64(addr.Timescale)) + addr.PresentationTimeOffset
+	ticks := float64(d) / float64(time.Second) * float64(addr.Timescale)
+	if ticks > math.MaxUint64 {
+		return 0, ErrAddressingOverflow
+	}
+	return checkedAdd(uint64(ticks), addr.PresentationTimeOffset)
 }
 
-// timelineSegments expands SegmentTimeline, including @r=-1, which repeats
-// until the live edge (or the period end for static manifests).
-func timelineSegments(rep Representation, horizon uint64) ([]Segment, error) {
+func timelineSegments(rep Representation, horizon uint64, budget *expansionBudget) ([]Segment, error) {
 	addr := rep.Addressing
 	var out []Segment
 	number := addr.StartNumber
 	for _, e := range addr.Timeline {
 		if e.Repeat >= 0 {
-			for i := int64(0); i <= e.Repeat; i++ {
-				t := e.Time + uint64(i)*e.Duration
-				if t+e.Duration > horizon {
+			if e.Repeat == math.MaxInt64 {
+				return nil, addressingError(rep.ID, "repeat+1", ErrAddressingOverflow)
+			}
+			count, err := checkedAdd(uint64(e.Repeat), 1)
+			if err != nil {
+				return nil, addressingError(rep.ID, "repeat+1", err)
+			}
+			if err = budget.take(count); err != nil {
+				return nil, addressingError(rep.ID, "timeline expansion", err)
+			}
+			for i := uint64(0); i < count; i++ {
+				offset, mulErr := checkedMul(i, e.Duration)
+				if mulErr != nil {
+					return nil, addressingError(rep.ID, "index*duration", mulErr)
+				}
+				t, addErr := checkedAdd(e.Time, offset)
+				if addErr != nil {
+					return nil, addressingError(rep.ID, "time+index*duration", addErr)
+				}
+				end, endErr := checkedAdd(t, e.Duration)
+				if endErr != nil {
+					return nil, addressingError(rep.ID, "time+duration", endErr)
+				}
+				if end > horizon {
 					return out, nil
 				}
 				out = append(out, makeSegment(rep, number, t, e.Duration))
-				number++
+				number, addErr = checkedAdd(number, 1)
+				if addErr != nil && i+1 < count {
+					return nil, addressingError(rep.ID, "startNumber+index", addErr)
+				}
 			}
 			continue
 		}
 		if horizon == math.MaxUint64 {
 			return nil, fmt.Errorf("representation %s: @r=-1 without a live edge or period duration", rep.ID)
 		}
-		for i := 0; ; i++ {
-			if i > maxTimelineExpansion {
-				return nil, fmt.Errorf("representation %s: @r=-1 expanded past %d segments", rep.ID, maxTimelineExpansion)
+		for i := uint64(0); ; i++ {
+			offset, err := checkedMul(i, e.Duration)
+			if err != nil {
+				return nil, addressingError(rep.ID, "index*duration", err)
 			}
-			t := e.Time + uint64(i)*e.Duration
-			if t+e.Duration > horizon {
+			t, err := checkedAdd(e.Time, offset)
+			if err != nil {
+				return nil, addressingError(rep.ID, "time+index*duration", err)
+			}
+			end, err := checkedAdd(t, e.Duration)
+			if err != nil {
+				return nil, addressingError(rep.ID, "time+duration", err)
+			}
+			if end > horizon {
 				break
 			}
+			if err = budget.take(1); err != nil {
+				return nil, addressingError(rep.ID, "timeline expansion", err)
+			}
 			out = append(out, makeSegment(rep, number, t, e.Duration))
-			number++
+			number, err = checkedAdd(number, 1)
+			if err != nil {
+				return nil, addressingError(rep.ID, "startNumber+index", err)
+			}
 		}
 	}
 	return out, nil
 }
 
-func durationSegments(rep Representation, horizon uint64) ([]Segment, error) {
+func durationSegments(rep Representation, horizon uint64, budget *expansionBudget) ([]Segment, error) {
 	addr := rep.Addressing
 	if addr.Duration == 0 {
 		return nil, fmt.Errorf("representation %s: template without @duration", rep.ID)
@@ -126,48 +197,62 @@ func durationSegments(rep Representation, horizon uint64) ([]Segment, error) {
 	if horizon == math.MaxUint64 {
 		return nil, fmt.Errorf("representation %s: @duration addressing without a live edge or period duration", rep.ID)
 	}
-	start := addr.PresentationTimeOffset
-	if horizon <= start {
+	if horizon <= addr.PresentationTimeOffset {
 		return nil, nil
 	}
-	count := (horizon - start) / addr.Duration
-	if count > maxTimelineExpansion {
-		return nil, fmt.Errorf("representation %s: %d segments exceeds the expansion cap", rep.ID, count)
+	count := (horizon - addr.PresentationTimeOffset) / addr.Duration
+	if err := budget.take(count); err != nil {
+		return nil, addressingError(rep.ID, "duration expansion", err)
 	}
 	out := make([]Segment, 0, count)
-	for i := range count {
-		t := start + i*addr.Duration
-		out = append(out, makeSegment(rep, addr.StartNumber+i, t, addr.Duration))
+	for i := uint64(0); i < count; i++ {
+		offset, err := checkedMul(i, addr.Duration)
+		if err != nil {
+			return nil, addressingError(rep.ID, "index*duration", err)
+		}
+		t, err := checkedAdd(addr.PresentationTimeOffset, offset)
+		if err != nil {
+			return nil, addressingError(rep.ID, "presentationTimeOffset+ticks", err)
+		}
+		number, err := checkedAdd(addr.StartNumber, i)
+		if err != nil {
+			return nil, addressingError(rep.ID, "startNumber+index", err)
+		}
+		out = append(out, makeSegment(rep, number, t, addr.Duration))
 	}
 	return out, nil
 }
 
-func listSegments(rep Representation) ([]Segment, error) {
+func listSegments(rep Representation, budget *expansionBudget) ([]Segment, error) {
 	addr := rep.Addressing
+	if err := budget.take(uint64(len(addr.List))); err != nil {
+		return nil, addressingError(rep.ID, "list expansion", err)
+	}
 	out := make([]Segment, 0, len(addr.List))
 	for i, u := range addr.List {
-		out = append(out, Segment{
-			Number:   addr.StartNumber + uint64(i),
-			Time:     addr.PresentationTimeOffset + uint64(i)*addr.Duration,
-			Duration: addr.Duration,
-			URL:      u,
-		})
+		index := uint64(i)
+		number, err := checkedAdd(addr.StartNumber, index)
+		if err != nil {
+			return nil, addressingError(rep.ID, "startNumber+index", err)
+		}
+		offset, err := checkedMul(index, addr.Duration)
+		if err != nil {
+			return nil, addressingError(rep.ID, "index*duration", err)
+		}
+		segmentTime, err := checkedAdd(addr.PresentationTimeOffset, offset)
+		if err != nil {
+			return nil, addressingError(rep.ID, "presentationTimeOffset+ticks", err)
+		}
+		out = append(out, Segment{Number: number, Time: segmentTime, Duration: addr.Duration, URL: u})
 	}
 	return out, nil
 }
 
 func makeSegment(rep Representation, number, t, dur uint64) Segment {
 	addr := rep.Addressing
-	return Segment{
-		Number:   number,
-		Time:     t,
-		Duration: dur,
-		URL:      expandIdentifiers(addr.Media, rep.ID, rep.Bandwidth, number, t),
-	}
+	return Segment{Number: number, Time: t, Duration: dur, URL: expandIdentifiers(addr.Media, rep.ID, rep.Bandwidth, number, t)}
 }
 
-// trimToTimeShift drops segments that have already fallen out of the origin's
-// time-shift buffer; requesting them yields 404/410.
 func trimToTimeShift(segs []Segment, edge uint64, depth time.Duration, timescale uint64) []Segment {
 	if depth <= 0 || len(segs) == 0 {
 		return segs
@@ -178,7 +263,8 @@ func trimToTimeShift(segs []Segment, edge uint64, depth time.Duration, timescale
 	}
 	cutoff := edge - depthTicks
 	for i, s := range segs {
-		if s.Time+s.Duration > cutoff {
+		end, err := checkedAdd(s.Time, s.Duration)
+		if err != nil || end > cutoff {
 			return segs[i:]
 		}
 	}

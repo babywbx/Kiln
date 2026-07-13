@@ -1,6 +1,8 @@
 package mpd
 
 import (
+	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -237,6 +239,72 @@ func TestParseStaticFixtures(t *testing.T) {
 				t.Errorf("init url = %s", video.Addressing.InitURL)
 			}
 		})
+	}
+}
+
+func testPresentation(rep Representation) *Presentation {
+	return &Presentation{Periods: []Period{{Representations: []Representation{rep}}}}
+}
+
+func TestTimelineFiniteRepeatSharesExpansionBudget(t *testing.T) {
+	rep := Representation{ID: "v", Addressing: Addressing{Mode: AddressingTemplateTimeline, Timescale: 1, Timeline: []TimelineEntry{{Duration: 1, Repeat: 100000}}}}
+	segs, err := testPresentation(rep).AvailableSegments(0, rep, time.Time{})
+	if !errors.Is(err, ErrExpansionLimit) || segs != nil {
+		t.Fatalf("segments=%d err=%v", len(segs), err)
+	}
+}
+
+func TestTimelineEntriesShareOneExpansionBudget(t *testing.T) {
+	rep := Representation{ID: "v", Addressing: Addressing{Mode: AddressingTemplateTimeline, Timescale: 1, Timeline: []TimelineEntry{{Duration: 1, Repeat: 49999}, {Time: 50000, Duration: 1, Repeat: 50000}}}}
+	segs, err := testPresentation(rep).AvailableSegments(0, rep, time.Time{})
+	if !errors.Is(err, ErrExpansionLimit) || segs != nil {
+		t.Fatalf("segments=%d err=%v", len(segs), err)
+	}
+}
+
+func TestSegmentListUsesExpansionLimit(t *testing.T) {
+	rep := Representation{ID: "v", Addressing: Addressing{Mode: AddressingList, Timescale: 1, List: make([]string, 100001)}}
+	segs, err := testPresentation(rep).AvailableSegments(0, rep, time.Time{})
+	if !errors.Is(err, ErrExpansionLimit) || segs != nil {
+		t.Fatalf("segments=%d err=%v", len(segs), err)
+	}
+}
+
+func TestTimelineRepeatOverflowIsRejected(t *testing.T) {
+	rep := Representation{ID: "v", Addressing: Addressing{Mode: AddressingTemplateTimeline, Timescale: 1, Timeline: []TimelineEntry{{Duration: 1, Repeat: math.MaxInt64}}}}
+	_, err := testPresentation(rep).AvailableSegments(0, rep, time.Time{})
+	if !errors.Is(err, ErrAddressingOverflow) {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestTimelineTimeOverflowIsRejected(t *testing.T) {
+	for _, entry := range []TimelineEntry{{Time: 1, Duration: math.MaxUint64, Repeat: 1}, {Time: math.MaxUint64, Duration: 1}} {
+		rep := Representation{ID: "v", Addressing: Addressing{Mode: AddressingTemplateTimeline, Timescale: 1, Timeline: []TimelineEntry{entry}}}
+		_, err := testPresentation(rep).AvailableSegments(0, rep, time.Time{})
+		if !errors.Is(err, ErrAddressingOverflow) {
+			t.Fatalf("entry=%+v err=%v", entry, err)
+		}
+	}
+}
+
+func TestDurationNumberOverflowIsRejected(t *testing.T) {
+	rep := Representation{ID: "v", Addressing: Addressing{Mode: AddressingTemplateDuration, Timescale: 1, Duration: 1, StartNumber: math.MaxUint64}}
+	p := testPresentation(rep)
+	p.MediaPresentationDuration = 2 * time.Second
+	_, err := p.AvailableSegments(0, rep, time.Time{})
+	if !errors.Is(err, ErrAddressingOverflow) {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestPresentationOffsetOverflowIsRejected(t *testing.T) {
+	rep := Representation{ID: "v", Addressing: Addressing{Mode: AddressingTemplateDuration, Timescale: 1, Duration: 1, PresentationTimeOffset: math.MaxUint64}}
+	p := testPresentation(rep)
+	p.MediaPresentationDuration = time.Second
+	_, err := p.AvailableSegments(0, rep, time.Time{})
+	if !errors.Is(err, ErrAddressingOverflow) {
+		t.Fatalf("err=%v", err)
 	}
 }
 
