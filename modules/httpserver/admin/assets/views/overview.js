@@ -48,7 +48,16 @@ export async function renderOverview(ctx) {
   const sessionCount = h("p", { text: "" });
   const goroutines = h("strong", { class: "mono", text: "—" });
   const syncedAt = h("strong", { class: "mono", text: "—" });
-  const healthTone = h("div", { class: "health-row" });
+  const httpDetail = h("small", { text: "健康检查通过" });
+  const httpBadge = h("span", { class: "state-slot" });
+  const healthTone = h(
+    "div",
+    { class: "health-row" },
+    h("div", { class: "health-item" }, h("span", {}, h("strong", { text: "HTTP 服务" }), httpDetail), httpBadge),
+    h("div", { class: "health-item" }, h("span", {}, h("strong", { text: "并发协程" }), h("small", { text: "Go runtime" })), goroutines),
+    h("div", { class: "health-item" }, h("span", {}, h("strong", { text: "最近同步" }), h("small", { text: "每 4 秒自动刷新" })), syncedAt),
+  );
+  let lastOnline = null;
 
   const stop = async (channelID) => {
     const accepted = await confirmDialog({
@@ -74,16 +83,11 @@ export async function renderOverview(ctx) {
     goroutines.textContent = formatNumber(status?.goroutines);
     syncedAt.textContent = store.lastSyncAt ? formatClock(new Date(store.lastSyncAt)) : "—";
 
-    healthTone.replaceChildren(
-      h(
-        "div",
-        { class: "health-item" },
-        h("span", {}, h("strong", { text: "HTTP 服务" }), h("small", { text: store.online ? "健康检查通过" : "无法连接到服务" })),
-        store.online ? badge("正常", "success", "circle-check") : badge("异常", "danger", "circle-alert"),
-      ),
-      h("div", { class: "health-item" }, h("span", {}, h("strong", { text: "并发协程" }), h("small", { text: "Go runtime" })), goroutines),
-      h("div", { class: "health-item" }, h("span", {}, h("strong", { text: "最近同步" }), h("small", { text: "每 4 秒自动刷新" })), syncedAt),
-    );
+    if (store.online !== lastOnline) {
+      lastOnline = store.online;
+      httpDetail.textContent = store.online ? "健康检查通过" : "无法连接到服务";
+      httpBadge.replaceChildren(store.online ? badge("正常", "success", "circle-check") : badge("异常", "danger", "circle-alert"));
+    }
 
     const sessions = status?.sessions || [];
     sessionCount.textContent = sessions.length ? `${sessions.length} 个会话正在运行` : "没有正在运行的会话";
