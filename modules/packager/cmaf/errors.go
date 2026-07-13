@@ -18,6 +18,7 @@ const (
 	ReasonSampleEntry      = "sample_entry_unsupported"
 	ReasonHandler          = "handler_unsupported"
 	ReasonMultiSampleEntry = "multi_sample_entry"
+	ReasonMalformed        = "malformed_media"
 )
 
 // UnsupportedError marks input the native path cannot handle. Whether it may

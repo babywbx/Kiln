@@ -68,7 +68,18 @@ type Init struct {
 	di mp4.DecryptInfo
 }
 
-func ParseInit(raw []byte) (*Init, error) {
+// ParseInit reads bytes an upstream gave us, so a defect in the box parser must
+// not be able to take the process down with it.
+func ParseInit(raw []byte) (init *Init, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			init, err = nil, unsupportedf(ReasonMalformed, "init segment crashed the box parser: %v", r)
+		}
+	}()
+	return parseInit(raw)
+}
+
+func parseInit(raw []byte) (*Init, error) {
 	f, err := mp4.DecodeFile(bytes.NewReader(raw))
 	if err != nil {
 		return nil, fmt.Errorf("decode init segment: %w", err)
@@ -88,16 +99,18 @@ func ParseInit(raw []byte) (*Init, error) {
 		return nil, unsupportedf(ReasonMultiTrackInit, "init segment has %d traks", len(moov.Traks))
 	}
 
+	trak := moov.Traks[0]
+	if trak.Tkhd == nil || trak.Mdia == nil || trak.Mdia.Mdhd == nil ||
+		trak.Mdia.Minf == nil || trak.Mdia.Minf.Stbl == nil || trak.Mdia.Minf.Stbl.Stsd == nil {
+		return nil, unsupportedf(ReasonNotFragmented, "incomplete trak")
+	}
+
 	di, err := mp4.DecryptInit(f.Init)
 	if err != nil {
 		return nil, unsupportedf(ReasonScheme, "%v", err)
 	}
 
-	trak := moov.Traks[0]
 	track := Track{ID: trak.Tkhd.TrackID}
-	if trak.Mdia == nil || trak.Mdia.Mdhd == nil || trak.Mdia.Minf == nil || trak.Mdia.Minf.Stbl == nil {
-		return nil, unsupportedf(ReasonNotFragmented, "incomplete trak")
-	}
 	track.Timescale = trak.Mdia.Mdhd.Timescale
 
 	for _, ti := range di.TrackInfos {
@@ -193,7 +206,16 @@ func (i *Init) DecryptOwnedReserved(raw []byte, keys KeySet, reserve func(int64)
 	return i.decryptOwnedReserved(raw, keys, reserve)
 }
 
-func (i *Init) decryptOwnedReserved(raw []byte, keys KeySet, reserve func(int64) error) (*Segment, error) {
+func (i *Init) decryptOwnedReserved(raw []byte, keys KeySet, reserve func(int64) error) (seg *Segment, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			seg, err = nil, unsupportedf(ReasonMalformed, "media segment crashed the box parser: %v", r)
+		}
+	}()
+	return i.decryptChecked(raw, keys, reserve)
+}
+
+func (i *Init) decryptChecked(raw []byte, keys KeySet, reserve func(int64) error) (*Segment, error) {
 	f, err := decodeOwnedSegment(raw)
 	if err != nil {
 		return nil, fmt.Errorf("decode media segment: %w", err)
