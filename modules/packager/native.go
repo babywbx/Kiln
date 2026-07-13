@@ -153,19 +153,32 @@ func (ts *trackState) estimate(segmentSeconds float64) int64 {
 	if n <= 0 {
 		n = declaredSize(ts.rep.Bandwidth, segmentSeconds)
 	}
-	return 2 * n
+	return n
 }
 
 func declaredSize(bandwidth int, seconds float64) int64 {
 	if bandwidth <= 0 || seconds <= 0 {
 		return initialSegmentEstimate
 	}
-	n := int64(float64(bandwidth) / 8 * seconds)
+	bytesPerSecond := int64(bandwidth) / 8
+	if seconds >= float64(maxInt64)/float64(bytesPerSecond) {
+		return maxInt64
+	}
+	n := int64(float64(bytesPerSecond) * seconds)
 	if n < initialSegmentEstimate {
 		return initialSegmentEstimate
 	}
 	return n
 }
+
+func addBytes(a, b int64) int64 {
+	if a > maxInt64-b {
+		return maxInt64
+	}
+	return a + b
+}
+
+const maxInt64 = int64(^uint64(0) >> 1)
 
 func (ts *trackState) observe(size int) {
 	if size > 0 {
@@ -182,6 +195,9 @@ type Native struct {
 	plan     Plan
 	packMode string
 	gate     *byteGate
+
+	budgetObserved func(string, int64)
+	stagePrepare   func() error
 
 	refresh string
 
@@ -629,13 +645,20 @@ func continuous(expected, got uint64, timescale uint32) bool {
 	return expected-got <= tolerance
 }
 
+func (n *Native) observeBudget(phase string) {
+	if n.budgetObserved != nil {
+		n.budgetObserved(phase, n.gate.usage())
+	}
+}
+
 func (n *Native) prepare(ctx context.Context, ts *trackState, seg mpd.Segment) (res prepared) {
-	held, err := n.gate.acquire(ctx, ts.estimate(seg.Seconds(ts.rep.Addressing.Timescale)))
+	reservation, err := n.gate.acquire(ctx, ts.estimate(seg.Seconds(ts.rep.Addressing.Timescale)))
 	if err != nil {
 		res.err = err
 		return res
 	}
-	defer n.gate.release(held)
+	defer reservation.release()
+	n.observeBudget("estimate")
 
 	n.segmentsFetched.Add(1)
 	raw, _, err := n.opts.Fetcher.Fetch(ctx, seg.URL)
@@ -649,12 +672,17 @@ func (n *Native) prepare(ctx context.Context, ts *trackState, seg mpd.Segment) (
 		res.err = fmt.Errorf("segment %s#%d is %d bytes, over the limit", ts.rep.ID, seg.Number, len(raw))
 		return res
 	}
+	ciphertextBytes := int64(len(raw))
+	if err := reservation.resize(ctx, ciphertextBytes); err != nil {
+		res.err = err
+		return res
+	}
+	n.observeBudget("ciphertext")
 	ts.observe(len(raw))
 
 	started := time.Now()
 	clear, err := ts.init.Decrypt(raw, n.opts.Keys)
 	n.decryptNanos.Add(int64(time.Since(started)))
-	raw = nil
 	if err != nil {
 		if u, ok := cmaf.Unsupported(err); ok && u.Reason == cmaf.ReasonMissingKey {
 			n.keyMismatches.Add(1)
@@ -662,6 +690,12 @@ func (n *Native) prepare(ctx context.Context, ts *trackState, seg mpd.Segment) (
 		res.err = fmt.Errorf("decrypt segment %s#%d: %w", ts.rep.ID, seg.Number, err)
 		return res
 	}
+	if err := reservation.resize(ctx, addBytes(ciphertextBytes, int64(len(clear.Clear)))); err != nil {
+		res.err = err
+		return res
+	}
+	n.observeBudget("plaintext")
+	raw = nil
 
 	res.baseTime = clear.BaseTime
 	res.duration = clear.Duration
@@ -669,7 +703,15 @@ func (n *Native) prepare(ctx context.Context, ts *trackState, seg mpd.Segment) (
 	if clear.Duration > 0 && ts.init.Track.Timescale > 0 {
 		res.dur = float64(clear.Duration) / float64(ts.init.Track.Timescale)
 	}
+	if n.stagePrepare != nil {
+		if err := n.stagePrepare(); err != nil {
+			res.err = err
+			return res
+		}
+	}
 	res.staged, err = n.pub.Stage(clear.Clear)
+	reservation.release()
+	n.observeBudget("staged")
 	if err != nil {
 		res.err = err
 	}

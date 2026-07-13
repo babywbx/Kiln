@@ -6,60 +6,134 @@ import (
 )
 
 type byteGate struct {
-	mu    sync.Mutex
-	cond  *sync.Cond
-	limit int64
-	used  int64
+	mu      sync.Mutex
+	limit   int64
+	used    int64
+	waiters []*byteWaiter
+}
+
+type byteWaiter struct {
+	n     int64
+	ready chan struct{}
+}
+
+type byteReservation struct {
+	mu       sync.Mutex
+	gate     *byteGate
+	n        int64
+	released bool
 }
 
 func newByteGate(limit int64) *byteGate {
 	if limit <= 0 {
 		limit = defaultInflightBytes
 	}
-	g := &byteGate{limit: limit}
-	g.cond = sync.NewCond(&g.mu)
-	return g
+	return &byteGate{limit: limit}
 }
 
-func (g *byteGate) acquire(ctx context.Context, n int64) (int64, error) {
-	if n <= 0 {
-		n = 1
+func (g *byteGate) acquire(ctx context.Context, n int64) (*byteReservation, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	if n > g.limit {
-		n = g.limit
-	}
-
-	stop := context.AfterFunc(ctx, func() {
-		g.mu.Lock()
-		g.cond.Broadcast()
-		g.mu.Unlock()
-	})
-	defer stop()
+	n = normalizedBytes(n)
+	w := &byteWaiter{n: n, ready: make(chan struct{})}
 
 	g.mu.Lock()
-	defer g.mu.Unlock()
-	for g.used+n > g.limit {
-		if err := ctx.Err(); err != nil {
-			return 0, err
+	g.waiters = append(g.waiters, w)
+	g.admitLocked()
+	g.mu.Unlock()
+
+	select {
+	case <-w.ready:
+		return &byteReservation{gate: g, n: n}, nil
+	case <-ctx.Done():
+		g.mu.Lock()
+		for i, candidate := range g.waiters {
+			if candidate == w {
+				g.waiters = append(g.waiters[:i], g.waiters[i+1:]...)
+				g.admitLocked()
+				g.mu.Unlock()
+				return nil, ctx.Err()
+			}
 		}
-		g.cond.Wait()
+		g.mu.Unlock()
+		<-w.ready
+		g.release(n)
+		return nil, ctx.Err()
 	}
-	if err := ctx.Err(); err != nil {
-		return 0, err
+}
+
+func (g *byteGate) admitLocked() {
+	for len(g.waiters) > 0 {
+		w := g.waiters[0]
+		if w.n > g.limit {
+			if g.used != 0 {
+				return
+			}
+		} else if g.used > g.limit-w.n {
+			return
+		}
+		g.waiters = g.waiters[1:]
+		g.used += w.n
+		close(w.ready)
+		if w.n > g.limit {
+			return
+		}
 	}
-	g.used += n
-	return n, nil
 }
 
 func (g *byteGate) release(n int64) {
-	if n <= 0 {
-		return
-	}
 	g.mu.Lock()
 	g.used -= n
-	if g.used < 0 {
-		g.used = 0
-	}
+	g.admitLocked()
 	g.mu.Unlock()
-	g.cond.Broadcast()
+}
+
+func (g *byteGate) usage() int64 {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.used
+}
+
+func (r *byteReservation) resize(ctx context.Context, n int64) error {
+	n = normalizedBytes(n)
+	r.mu.Lock()
+	if r.released {
+		r.mu.Unlock()
+		return nil
+	}
+	gate := r.gate
+	old := r.n
+	r.n = 0
+	gate.release(old)
+	resized, err := gate.acquire(ctx, n)
+	if err != nil {
+		r.released = true
+		r.mu.Unlock()
+		return err
+	}
+	r.n = resized.n
+	resized.released = true
+	r.mu.Unlock()
+	return nil
+}
+
+func (r *byteReservation) release() {
+	r.mu.Lock()
+	if r.released {
+		r.mu.Unlock()
+		return
+	}
+	r.released = true
+	n := r.n
+	r.n = 0
+	r.mu.Unlock()
+	r.gate.release(n)
+}
+
+func normalizedBytes(n int64) int64 {
+	if n <= 0 {
+		return 1
+	}
+	return n
 }

@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -408,6 +409,107 @@ func assertNoStages(t *testing.T, dir string) {
 	}
 	if len(matches) != 0 {
 		t.Fatalf("temporary stages remain: %v", matches)
+	}
+}
+
+func TestPrepareAccountsActualWorkingSetAndReleasesAfterStage(t *testing.T) {
+	data := fixtureSegment(t)
+	f := &controlledSegmentFetcher{data: data, starts: make(chan string, 1), release: map[string]chan struct{}{}, errs: map[string]error{}}
+	n, ts, segs, _ := pipelineNative(t, 1, f)
+	n.gate = newByteGate(int64(len(data)) * 4)
+	ts.segBytes.Store(1)
+	observed := map[string]int64{}
+	n.budgetObserved = func(phase string, usage int64) { observed[phase] = usage }
+	result := n.prepare(context.Background(), ts, segs[0])
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if observed["estimate"] != 1 {
+		t.Fatalf("estimated usage = %d, want 1", observed["estimate"])
+	}
+	if observed["ciphertext"] != int64(len(data)) {
+		t.Fatalf("ciphertext usage = %d, want %d", observed["ciphertext"], len(data))
+	}
+	if observed["plaintext"] <= observed["ciphertext"] {
+		t.Fatalf("plaintext usage = %d, want above ciphertext %d", observed["plaintext"], observed["ciphertext"])
+	}
+	if observed["staged"] != 0 || n.gate.usage() != 0 {
+		t.Fatalf("usage after Stage = %d, final = %d", observed["staged"], n.gate.usage())
+	}
+	n.pub.Discard(result.staged)
+}
+
+func TestPrepareReleasesBudgetOnAllExits(t *testing.T) {
+	data := fixtureSegment(t)
+	cases := []struct {
+		name  string
+		data  []byte
+		err   error
+		ctx   func() context.Context
+		stage func() error
+	}{
+		{name: "success", data: data, ctx: context.Background},
+		{name: "fetch", err: errors.New("fetch"), ctx: context.Background},
+		{name: "decrypt", data: []byte("invalid"), ctx: context.Background},
+		{name: "stage", data: data, ctx: context.Background, stage: func() error { return errors.New("stage") }},
+		{name: "cancel", data: data, ctx: func() context.Context { ctx, cancel := context.WithCancel(context.Background()); cancel(); return ctx }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &controlledSegmentFetcher{data: tc.data, starts: make(chan string, 1), release: map[string]chan struct{}{}, errs: map[string]error{"segment-1": tc.err}}
+			n, ts, segs, _ := pipelineNative(t, 1, f)
+			n.stagePrepare = tc.stage
+			result := n.prepare(tc.ctx(), ts, segs[0])
+			if tc.name == "success" {
+				if result.err != nil {
+					t.Fatal(result.err)
+				}
+				n.pub.Discard(result.staged)
+			} else if result.err == nil {
+				t.Fatal("prepare succeeded")
+			}
+			if got := n.gate.usage(); got != 0 {
+				t.Fatalf("usage = %d, want 0", got)
+			}
+		})
+	}
+}
+
+func TestPrepareActualCiphertextSerializesUnderestimatedTasks(t *testing.T) {
+	data := fixtureSegment(t)
+	block := make(chan struct{})
+	f := &controlledSegmentFetcher{data: data, starts: make(chan string, 2), release: map[string]chan struct{}{}, errs: map[string]error{}}
+	n, ts, segs, _ := pipelineNative(t, 2, f)
+	n.gate = newByteGate(int64(len(data)) * 2)
+	ts.segBytes.Store(1)
+	var plaintext atomic.Int64
+	n.budgetObserved = func(phase string, usage int64) {
+		if phase == "plaintext" && plaintext.Add(1) == 1 {
+			<-block
+		}
+		if usage > int64(len(data))*2 {
+			t.Errorf("usage = %d exceeds limit", usage)
+		}
+	}
+	done := make(chan prepared, 2)
+	go func() { done <- n.prepare(context.Background(), ts, segs[0]) }()
+	go func() { done <- n.prepare(context.Background(), ts, segs[1]) }()
+	<-f.starts
+	<-f.starts
+	time.Sleep(10 * time.Millisecond)
+	if got := plaintext.Load(); got != 1 {
+		t.Fatalf("plaintext workers = %d, want 1", got)
+	}
+	close(block)
+	for range 2 {
+		result := <-done
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		n.pub.Discard(result.staged)
+	}
+	if got := n.gate.usage(); got != 0 {
+		t.Fatalf("usage = %d", got)
 	}
 }
 
