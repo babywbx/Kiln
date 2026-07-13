@@ -64,7 +64,7 @@ vuln:
 	@command -v govulncheck >/dev/null 2>&1 || { echo "govulncheck not found: go install golang.org/x/vuln/cmd/govulncheck@latest"; exit 1; }
 	govulncheck ./...
 
-ci: fmt vet lint build test vuln
+ci: fmt vet lint build test media-oracle test-safety vuln
 
 clean:
 	rm -rf dist coverage.out
