@@ -2,6 +2,7 @@ package packager
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -165,4 +166,43 @@ func startExpiring(t *testing.T, origin *expiringOrigin, clock *fakeClock) *Nati
 	}
 	t.Cleanup(func() { _ = n.Stop() })
 	return n
+}
+
+func TestAStalledPublicationFailsOnlyWhenTheManifestIsHealthy(t *testing.T) {
+	origin := newLiveOrigin(t)
+	clock := newClock()
+	n, _ := startLive(t, origin, clock)
+
+	if err := n.checkStalled(); err != nil {
+		t.Fatalf("a publication that just started is not stalled: %v", err)
+	}
+
+	clock.advance(4 * time.Minute)
+
+	if err := n.checkStalled(); err != nil {
+		t.Fatalf("an unreachable upstream must keep retrying, not burn the restart budget: %v", err)
+	}
+
+	n.lastManifestOK = clock.now()
+	err := n.checkStalled()
+	if err == nil {
+		t.Fatal("a live manifest with a dead publication means we are broken, and must not look healthy")
+	}
+	var fatal *fatalError
+	if !errors.As(err, &fatal) {
+		t.Errorf("stall must end the publication so the session restarts, got %T", err)
+	}
+}
+
+func TestTheStallWatchdogCanBeDisabled(t *testing.T) {
+	origin := newLiveOrigin(t)
+	clock := newClock()
+	n, _ := startLive(t, origin, clock)
+	n.opts.StallTimeout = -1
+
+	clock.advance(time.Hour)
+	n.lastManifestOK = clock.now()
+	if err := n.checkStalled(); err != nil {
+		t.Fatalf("the watchdog must stay off when it is disabled: %v", err)
+	}
 }

@@ -71,6 +71,10 @@ inflight_bytes = 100663296
 # it stops audio from sliding its playlist window past what a player stalled on
 # video still needs.
 primary_track_hold_sec = 12
+# Fail a publication whose manifest keeps updating while nothing reaches the
+# playlist: at that point the fault is ours, and a restart re-plans from scratch.
+# An unreachable upstream is not this case and keeps retrying. -1 disables.
+stall_timeout_sec = 180
 
 [ffmpeg]
 mode = "native"       # native | docker

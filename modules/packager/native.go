@@ -70,6 +70,8 @@ type Options struct {
 
 	PrimaryTrackHold time.Duration
 
+	StallTimeout time.Duration
+
 	Gate *byteGate
 	Now  func() time.Time
 	Log  *slog.Logger
@@ -81,6 +83,7 @@ const (
 	defaultMaxSegmentBytes  = 32 << 20
 	defaultReanchorAfter    = 30 * time.Second
 	defaultPrimaryTrackHold = 12 * time.Second
+	defaultStallTimeout     = 3 * time.Minute
 	defaultRefreshInterval  = 2 * time.Second
 
 	defaultInflightBytes = 96 << 20
@@ -103,6 +106,9 @@ func (o *Options) applyDefaults() {
 	}
 	if o.PrimaryTrackHold <= 0 {
 		o.PrimaryTrackHold = defaultPrimaryTrackHold
+	}
+	if o.StallTimeout == 0 {
+		o.StallTimeout = defaultStallTimeout
 	}
 	if o.Gate == nil {
 		o.Gate = newByteGate(defaultInflightBytes)
@@ -178,6 +184,8 @@ type Native struct {
 	gate     *byteGate
 
 	refresh string
+
+	lastManifestOK time.Time
 
 	forceResolve atomic.Bool
 
@@ -297,6 +305,8 @@ func StartNative(ctx context.Context, opts Options) (*Native, error) {
 		refresh:  pres.Refresh,
 		done:     make(chan struct{}),
 		video:    newTrackState(trackVideo, plan.Video, videoInit, now),
+
+		lastManifestOK: now,
 	}
 	taken := map[string]struct{}{}
 	for i, rep := range plan.Audios {
@@ -648,6 +658,11 @@ func (n *Native) run(ctx context.Context, pres *mpd.Presentation) {
 		case <-timer.C:
 		}
 
+		if err := n.checkStalled(); err != nil {
+			n.fail(err)
+			return
+		}
+
 		n.manifestRefreshes.Add(1)
 		next, err := n.refreshManifest(ctx)
 		if err != nil {
@@ -659,6 +674,7 @@ func (n *Native) run(ctx context.Context, pres *mpd.Presentation) {
 			timer.Reset(interval)
 			continue
 		}
+		n.lastManifestOK = n.now()
 		if err := n.advance(ctx, next); err != nil {
 			if ctx.Err() != nil {
 				return
@@ -695,6 +711,27 @@ func (n *Native) refreshManifest(ctx context.Context) (*mpd.Presentation, error)
 	n.log.Warn("pinned manifest failed, re-resolving from the entry url",
 		"pinned", n.refresh, "err", err)
 	return n.resolveEntry(ctx)
+}
+
+// checkStalled ends a publication that cannot explain itself: the manifest is
+// being served and parsed, yet nothing reaches the playlist. Failing lets the
+// session restart and re-plan. An unreachable upstream is not this case, and
+// must keep retrying instead of burning the restart budget.
+func (n *Native) checkStalled() error {
+	if n.opts.StallTimeout <= 0 {
+		return nil
+	}
+	now := n.now()
+	if now.Sub(n.lastManifestOK) > n.opts.StallTimeout {
+		return nil
+	}
+	for _, ts := range n.tracks() {
+		if now.Sub(ts.lastProgress) <= n.opts.StallTimeout {
+			return nil
+		}
+	}
+	return &fatalError{fmt.Errorf("no segment published for %s while the manifest kept updating",
+		n.opts.StallTimeout)}
 }
 
 func (n *Native) resolveEntry(ctx context.Context) (*mpd.Presentation, error) {

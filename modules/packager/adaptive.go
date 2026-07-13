@@ -21,6 +21,7 @@ type NativeAdapter struct {
 	Prefetch         int
 	MaxSegmentBytes  int64
 	PrimaryTrackHold time.Duration
+	StallTimeout     time.Duration
 
 	newFetcher   func(req Request) Fetcher
 	playlistSize int
@@ -59,6 +60,7 @@ func (a *NativeAdapter) Start(ctx context.Context, req Request) (Job, error) {
 		Prefetch:         a.Prefetch,
 		MaxSegmentBytes:  a.MaxSegmentBytes,
 		PrimaryTrackHold: a.PrimaryTrackHold,
+		StallTimeout:     a.StallTimeout,
 		Gate:             a.gate,
 		Grace:            a.grace,
 		Now:              a.now,

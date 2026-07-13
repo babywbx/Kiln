@@ -143,6 +143,7 @@ func (m *Manager) newPackager() packager.Packager {
 	native.Prefetch = cfg.PrefetchSegments
 	native.MaxSegmentBytes = cfg.MaxSegmentBytes
 	native.PrimaryTrackHold = time.Duration(cfg.PrimaryTrackHoldSec) * time.Second
+	native.StallTimeout = time.Duration(cfg.StallTimeoutSec) * time.Second
 	native.SetInflightBytes(cfg.InflightBytes)
 	ffmpeg := packager.NewFFmpegAdapter(m.ffmpeg, m.egress, m.spawn, onBytesIn)
 	return packager.NewAdaptivePackager(native, ffmpeg, m.log)

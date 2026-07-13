@@ -175,6 +175,9 @@ type Packager struct {
 	// boundaries. It stops audio from sliding its playlist window past what a
 	// player stalled on video still needs.
 	PrimaryTrackHoldSec int `json:"primary_track_hold_sec" toml:"primary_track_hold_sec"`
+	// StallTimeoutSec fails a publication whose manifest keeps updating while
+	// nothing reaches the playlist. -1 disables it.
+	StallTimeoutSec int `json:"stall_timeout_sec" toml:"stall_timeout_sec"`
 	// InflightBytes bounds the segment bytes held in memory across every channel
 	// at once. This is what decides peak RSS: a 4K segment is tens of megabytes,
 	// so limiting prefetch by segment count instead would make memory a function
@@ -371,6 +374,9 @@ func (c *File) applyDefaults() {
 	}
 	if c.Packager.PrimaryTrackHoldSec <= 0 {
 		c.Packager.PrimaryTrackHoldSec = 12
+	}
+	if c.Packager.StallTimeoutSec == 0 {
+		c.Packager.StallTimeoutSec = 180
 	}
 	if c.Packager.InflightBytes <= 0 {
 		c.Packager.InflightBytes = 96 << 20
