@@ -8,14 +8,12 @@ import (
 	"github.com/babywbx/kiln/modules/packager/mpd"
 )
 
-// Engine names are stable and surfaced through the status API.
 const (
 	EngineNativeRewrite  = "native_rewrite"
 	EngineFFmpegCopy     = "ffmpeg_copy"
 	EngineFFmpegTranscod = "ffmpeg_transcode"
 )
 
-// Fallback reasons that originate in the manifest rather than the init segment.
 const (
 	ReasonNoVideo        = "no_video_representation"
 	ReasonNoAudio        = "no_audio_representation"
@@ -25,26 +23,18 @@ const (
 	ReasonKIDMismatch    = "manifest_kid_conflicts_with_tenc"
 	ReasonMissingKey     = "missing_key_for_kid"
 	ReasonMultiKIDNoFall = "multi_kid_cannot_fall_back"
-	// ReasonNativeStartFailed covers failures that are not about capability at
-	// all, such as an unreachable manifest. ffmpeg resolves the manifest on a
-	// different path, so it is still worth trying.
+
 	ReasonNativeStartFailed = "native_start_failed"
 )
 
-// Plan is the one-shot capability decision. Engine selection happens at
-// startup only; a running publication never switches engines.
 type Plan struct {
 	Engine string
 	Video  mpd.Representation
-	// Audios is one representation per audio adaptation set, in manifest order.
-	// The first one is what a player picks when it has no preference.
+
 	Audios []mpd.Representation
-	// SkippedAudios names the audio adaptation sets left out, so a channel that
-	// silently ships fewer languages than the source has says why.
+
 	SkippedAudios []string
-	// FallbackAllowed is not a global switch. It is false when ffmpeg would
-	// produce a worse result than an honest failure, e.g. multi-KID input,
-	// where ffmpeg is handed a single key and decodes garbage.
+
 	FallbackAllowed bool
 	Reason          string
 }
@@ -57,8 +47,6 @@ var nativeVideoCodecs = map[string]struct{}{
 
 var nativeAudioCodecs = map[string]struct{}{"mp4a": {}}
 
-// PlanFromManifest picks tracks and decides whether the native path can even be
-// attempted. It only sees the manifest; the init segments get the final say.
 func PlanFromManifest(p *mpd.Presentation, preferHeight int) (Plan, error) {
 	if len(p.Periods) != 1 {
 		return unsupportedPlan(ReasonMultiPeriod, true), nil
@@ -77,10 +65,6 @@ func PlanFromManifest(p *mpd.Presentation, preferHeight int) (Plan, error) {
 		return unsupportedPlan(ReasonManifestCodec, true), nil
 	}
 
-	// An audio the native path cannot carry is dropped, not fatal: a source that
-	// offers a second language in E-AC-3 should still serve the languages it
-	// offers in AAC, rather than sending the whole channel to ffmpeg, which would
-	// carry exactly one of them anyway.
 	plan := Plan{Engine: EngineNativeRewrite, Video: video, FallbackAllowed: true}
 	for _, a := range audios {
 		if _, ok := nativeAudioCodecs[family(a.Codecs)]; !ok || !nativeAddressing(a) {
@@ -104,14 +88,11 @@ func nativeAddressing(rep mpd.Representation) bool {
 	}
 }
 
-// trackPair is one representation next to what its init segment actually says.
 type trackPair struct {
 	rep   mpd.Representation
 	track cmaf.Track
 }
 
-// VerifyTracks is the second gate: the init segments carry the truth about
-// encryption scheme, sample entry and KID, and the manifest may disagree.
 func VerifyTracks(plan *Plan, video cmaf.Track, audios []cmaf.Track, keys cmaf.KeySet) error {
 	if len(audios) != len(plan.Audios) {
 		return fmt.Errorf("planned %d audio tracks but read %d init segments", len(plan.Audios), len(audios))
@@ -140,19 +121,12 @@ func VerifyTracks(plan *Plan, video cmaf.Track, audios []cmaf.Track, keys cmaf.K
 		kids[pair.track.KID] = struct{}{}
 	}
 
-	// ffmpeg takes a single -cenc_decryption_key and silently falls back to
-	// the first key on a KID miss, so handing it a multi-KID stream produces a
-	// stream that starts and then decodes to garbage. Failing is better.
 	if len(kids) > 1 {
 		plan.FallbackAllowed = false
 	}
 	return nil
 }
 
-// selectTracks picks the video rendition to carry, and one audio rendition per
-// audio adaptation set. Two representations in the same set are the same audio
-// at two bitrates, so only the best of each is taken; two sets are two different
-// audios, and both are carried.
 func selectTracks(reps []mpd.Representation, preferHeight int) (mpd.Representation, []mpd.Representation) {
 	var video mpd.Representation
 	var videoSet bool
@@ -186,8 +160,6 @@ func selectTracks(reps []mpd.Representation, preferHeight int) (mpd.Representati
 	return video, audios
 }
 
-// betterVideo prefers the tallest rendition at or below preferHeight, and the
-// shortest one above it when nothing fits.
 func betterVideo(candidate, current mpd.Representation, preferHeight int) bool {
 	if preferHeight <= 0 {
 		if candidate.Height != current.Height {

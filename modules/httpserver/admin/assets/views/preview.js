@@ -5,7 +5,6 @@ import { closeModal, openModal, toastError } from "/admin/assets/ui/overlay.js";
 
 let hlsPromise = null;
 
-// The light build ignores alternate audio renditions, which is our audio.
 function loadHls() {
   if (window.Hls) return Promise.resolve(window.Hls);
   if (!hlsPromise) {
@@ -21,11 +20,6 @@ function loadHls() {
   return hlsPromise;
 }
 
-// The preview must play from the origin the admin page is already on.
-// play_url is built from public_base_url, which is where *players* reach the
-// server, not necessarily where this browser reached it: a public_base_url of
-// 127.0.0.1 resolves to the operator's own machine. And a cross-origin playlist
-// needs CORS, which the play routes deliberately do not grant.
 function sameOrigin(playURL) {
   try {
     const parsed = new URL(playURL, window.location.href);
@@ -65,8 +59,6 @@ export async function previewChannel(channel) {
       status.classList.remove("is-error");
     });
 
-    // Safari plays HLS natively, and does it better than Media Source can:
-    // it is the only path that decodes HEVC without a codec negotiation.
     if (video.canPlayType("application/vnd.apple.mpegurl")) {
       video.addEventListener("error", () => {
         fail(`播放失败：${video.error?.message || "浏览器拒绝了这个流"}`);
@@ -81,7 +73,6 @@ export async function previewChannel(channel) {
       return;
     }
     player = new Hls({ enableWorker: true, lowLatencyMode: true });
-    // Without this, every failure is silent and the player just sits there.
     player.on(Hls.Events.ERROR, (_event, data) => {
       if (!data.fatal) return;
       if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {

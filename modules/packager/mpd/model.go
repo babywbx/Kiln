@@ -5,17 +5,13 @@ import (
 	"time"
 )
 
-// Presentation is the normalized manifest. Every Representation it carries is
-// self-contained: no caller ever has to walk back up for inherited attributes.
 type Presentation struct {
 	Dynamic  bool
 	Profiles string
 	BaseURL  string
-	// Location is where DASH says to re-fetch a dynamic manifest, when the
-	// manifest says so. It is absolute.
+
 	Location string
-	// Refresh is where the next refresh must actually go: Location if there is
-	// one, otherwise the URL this manifest resolved to.
+
 	Refresh                    string
 	MinimumUpdatePeriod        time.Duration
 	AvailabilityStartTime      time.Time
@@ -44,9 +40,7 @@ const (
 
 type Representation struct {
 	ID string
-	// Group is the adaptation set this representation came from. Renditions of
-	// one track share it: two audio representations in the same group are the
-	// same audio in two bitrates, while two groups are two different audios.
+
 	Group         string
 	Type          ContentType
 	MimeType      string
@@ -60,9 +54,6 @@ type Representation struct {
 	AudioChannels int
 	Trick         bool
 
-	// DefaultKID is advisory only. The authoritative KID is the one in the
-	// init segment's tenc box; this is used for cross-checking, and manifests
-	// are allowed to omit it entirely.
 	DefaultKID string
 	Encrypted  bool
 	Scheme     string
@@ -70,7 +61,6 @@ type Representation struct {
 	Addressing Addressing
 }
 
-// AddressingMode says how media segment URLs are derived.
 type AddressingMode string
 
 const (
@@ -92,8 +82,6 @@ type Addressing struct {
 	List                   []string
 }
 
-// TimelineEntry is one S element. Repeat is the raw @r: -1 means "keep going
-// until the period or the live edge ends", which is required, not optional.
 type TimelineEntry struct {
 	Time     uint64
 	Duration uint64
@@ -103,7 +91,6 @@ type TimelineEntry struct {
 func (r Representation) IsVideo() bool { return r.Type == TypeVideo }
 func (r Representation) IsAudio() bool { return r.Type == TypeAudio }
 
-// Segment is one addressable media segment.
 type Segment struct {
 	Number   uint64
 	Time     uint64
@@ -111,7 +98,6 @@ type Segment struct {
 	URL      string
 }
 
-// StartTime is the presentation time of the segment in seconds.
 func (s Segment) StartTime(timescale uint64) float64 {
 	if timescale == 0 {
 		return 0

@@ -43,8 +43,6 @@ func publish(t *testing.T, p *Publisher, track string, seq uint64, dur float64) 
 	}
 }
 
-// Nothing is playable until every track has an init and a segment; publishing
-// a master playlist earlier would point players at a track that cannot start.
 func TestNotPlayableUntilAllTracksHaveMedia(t *testing.T) {
 	p, _, _ := newTestPublisher(t, 4, time.Minute)
 	if p.Playable() {
@@ -66,8 +64,6 @@ func TestNotPlayableUntilAllTracksHaveMedia(t *testing.T) {
 	}
 }
 
-// A segment that arrives after the frontier has moved past it must be dropped.
-// Re-inserting it would reorder a window players may already hold.
 func TestFrontierIsMonotonic(t *testing.T) {
 	p, _, _ := newTestPublisher(t, 6, time.Minute)
 	publish(t, p, "audio-main", 1, 2)
@@ -111,8 +107,6 @@ func TestSlidingWindowAdvancesMediaSequence(t *testing.T) {
 	}
 }
 
-// A player holding the previous playlist must still be able to fetch a segment
-// that just slid out of the window.
 func TestExpiredSegmentSurvivesGracePeriod(t *testing.T) {
 	p, c, dir := newTestPublisher(t, 2, 30*time.Second)
 	publish(t, p, "audio-main", 1, 2)
@@ -139,9 +133,6 @@ func TestExpiredSegmentSurvivesGracePeriod(t *testing.T) {
 	}
 }
 
-// A target duration below the longest segment makes players stall, so an
-// oversized segment still forces it up even though HLS would rather it never
-// moved.
 func TestTargetDurationRoundsUp(t *testing.T) {
 	p, _, _ := newTestPublisher(t, 4, time.Minute)
 	publish(t, p, "audio-main", 1, 2)
@@ -154,11 +145,6 @@ func TestTargetDurationRoundsUp(t *testing.T) {
 	}
 }
 
-// HLS forbids changing EXT-X-TARGETDURATION under a player that is already
-// reading the playlist. Deriving it from the current window breaks that as soon
-// as a longer segment slides in, which real sources do: one origin declares 12 s
-// but mostly ships 8 s. The declared maximum is what gets published, from the
-// first playlist on.
 func TestTargetDurationIsPinnedToTheDeclaredMaximum(t *testing.T) {
 	c := &clock{t: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
 	p, err := New(Config{
@@ -178,7 +164,6 @@ func TestTargetDurationIsPinnedToTheDeclaredMaximum(t *testing.T) {
 		t.Fatalf("PublishInit: %v", err)
 	}
 
-	// The window only ever holds 8 s segments, until an 11.5 s one arrives.
 	for seq := uint64(1); seq <= 3; seq++ {
 		publish(t, p, "video-main", seq, 8)
 		pl, _ := p.Playlist("video-main.m3u8")
@@ -193,8 +178,6 @@ func TestTargetDurationIsPinnedToTheDeclaredMaximum(t *testing.T) {
 	}
 }
 
-// Serving is whitelist-based: an asset that was never published is not
-// reachable, whatever path a request asks for.
 func TestUnpublishedAssetIsNotServed(t *testing.T) {
 	p, _, _ := newTestPublisher(t, 4, time.Minute)
 	publish(t, p, "audio-main", 1, 2)
@@ -225,9 +208,6 @@ func TestPlaylistSnapshotIsStableWhenNothingChanges(t *testing.T) {
 	}
 }
 
-// A stream whose init changes mid-flight needs a second EXT-X-MAP. Overwriting
-// the first one would break every segment already in the window, which still
-// decodes against the old map.
 func TestInitChangeEmitsANewMap(t *testing.T) {
 	p, _, dir := newTestPublisher(t, 6, time.Minute)
 	publish(t, p, "audio-main", 1, 2)
@@ -250,7 +230,7 @@ func TestInitChangeEmitsANewMap(t *testing.T) {
 			t.Errorf("playlist is missing %s:\n%s", want, pl)
 		}
 	}
-	// The old map must still be readable by players holding the older window.
+
 	if _, err := os.Stat(filepath.Join(dir, "video-main-init.mp4")); err != nil {
 		t.Errorf("the first init segment was overwritten or removed: %v", err)
 	}
@@ -259,7 +239,6 @@ func TestInitChangeEmitsANewMap(t *testing.T) {
 	}
 }
 
-// An unchanged init must not churn the playlist with a repeated map.
 func TestUnchangedInitDoesNotRepeatTheMap(t *testing.T) {
 	p, _, _ := newTestPublisher(t, 6, time.Minute)
 	publish(t, p, "audio-main", 1, 2)

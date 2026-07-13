@@ -5,7 +5,6 @@ import (
 	"strings"
 )
 
-// MasterName is the entry playlist every player starts from.
 const MasterName = "master.m3u8"
 
 func mediaPlaylist(t *track, endList bool) []byte {
@@ -20,8 +19,6 @@ func mediaPlaylist(t *track, endList bool) []byte {
 	fmt.Fprintf(&b, "#EXT-X-MEDIA-SEQUENCE:%d\n", t.mediaSequence)
 	fmt.Fprintf(&b, "#EXT-X-DISCONTINUITY-SEQUENCE:%d\n", t.discontinuitySequence)
 
-	// The map is re-emitted whenever it changes, so segments that decode against
-	// an older init keep working after the stream switches to a new one.
 	currentMap := ""
 	for _, s := range t.segments {
 		if s.Discontinuity {

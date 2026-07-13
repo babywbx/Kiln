@@ -39,9 +39,6 @@ func multiKeyPairs() []config.KeyPair {
 	}
 }
 
-// breakSegments serves the manifest and the init segments but fails every media
-// segment, so the native path gets far enough to learn the input is multi-KID
-// and then dies.
 type breakSegments struct{ inner Fetcher }
 
 func (f *breakSegments) Fetch(ctx context.Context, url string) ([]byte, string, error) {
@@ -51,8 +48,6 @@ func (f *breakSegments) Fetch(ctx context.Context, url string) ([]byte, string, 
 	return f.inner.Fetch(ctx, url)
 }
 
-// spyPackager stands in for the ffmpeg adapter, so a fallback is visible instead
-// of merely being a second failure.
 type spyPackager struct{ started bool }
 
 func (p *spyPackager) Start(context.Context, Request) (Job, error) {
@@ -60,8 +55,6 @@ func (p *spyPackager) Start(context.Context, Request) (Job, error) {
 	return nil, errors.New("spy ffmpeg")
 }
 
-// A different key per track is the case ffmpeg cannot serve at all: its dash
-// demuxer takes one -cenc_decryption_key. Native has to handle it directly.
 func TestNativeServesMultiKID(t *testing.T) {
 	origin := startOrigin(t, "multikid")
 	job, err := StartNative(context.Background(), Options{
@@ -92,9 +85,6 @@ func TestNativeServesMultiKID(t *testing.T) {
 	}
 }
 
-// Once the init segments prove the input is multi-KID, no later failure may send
-// it to ffmpeg. ffmpeg would start, use its single key on both tracks, and serve
-// one of them as garbage; failing outright is the honest outcome.
 func TestMultiKIDStartFailureDoesNotFallBackToFFmpeg(t *testing.T) {
 	origin := startOrigin(t, "multikid")
 	spy := &spyPackager{}
@@ -119,8 +109,6 @@ func TestMultiKIDStartFailureDoesNotFallBackToFFmpeg(t *testing.T) {
 	}
 }
 
-// The same failure on a single-KID source is a plain fetch failure, and ffmpeg
-// resolves the manifest on its own path, so there the fallback must still happen.
 func TestSingleKIDStartFailureFallsBackToFFmpeg(t *testing.T) {
 	origin := startOrigin(t, "h264")
 	spy := &spyPackager{}

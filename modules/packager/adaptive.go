@@ -16,8 +16,6 @@ import (
 	"github.com/babywbx/kiln/modules/packager/hls"
 )
 
-// NativeAdapter runs the in-process CMAF rewrite path. It starts no external
-// process and writes no MPEG-TS.
 type NativeAdapter struct {
 	StartSegments    int
 	Prefetch         int
@@ -28,8 +26,7 @@ type NativeAdapter struct {
 	playlistSize int
 	grace        time.Duration
 	now          func() time.Time
-	// gate is shared by every channel this adapter starts, so peak memory is
-	// bounded for the process rather than per channel.
+
 	gate *byteGate
 }
 
@@ -42,7 +39,6 @@ func NewNativeAdapter(newFetcher func(req Request) Fetcher, playlistSize int, gr
 	}
 }
 
-// SetInflightBytes bounds the segment bytes held in memory across all channels.
 func (a *NativeAdapter) SetInflightBytes(limit int64) {
 	a.gate = newByteGate(limit)
 }
@@ -126,9 +122,6 @@ func (p *nativePublication) Asset(name string) (Asset, bool) {
 	return Asset{Path: path, Immutable: true, ModTime: st.ModTime()}, true
 }
 
-// AdaptivePackager resolves engine=auto once, at startup. A publication never
-// switches engines while it is running: that would change the playlist topology
-// and sequence numbering under a player that is already reading it.
 type AdaptivePackager struct {
 	native *NativeAdapter
 	ffmpeg Packager
@@ -159,9 +152,7 @@ func (a *AdaptivePackager) Start(ctx context.Context, req Request) (Job, error) 
 	if err == nil {
 		return job, nil
 	}
-	// A cancelled start is us stopping the channel, not the source being
-	// unsupported. Launching ffmpeg here would resurrect a session we just tore
-	// down.
+
 	if ctx.Err() != nil {
 		return nil, err
 	}
@@ -171,9 +162,7 @@ func (a *AdaptivePackager) Start(ctx context.Context, req Request) (Job, error) 
 	if errors.As(err, &fb) {
 		reason = fb.Reason
 		if !fb.Allowed {
-			// Some inputs are worse off on ffmpeg than failing outright: a
-			// multi-KID stream would start and then decode to garbage, because
-			// ffmpeg takes a single key. An honest failure beats a broken picture.
+
 			return nil, apperr.Wrap(apperr.CodeUpstream, 502,
 				"native cannot handle this source and ffmpeg would decode it incorrectly", err)
 		}
@@ -183,9 +172,6 @@ func (a *AdaptivePackager) Start(ctx context.Context, req Request) (Job, error) 
 			"engine=native but the source cannot be served natively", err)
 	}
 
-	// Even a plain fetch failure is worth retrying on ffmpeg: it resolves the
-	// manifest through a different path (origin to CDN, with its own retries),
-	// so a native fetch failure does not prove ffmpeg would fail too.
 	a.log.Info("falling back to ffmpeg", "channel", req.ChannelID, "reason", reason, "err", err)
 	return a.startFFmpeg(ctx, req, reason)
 }
@@ -201,8 +187,6 @@ func (a *AdaptivePackager) startFFmpeg(ctx context.Context, req Request, reason 
 	return job, nil
 }
 
-// cleanWorkDir gives each engine its own directory, so a fallback never serves
-// a mix of the previous engine's assets and the new one's.
 func cleanWorkDir(req Request, engine string) Request {
 	out := req
 	out.WorkDir = filepath.Join(req.WorkDir, engine)

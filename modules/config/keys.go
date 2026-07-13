@@ -32,8 +32,6 @@ func LoadKeysFile(path string) ([]KeyPair, error) {
 	return keys, nil
 }
 
-// ParseKeys reads kid:key lines. It is the one parser for both the keys file and
-// the keys typed into the admin form, so the two can never drift.
 func ParseKeys(text string) ([]KeyPair, error) {
 	var out []KeyPair
 	sc := bufio.NewScanner(strings.NewReader(text))
@@ -70,8 +68,6 @@ func ParseKeys(text string) ([]KeyPair, error) {
 	return out, nil
 }
 
-// validHex catches the mistakes people actually make when pasting a key: a
-// dashed KID copied out of an MPD, or a truncated value.
 func validHex(s, what string, lineNo int) error {
 	s = strings.ReplaceAll(s, "-", "")
 	if len(s) != 32 {
@@ -83,9 +79,6 @@ func validHex(s, what string, lineNo int) error {
 	return nil
 }
 
-// MaskKeys renders keys for display. The KID is public — it is in the manifest —
-// but the key itself never leaves the server, so an admin can see which keys are
-// configured without the page ever holding one.
 func MaskKeys(text string) string {
 	keys, err := ParseKeys(text)
 	if err != nil {
@@ -98,12 +91,8 @@ func MaskKeys(text string) string {
 	return strings.Join(lines, "\n")
 }
 
-// maskedKey is what the form shows in place of a key. A submitted value that
-// still contains it means the admin did not touch the field.
 const maskedKey = "********************************"
 
-// KeysUnchanged reports whether a submitted keys blob is just the masked form
-// handed back, in which case the stored keys must be kept.
 func KeysUnchanged(submitted string) bool {
 	return strings.Contains(submitted, maskedKey)
 }

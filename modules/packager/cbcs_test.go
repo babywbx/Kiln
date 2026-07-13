@@ -10,9 +10,6 @@ import (
 	"github.com/babywbx/kiln/modules/packager/hls"
 )
 
-// cbcs is the scheme Apple's own DRM uses, so a channel that only supports cenc
-// refuses a large slice of real sources. The manifest declares it, the init
-// segment's schm box declares it, and both have to be accepted end to end.
 func TestNativeServesACbcsSource(t *testing.T) {
 	job, out := runNative(t, "cbcs")
 
@@ -55,9 +52,6 @@ func TestNativeServesACbcsSource(t *testing.T) {
 	}
 }
 
-// The published segments must be clear. A cbcs segment that was never decrypted
-// still parses, still has valid box structure, and still plays as noise, so the
-// only honest check is that the protection boxes are gone.
 func TestCbcsOutputCarriesNoProtection(t *testing.T) {
 	_, out := runNative(t, "cbcs")
 

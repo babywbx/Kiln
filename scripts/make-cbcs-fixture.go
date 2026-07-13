@@ -1,9 +1,5 @@
 //go:build ignore
 
-// make-cbcs-fixture turns clear fragmented MP4s into a cbcs-encrypted DASH
-// fixture. ffmpeg only writes cenc-aes-ctr, so cbcs coverage has to be produced
-// here. The encryption is done by the library's own encryptor, which keeps the
-// fixture independent of the decryption path under test.
 package main
 
 import (
@@ -19,7 +15,6 @@ import (
 	"github.com/Eyevinn/mp4ff/mp4"
 )
 
-// encrypt writes one track's init and media segments, encrypted in place.
 func encrypt(path, outDir string, streamID int, key, kid []byte, clearDir string) (int, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -41,9 +36,6 @@ func encrypt(path, outDir string, streamID int, key, kid []byte, clearDir string
 		return 0, fmt.Errorf("%s: no fragments", path)
 	}
 
-	// The plaintext goes next to the fixture: it is what the decrypted output is
-	// held against, and without it a passing test would only prove that the two
-	// halves of one library agree with each other.
 	if clearDir != "" {
 		if err := write(filepath.Join(clearDir, fmt.Sprintf("init-stream%d.m4s", streamID)), f.Init); err != nil {
 			return 0, err
@@ -56,7 +48,6 @@ func encrypt(path, outDir string, streamID int, key, kid []byte, clearDir string
 		}
 	}
 
-	// cbcs uses one constant IV for every sample, carried in the tenc box.
 	iv, err := hex.DecodeString("11223344556677889900aabbccddeeff")
 	if err != nil {
 		return 0, err

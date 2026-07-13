@@ -7,14 +7,6 @@ import (
 	"github.com/Eyevinn/mp4ff/mp4"
 )
 
-// cbcs is AES-CBC pattern encryption: only the first block of every ten is
-// encrypted, and the IV is constant rather than per-sample. Nothing about the
-// cenc path proves it works, and getting the pattern wrong produces samples that
-// still parse as valid NAL units.
-//
-// The fixture ships the plaintext next to the ciphertext, so what is compared
-// here is our decrypted output against media that was never encrypted, not one
-// half of a library against the other.
 func TestCbcsDecryptsToThePlaintext(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -58,8 +50,6 @@ func TestCbcsDecryptsToThePlaintext(t *testing.T) {
 	}
 }
 
-// A cbcs source must not be decrypted with the wrong key just because a key is
-// present: strict-KID applies to every scheme.
 func TestCbcsRefusesAKeyForAnotherKID(t *testing.T) {
 	init, err := ParseInit(readFixture(t, "cbcs", "init-stream0.m4s"))
 	if err != nil {
@@ -74,7 +64,6 @@ func TestCbcsRefusesAKeyForAnotherKID(t *testing.T) {
 	}
 }
 
-// sampleBytes is every sample's payload, in decode order.
 func sampleBytes(t *testing.T, initRaw, segRaw []byte) [][]byte {
 	t.Helper()
 	initFile, err := mp4.DecodeFile(bytes.NewReader(initRaw))

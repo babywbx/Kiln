@@ -229,8 +229,6 @@ func listAddressing(l *xmlSegmentList, base *url.URL) (Addressing, error) {
 	return addr, nil
 }
 
-// mergeTemplate lets a child SegmentTemplate override individual attributes of
-// its parent rather than replacing the whole element.
 func mergeTemplate(parent, child *xmlSegmentTmpl) *xmlSegmentTmpl {
 	if parent == nil {
 		return child

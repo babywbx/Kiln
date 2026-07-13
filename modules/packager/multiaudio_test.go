@@ -10,9 +10,6 @@ import (
 	"github.com/babywbx/kiln/modules/packager/mpd"
 )
 
-// Every real broadcast source carries more than one language. Taking only the
-// first one is the difference between a channel that works and a channel that
-// works for half its audience.
 func TestEveryAudioLanguageIsPublished(t *testing.T) {
 	origin := newLiveOrigin(t)
 	origin.audios = []audioSet{
@@ -39,8 +36,7 @@ func TestEveryAudioLanguageIsPublished(t *testing.T) {
 		t.Fatal("no master playlist")
 	}
 	got := string(master)
-	// Both renditions are in the same group, so a player can switch between
-	// them, and exactly one of them is the default.
+
 	if n := strings.Count(got, "#EXT-X-MEDIA:TYPE=AUDIO"); n != 2 {
 		t.Fatalf("master advertises %d audio renditions, want 2:\n%s", n, got)
 	}
@@ -54,8 +50,6 @@ func TestEveryAudioLanguageIsPublished(t *testing.T) {
 	}
 }
 
-// Each language keeps its own position in the timeline, so they all have to
-// advance on a refresh, not just the default one.
 func TestEveryAudioLanguageAdvances(t *testing.T) {
 	origin := newLiveOrigin(t)
 	origin.audios = []audioSet{
@@ -78,8 +72,6 @@ func TestEveryAudioLanguageAdvances(t *testing.T) {
 	}
 }
 
-// Two representations in one adaptation set are one language at two bitrates:
-// only the best is carried. Two adaptation sets are two languages: both are.
 func TestOneRenditionPerAdaptationSet(t *testing.T) {
 	origin := newLiveOrigin(t)
 	origin.audios = []audioSet{
@@ -102,8 +94,6 @@ func TestOneRenditionPerAdaptationSet(t *testing.T) {
 	}
 }
 
-// An audio the native path cannot carry costs that language, not the channel.
-// Sending the whole stream to ffmpeg over it would drop every language but one.
 func TestAnUnsupportedAudioCodecOnlyCostsThatLanguage(t *testing.T) {
 	origin := newLiveOrigin(t)
 	origin.audios = []audioSet{
@@ -118,8 +108,7 @@ func TestAnUnsupportedAudioCodecOnlyCostsThatLanguage(t *testing.T) {
 	if len(plan.Audios) != 1 || plan.Audios[0].ID != "a0" {
 		t.Fatalf("planned audios = %v, want just a0", plan.Audios)
 	}
-	// Silently shipping fewer languages than the source has is the thing to
-	// avoid; the plan has to say which ones went missing.
+
 	if len(plan.SkippedAudios) != 1 || plan.SkippedAudios[0] != "e0" {
 		t.Errorf("skipped = %v, want [e0]", plan.SkippedAudios)
 	}

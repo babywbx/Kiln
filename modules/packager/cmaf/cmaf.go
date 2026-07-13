@@ -1,5 +1,4 @@
-// Package cmaf turns encrypted DASH CMAF tracks into clear HLS-compatible fMP4
-// without decoding, re-encoding or touching compressed samples.
+// Package cmaf turns encrypted DASH CMAF tracks into clear HLS-compatible fMP4.
 package cmaf
 
 import (
@@ -18,15 +17,10 @@ const (
 	KindAudio Kind = "audio"
 )
 
-// supportedSchemes is the whitelist. cenc is AES-CTR full-sample encryption;
-// cbcs is AES-CBC pattern encryption. cens and cbc1 stay out: no fixture, so no
-// claim.
 var supportedSchemes = map[string]struct{}{"cenc": {}, "cbcs": {}}
 
-// KeySet maps a normalized KID to its 16-byte content key.
 type KeySet map[string][]byte
 
-// NewKeySet parses hex kid:key pairs. Dashes and 0x prefixes are tolerated.
 func NewKeySet(pairs map[string]string) (KeySet, error) {
 	out := make(KeySet, len(pairs))
 	for kid, key := range pairs {
@@ -66,8 +60,6 @@ type Track struct {
 	Scheme     string
 }
 
-// Init is a parsed, decrypted, HLS-ready init segment plus everything needed to
-// decrypt the media segments that reference it.
 type Init struct {
 	Clear []byte
 	Track Track
@@ -75,8 +67,6 @@ type Init struct {
 	di mp4.DecryptInfo
 }
 
-// ParseInit strips CENC protection from a DASH init segment and normalizes its
-// sample entry for HLS. The KID comes from the track's tenc box, never the MPD.
 func ParseInit(raw []byte) (*Init, error) {
 	f, err := mp4.DecodeFile(bytes.NewReader(raw))
 	if err != nil {
@@ -140,8 +130,6 @@ func ParseInit(raw []byte) (*Init, error) {
 	return &Init{Clear: buf.Bytes(), Track: track, di: di}, nil
 }
 
-// describeSampleEntry reads the entry left behind by DecryptInit. The stsd
-// typed pointers still point at encv/enca, so walk Children instead.
 func describeSampleEntry(stsd *mp4.StsdBox, track *Track) error {
 	var video *mp4.VisualSampleEntryBox
 	var audio *mp4.AudioSampleEntryBox
@@ -190,16 +178,12 @@ func describeSampleEntry(stsd *mp4.StsdBox, track *Track) error {
 	return nil
 }
 
-// Segment is a decrypted media segment ready to publish.
 type Segment struct {
 	Clear    []byte
 	BaseTime uint64
 	Duration uint64
 }
 
-// Decrypt decrypts one media segment in place and re-encodes it. Keys are
-// matched strictly by the track KID; a missing key is an error, never a
-// silent fallback to some other key.
 func (i *Init) Decrypt(raw []byte, keys KeySet) (*Segment, error) {
 	f, err := mp4.DecodeFile(bytes.NewReader(raw))
 	if err != nil {
@@ -234,8 +218,6 @@ func (i *Init) Decrypt(raw []byte, keys KeySet) (*Segment, error) {
 	return &Segment{Clear: buf.Bytes(), BaseTime: base, Duration: dur}, nil
 }
 
-// segmentTiming derives the decode time and duration from the fragments
-// themselves so the playlist never has to trust the manifest's arithmetic.
 func segmentTiming(seg *mp4.MediaSegment, di mp4.DecryptInfo, trackID uint32) (uint64, uint64, error) {
 	var base uint64
 	var total uint64

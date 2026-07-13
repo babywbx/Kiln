@@ -8,13 +8,10 @@ import (
 	"time"
 )
 
-// The budget is in bytes, not segments, because that is what memory is. Three
-// segments in flight is nothing for a 2 MB rendition and a quarter of a
-// gigabyte for a 4K one.
 func TestByteGateBoundsConcurrencyBySize(t *testing.T) {
 	const (
 		limit   = 64 << 20
-		segment = 30 << 20 // one 4K segment, ciphertext plus plaintext
+		segment = 30 << 20
 	)
 	g := newByteGate(limit)
 
@@ -43,8 +40,6 @@ func TestByteGateBoundsConcurrencyBySize(t *testing.T) {
 		}()
 	}
 
-	// Nothing may proceed past two at a time: a third would put 90 MB of media
-	// in memory against a 64 MB budget.
 	waitFor(t, &live, 2)
 	if got := peak.Load(); got > 2 {
 		t.Fatalf("%d segments were in flight at once, the budget allows 2", got)
@@ -57,8 +52,6 @@ func TestByteGateBoundsConcurrencyBySize(t *testing.T) {
 	}
 }
 
-// A segment bigger than the whole budget must still get through, alone, rather
-// than wait forever for room that can never exist.
 func TestByteGateAdmitsAnOversizedSegment(t *testing.T) {
 	g := newByteGate(8 << 20)
 	held, err := g.acquire(context.Background(), 64<<20)
@@ -91,9 +84,6 @@ func TestByteGateUnblocksOnCancel(t *testing.T) {
 	}
 }
 
-// The manifest already says how big a segment will be. Guessing small instead
-// is what lets the whole opening window start fetching before any of them has
-// reported a size.
 func TestSegmentSizeIsEstimatedFromTheDeclaredBandwidth(t *testing.T) {
 	if got := declaredSize(15_128_000, 8); got != 15_128_000 {
 		t.Errorf("declaredSize = %d, want bandwidth/8 * 8s = 15128000", got)
