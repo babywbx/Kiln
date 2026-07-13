@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
+	"math/bits"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,11 +19,16 @@ import (
 )
 
 type Fetcher interface {
+	// Fetch transfers ownership of data to the caller.
 	Fetch(ctx context.Context, url string) (data []byte, finalURL string, err error)
 }
 
 type reservedFetcher interface {
 	FetchReserved(ctx context.Context, url string, reserve func(int64) error) (data []byte, finalURL string, err error)
+}
+
+type manifestReservedFetcher interface {
+	FetchManifestReserved(ctx context.Context, url string, reserve func(int64) error) (data []byte, finalURL string, err error)
 }
 
 const (
@@ -105,12 +112,6 @@ func (o *Options) applyDefaults() {
 	if o.Prefetch <= 0 {
 		o.Prefetch = defaultPrefetch
 	}
-	if o.DecryptWorkers <= 0 {
-		o.DecryptWorkers = defaultPrefetch
-	}
-	if o.DecryptPool == nil {
-		o.DecryptPool = make(chan struct{}, o.DecryptWorkers)
-	}
 	if o.MaxSegmentBytes <= 0 {
 		o.MaxSegmentBytes = defaultMaxSegmentBytes
 	}
@@ -118,11 +119,13 @@ func (o *Options) applyDefaults() {
 		o.Gate = newByteGate(defaultInflightBytes)
 	}
 	if o.DownloadPool == nil {
-		slots := int(o.Gate.capacity() / o.MaxSegmentBytes)
-		if slots < 2 {
-			slots = 2
+		o.DownloadPool = make(chan struct{}, downloadSlots(o.Gate.capacity(), o.MaxSegmentBytes))
+	}
+	if o.DecryptPool == nil {
+		if o.DecryptWorkers <= 0 {
+			o.DecryptWorkers = decryptSlots(o.Gate.capacity(), o.MaxSegmentBytes)
 		}
-		o.DownloadPool = make(chan struct{}, slots)
+		o.DecryptPool = make(chan struct{}, o.DecryptWorkers)
 	}
 	if o.ReanchorAfter <= 0 {
 		o.ReanchorAfter = defaultReanchorAfter
@@ -184,7 +187,7 @@ func declaredSize(bandwidth int, seconds float64) int64 {
 }
 
 func segmentWorkingSet(n int64) int64 {
-	return addBytes(n, addBytes(n, n))
+	return addBytes(n, n)
 }
 
 func addBytes(a, b int64) int64 {
@@ -320,13 +323,17 @@ func StartNative(ctx context.Context, opts Options) (*Native, error) {
 		opts.Log.Warn("carrying a representation with an essential property we do not act on",
 			"schemes", plan.UnknownEssential)
 	}
+	maxSegmentDuration, err := publicationMaxSegmentDuration(pres, plan)
+	if err != nil {
+		return nil, noFallback(plan, err)
+	}
 
 	pub, err := hls.New(hls.Config{
 		Dir:                opts.Dir,
 		PlaylistSize:       opts.PlaylistSize,
 		Grace:              opts.Grace,
 		Static:             !pres.Dynamic,
-		MaxSegmentDuration: pres.MaxSegmentDuration,
+		MaxSegmentDuration: maxSegmentDuration,
 		Now:                opts.Now,
 	})
 	if err != nil {
@@ -373,6 +380,32 @@ func StartNative(ctx context.Context, opts Options) (*Native, error) {
 	return n, nil
 }
 
+func publicationMaxSegmentDuration(pres *mpd.Presentation, plan Plan) (time.Duration, error) {
+	if pres.Dynamic {
+		return pres.MaxSegmentDuration, nil
+	}
+	maximum := pres.MaxSegmentDuration
+	for _, rep := range append([]mpd.Representation{plan.Video}, plan.Audios...) {
+		durations := []uint64{rep.Addressing.Duration}
+		if rep.Addressing.Mode == mpd.AddressingTemplateTimeline {
+			durations = make([]uint64, 0, len(rep.Addressing.Timeline))
+			for _, entry := range rep.Addressing.Timeline {
+				durations = append(durations, entry.Duration)
+			}
+		}
+		for _, ticks := range durations {
+			duration, ok := ticksDuration(ticks, rep.Addressing.Timescale)
+			if !ok {
+				return 0, fmt.Errorf("segment duration is outside the supported range on %s", rep.ID)
+			}
+			if duration > maximum {
+				maximum = duration
+			}
+		}
+	}
+	return maximum, nil
+}
+
 func noFallback(plan Plan, err error) error {
 	if err == nil || plan.FallbackAllowed {
 		return err
@@ -385,16 +418,59 @@ func noFallback(plan Plan, err error) error {
 }
 
 func fetchManifest(ctx context.Context, opts Options, url string) (*mpd.Presentation, error) {
-	raw, finalURL, err := opts.Fetcher.Fetch(ctx, url)
+	raw, finalURL, reservation, err := fetchManifestBytes(ctx, opts, url)
 	if err != nil {
 		return nil, fmt.Errorf("fetch manifest: %w", err)
 	}
+	defer reservation.release()
 	pres, err := mpd.Parse(raw, finalURL)
 	if err != nil {
 		return nil, &FallbackError{Reason: ReasonAddressing, Allowed: true, Err: err}
 	}
 	pres.Refresh = refreshURL(pres, finalURL)
 	return pres, nil
+}
+
+func fetchManifestBytes(ctx context.Context, opts Options, url string) ([]byte, string, *byteReservation, error) {
+	if !acquireSlot(ctx, opts.DownloadPool) {
+		return nil, "", nil, ctx.Err()
+	}
+	reservation, err := opts.Gate.acquire(ctx, 1)
+	if err != nil {
+		<-opts.DownloadPool
+		return nil, "", nil, err
+	}
+	reservation.onRelease = func() { <-opts.DownloadPool }
+
+	var raw []byte
+	var finalURL string
+	if fetcher, ok := opts.Fetcher.(manifestReservedFetcher); ok {
+		raw, finalURL, err = fetcher.FetchManifestReserved(ctx, url, func(liveBytes int64) error {
+			if !reservation.resizeContext(ctx, liveBytes) {
+				return errors.New("manifest memory budget exhausted")
+			}
+			return nil
+		})
+	} else {
+		if !reservation.resizeContext(ctx, opts.MaxSegmentBytes) {
+			reservation.release()
+			return nil, "", nil, errors.New("manifest memory budget exhausted")
+		}
+		raw, finalURL, err = opts.Fetcher.Fetch(ctx, url)
+	}
+	if err != nil {
+		reservation.release()
+		return nil, "", nil, err
+	}
+	if int64(len(raw)) > opts.MaxSegmentBytes || int64(cap(raw)) > downloadWorkingSet(opts.MaxSegmentBytes) {
+		reservation.release()
+		return nil, "", nil, errors.New("upstream response too large")
+	}
+	if !reservation.resizeContext(ctx, int64(cap(raw))) {
+		reservation.release()
+		return nil, "", nil, errors.New("manifest memory budget exhausted")
+	}
+	return raw, finalURL, reservation, nil
 }
 
 func refreshURL(pres *mpd.Presentation, finalURL string) string {
@@ -443,10 +519,12 @@ func loadInit(ctx context.Context, opts Options, rep mpd.Representation) (*cmaf.
 		return nil, &FallbackError{Reason: ReasonAddressing, Allowed: true,
 			Err: fmt.Errorf("representation %s has no initialization segment", rep.ID)}
 	}
-	raw, _, err := opts.Fetcher.Fetch(ctx, rep.Addressing.InitURL)
+	raw, _, reservation, err := fetchBounded(ctx, opts.Fetcher, opts.Gate, opts.DownloadPool,
+		opts.MaxSegmentBytes, rep.Addressing.InitURL)
 	if err != nil {
 		return nil, fmt.Errorf("fetch init %s: %w", rep.ID, err)
 	}
+	defer reservation.release()
 	init, err := cmaf.ParseInit(raw)
 	if err != nil {
 		if u, ok := cmaf.Unsupported(err); ok {
@@ -608,12 +686,27 @@ func (n *Native) segmentTime(ts *trackState, seg mpd.Segment) time.Time {
 	if n.epoch.IsZero() || addr.Timescale == 0 || seg.Time < addr.PresentationTimeOffset {
 		return time.Time{}
 	}
-	// Segment.Time is on the media timeline; the period starts at the offset.
-	elapsed := float64(seg.Time-addr.PresentationTimeOffset) / float64(addr.Timescale)
-	return n.epoch.Add(time.Duration(elapsed * float64(time.Second)))
+	elapsed, ok := ticksDuration(seg.Time-addr.PresentationTimeOffset, addr.Timescale)
+	if !ok {
+		return time.Time{}
+	}
+	return n.epoch.Add(elapsed)
 }
 
 func (n *Native) commit(ts *trackState, seg mpd.Segment, p prepared) error {
+	readyTicks, ok := addUint64(seg.Time, seg.Duration)
+	if !ok {
+		return fmt.Errorf("segment media time overflows on %s", ts.rep.ID)
+	}
+	readyMillis, ok := millis(readyTicks, ts.rep.Addressing.Timescale)
+	if !ok {
+		return fmt.Errorf("segment media time is outside the supported range on %s", ts.rep.ID)
+	}
+	expectedDTS, ok := addUint64(p.baseTime, p.duration)
+	if !ok {
+		return fmt.Errorf("decoded media time overflows on %s", ts.rep.ID)
+	}
+
 	discontinuity := ts.forceDiscontinuity
 	if ts.hasExpected && !continuous(ts.expectedDTS, p.baseTime, ts.init.Track.Timescale) {
 		discontinuity = true
@@ -639,19 +732,53 @@ func (n *Native) commit(ts *trackState, seg mpd.Segment, p prepared) error {
 	ts.nextSeq++
 	ts.lastTime = seg.Time
 	ts.hasLast = true
-	ts.expectedDTS = p.baseTime + p.duration
+	ts.expectedDTS = expectedDTS
 	ts.hasExpected = true
 	ts.forceDiscontinuity = false
 	ts.lastProgress = n.now()
-	ts.readyMillis.Store(millis(seg.Time+seg.Duration, ts.rep.Addressing.Timescale))
+	ts.readyMillis.Store(readyMillis)
 	return nil
 }
 
-func millis(ticks uint64, timescale uint64) int64 {
-	if timescale == 0 {
-		return -1
+func addUint64(a, b uint64) (uint64, bool) {
+	if b > math.MaxUint64-a {
+		return 0, false
 	}
-	return int64(ticks * 1000 / timescale)
+	return a + b, true
+}
+
+func millis(ticks uint64, timescale uint64) (int64, bool) {
+	if timescale == 0 {
+		return 0, false
+	}
+	whole := ticks / timescale
+	if whole > math.MaxInt64/1000 {
+		return 0, false
+	}
+	hi, lo := bits.Mul64(ticks%timescale, 1000)
+	fraction, _ := bits.Div64(hi, lo, timescale)
+	value := whole*1000 + fraction
+	if value > math.MaxInt64 {
+		return 0, false
+	}
+	return int64(value), true
+}
+
+func ticksDuration(ticks uint64, timescale uint64) (time.Duration, bool) {
+	if timescale == 0 {
+		return 0, false
+	}
+	whole := ticks / timescale
+	if whole > math.MaxInt64/uint64(time.Second) {
+		return 0, false
+	}
+	hi, lo := bits.Mul64(ticks%timescale, uint64(time.Second))
+	fraction, _ := bits.Div64(hi, lo, timescale)
+	value := whole*uint64(time.Second) + fraction
+	if value > math.MaxInt64 {
+		return 0, false
+	}
+	return time.Duration(value), true
 }
 
 func continuous(expected, got uint64, timescale uint32) bool {
@@ -687,64 +814,111 @@ func acquireSlot(ctx context.Context, pool chan struct{}) bool {
 	}
 }
 
+func downloadWorkingSet(maxSegment int64) int64 {
+	if maxSegment <= 0 {
+		return 1
+	}
+	next := min(maxSegment, 32<<10)
+	var previous int64
+	for next < maxSegment {
+		previous = next
+		if next > maxSegment/2 {
+			next = maxSegment
+		} else {
+			next *= 2
+		}
+	}
+	return addBytes(previous, next)
+}
+
+func downloadSlots(budget, maxSegment int64) int {
+	peak := downloadWorkingSet(maxSegment)
+	slots := int(budget / peak)
+	if slots < 1 {
+		return 1
+	}
+	return slots
+}
+
+func decryptSlots(budget, maxSegment int64) int {
+	workingSet := segmentWorkingSet(maxSegment)
+	if workingSet <= 0 {
+		return 1
+	}
+	slots := int(budget / workingSet)
+	if slots < 1 {
+		return 1
+	}
+	return slots
+}
+
 func (n *Native) downloadPool() chan struct{} {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if n.download == nil {
-		slots := int(n.gate.capacity() / n.opts.MaxSegmentBytes)
-		if slots < 2 {
-			slots = 2
-		}
-		n.download = make(chan struct{}, slots)
+		n.download = make(chan struct{}, downloadSlots(n.gate.capacity(), n.opts.MaxSegmentBytes))
 	}
 	return n.download
 }
 
 func (n *Native) fetchSegment(ctx context.Context, url string) ([]byte, *byteReservation, error) {
-	pool := n.downloadPool()
+	raw, _, reservation, err := fetchBounded(ctx, n.opts.Fetcher, n.gate, n.downloadPool(),
+		n.opts.MaxSegmentBytes, url)
+	return raw, reservation, err
+}
+
+func fetchBounded(ctx context.Context, fetcher Fetcher, gate *byteGate, pool chan struct{}, maxBytes int64, url string) ([]byte, string, *byteReservation, error) {
 	if !acquireSlot(ctx, pool) {
-		return nil, nil, ctx.Err()
+		return nil, "", nil, ctx.Err()
 	}
-	reservation, err := n.gate.acquire(ctx, 1)
+	reservation, err := gate.acquire(ctx, 1)
 	if err != nil {
 		<-pool
-		return nil, nil, err
+		return nil, "", nil, err
 	}
 	reservation.onRelease = func() { <-pool }
-	fetcher, reserved := n.opts.Fetcher.(reservedFetcher)
 	var raw []byte
-	if reserved {
-		raw, _, err = fetcher.FetchReserved(ctx, url, func(capacity int64) error {
-			if capacity > n.opts.MaxSegmentBytes+1 {
+	var finalURL string
+	if reserved, ok := fetcher.(reservedFetcher); ok {
+		raw, finalURL, err = reserved.FetchReserved(ctx, url, func(liveBytes int64) error {
+			if liveBytes > downloadWorkingSet(maxBytes) {
 				return errors.New("upstream response too large")
 			}
-			if !reservation.resize(capacity) {
+			if !reservation.resizeContext(ctx, liveBytes) {
 				return errors.New("segment memory budget exhausted")
 			}
 			return nil
 		})
 	} else {
-		if !reservation.resize(n.opts.MaxSegmentBytes) {
+		if !reservation.resizeContext(ctx, maxBytes) {
 			reservation.release()
-			return nil, nil, errors.New("segment memory budget exhausted")
+			return nil, "", nil, errors.New("segment memory budget exhausted")
 		}
-		raw, _, err = n.opts.Fetcher.Fetch(ctx, url)
+		raw, finalURL, err = fetcher.Fetch(ctx, url)
 	}
 	if err != nil {
 		reservation.release()
-		return nil, nil, err
+		return nil, "", nil, err
 	}
-	if int64(len(raw)) > n.opts.MaxSegmentBytes {
+	if int64(len(raw)) > maxBytes || int64(cap(raw)) > addBytes(maxBytes, maxBytes) {
 		reservation.release()
-		return nil, nil, errors.New("upstream response too large")
+		return nil, "", nil, errors.New("upstream response too large")
 	}
-	if int64(cap(raw)) > n.opts.MaxSegmentBytes {
+	if int64(cap(raw)) > maxBytes {
+		peak := addBytes(int64(cap(raw)), int64(len(raw)))
+		if !reservation.resizeContext(ctx, peak) {
+			reservation.release()
+			return nil, "", nil, errors.New("segment memory budget exhausted")
+		}
 		exact := make([]byte, len(raw))
 		copy(exact, raw)
 		raw = exact
 	}
-	reservation.shrink(int64(cap(raw)))
-	return raw, reservation, nil
+	if !reservation.resizeContext(ctx, int64(cap(raw))) {
+		reservation.release()
+		return nil, "", nil, errors.New("segment memory budget exhausted")
+	}
+	return raw, finalURL, reservation, nil
 }
 
 func (n *Native) acquireDecrypt(ctx context.Context) chan struct{} {
@@ -793,8 +967,8 @@ func (n *Native) prepare(ctx context.Context, ts *trackState, seg mpd.Segment) (
 		return res
 	}
 	started := time.Now()
-	clear, err := ts.init.DecryptReserved(raw, n.opts.Keys, func(clearCapacity int64) error {
-		if !reservation.resize(addBytes(int64(cap(raw)), clearCapacity)) {
+	clear, err := ts.init.DecryptOwnedReserved(raw, n.opts.Keys, func(clearCapacity int64) error {
+		if !reservation.resizeContext(ctx, addBytes(int64(cap(raw)), clearCapacity)) {
 			return errors.New("segment memory budget exhausted")
 		}
 		return nil
@@ -837,7 +1011,10 @@ func (n *Native) run(ctx context.Context, pres *mpd.Presentation) {
 	if !pres.Dynamic {
 		if err := n.advance(ctx, pres); err != nil {
 			n.fail(err)
+			return
 		}
+		n.pub.Complete()
+		<-ctx.Done()
 		return
 	}
 
@@ -881,6 +1058,11 @@ func (n *Native) run(ctx context.Context, pres *mpd.Presentation) {
 				return
 			}
 			n.log.Warn("segment publish failed", "err", err)
+		}
+		if !next.Dynamic {
+			n.pub.Complete()
+			<-ctx.Done()
+			return
 		}
 		if p := next.MinimumUpdatePeriod; p > 0 {
 			interval = p
@@ -1061,10 +1243,14 @@ func (n *Native) holdBehindVideo(ts *trackState, pending []mpd.Segment) []mpd.Se
 	if watermark < 0 || len(pending) == 0 {
 		return pending
 	}
-	limit := watermark + n.opts.PrimaryTrackHold.Milliseconds()
+	hold := n.opts.PrimaryTrackHold.Milliseconds()
+	limit := int64(math.MaxInt64)
+	if hold <= math.MaxInt64-watermark {
+		limit = watermark + hold
+	}
 	timescale := ts.rep.Addressing.Timescale
 	for i, seg := range pending {
-		if start := millis(seg.Time, timescale); start >= 0 && start > limit {
+		if start, ok := millis(seg.Time, timescale); ok && start > limit {
 			n.trackHolds.Add(1)
 			n.log.Info("holding audio behind the video watermark", "track", ts.name,
 				"video_ready_ms", watermark, "audio_start_ms", start, "held", len(pending)-i)

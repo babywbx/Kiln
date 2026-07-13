@@ -4,6 +4,7 @@ package cmaf
 import (
 	"bytes"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -185,11 +186,15 @@ type Segment struct {
 }
 
 func (i *Init) Decrypt(raw []byte, keys KeySet) (*Segment, error) {
-	return i.DecryptReserved(raw, keys, nil)
+	return i.decryptOwnedReserved(bytes.Clone(raw), keys, nil)
 }
 
-func (i *Init) DecryptReserved(raw []byte, keys KeySet, reserve func(int64) error) (*Segment, error) {
-	f, err := mp4.DecodeFile(bytes.NewReader(raw))
+func (i *Init) DecryptOwnedReserved(raw []byte, keys KeySet, reserve func(int64) error) (*Segment, error) {
+	return i.decryptOwnedReserved(raw, keys, reserve)
+}
+
+func (i *Init) decryptOwnedReserved(raw []byte, keys KeySet, reserve func(int64) error) (*Segment, error) {
+	f, err := decodeOwnedSegment(raw)
 	if err != nil {
 		return nil, fmt.Errorf("decode media segment: %w", err)
 	}
@@ -226,6 +231,28 @@ func (i *Init) DecryptReserved(raw []byte, keys KeySet, reserve func(int64) erro
 		return nil, fmt.Errorf("encode clear segment: %w", err)
 	}
 	return &Segment{Clear: buf.Bytes(), BaseTime: base, Duration: dur}, nil
+}
+
+func decodeOwnedSegment(raw []byte) (*mp4.File, error) {
+	f, err := mp4.DecodeFile(bytes.NewReader(raw), mp4.WithDecodeMode(mp4.DecModeLazyMdat))
+	if err != nil {
+		return nil, err
+	}
+	for _, segment := range f.Segments {
+		for _, fragment := range segment.Fragments {
+			mdat := fragment.Mdat
+			if mdat == nil {
+				return nil, errors.New("fragment has no mdat")
+			}
+			start := mdat.PayloadAbsoluteOffset()
+			size := mdat.GetLazyDataSize()
+			if start > uint64(len(raw)) || size > uint64(len(raw))-start {
+				return nil, errors.New("mdat payload is outside the segment")
+			}
+			mdat.SetData(raw[start : start+size])
+		}
+	}
+	return f, nil
 }
 
 func segmentTiming(seg *mp4.MediaSegment, di mp4.DecryptInfo, trackID uint32) (uint64, uint64, error) {

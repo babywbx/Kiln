@@ -344,6 +344,24 @@ func TestRepeatedInitChangesRemainBounded(t *testing.T) {
 	}
 }
 
+func TestUnreferencedInitChangesAreReapedWithoutMediaProgress(t *testing.T) {
+	p, _, _ := newTestPublisher(t, 2, time.Second)
+	for version := byte(1); version <= 12; version++ {
+		if err := p.PublishInit("video-main", []byte{version}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	count := 0
+	for name := range p.assets {
+		if strings.HasPrefix(name, "video-main-init") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("unreferenced init assets = %d, want 1", count)
+	}
+}
+
 func TestInitRemovalFailureDoesNotBreakPublication(t *testing.T) {
 	p, c, dir := newTestPublisher(t, 1, time.Second)
 	publish(t, p, "audio-main", 1, 2)
@@ -416,7 +434,7 @@ func TestStaticPublicationKeepsEveryInitAsset(t *testing.T) {
 	}
 }
 
-func TestStaticPublicationEndsList(t *testing.T) {
+func TestStaticPublicationEndsOnlyAfterCompletion(t *testing.T) {
 	c := &clock{t: time.Now()}
 	p, err := New(Config{Dir: t.TempDir(), PlaylistSize: 2, Static: true, Now: c.now})
 	if err != nil {
@@ -432,10 +450,56 @@ func TestStaticPublicationEndsList(t *testing.T) {
 		publish(t, p, "video-main", seq, 2)
 	}
 	pl, _ := p.Playlist("video-main.m3u8")
+	if strings.Contains(string(pl), "#EXT-X-ENDLIST") {
+		t.Errorf("incomplete static playlist ended early:\n%s", pl)
+	}
+
+	p.Complete()
+	pl, _ = p.Playlist("video-main.m3u8")
 	if !strings.Contains(string(pl), "#EXT-X-ENDLIST") {
-		t.Errorf("static playlist has no ENDLIST:\n%s", pl)
+		t.Errorf("completed static playlist has no ENDLIST:\n%s", pl)
 	}
 	if strings.Count(string(pl), ".m4s") != 4 {
 		t.Errorf("static playlist must keep every segment:\n%s", pl)
+	}
+}
+
+func TestStaticPublicationAppendsWithoutReencodingHistory(t *testing.T) {
+	p, err := New(Config{Dir: t.TempDir(), Static: true, MaxSegmentDuration: 2 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.AddTrack(Track{Name: "video-main", Kind: KindVideo, Codec: "avc1.42C00C"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.PublishInit("video-main", []byte("init")); err != nil {
+		t.Fatal(err)
+	}
+	mediaCalls := 0
+	p.encoder.media = func(track *track, endList bool) []byte {
+		mediaCalls++
+		return mediaPlaylist(track, endList)
+	}
+
+	publish(t, p, "video-main", 1, 2)
+	first, _ := p.Playlist("video-main.m3u8")
+	wantFirst := string(first)
+	for seq := uint64(2); seq <= 100; seq++ {
+		publish(t, p, "video-main", seq, 2)
+	}
+	p.Complete()
+
+	if mediaCalls != 1 {
+		t.Fatalf("full media encodes = %d, want 1", mediaCalls)
+	}
+	if string(first) != wantFirst {
+		t.Fatal("an earlier playlist snapshot changed after append")
+	}
+	final, _ := p.Playlist("video-main.m3u8")
+	if got := strings.Count(string(final), ".m4s"); got != 100 {
+		t.Fatalf("segments = %d, want 100", got)
+	}
+	if !strings.Contains(string(final), "#EXT-X-ENDLIST") {
+		t.Fatal("completed playlist has no ENDLIST")
 	}
 }

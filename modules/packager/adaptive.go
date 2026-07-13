@@ -39,8 +39,8 @@ func NewNativeAdapter(newFetcher func(req Request) Fetcher, playlistSize int, gr
 		playlistSize: playlistSize,
 		grace:        grace,
 		gate:         newByteGate(defaultInflightBytes),
-		download:     make(chan struct{}, defaultInflightBytes/defaultMaxSegmentBytes),
-		decrypt:      make(chan struct{}, defaultPrefetch),
+		download:     make(chan struct{}, downloadSlots(defaultInflightBytes, defaultMaxSegmentBytes)),
+		decrypt:      make(chan struct{}, decryptSlots(defaultInflightBytes, defaultMaxSegmentBytes)),
 	}
 }
 
@@ -50,11 +50,8 @@ func (a *NativeAdapter) SetInflightBytes(limit int64) {
 	if maxSegmentBytes <= 0 {
 		maxSegmentBytes = defaultMaxSegmentBytes
 	}
-	slots := int(a.gate.capacity() / maxSegmentBytes)
-	if slots < 2 {
-		slots = 2
-	}
-	a.download = make(chan struct{}, slots)
+	a.download = make(chan struct{}, downloadSlots(a.gate.capacity(), maxSegmentBytes))
+	a.decrypt = make(chan struct{}, decryptSlots(a.gate.capacity(), maxSegmentBytes))
 }
 
 func (a *NativeAdapter) Start(ctx context.Context, req Request) (Job, error) {

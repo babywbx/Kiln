@@ -2,6 +2,7 @@ package packager
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -111,6 +112,25 @@ func TestAnUnsupportedAudioCodecOnlyCostsThatLanguage(t *testing.T) {
 
 	if len(plan.SkippedAudios) != 1 || plan.SkippedAudios[0] != "e0" {
 		t.Errorf("skipped = %v, want [e0]", plan.SkippedAudios)
+	}
+}
+
+func TestAudioTrackCountIsCappedBeforeStartingPipelines(t *testing.T) {
+	origin := newLiveOrigin(t)
+	origin.audios = make([]audioSet, 0, maxNativeAudioTracks+4)
+	for i := range maxNativeAudioTracks + 4 {
+		origin.audios = append(origin.audios, audioSet{
+			prefix: fmt.Sprintf("a%d", i),
+			lang:   fmt.Sprintf("lang-%d", i),
+			reps:   []audioRep{{id: fmt.Sprintf("audio-%d", i), bandwidth: 32000}},
+		})
+	}
+	plan := planFor(t, origin)
+	if got := len(plan.Audios); got != maxNativeAudioTracks {
+		t.Fatalf("planned audio tracks = %d, want %d", got, maxNativeAudioTracks)
+	}
+	if got := len(plan.SkippedAudios); got != 4 {
+		t.Fatalf("skipped audio tracks = %d, want 4", got)
 	}
 }
 

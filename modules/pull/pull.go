@@ -164,6 +164,10 @@ func (c *Client) GetBytes(ctx context.Context, req Request) ([]byte, string, err
 	return c.GetBytesLimit(ctx, req, c.maxPlaylist)
 }
 
+func (c *Client) GetBytesReserve(ctx context.Context, req Request, reserve func(int64) error) ([]byte, string, error) {
+	return c.GetBytesLimitReserve(ctx, req, c.maxPlaylist, reserve)
+}
+
 // GetBytesLimit reads at most max bytes. Media segments are far larger than
 // playlists, so they need their own ceiling rather than the playlist one.
 func (c *Client) GetBytesLimit(ctx context.Context, req Request, max int64) ([]byte, string, error) {
@@ -181,25 +185,48 @@ func (c *Client) GetBytesLimitReserve(ctx context.Context, req Request, max int6
 	defer res.Body.Close()
 	var b []byte
 	for {
+		if int64(len(b)) == max {
+			var extra [1]byte
+			n, readErr := res.Body.Read(extra[:])
+			if n > 0 {
+				return nil, "", apperr.New(apperr.CodeUpstream, 502, "upstream response too large")
+			}
+			if readErr == io.EOF {
+				return b, res.FinalURL, nil
+			}
+			if readErr != nil {
+				return nil, "", apperr.Wrap(apperr.CodeUpstream, 502, "read upstream body failed", readErr)
+			}
+			continue
+		}
 		if len(b) == cap(b) {
-			next := int64(cap(b)) * 2
+			oldCapacity := int64(cap(b))
+			next := oldCapacity * 2
 			if next < 32<<10 {
 				next = 32 << 10
 			}
-			if next > max+1 {
-				next = max + 1
+			if next > max {
+				next = max
 			}
-			if next <= int64(cap(b)) {
+			if next <= oldCapacity {
 				return nil, "", apperr.New(apperr.CodeUpstream, 502, "upstream response too large")
 			}
 			if reserve != nil {
-				if err := reserve(next); err != nil {
+				if next > int64(^uint64(0)>>1)-oldCapacity {
+					return nil, "", apperr.New(apperr.CodeUpstream, 502, "upstream response too large")
+				}
+				if err := reserve(oldCapacity + next); err != nil {
 					return nil, "", err
 				}
 			}
 			grown := make([]byte, len(b), next)
 			copy(grown, b)
 			b = grown
+			if reserve != nil {
+				if err := reserve(next); err != nil {
+					return nil, "", err
+				}
+			}
 		}
 		n, readErr := res.Body.Read(b[len(b):cap(b)])
 		b = b[:len(b)+n]

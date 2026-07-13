@@ -165,6 +165,79 @@ func TestByteReservationResizeRejectsGrowthWithoutCapacity(t *testing.T) {
 	reservation.release()
 }
 
+func TestByteReservationResizeAdmitsOneOversizedWorkingSet(t *testing.T) {
+	g := newByteGate(10)
+	reservation, err := g.acquire(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reservation.resize(15) {
+		t.Fatal("exclusive reservation could not grow beyond the nominal budget")
+	}
+	if got := g.usage(); got != 15 {
+		t.Fatalf("usage = %d, want 15", got)
+	}
+	reservation.release()
+}
+
+func TestByteReservationGrowthWaitsForAnotherStage(t *testing.T) {
+	g := newByteGate(96)
+	decrypt, err := g.acquire(context.Background(), 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	download, err := g.acquire(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan bool, 1)
+	go func() {
+		done <- download.resizeContext(context.Background(), 48)
+	}()
+	select {
+	case <-done:
+		t.Fatal("download growth did not wait for decrypt memory")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	decrypt.release()
+	select {
+	case ok := <-done:
+		if !ok {
+			t.Fatal("download growth failed after memory became available")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("download growth remained blocked")
+	}
+	download.release()
+}
+
+func TestByteReservationGrowthDoesNotDeadlockBehindANewWaiter(t *testing.T) {
+	g := newByteGate(96)
+	active, err := g.acquire(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waiting := make(chan *byteReservation, 1)
+	go func() {
+		reservation, _ := g.acquire(context.Background(), 96)
+		waiting <- reservation
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	if !active.resizeContext(context.Background(), 32) {
+		t.Fatal("active growth deadlocked behind a waiter")
+	}
+	active.release()
+	select {
+	case reservation := <-waiting:
+		reservation.release()
+	case <-time.After(time.Second):
+		t.Fatal("waiter was not admitted after the active reservation released")
+	}
+}
+
 func BenchmarkByteReservationResize(b *testing.B) {
 	g := newByteGate(1 << 30)
 	reservation, err := g.acquire(context.Background(), 32<<10)

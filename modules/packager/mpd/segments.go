@@ -121,7 +121,7 @@ func timelineSegments(rep Representation, horizon uint64, budget *expansionBudge
 	addr := rep.Addressing
 	var out []Segment
 	number := addr.StartNumber
-	for _, e := range addr.Timeline {
+	for entryIndex, e := range addr.Timeline {
 		if e.Repeat >= 0 {
 			if e.Repeat == math.MaxInt64 {
 				return nil, addressingError(rep.ID, "repeat+1", ErrAddressingOverflow)
@@ -151,7 +151,7 @@ func timelineSegments(rep Representation, horizon uint64, budget *expansionBudge
 				}
 				out = append(out, makeSegment(rep, number, t, e.Duration))
 				number, addErr = checkedAdd(number, 1)
-				if addErr != nil && i+1 < count {
+				if addErr != nil && (i+1 < count || entryIndex+1 < len(addr.Timeline)) {
 					return nil, addressingError(rep.ID, "startNumber+index", addErr)
 				}
 			}

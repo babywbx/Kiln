@@ -89,6 +89,8 @@ var nativeVideoCodecs = map[string]struct{}{
 
 var nativeAudioCodecs = map[string]struct{}{"mp4a": {}}
 
+const maxNativeAudioTracks = 16
+
 func PlanFromManifest(p *mpd.Presentation, preferHeight int) (Plan, error) {
 	if len(p.Periods) != 1 {
 		return unsupportedPlan(ReasonMultiPeriod, true), nil
@@ -111,6 +113,10 @@ func PlanFromManifest(p *mpd.Presentation, preferHeight int) (Plan, error) {
 	plan.UnknownEssential = unknownEssential(append([]mpd.Representation{video}, audios...)...)
 	for _, a := range audios {
 		if _, ok := nativeAudioCodecs[family(a.Codecs)]; !ok || !nativeAddressing(a) {
+			plan.SkippedAudios = append(plan.SkippedAudios, a.ID)
+			continue
+		}
+		if len(plan.Audios) >= maxNativeAudioTracks {
 			plan.SkippedAudios = append(plan.SkippedAudios, a.ID)
 			continue
 		}

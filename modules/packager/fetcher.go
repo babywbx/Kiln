@@ -23,12 +23,24 @@ func (f *PullFetcher) Fetch(ctx context.Context, url string) ([]byte, string, er
 	if f.Client == nil {
 		return nil, "", errors.New("packager: no upstream client")
 	}
-	return f.Client.GetBytesLimit(ctx, pull.Request{
+	return f.Client.GetBytes(ctx, pull.Request{
 		URL:       url,
 		UserAgent: version.UserAgent(f.UserAgent),
 		Headers:   f.Headers,
 		ChannelID: f.ChannelID,
-	}, f.MaxBytes)
+	})
+}
+
+func (f *PullFetcher) FetchManifestReserved(ctx context.Context, url string, reserve func(int64) error) ([]byte, string, error) {
+	if f.Client == nil {
+		return nil, "", errors.New("packager: no upstream client")
+	}
+	return f.Client.GetBytesReserve(ctx, pull.Request{
+		URL:       url,
+		UserAgent: version.UserAgent(f.UserAgent),
+		Headers:   f.Headers,
+		ChannelID: f.ChannelID,
+	}, reserve)
 }
 
 func (f *PullFetcher) FetchReserved(ctx context.Context, url string, reserve func(int64) error) ([]byte, string, error) {

@@ -288,6 +288,22 @@ func TestTimelineTimeOverflowIsRejected(t *testing.T) {
 	}
 }
 
+func TestTimelineNumberOverflowAcrossEntriesIsRejected(t *testing.T) {
+	rep := Representation{ID: "v", Addressing: Addressing{
+		Mode:        AddressingTemplateTimeline,
+		Timescale:   1,
+		StartNumber: math.MaxUint64,
+		Timeline: []TimelineEntry{
+			{Time: 0, Duration: 1},
+			{Time: 1, Duration: 1},
+		},
+	}}
+	_, err := testPresentation(rep).AvailableSegments(0, rep, time.Time{})
+	if !errors.Is(err, ErrAddressingOverflow) {
+		t.Fatalf("err=%v", err)
+	}
+}
+
 func TestDurationNumberOverflowIsRejected(t *testing.T) {
 	rep := Representation{ID: "v", Addressing: Addressing{Mode: AddressingTemplateDuration, Timescale: 1, Duration: 1, StartNumber: math.MaxUint64}}
 	p := testPresentation(rep)

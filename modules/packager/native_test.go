@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -78,10 +79,14 @@ func runNative(t *testing.T, dir string) (*Native, string) {
 	origin := startOrigin(t, dir)
 	out := t.TempDir()
 
+	keySet := keys(t)
+	if dir == "multikid" {
+		keySet = multiKeys(t)
+	}
 	job, err := StartNative(context.Background(), Options{
 		ManifestURL:   origin.URL + "/stream.mpd",
 		Dir:           out,
-		Keys:          keys(t),
+		Keys:          keySet,
 		Fetcher:       &httpFetcher{client: origin.Client(), hits: map[string]int{}},
 		StartSegments: 1,
 	})
@@ -92,8 +97,22 @@ func runNative(t *testing.T, dir string) (*Native, string) {
 	return job, out
 }
 
+func waitForStaticCompletion(t *testing.T, job *Native) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		pl, ok := job.Publication().Playlist("video-main.m3u8")
+		if ok && strings.Contains(string(pl), "#EXT-X-ENDLIST") {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("static publication did not finish draining")
+}
+
 func TestNativeProducesPlayableHLS(t *testing.T) {
 	job, out := runNative(t, "hevc")
+	waitForStaticCompletion(t, job)
 
 	if job.Engine() != EngineNativeRewrite {
 		t.Fatalf("engine = %s, want %s", job.Engine(), EngineNativeRewrite)
@@ -148,10 +167,22 @@ func TestNativeProducesPlayableHLS(t *testing.T) {
 	}
 }
 
+func TestCompletedStaticPublicationStaysAliveUntilStopped(t *testing.T) {
+	job, _ := runNative(t, "hevc")
+	waitForStaticCompletion(t, job)
+
+	select {
+	case <-job.Done():
+		t.Fatal("completed static publication stopped serving without an explicit stop")
+	default:
+	}
+}
+
 // The whole point of the native path: no MPEG-TS, no external process, and no
 // stray copies of the media on disk.
 func TestNativeWritesOnlyFinalAssets(t *testing.T) {
-	_, out := runNative(t, "hevc")
+	job, out := runNative(t, "hevc")
+	waitForStaticCompletion(t, job)
 	entries, err := os.ReadDir(out)
 	if err != nil {
 		t.Fatalf("read dir: %v", err)
@@ -186,11 +217,7 @@ func TestNativeFetchesEachSegmentOnce(t *testing.T) {
 	}
 	defer func() { _ = job.Stop() }()
 
-	select {
-	case <-job.Done():
-	case <-time.After(10 * time.Second):
-		t.Fatal("static publication did not finish draining")
-	}
+	waitForStaticCompletion(t, job)
 	if err := job.Err(); err != nil {
 		t.Fatalf("job error: %v", err)
 	}
@@ -235,38 +262,46 @@ func TestNativeRejectsMissingKey(t *testing.T) {
 // container metadata are allowed to differ; the decoded frames are not.
 func TestNativeOutputMatchesFFmpegDecodeOfSource(t *testing.T) {
 	requireFFmpeg(t)
-	sources := map[string]map[string][]string{
+	type sourceTrack struct {
+		parts []string
+		key   string
+	}
+	sources := map[string]map[string]sourceTrack{
 		"hevc": {
-			"video-main.m3u8": {"init-stream0.m4s", "chunk-stream0-00001.m4s", "chunk-stream0-00002.m4s", "chunk-stream0-00003.m4s"},
-			"audio-main.m3u8": {"init-stream1.m4s", "chunk-stream1-00001.m4s", "chunk-stream1-00002.m4s"},
+			"video-main.m3u8": {parts: []string{"init-stream0.m4s", "chunk-stream0-00001.m4s", "chunk-stream0-00002.m4s", "chunk-stream0-00003.m4s"}, key: fixtureKey},
+			"audio-main.m3u8": {parts: []string{"init-stream1.m4s", "chunk-stream1-00001.m4s", "chunk-stream1-00002.m4s"}, key: fixtureKey},
+		},
+		"hev1": {
+			"video-main.m3u8": {parts: []string{"init-stream0.m4s", "chunk-stream0-00001.m4s", "chunk-stream0-00002.m4s", "chunk-stream0-00003.m4s"}, key: fixtureKey},
+			"audio-main.m3u8": {parts: []string{"init-stream1.m4s", "chunk-stream1-00001.m4s", "chunk-stream1-00002.m4s"}, key: fixtureKey},
 		},
 		"cbcs": {
-			"video-main.m3u8": {"init-stream0.m4s", "chunk-stream0-00001.m4s", "chunk-stream0-00002.m4s"},
-			"audio-main.m3u8": {"init-stream1.m4s", "chunk-stream1-00001.m4s", "chunk-stream1-00002.m4s"},
+			"video-main.m3u8": {parts: []string{"init-stream0.m4s", "chunk-stream0-00001.m4s", "chunk-stream0-00002.m4s"}, key: fixtureKey},
+			"audio-main.m3u8": {parts: []string{"init-stream1.m4s", "chunk-stream1-00001.m4s", "chunk-stream1-00002.m4s"}, key: fixtureKey},
 		},
 		"h264": {
-			"video-main.m3u8": {"init-stream0.m4s", "chunk-stream0-00001.m4s", "chunk-stream0-00002.m4s"},
-			"audio-main.m3u8": {"init-stream1.m4s", "chunk-stream1-00001.m4s", "chunk-stream1-00002.m4s"},
+			"video-main.m3u8": {parts: []string{"init-stream0.m4s", "chunk-stream0-00001.m4s", "chunk-stream0-00002.m4s"}, key: fixtureKey},
+			"audio-main.m3u8": {parts: []string{"init-stream1.m4s", "chunk-stream1-00001.m4s", "chunk-stream1-00002.m4s"}, key: fixtureKey},
+		},
+		"multikid": {
+			"video-main.m3u8": {parts: []string{"init-stream0.m4s", "chunk-stream0-00001.m4s", "chunk-stream0-00002.m4s"}, key: multiVideoKey},
+			"audio-main.m3u8": {parts: []string{"init-stream1.m4s", "chunk-stream1-00001.m4s", "chunk-stream1-00002.m4s"}, key: multiAudioKey},
 		},
 	}
 
 	for dir, tracks := range sources {
 		t.Run(dir, func(t *testing.T) {
 			job, out := runNative(t, dir)
-			select {
-			case <-job.Done():
-			case <-time.After(10 * time.Second):
-				t.Fatal("publication did not finish draining")
-			}
+			waitForStaticCompletion(t, job)
 			if err := job.Err(); err != nil {
 				t.Fatalf("job error: %v", err)
 			}
 			writePlaylists(t, job, out)
 
-			for playlist, parts := range tracks {
+			for playlist, source := range tracks {
 				encrypted := filepath.Join(out, "source-"+playlist+".mp4")
 				var raw bytes.Buffer
-				for _, p := range parts {
+				for _, p := range source.parts {
 					b, err := os.ReadFile(filepath.Join("..", "..", "testdata", "cenc", dir, p))
 					if err != nil {
 						t.Fatalf("read %s: %v", p, err)
@@ -277,7 +312,7 @@ func TestNativeOutputMatchesFFmpegDecodeOfSource(t *testing.T) {
 					t.Fatalf("write: %v", err)
 				}
 
-				want := frameCRCs(t, encrypted, fixtureKey)
+				want := frameCRCs(t, encrypted, source.key)
 				got := frameCRCs(t, filepath.Join(out, playlist), "")
 				if len(want) == 0 {
 					t.Fatalf("%s: ffmpeg produced no reference frames", playlist)
@@ -359,7 +394,7 @@ func (f *controlledSegmentFetcher) Fetch(ctx context.Context, url string) ([]byt
 	if err := f.errs[url]; err != nil {
 		return nil, url, err
 	}
-	return f.data, url, nil
+	return bytes.Clone(f.data), url, nil
 }
 
 func pipelineNative(t *testing.T, prefetch int, fetcher Fetcher) (*Native, *trackState, []mpd.Segment, string) {
@@ -415,27 +450,111 @@ func assertNoStages(t *testing.T, dir string) {
 }
 
 type reservedTestFetcher struct {
-	data  []byte
-	calls atomic.Int64
+	data          []byte
+	calls         atomic.Int64
+	reservedCalls atomic.Int64
+	peaks         []int64
 }
 
 func (f *reservedTestFetcher) Fetch(context.Context, string) ([]byte, string, error) {
 	f.calls.Add(1)
-	return f.data, "segment", nil
+	return bytes.Clone(f.data), "segment", nil
 }
 
 func (f *reservedTestFetcher) FetchReserved(_ context.Context, _ string, reserve func(int64) error) ([]byte, string, error) {
 	f.calls.Add(1)
-	if err := reserve(int64(cap(f.data))); err != nil {
+	f.reservedCalls.Add(1)
+	if len(f.peaks) > 0 {
+		for _, peak := range f.peaks {
+			if err := reserve(peak); err != nil {
+				return nil, "segment", err
+			}
+		}
+	} else if err := reserve(int64(cap(f.data))); err != nil {
 		return nil, "segment", err
 	}
-	return f.data, "segment", nil
+	return bytes.Clone(f.data), "segment", nil
 }
 
-func TestDownloadPoolAllowsThreeMaxSegmentsByDefault(t *testing.T) {
+func TestLoadInitUsesTheSharedReservationPath(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "cenc", "hevc", "init-stream0.m4s"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &reservedTestFetcher{data: data}
+	opts := Options{
+		Fetcher:         f,
+		MaxSegmentBytes: defaultMaxSegmentBytes,
+		Gate:            newByteGate(defaultInflightBytes),
+		DownloadPool:    make(chan struct{}, 1),
+	}
+	_, err = loadInit(context.Background(), opts, mpd.Representation{
+		ID: "video",
+		Addressing: mpd.Addressing{
+			InitURL: "https://origin.example.com/init.m4s",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := f.reservedCalls.Load(); got != 1 {
+		t.Fatalf("reserved init fetches = %d, want 1", got)
+	}
+	if got := opts.Gate.usage(); got != 0 {
+		t.Fatalf("gate usage after init parse = %d, want 0", got)
+	}
+}
+
+func TestDownloadPoolAllowsTwoPeakGrowthsByDefault(t *testing.T) {
 	n := &Native{opts: Options{MaxSegmentBytes: defaultMaxSegmentBytes}, gate: newByteGate(defaultInflightBytes)}
-	if got := cap(n.downloadPool()); got != 3 {
-		t.Fatalf("download slots = %d, want 3", got)
+	if got := cap(n.downloadPool()); got != 2 {
+		t.Fatalf("download slots = %d, want 2", got)
+	}
+}
+
+func TestDownloadPoolAllowsOneOversizedSegment(t *testing.T) {
+	n := &Native{opts: Options{MaxSegmentBytes: 64 << 20}, gate: newByteGate(8 << 20)}
+	if got := cap(n.downloadPool()); got != 1 {
+		t.Fatalf("download slots = %d, want 1", got)
+	}
+}
+
+func TestDefaultDecryptPoolSerializesWorkingSetGrowth(t *testing.T) {
+	opts := Options{MaxSegmentBytes: defaultMaxSegmentBytes, Gate: newByteGate(defaultInflightBytes)}
+	opts.applyDefaults()
+	if got := cap(opts.DecryptPool); got != 1 {
+		t.Fatalf("decrypt slots = %d, want 1", got)
+	}
+}
+
+func TestMillisRejectsOverflow(t *testing.T) {
+	if _, ok := millis(math.MaxUint64, 1); ok {
+		t.Fatal("overflowing media time was accepted")
+	}
+	if got, ok := millis(math.MaxUint64-1, math.MaxUint64); !ok || got != 999 {
+		t.Fatalf("large timescale conversion = %d, %v; want 999, true", got, ok)
+	}
+}
+
+func TestStaticPublicationPrecomputesItsTargetDuration(t *testing.T) {
+	rep := mpd.Representation{
+		ID: "video",
+		Addressing: mpd.Addressing{
+			Mode:      mpd.AddressingTemplateTimeline,
+			Timescale: 1,
+			Timeline: []mpd.TimelineEntry{
+				{Time: 0, Duration: 1},
+				{Time: 1, Duration: 5},
+			},
+		},
+	}
+	pres := &mpd.Presentation{Periods: []mpd.Period{{Representations: []mpd.Representation{rep}}}}
+	got, err := publicationMaxSegmentDuration(pres, Plan{Video: rep})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 5*time.Second {
+		t.Fatalf("maximum segment duration = %s, want 5s", got)
 	}
 }
 
@@ -451,6 +570,19 @@ func TestFetchSegmentOverLimitUsesSingleRequest(t *testing.T) {
 	}
 	if got := f.calls.Load(); got != 1 {
 		t.Fatalf("requests = %d, want 1", got)
+	}
+}
+
+func TestFetchSegmentAllowsOversizedExclusivePeak(t *testing.T) {
+	f := &reservedTestFetcher{data: make([]byte, 64<<10), peaks: []int64{96 << 10, 64 << 10}}
+	n := &Native{opts: Options{Fetcher: f, MaxSegmentBytes: 64 << 10}, gate: newByteGate(32 << 10)}
+	_, reservation, err := n.fetchSegment(context.Background(), "segment")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservation.release()
+	if got := n.gate.usage(); got != 0 {
+		t.Fatalf("usage = %d, want 0", got)
 	}
 }
 

@@ -3,6 +3,7 @@
 package mpd
 
 import (
+	"bytes"
 	"encoding/xml"
 	"fmt"
 	"net/url"
@@ -138,7 +139,7 @@ type xmlSegmentBase struct {
 // fetched from, after redirects, so relative references resolve correctly.
 func Parse(data []byte, baseURL string) (*Presentation, error) {
 	var doc xmlMPD
-	dec := xml.NewDecoder(strings.NewReader(string(data)))
+	dec := xml.NewDecoder(bytes.NewReader(data))
 	dec.Strict = true
 	dec.Entity = nil
 	if err := dec.Decode(&doc); err != nil {

@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/babywbx/kiln/modules/packager/hls"
 )
@@ -20,11 +19,7 @@ func TestNativeServesACbcsSource(t *testing.T) {
 		t.Fatal("publication is not playable")
 	}
 
-	select {
-	case <-job.Done():
-	case <-time.After(10 * time.Second):
-		t.Fatal("static publication did not finish draining")
-	}
+	waitForStaticCompletion(t, job)
 	if err := job.Err(); err != nil {
 		t.Fatalf("job error: %v", err)
 	}

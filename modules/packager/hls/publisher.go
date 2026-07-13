@@ -76,6 +76,11 @@ type track struct {
 
 	frontier    uint64
 	hasFrontier bool
+	complete    bool
+
+	encodedSegments int
+	encodedTarget   int
+	encodedEnd      bool
 
 	target int
 }
@@ -183,6 +188,7 @@ func (p *Publisher) PublishInit(name string, data []byte) error {
 	t.initAssets[assetName] = struct{}{}
 	t.initCount++
 	t.initReady = true
+	p.reap(t)
 	return nil
 }
 
@@ -314,11 +320,51 @@ func (p *Publisher) refresh(changed *track) {
 
 func (p *Publisher) refreshMedia(t *track) {
 	name := t.playlistName()
-	next := p.encoder.media(t, p.cfg.Static)
+	var next []byte
+	if p.cfg.Static {
+		next = p.appendStaticPlaylist(t, p.playlists[name])
+	} else {
+		next = p.encoder.media(t, t.complete)
+	}
 	if cur, ok := p.playlists[name]; ok && bytes.Equal(cur, next) {
 		return
 	}
 	p.playlists[name] = next
+}
+
+func (p *Publisher) appendStaticPlaylist(t *track, current []byte) []byte {
+	if t.encodedSegments == 0 || t.encodedTarget != t.target || t.encodedSegments > len(t.segments) {
+		next := p.encoder.media(t, t.complete)
+		t.encodedSegments = len(t.segments)
+		t.encodedTarget = t.target
+		t.encodedEnd = t.complete
+		return next
+	}
+
+	next := current
+	currentMap := t.segments[t.encodedSegments-1].InitName
+	for i := t.encodedSegments; i < len(t.segments); i++ {
+		next = appendMediaSegment(next, t.segments[i], false, &currentMap)
+	}
+	if t.complete && !t.encodedEnd {
+		next = append(next, "#EXT-X-ENDLIST\n"...)
+	}
+	t.encodedSegments = len(t.segments)
+	t.encodedTarget = t.target
+	t.encodedEnd = t.complete
+	return next
+}
+
+func (p *Publisher) Complete() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, name := range p.order {
+		t := p.tracks[name]
+		t.complete = true
+		if p.playable {
+			p.refreshMedia(t)
+		}
+	}
 }
 
 func (p *Publisher) refreshMaster(tracks []*track) {

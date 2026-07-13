@@ -179,6 +179,37 @@ func TestDecryptDropsEncryptionBoxes(t *testing.T) {
 	}
 }
 
+func TestDecryptPreservesCallerInput(t *testing.T) {
+	init, err := ParseInit(readFixture(t, "hevc", "init-stream0.m4s"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := readFixture(t, "hevc", "chunk-stream0-00001.m4s")
+	want := bytes.Clone(raw)
+	if _, err := init.Decrypt(raw, testKeys(t)); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(raw, want) {
+		t.Fatal("Decrypt mutated its caller-owned input")
+	}
+}
+
+func TestOwnedDecodeAliasesTheCiphertextMdat(t *testing.T) {
+	raw := readFixture(t, "hevc", "chunk-stream0-00001.m4s")
+	f, err := decodeOwnedSegment(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mdat := f.Segments[0].Fragments[0].Mdat
+	start := mdat.PayloadAbsoluteOffset()
+	if len(mdat.Data) == 0 {
+		t.Fatal("decoded mdat is empty")
+	}
+	if &mdat.Data[0] != &raw[start] {
+		t.Fatal("owned decode copied mdat instead of aliasing the input")
+	}
+}
+
 // A KID with no key must fail. The ffmpeg path silently falls back to the
 // first key here, which is exactly the behaviour the native path must not have.
 func TestDecryptStrictKIDRefusesWrongKey(t *testing.T) {

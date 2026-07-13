@@ -10,37 +10,43 @@ const MasterName = "master.m3u8"
 const programDateLayout = "2006-01-02T15:04:05.000Z07:00"
 
 func mediaPlaylist(t *track, endList bool) []byte {
+	b := make([]byte, 0, 128+len(t.segments)*96)
+	b = appendMediaHeader(b, t)
+	currentMap := ""
+	for i, s := range t.segments {
+		b = appendMediaSegment(b, s, i == 0, &currentMap)
+	}
+	if endList {
+		b = append(b, "#EXT-X-ENDLIST\n"...)
+	}
+	return b
+}
+
+func appendMediaHeader(dst []byte, t *track) []byte {
 	target := t.target
 	if target == 0 {
 		target = 1
 	}
-	var b strings.Builder
-	b.WriteString("#EXTM3U\n")
-	b.WriteString("#EXT-X-VERSION:7\n")
-	fmt.Fprintf(&b, "#EXT-X-TARGETDURATION:%d\n", target)
-	fmt.Fprintf(&b, "#EXT-X-MEDIA-SEQUENCE:%d\n", t.mediaSequence)
-	fmt.Fprintf(&b, "#EXT-X-DISCONTINUITY-SEQUENCE:%d\n", t.discontinuitySequence)
+	dst = append(dst, "#EXTM3U\n#EXT-X-VERSION:7\n"...)
+	dst = fmt.Appendf(dst, "#EXT-X-TARGETDURATION:%d\n", target)
+	dst = fmt.Appendf(dst, "#EXT-X-MEDIA-SEQUENCE:%d\n", t.mediaSequence)
+	return fmt.Appendf(dst, "#EXT-X-DISCONTINUITY-SEQUENCE:%d\n", t.discontinuitySequence)
+}
 
-	currentMap := ""
-	for i, s := range t.segments {
-		if s.Discontinuity {
-			b.WriteString("#EXT-X-DISCONTINUITY\n")
-		}
-		if s.InitName != currentMap {
-			fmt.Fprintf(&b, "#EXT-X-MAP:URI=%q\n", s.InitName)
-			currentMap = s.InitName
-		}
-		if !s.At.IsZero() && (i == 0 || s.Discontinuity) {
-			fmt.Fprintf(&b, "#EXT-X-PROGRAM-DATE-TIME:%s\n", s.At.Format(programDateLayout))
-		}
-		fmt.Fprintf(&b, "#EXTINF:%.6f,\n", s.Duration)
-		b.WriteString(s.Name)
-		b.WriteByte('\n')
+func appendMediaSegment(dst []byte, s segment, first bool, currentMap *string) []byte {
+	if s.Discontinuity {
+		dst = append(dst, "#EXT-X-DISCONTINUITY\n"...)
 	}
-	if endList {
-		b.WriteString("#EXT-X-ENDLIST\n")
+	if s.InitName != *currentMap {
+		dst = fmt.Appendf(dst, "#EXT-X-MAP:URI=%q\n", s.InitName)
+		*currentMap = s.InitName
 	}
-	return []byte(b.String())
+	if !s.At.IsZero() && (first || s.Discontinuity) {
+		dst = fmt.Appendf(dst, "#EXT-X-PROGRAM-DATE-TIME:%s\n", s.At.Format(programDateLayout))
+	}
+	dst = fmt.Appendf(dst, "#EXTINF:%.6f,\n", s.Duration)
+	dst = append(dst, s.Name...)
+	return append(dst, '\n')
 }
 
 func masterPlaylist(tracks []*track, independent bool) []byte {

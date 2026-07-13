@@ -34,6 +34,7 @@ type liveOrigin struct {
 	prefix string
 
 	videoID string
+	static  bool
 }
 
 type audioSet struct {
@@ -86,10 +87,16 @@ func (o *liveOrigin) manifest() []byte {
 func (o *liveOrigin) manifestFrom(start uint64) []byte {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	typeName := "dynamic"
+	refresh := ` minimumUpdatePeriod="PT1S" timeShiftBufferDepth="PT60S"`
+	if o.static {
+		typeName = "static"
+		refresh = ""
+	}
 	out := fmt.Appendf(nil, `<?xml version="1.0"?>
-<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="dynamic"
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="%s"%s
      availabilityStartTime="2026-01-01T00:00:00Z"
-     minimumUpdatePeriod="PT1S" timeShiftBufferDepth="PT60S">
+     >
   <Period id="0" start="PT0S">
     <AdaptationSet contentType="video" mimeType="video/mp4" codecs="hvc1.1.6.L60.90">
       <ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011" value="cenc"/>
@@ -97,8 +104,8 @@ func (o *liveOrigin) manifestFrom(start uint64) []byte {
         <SegmentTimeline><S t="%d" d="%d" r="%d"/></SegmentTimeline>
       </SegmentTemplate>
       <Representation id="%s" bandwidth="120000" width="320" height="180"/>
-    </AdaptationSet>`,
-		liveTimescale, o.prefix, o.prefix, start, liveSegTicks, o.videoCount-1, o.videoID)
+</AdaptationSet>`,
+		typeName, refresh, liveTimescale, o.prefix, o.prefix, start, liveSegTicks, o.videoCount-1, o.videoID)
 
 	for i, set := range o.audios {
 		out = fmt.Appendf(out, `
@@ -118,6 +125,12 @@ func (o *liveOrigin) manifestFrom(start uint64) []byte {
 		out = append(out, "\n    </AdaptationSet>"...)
 	}
 	return append(out, "\n  </Period>\n</MPD>"...)
+}
+
+func (o *liveOrigin) finish() {
+	o.mu.Lock()
+	o.static = true
+	o.mu.Unlock()
 }
 
 func (o *liveOrigin) grow(segments int) {
@@ -263,6 +276,28 @@ func TestDynamicSourcePublishesContiguousSegments(t *testing.T) {
 	if !strings.Contains(pl, "#EXT-X-MEDIA-SEQUENCE:0") {
 		t.Errorf("media sequence should start at 0:\n%s", pl)
 	}
+}
+
+func TestDynamicSourceCanFinalizeWithoutStoppingItsPublication(t *testing.T) {
+	origin := newLiveOrigin(t)
+	clock := newClock()
+	n, _ := startLive(t, origin, clock)
+
+	origin.finish()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		playlist := videoPlaylist(t, n)
+		if strings.Contains(playlist, "#EXT-X-ENDLIST") {
+			select {
+			case <-n.Done():
+				t.Fatal("finalized publication stopped before an explicit Stop")
+			default:
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("finalized live playlist has no ENDLIST:\n%s", videoPlaylist(t, n))
 }
 
 func TestRolloverReanchorsInsteadOfStalling(t *testing.T) {

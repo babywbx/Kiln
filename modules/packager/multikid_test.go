@@ -69,11 +69,7 @@ func TestNativeServesMultiKID(t *testing.T) {
 	}
 	defer func() { _ = job.Stop() }()
 
-	select {
-	case <-job.Done():
-	case <-time.After(10 * time.Second):
-		t.Fatal("publication did not finish draining")
-	}
+	waitForStaticCompletion(t, job)
 	if err := job.Err(); err != nil {
 		t.Fatalf("job error: %v", err)
 	}

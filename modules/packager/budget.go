@@ -10,6 +10,7 @@ type byteGate struct {
 	limit   int64
 	used    int64
 	waiters []*byteWaiter
+	changed chan struct{}
 }
 
 type byteWaiter struct {
@@ -29,7 +30,7 @@ func newByteGate(limit int64) *byteGate {
 	if limit <= 0 {
 		limit = defaultInflightBytes
 	}
-	return &byteGate{limit: limit}
+	return &byteGate{limit: limit, changed: make(chan struct{})}
 }
 
 func (g *byteGate) acquire(ctx context.Context, n int64) (*byteReservation, error) {
@@ -53,6 +54,7 @@ func (g *byteGate) acquire(ctx context.Context, n int64) (*byteReservation, erro
 			if candidate == w {
 				g.waiters = append(g.waiters[:i], g.waiters[i+1:]...)
 				g.admitLocked()
+				g.signalLocked()
 				g.mu.Unlock()
 				return nil, ctx.Err()
 			}
@@ -87,7 +89,13 @@ func (g *byteGate) release(n int64) {
 	g.mu.Lock()
 	g.used -= n
 	g.admitLocked()
+	g.signalLocked()
 	g.mu.Unlock()
+}
+
+func (g *byteGate) signalLocked() {
+	close(g.changed)
+	g.changed = make(chan struct{})
 }
 
 func (g *byteGate) usage() int64 {
@@ -118,7 +126,9 @@ func (r *byteReservation) resize(n int64) bool {
 	}
 	delta := n - r.n
 	r.gate.mu.Lock()
-	if r.gate.used > r.gate.limit-delta || len(r.gate.waiters) > 0 {
+	withinLimit := delta <= r.gate.limit && r.gate.used <= r.gate.limit-delta
+	oversizedAlone := n > r.gate.limit && r.gate.used == r.n
+	if len(r.gate.waiters) > 0 || !withinLimit && !oversizedAlone {
 		r.gate.mu.Unlock()
 		r.mu.Unlock()
 		return false
@@ -128,6 +138,45 @@ func (r *byteReservation) resize(n int64) bool {
 	r.gate.mu.Unlock()
 	r.mu.Unlock()
 	return true
+}
+
+func (r *byteReservation) resizeContext(ctx context.Context, n int64) bool {
+	n = normalizedBytes(n)
+	for {
+		r.mu.Lock()
+		if r.released {
+			r.mu.Unlock()
+			return false
+		}
+		if n <= r.n {
+			delta := r.n - n
+			r.n = n
+			r.mu.Unlock()
+			r.gate.release(delta)
+			return true
+		}
+
+		delta := n - r.n
+		r.gate.mu.Lock()
+		withinLimit := delta <= r.gate.limit && r.gate.used <= r.gate.limit-delta
+		oversizedAlone := n > r.gate.limit && r.gate.used == r.n
+		if withinLimit || oversizedAlone {
+			r.gate.used += delta
+			r.n = n
+			r.gate.mu.Unlock()
+			r.mu.Unlock()
+			return true
+		}
+		changed := r.gate.changed
+		r.gate.mu.Unlock()
+		r.mu.Unlock()
+
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			return false
+		}
+	}
 }
 
 func (r *byteReservation) shrink(n int64) {
