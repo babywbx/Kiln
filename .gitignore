@@ -88,10 +88,4 @@ AGENTS.private.md
 # Local scratch and private planning (repo root only)
 /local/
 /.local/
-docs/private/
-docs/plans/
-docs/superpowers/
-docs/**/*-draft*.md
-docs/**/*-scratch*.md
-
 .playwright-mcp/
