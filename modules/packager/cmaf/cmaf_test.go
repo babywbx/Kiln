@@ -306,9 +306,7 @@ func TestMultiKIDRefusesAPartialKeySet(t *testing.T) {
 // ffmpeg's decryption of the same fixture must decode to identical frames.
 // Structural checks cannot prove this, since CENC leaves NAL headers in clear.
 func TestDecryptMatchesFFmpeg(t *testing.T) {
-	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		t.Skip("ffmpeg not available")
-	}
+	requireFFmpeg(t)
 	keys := testKeys(t)
 	for _, f := range fixtures {
 		t.Run(f.name, func(t *testing.T) {
@@ -372,4 +370,15 @@ func frameCRC(t *testing.T, path, key string) string {
 		t.Fatalf("ffmpeg reported decode errors for %s:\n%s", filepath.Base(path), errBuf.String())
 	}
 	return out.String()
+}
+
+func requireFFmpeg(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("ffmpeg"); err == nil {
+		return
+	}
+	if os.Getenv("KILN_REQUIRE_MEDIA_ORACLE") == "1" {
+		t.Fatal("ffmpeg is required by KILN_REQUIRE_MEDIA_ORACLE=1")
+	}
+	t.Skip("ffmpeg not available")
 }

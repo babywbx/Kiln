@@ -234,12 +234,14 @@ func TestNativeRejectsMissingKey(t *testing.T) {
 // ffmpeg gets by decrypting the original DASH segments itself. Timestamps and
 // container metadata are allowed to differ; the decoded frames are not.
 func TestNativeOutputMatchesFFmpegDecodeOfSource(t *testing.T) {
-	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		t.Skip("ffmpeg not available")
-	}
+	requireFFmpeg(t)
 	sources := map[string]map[string][]string{
 		"hevc": {
 			"video-main.m3u8": {"init-stream0.m4s", "chunk-stream0-00001.m4s", "chunk-stream0-00002.m4s", "chunk-stream0-00003.m4s"},
+			"audio-main.m3u8": {"init-stream1.m4s", "chunk-stream1-00001.m4s", "chunk-stream1-00002.m4s"},
+		},
+		"cbcs": {
+			"video-main.m3u8": {"init-stream0.m4s", "chunk-stream0-00001.m4s", "chunk-stream0-00002.m4s"},
 			"audio-main.m3u8": {"init-stream1.m4s", "chunk-stream1-00001.m4s", "chunk-stream1-00002.m4s"},
 		},
 		"h264": {
@@ -711,4 +713,15 @@ func asFallback(err error, target **FallbackError) bool {
 		err = u.Unwrap()
 	}
 	return false
+}
+
+func requireFFmpeg(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("ffmpeg"); err == nil {
+		return
+	}
+	if os.Getenv("KILN_REQUIRE_MEDIA_ORACLE") == "1" {
+		t.Fatal("ffmpeg is required by KILN_REQUIRE_MEDIA_ORACLE=1")
+	}
+	t.Skip("ffmpeg not available")
 }

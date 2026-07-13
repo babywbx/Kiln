@@ -1,5 +1,6 @@
 .PHONY: build test coverage run tidy hash keys fmt vet lint vuln ci clean audit-admin-ui \
-        docker docker-multiarch docker-verify docker-smoke docker-reap fixtures
+        docker docker-multiarch docker-verify docker-smoke docker-reap fixtures \
+        media-oracle test-safety benchmark-performance
 
 VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT   ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
@@ -20,6 +21,18 @@ build:
 
 test:
 	go test -race ./...
+
+media-oracle:
+	KILN_REQUIRE_MEDIA_ORACLE=1 go test ./modules/packager/... -run 'FFmpeg|NativeOutput'
+
+test-safety:
+	go test ./modules/packager/mpd -run '^FuzzAvailableSegments$$'
+	go test ./modules/packager/cmaf -run '^FuzzCMAF$$'
+	go test ./modules/packager/mpd -run '^$$' -fuzz '^FuzzAvailableSegments$$' -fuzztime=30s
+	go test ./modules/packager/cmaf -run '^$$' -fuzz '^FuzzCMAF$$' -fuzztime=30s
+
+benchmark-performance:
+	go test ./modules/packager/... -run '^$$' -bench . -benchmem
 
 coverage:
 	go test -race -coverprofile=coverage.out ./...
