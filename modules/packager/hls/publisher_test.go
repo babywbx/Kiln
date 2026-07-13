@@ -38,7 +38,8 @@ func newTestPublisher(t *testing.T, size int, grace time.Duration) (*Publisher, 
 
 func publish(t *testing.T, p *Publisher, track string, seq uint64, dur float64) {
 	t.Helper()
-	if err := p.PublishSegment(track, seq, dur, []byte("segment-data"), false); err != nil {
+	pub := Publication{Track: track, Seq: seq, Duration: dur}
+	if err := p.PublishSegment(pub, []byte("segment-data")); err != nil {
 		t.Fatalf("PublishSegment(%s, %d): %v", track, seq, err)
 	}
 }
@@ -199,7 +200,8 @@ func TestPlaylistSnapshotIsStableWhenNothingChanges(t *testing.T) {
 	publish(t, p, "video-main", 1, 2)
 
 	first, _ := p.Playlist("video-main.m3u8")
-	if err := p.PublishSegment("video-main", 1, 2, []byte("segment-data"), false); err != nil {
+	repeat := Publication{Track: "video-main", Seq: 1, Duration: 2}
+	if err := p.PublishSegment(repeat, []byte("segment-data")); err != nil {
 		t.Fatalf("re-publish: %v", err)
 	}
 	second, _ := p.Playlist("video-main.m3u8")

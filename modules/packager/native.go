@@ -185,6 +185,8 @@ type Native struct {
 
 	refresh string
 
+	epoch time.Time
+
 	lastManifestOK time.Time
 
 	forceResolve atomic.Bool
@@ -310,6 +312,7 @@ func StartNative(ctx context.Context, opts Options) (*Native, error) {
 		done:     make(chan struct{}),
 		video:    newTrackState(trackVideo, plan.Video, videoInit, now),
 
+		epoch:          presentationEpoch(pres),
 		lastManifestOK: now,
 	}
 	taken := map[string]struct{}{}
@@ -547,6 +550,23 @@ func (n *Native) publishSegments(ctx context.Context, ts *trackState, segs []mpd
 	return err
 }
 
+func presentationEpoch(pres *mpd.Presentation) time.Time {
+	if !pres.Dynamic || pres.AvailabilityStartTime.IsZero() || len(pres.Periods) == 0 {
+		return time.Time{}
+	}
+	return pres.AvailabilityStartTime.Add(pres.Periods[0].Start)
+}
+
+func (n *Native) segmentTime(ts *trackState, seg mpd.Segment) time.Time {
+	addr := ts.rep.Addressing
+	if n.epoch.IsZero() || addr.Timescale == 0 || seg.Time < addr.PresentationTimeOffset {
+		return time.Time{}
+	}
+	// Segment.Time is on the media timeline; the period starts at the offset.
+	elapsed := float64(seg.Time-addr.PresentationTimeOffset) / float64(addr.Timescale)
+	return n.epoch.Add(time.Duration(elapsed * float64(time.Second)))
+}
+
 func (n *Native) commit(ts *trackState, seg mpd.Segment, p prepared) error {
 	discontinuity := ts.forceDiscontinuity
 	if ts.hasExpected && !continuous(ts.expectedDTS, p.baseTime, ts.init.Track.Timescale) {
@@ -555,7 +575,14 @@ func (n *Native) commit(ts *trackState, seg mpd.Segment, p prepared) error {
 			"track", ts.name, "expected_dts", ts.expectedDTS, "got_dts", p.baseTime)
 	}
 
-	if err := n.pub.PublishStaged(ts.name, ts.nextSeq, p.dur, p.staged, discontinuity); err != nil {
+	pub := hls.Publication{
+		Track:         ts.name,
+		Seq:           ts.nextSeq,
+		Duration:      p.dur,
+		At:            n.segmentTime(ts, seg),
+		Discontinuity: discontinuity,
+	}
+	if err := n.pub.PublishStaged(pub, p.staged); err != nil {
 		return err
 	}
 	n.segmentsPublished.Add(1)

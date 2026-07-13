@@ -7,6 +7,8 @@ import (
 
 const MasterName = "master.m3u8"
 
+const programDateLayout = "2006-01-02T15:04:05.000Z07:00"
+
 func mediaPlaylist(t *track, endList bool) []byte {
 	target := t.target
 	if target == 0 {
@@ -20,13 +22,16 @@ func mediaPlaylist(t *track, endList bool) []byte {
 	fmt.Fprintf(&b, "#EXT-X-DISCONTINUITY-SEQUENCE:%d\n", t.discontinuitySequence)
 
 	currentMap := ""
-	for _, s := range t.segments {
+	for i, s := range t.segments {
 		if s.Discontinuity {
 			b.WriteString("#EXT-X-DISCONTINUITY\n")
 		}
 		if s.InitName != currentMap {
 			fmt.Fprintf(&b, "#EXT-X-MAP:URI=%q\n", s.InitName)
 			currentMap = s.InitName
+		}
+		if !s.At.IsZero() && (i == 0 || s.Discontinuity) {
+			fmt.Fprintf(&b, "#EXT-X-PROGRAM-DATE-TIME:%s\n", s.At.Format(programDateLayout))
 		}
 		fmt.Fprintf(&b, "#EXTINF:%.6f,\n", s.Duration)
 		b.WriteString(s.Name)

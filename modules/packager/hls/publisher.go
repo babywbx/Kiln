@@ -43,10 +43,19 @@ type Config struct {
 	Now                func() time.Time
 }
 
+type Publication struct {
+	Track         string
+	Seq           uint64
+	Duration      float64
+	At            time.Time
+	Discontinuity bool
+}
+
 type segment struct {
 	Name          string
 	Seq           uint64
 	Duration      float64
+	At            time.Time
 	Discontinuity bool
 
 	InitName  string
@@ -164,36 +173,36 @@ func (p *Publisher) PublishInit(name string, data []byte) error {
 	return nil
 }
 
-func (p *Publisher) PublishSegment(name string, seq uint64, duration float64, data []byte, discontinuity bool) error {
+func (p *Publisher) PublishSegment(pub Publication, data []byte) error {
 	staged, err := p.Stage(data)
 	if err != nil {
 		return err
 	}
-	return p.PublishStaged(name, seq, duration, staged, discontinuity)
+	return p.PublishStaged(pub, staged)
 }
 
-func (p *Publisher) PublishStaged(name string, seq uint64, duration float64, staged string, discontinuity bool) error {
+func (p *Publisher) PublishStaged(pub Publication, staged string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	t, ok := p.tracks[name]
+	t, ok := p.tracks[pub.Track]
 	if !ok {
 		p.Discard(staged)
-		return fmt.Errorf("hls: unknown track %s", name)
+		return fmt.Errorf("hls: unknown track %s", pub.Track)
 	}
 	if !t.initReady {
 		p.Discard(staged)
-		return fmt.Errorf("hls: track %s has no init segment", name)
+		return fmt.Errorf("hls: track %s has no init segment", pub.Track)
 	}
-	if t.hasFrontier && seq <= t.frontier {
+	if t.hasFrontier && pub.Seq <= t.frontier {
 		p.Discard(staged)
 		return nil
 	}
-	if duration <= 0 {
+	if pub.Duration <= 0 {
 		p.Discard(staged)
-		return fmt.Errorf("hls: track %s segment %d has zero duration", name, seq)
+		return fmt.Errorf("hls: track %s segment %d has zero duration", pub.Track, pub.Seq)
 	}
 
-	file := segmentName(name, seq)
+	file := segmentName(pub.Track, pub.Seq)
 	if err := p.moveIntoPlace(file, staged); err != nil {
 		return err
 	}
@@ -201,15 +210,16 @@ func (p *Publisher) PublishStaged(name string, seq uint64, duration float64, sta
 	if p.cfg.MaxSegmentDuration > 0 {
 		hint = ceilSeconds(p.cfg.MaxSegmentDuration.Seconds())
 	}
-	t.setTarget(hint, duration)
+	t.setTarget(hint, pub.Duration)
 	t.segments = append(t.segments, segment{
 		Name:          file,
-		Seq:           seq,
-		Duration:      duration,
-		Discontinuity: discontinuity,
+		Seq:           pub.Seq,
+		Duration:      pub.Duration,
+		At:            pub.At,
+		Discontinuity: pub.Discontinuity,
 		InitName:      t.initName,
 	})
-	t.frontier = seq
+	t.frontier = pub.Seq
 	t.hasFrontier = true
 	p.slide(t)
 	p.refresh()
