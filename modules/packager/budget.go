@@ -18,10 +18,11 @@ type byteWaiter struct {
 }
 
 type byteReservation struct {
-	mu       sync.Mutex
-	gate     *byteGate
-	n        int64
-	released bool
+	mu        sync.Mutex
+	gate      *byteGate
+	n         int64
+	onRelease func()
+	released  bool
 }
 
 func newByteGate(limit int64) *byteGate {
@@ -101,6 +102,34 @@ func (g *byteGate) capacity() int64 {
 	return g.limit
 }
 
+func (r *byteReservation) resize(n int64) bool {
+	n = normalizedBytes(n)
+	r.mu.Lock()
+	if r.released {
+		r.mu.Unlock()
+		return false
+	}
+	if n <= r.n {
+		delta := r.n - n
+		r.n = n
+		r.mu.Unlock()
+		r.gate.release(delta)
+		return true
+	}
+	delta := n - r.n
+	r.gate.mu.Lock()
+	if r.gate.used > r.gate.limit-delta || len(r.gate.waiters) > 0 {
+		r.gate.mu.Unlock()
+		r.mu.Unlock()
+		return false
+	}
+	r.gate.used += delta
+	r.n = n
+	r.gate.mu.Unlock()
+	r.mu.Unlock()
+	return true
+}
+
 func (r *byteReservation) shrink(n int64) {
 	n = normalizedBytes(n)
 	r.mu.Lock()
@@ -122,9 +151,13 @@ func (r *byteReservation) release() {
 	}
 	r.released = true
 	n := r.n
+	onRelease := r.onRelease
 	r.n = 0
 	r.mu.Unlock()
 	r.gate.release(n)
+	if onRelease != nil {
+		onRelease()
+	}
 }
 
 func normalizedBytes(n int64) int64 {

@@ -185,6 +185,10 @@ type Segment struct {
 }
 
 func (i *Init) Decrypt(raw []byte, keys KeySet) (*Segment, error) {
+	return i.DecryptReserved(raw, keys, nil)
+}
+
+func (i *Init) DecryptReserved(raw []byte, keys KeySet, reserve func(int64) error) (*Segment, error) {
 	f, err := mp4.DecodeFile(bytes.NewReader(raw))
 	if err != nil {
 		return nil, fmt.Errorf("decode media segment: %w", err)
@@ -211,8 +215,14 @@ func (i *Init) Decrypt(raw []byte, keys KeySet) (*Segment, error) {
 		return nil, err
 	}
 
-	var buf bytes.Buffer
-	if err := seg.Encode(&buf); err != nil {
+	size := int64(seg.Size())
+	if reserve != nil {
+		if err := reserve(size); err != nil {
+			return nil, err
+		}
+	}
+	buf := bytes.NewBuffer(make([]byte, 0, size))
+	if err := seg.Encode(buf); err != nil {
 		return nil, fmt.Errorf("encode clear segment: %w", err)
 	}
 	return &Segment{Clear: buf.Bytes(), BaseTime: base, Duration: dur}, nil

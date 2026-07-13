@@ -167,6 +167,10 @@ func (c *Client) GetBytes(ctx context.Context, req Request) ([]byte, string, err
 // GetBytesLimit reads at most max bytes. Media segments are far larger than
 // playlists, so they need their own ceiling rather than the playlist one.
 func (c *Client) GetBytesLimit(ctx context.Context, req Request, max int64) ([]byte, string, error) {
+	return c.GetBytesLimitReserve(ctx, req, max, nil)
+}
+
+func (c *Client) GetBytesLimitReserve(ctx context.Context, req Request, max int64, reserve func(int64) error) ([]byte, string, error) {
 	if max <= 0 {
 		max = c.maxPlaylist
 	}
@@ -175,15 +179,40 @@ func (c *Client) GetBytesLimit(ctx context.Context, req Request, max int64) ([]b
 		return nil, "", err
 	}
 	defer res.Body.Close()
-	limited := io.LimitReader(res.Body, max+1)
-	b, err := io.ReadAll(limited)
-	if err != nil {
-		return nil, "", apperr.Wrap(apperr.CodeUpstream, 502, "read upstream body failed", err)
+	var b []byte
+	for {
+		if len(b) == cap(b) {
+			next := int64(cap(b)) * 2
+			if next < 32<<10 {
+				next = 32 << 10
+			}
+			if next > max+1 {
+				next = max + 1
+			}
+			if next <= int64(cap(b)) {
+				return nil, "", apperr.New(apperr.CodeUpstream, 502, "upstream response too large")
+			}
+			if reserve != nil {
+				if err := reserve(next); err != nil {
+					return nil, "", err
+				}
+			}
+			grown := make([]byte, len(b), next)
+			copy(grown, b)
+			b = grown
+		}
+		n, readErr := res.Body.Read(b[len(b):cap(b)])
+		b = b[:len(b)+n]
+		if int64(len(b)) > max {
+			return nil, "", apperr.New(apperr.CodeUpstream, 502, "upstream response too large")
+		}
+		if readErr == io.EOF {
+			return b, res.FinalURL, nil
+		}
+		if readErr != nil {
+			return nil, "", apperr.Wrap(apperr.CodeUpstream, 502, "read upstream body failed", readErr)
+		}
 	}
-	if int64(len(b)) > max {
-		return nil, "", apperr.New(apperr.CodeUpstream, 502, "upstream response too large")
-	}
-	return b, res.FinalURL, nil
 }
 
 func (c *Client) Router() *proxyegress.Router { return c.router }

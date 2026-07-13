@@ -31,7 +31,18 @@ func (f *PullFetcher) Fetch(ctx context.Context, url string) ([]byte, string, er
 	}, f.MaxBytes)
 }
 
-// NewPullFetcher builds the per-request fetcher the native adapter needs.
+func (f *PullFetcher) FetchReserved(ctx context.Context, url string, reserve func(int64) error) ([]byte, string, error) {
+	if f.Client == nil {
+		return nil, "", errors.New("packager: no upstream client")
+	}
+	return f.Client.GetBytesLimitReserve(ctx, pull.Request{
+		URL:       url,
+		UserAgent: version.UserAgent(f.UserAgent),
+		Headers:   f.Headers,
+		ChannelID: f.ChannelID,
+	}, f.MaxBytes, reserve)
+}
+
 func NewPullFetcher(client *pull.Client, maxBytes int64) func(req Request) Fetcher {
 	return func(req Request) Fetcher {
 		return &PullFetcher{

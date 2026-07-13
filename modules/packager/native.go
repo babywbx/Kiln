@@ -20,6 +20,10 @@ type Fetcher interface {
 	Fetch(ctx context.Context, url string) (data []byte, finalURL string, err error)
 }
 
+type reservedFetcher interface {
+	FetchReserved(ctx context.Context, url string, reserve func(int64) error) (data []byte, finalURL string, err error)
+}
+
 const (
 	trackVideo = "video-main"
 	trackAudio = "audio-main"
@@ -63,6 +67,7 @@ type Options struct {
 	StartSegments int
 
 	Prefetch        int
+	DecryptWorkers  int
 	MaxSegmentBytes int64
 	Grace           time.Duration
 
@@ -72,9 +77,11 @@ type Options struct {
 
 	StallTimeout time.Duration
 
-	Gate *byteGate
-	Now  func() time.Time
-	Log  *slog.Logger
+	Gate         *byteGate
+	DownloadPool chan struct{}
+	DecryptPool  chan struct{}
+	Now          func() time.Time
+	Log          *slog.Logger
 }
 
 const (
@@ -98,8 +105,24 @@ func (o *Options) applyDefaults() {
 	if o.Prefetch <= 0 {
 		o.Prefetch = defaultPrefetch
 	}
+	if o.DecryptWorkers <= 0 {
+		o.DecryptWorkers = defaultPrefetch
+	}
+	if o.DecryptPool == nil {
+		o.DecryptPool = make(chan struct{}, o.DecryptWorkers)
+	}
 	if o.MaxSegmentBytes <= 0 {
 		o.MaxSegmentBytes = defaultMaxSegmentBytes
+	}
+	if o.Gate == nil {
+		o.Gate = newByteGate(defaultInflightBytes)
+	}
+	if o.DownloadPool == nil {
+		slots := int(o.Gate.capacity() / o.MaxSegmentBytes)
+		if slots < 2 {
+			slots = 2
+		}
+		o.DownloadPool = make(chan struct{}, slots)
 	}
 	if o.ReanchorAfter <= 0 {
 		o.ReanchorAfter = defaultReanchorAfter
@@ -109,9 +132,6 @@ func (o *Options) applyDefaults() {
 	}
 	if o.StallTimeout == 0 {
 		o.StallTimeout = defaultStallTimeout
-	}
-	if o.Gate == nil {
-		o.Gate = newByteGate(defaultInflightBytes)
 	}
 	if o.Now == nil {
 		o.Now = time.Now
@@ -191,6 +211,8 @@ type Native struct {
 	plan     Plan
 	packMode string
 	gate     *byteGate
+	download chan struct{}
+	decrypt  chan struct{}
 
 	budgetObserved func(string, int64)
 	stagePrepare   func() error
@@ -320,6 +342,8 @@ func StartNative(ctx context.Context, opts Options) (*Native, error) {
 		plan:     plan,
 		packMode: packMode(pres, plan),
 		gate:     opts.Gate,
+		download: opts.DownloadPool,
+		decrypt:  opts.DecryptPool,
 		refresh:  pres.Refresh,
 		done:     make(chan struct{}),
 		video:    newTrackState(trackVideo, plan.Video, videoInit, now),
@@ -647,38 +671,135 @@ func (n *Native) observeBudget(phase string) {
 	}
 }
 
-func (n *Native) prepare(ctx context.Context, ts *trackState, seg mpd.Segment) (res prepared) {
-	reservationBytes := n.gate.capacity()
-	if n.opts.MaxSegmentBytes > 0 {
-		reservationBytes = segmentWorkingSet(n.opts.MaxSegmentBytes)
+func acquireSlot(ctx context.Context, pool chan struct{}) bool {
+	if ctx.Err() != nil {
+		return false
 	}
-	reservation, err := n.gate.acquire(ctx, reservationBytes)
-	if err != nil {
-		res.err = err
-		return res
+	select {
+	case pool <- struct{}{}:
+		if ctx.Err() != nil {
+			<-pool
+			return false
+		}
+		return true
+	case <-ctx.Done():
+		return false
 	}
-	defer reservation.release()
-	n.observeBudget("estimate")
+}
 
+func (n *Native) downloadPool() chan struct{} {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.download == nil {
+		slots := int(n.gate.capacity() / n.opts.MaxSegmentBytes)
+		if slots < 2 {
+			slots = 2
+		}
+		n.download = make(chan struct{}, slots)
+	}
+	return n.download
+}
+
+func (n *Native) fetchSegment(ctx context.Context, url string) ([]byte, *byteReservation, error) {
+	pool := n.downloadPool()
+	if !acquireSlot(ctx, pool) {
+		return nil, nil, ctx.Err()
+	}
+	reservation, err := n.gate.acquire(ctx, 1)
+	if err != nil {
+		<-pool
+		return nil, nil, err
+	}
+	reservation.onRelease = func() { <-pool }
+	fetcher, reserved := n.opts.Fetcher.(reservedFetcher)
+	var raw []byte
+	if reserved {
+		raw, _, err = fetcher.FetchReserved(ctx, url, func(capacity int64) error {
+			if capacity > n.opts.MaxSegmentBytes+1 {
+				return errors.New("upstream response too large")
+			}
+			if !reservation.resize(capacity) {
+				return errors.New("segment memory budget exhausted")
+			}
+			return nil
+		})
+	} else {
+		if !reservation.resize(n.opts.MaxSegmentBytes) {
+			reservation.release()
+			return nil, nil, errors.New("segment memory budget exhausted")
+		}
+		raw, _, err = n.opts.Fetcher.Fetch(ctx, url)
+	}
+	if err != nil {
+		reservation.release()
+		return nil, nil, err
+	}
+	if int64(len(raw)) > n.opts.MaxSegmentBytes {
+		reservation.release()
+		return nil, nil, errors.New("upstream response too large")
+	}
+	if int64(cap(raw)) > n.opts.MaxSegmentBytes {
+		exact := make([]byte, len(raw))
+		copy(exact, raw)
+		raw = exact
+	}
+	reservation.shrink(int64(cap(raw)))
+	return raw, reservation, nil
+}
+
+func (n *Native) acquireDecrypt(ctx context.Context) chan struct{} {
+	n.mu.Lock()
+	if n.decrypt == nil {
+		n.decrypt = make(chan struct{}, defaultPrefetch)
+	}
+	pool := n.decrypt
+	n.mu.Unlock()
+	if ctx.Err() != nil {
+		return nil
+	}
+	select {
+	case pool <- struct{}{}:
+		if ctx.Err() != nil {
+			<-pool
+			return nil
+		}
+		return pool
+	case <-ctx.Done():
+		return nil
+	}
+}
+
+func (n *Native) prepare(ctx context.Context, ts *trackState, seg mpd.Segment) (res prepared) {
 	n.segmentsFetched.Add(1)
-	raw, _, err := n.opts.Fetcher.Fetch(ctx, seg.URL)
+	raw, reservation, err := n.fetchSegment(ctx, seg.URL)
 	if err != nil {
 		n.segmentFetchErrs.Add(1)
 		res.err = fmt.Errorf("fetch segment %s#%d: %w", ts.rep.ID, seg.Number, err)
 		return res
 	}
+	defer reservation.release()
+	n.observeBudget("ciphertext")
 	if n.opts.MaxSegmentBytes > 0 && int64(len(raw)) > n.opts.MaxSegmentBytes {
 		n.segmentFetchErrs.Add(1)
 		res.err = fmt.Errorf("segment %s#%d is %d bytes, over the limit", ts.rep.ID, seg.Number, len(raw))
 		return res
 	}
-	ciphertextBytes := int64(len(raw))
-	reservation.shrink(segmentWorkingSet(ciphertextBytes))
-	n.observeBudget("ciphertext")
+	reservation.shrink(int64(cap(raw)))
 	ts.observe(len(raw))
 
+	pool := n.acquireDecrypt(ctx)
+	if pool == nil {
+		res.err = ctx.Err()
+		return res
+	}
 	started := time.Now()
-	clear, err := ts.init.Decrypt(raw, n.opts.Keys)
+	clear, err := ts.init.DecryptReserved(raw, n.opts.Keys, func(clearCapacity int64) error {
+		if !reservation.resize(addBytes(int64(cap(raw)), clearCapacity)) {
+			return errors.New("segment memory budget exhausted")
+		}
+		return nil
+	})
+	<-pool
 	n.decryptNanos.Add(int64(time.Since(started)))
 	if err != nil {
 		if u, ok := cmaf.Unsupported(err); ok && u.Reason == cmaf.ReasonMissingKey {
@@ -687,7 +808,6 @@ func (n *Native) prepare(ctx context.Context, ts *trackState, seg mpd.Segment) (
 		res.err = fmt.Errorf("decrypt segment %s#%d: %w", ts.rep.ID, seg.Number, err)
 		return res
 	}
-	reservation.shrink(addBytes(ciphertextBytes, int64(len(clear.Clear))))
 	n.observeBudget("plaintext")
 
 	res.baseTime = clear.BaseTime

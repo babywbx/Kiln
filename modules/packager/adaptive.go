@@ -28,7 +28,9 @@ type NativeAdapter struct {
 	grace        time.Duration
 	now          func() time.Time
 
-	gate *byteGate
+	gate     *byteGate
+	download chan struct{}
+	decrypt  chan struct{}
 }
 
 func NewNativeAdapter(newFetcher func(req Request) Fetcher, playlistSize int, grace time.Duration) *NativeAdapter {
@@ -37,11 +39,22 @@ func NewNativeAdapter(newFetcher func(req Request) Fetcher, playlistSize int, gr
 		playlistSize: playlistSize,
 		grace:        grace,
 		gate:         newByteGate(defaultInflightBytes),
+		download:     make(chan struct{}, defaultInflightBytes/defaultMaxSegmentBytes),
+		decrypt:      make(chan struct{}, defaultPrefetch),
 	}
 }
 
 func (a *NativeAdapter) SetInflightBytes(limit int64) {
 	a.gate = newByteGate(limit)
+	maxSegmentBytes := a.MaxSegmentBytes
+	if maxSegmentBytes <= 0 {
+		maxSegmentBytes = defaultMaxSegmentBytes
+	}
+	slots := int(a.gate.capacity() / maxSegmentBytes)
+	if slots < 2 {
+		slots = 2
+	}
+	a.download = make(chan struct{}, slots)
 }
 
 func (a *NativeAdapter) Start(ctx context.Context, req Request) (Job, error) {
@@ -62,6 +75,8 @@ func (a *NativeAdapter) Start(ctx context.Context, req Request) (Job, error) {
 		PrimaryTrackHold: a.PrimaryTrackHold,
 		StallTimeout:     a.StallTimeout,
 		Gate:             a.gate,
+		DownloadPool:     a.download,
+		DecryptPool:      a.decrypt,
 		Grace:            a.grace,
 		Now:              a.now,
 		Log:              req.Log,

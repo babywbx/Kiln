@@ -142,6 +142,45 @@ func TestByteReservationShrinkKeepsLiveBudgetCovered(t *testing.T) {
 	}
 }
 
+func TestByteReservationResizeRejectsGrowthWithoutCapacity(t *testing.T) {
+	g := newByteGate(10)
+	reservation, err := g.acquire(context.Background(), 6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := g.acquire(context.Background(), 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reservation.resize(7) {
+		t.Fatal("growth succeeded without capacity")
+	}
+	if got := g.usage(); got != 10 {
+		t.Fatalf("usage = %d, want 10", got)
+	}
+	other.release()
+	if !reservation.resize(7) {
+		t.Fatal("growth failed after capacity was released")
+	}
+	reservation.release()
+}
+
+func BenchmarkByteReservationResize(b *testing.B) {
+	g := newByteGate(1 << 30)
+	reservation, err := g.acquire(context.Background(), 32<<10)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer reservation.release()
+	b.ReportAllocs()
+	for b.Loop() {
+		if !reservation.resize(64 << 10) {
+			b.Fatal("resize failed")
+		}
+		reservation.shrink(32 << 10)
+	}
+}
+
 func TestSegmentSizeIsEstimatedFromTheDeclaredBandwidth(t *testing.T) {
 	if got := declaredSize(15_128_000, 8); got != 15_128_000 {
 		t.Errorf("declaredSize = %d, want bandwidth/8 * 8s = 15128000", got)

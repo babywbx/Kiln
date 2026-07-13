@@ -414,6 +414,72 @@ func assertNoStages(t *testing.T, dir string) {
 	}
 }
 
+type reservedTestFetcher struct {
+	data  []byte
+	calls atomic.Int64
+}
+
+func (f *reservedTestFetcher) Fetch(context.Context, string) ([]byte, string, error) {
+	f.calls.Add(1)
+	return f.data, "segment", nil
+}
+
+func (f *reservedTestFetcher) FetchReserved(_ context.Context, _ string, reserve func(int64) error) ([]byte, string, error) {
+	f.calls.Add(1)
+	if err := reserve(int64(cap(f.data))); err != nil {
+		return nil, "segment", err
+	}
+	return f.data, "segment", nil
+}
+
+func TestDownloadPoolAllowsThreeMaxSegmentsByDefault(t *testing.T) {
+	n := &Native{opts: Options{MaxSegmentBytes: defaultMaxSegmentBytes}, gate: newByteGate(defaultInflightBytes)}
+	if got := cap(n.downloadPool()); got != 3 {
+		t.Fatalf("download slots = %d, want 3", got)
+	}
+}
+
+func TestFetchSegmentOverLimitUsesSingleRequest(t *testing.T) {
+	f := &reservedTestFetcher{data: make([]byte, 1025)}
+	n := &Native{opts: Options{Fetcher: f, MaxSegmentBytes: 1024}, gate: newByteGate(4096)}
+	_, reservation, err := n.fetchSegment(context.Background(), "segment")
+	if reservation != nil {
+		reservation.release()
+	}
+	if err == nil {
+		t.Fatal("oversized segment succeeded")
+	}
+	if got := f.calls.Load(); got != 1 {
+		t.Fatalf("requests = %d, want 1", got)
+	}
+}
+
+func TestFetchSegmentAccountsCapacity(t *testing.T) {
+	data := make([]byte, 100, 200)
+	f := &reservedTestFetcher{data: data}
+	n := &Native{opts: Options{Fetcher: f, MaxSegmentBytes: 1024}, gate: newByteGate(4096)}
+	raw, reservation, err := n.fetchSegment(context.Background(), "segment")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reservation.release()
+	if got, want := n.gate.usage(), int64(cap(raw)); got != want {
+		t.Fatalf("usage = %d, want %d", got, want)
+	}
+}
+
+func TestAcquireDecryptRejectsCancelledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	n := &Native{decrypt: make(chan struct{}, 1)}
+	if pool := n.acquireDecrypt(ctx); pool != nil {
+		t.Fatal("cancelled context acquired decrypt token")
+	}
+	if got := len(n.decrypt); got != 0 {
+		t.Fatalf("decrypt tokens = %d, want 0", got)
+	}
+}
+
 func TestPrepareAccountsActualWorkingSetAndReleasesAfterStage(t *testing.T) {
 	data := fixtureSegment(t)
 	f := &controlledSegmentFetcher{data: data, starts: make(chan string, 1), release: map[string]chan struct{}{}, errs: map[string]error{}}
@@ -427,14 +493,14 @@ func TestPrepareAccountsActualWorkingSetAndReleasesAfterStage(t *testing.T) {
 	if result.err != nil {
 		t.Fatal(result.err)
 	}
-	if observed["estimate"] != segmentWorkingSet(int64(len(data))) {
-		t.Fatalf("estimated usage = %d, want %d", observed["estimate"], segmentWorkingSet(int64(len(data))))
+	if observed["estimate"] != 0 {
+		t.Fatalf("estimated usage = %d, want 0", observed["estimate"])
 	}
-	if observed["ciphertext"] != segmentWorkingSet(int64(len(data))) {
-		t.Fatalf("ciphertext usage = %d, want %d", observed["ciphertext"], segmentWorkingSet(int64(len(data))))
+	if observed["ciphertext"] != int64(len(data)) {
+		t.Fatalf("ciphertext usage = %d, want %d", observed["ciphertext"], len(data))
 	}
 	if observed["plaintext"] <= int64(len(data)) {
-		t.Fatalf("plaintext usage = %d, want above raw %d", observed["plaintext"], len(data))
+		t.Fatalf("plaintext usage = %d, want above %d", observed["plaintext"], len(data))
 	}
 	if observed["staged"] != 0 || n.gate.usage() != 0 {
 		t.Fatalf("usage after Stage = %d, final = %d", observed["staged"], n.gate.usage())
@@ -478,20 +544,19 @@ func TestPrepareReleasesBudgetOnAllExits(t *testing.T) {
 	}
 }
 
-func TestPrepareActualCiphertextSerializesUnderestimatedTasks(t *testing.T) {
+func TestPrepareAllowsBoundedCiphertextConcurrency(t *testing.T) {
 	data := fixtureSegment(t)
 	block := make(chan struct{})
 	f := &controlledSegmentFetcher{data: data, starts: make(chan string, 2), release: map[string]chan struct{}{}, errs: map[string]error{}}
 	n, ts, segs, _ := pipelineNative(t, 2, f)
-	n.gate = newByteGate(segmentWorkingSet(int64(len(data))))
+	n.gate = newByteGate(int64(len(data)) * 4)
 	n.opts.MaxSegmentBytes = int64(len(data))
-	ts.segBytes.Store(1)
 	var plaintext atomic.Int64
 	n.budgetObserved = func(phase string, usage int64) {
 		if phase == "plaintext" && plaintext.Add(1) == 1 {
 			<-block
 		}
-		if usage > segmentWorkingSet(int64(len(data))) {
+		if usage > int64(len(data))*4 {
 			t.Errorf("usage = %d exceeds limit", usage)
 		}
 	}
@@ -501,11 +566,8 @@ func TestPrepareActualCiphertextSerializesUnderestimatedTasks(t *testing.T) {
 	<-f.starts
 	select {
 	case <-f.starts:
-		t.Fatal("second worker fetched before the first released its reservation")
-	case <-time.After(10 * time.Millisecond):
-	}
-	if got := plaintext.Load(); got != 1 {
-		t.Fatalf("plaintext workers = %d, want 1", got)
+	case <-time.After(time.Second):
+		t.Fatal("second worker did not fetch concurrently")
 	}
 	close(block)
 	for range 2 {
