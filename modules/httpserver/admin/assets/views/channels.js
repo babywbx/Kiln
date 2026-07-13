@@ -31,9 +31,7 @@ export async function renderChannels(ctx) {
   const count = h("span", { class: "muted", text: "" });
   const tbody = h("tbody");
   const cards = h("div", { class: "record-list" });
-  // channel id -> badge slot, so polling swaps the badge in place instead of
-  // rebuilding the table and blowing away the filter and scroll position.
-  const stateSlots = new Map();
+  const mobileMedia = matchMedia("(max-width: 680px)");
 
   const move = async (id, delta) => {
     const ids = store.channels.map((channel) => channel.id);
@@ -52,108 +50,175 @@ export async function renderChannels(ctx) {
     }
   };
 
-  const draw = () => {
-    const visible = store.channels.filter((channel) => matchesQuery(channel, query));
-    stateSlots.clear();
-    tbody.replaceChildren();
-    cards.replaceChildren();
-    count.textContent = query
-      ? `${visible.length} / ${store.channels.length} 个频道`
-      : `${store.channels.length} 个频道`;
+  const stateOf = (channel) => {
+    if (channel.disabled) return "disabled";
+    const session = sessionFor(channel.id);
+    return session ? session.state || "unknown" : "idle";
+  };
 
-    if (!visible.length) {
-      const makeEmpty = () =>
-        query
-          ? emptyState("没有匹配的频道", "换一个名称、标识符或分组试试。", button("清除筛选", { onClick: () => { filter.value = ""; query = ""; draw(); } }))
-          : emptyState("还没有频道", "添加第一个频道，或从 M3U 播放列表批量导入。", linkButton("添加频道", "/admin/channels/new", { kind: "primary", iconName: "plus" }));
-      tbody.append(h("tr", {}, h("td", { colspan: 7 }, makeEmpty())));
-      cards.append(makeEmpty());
-      return;
+  // Rows build once per layout; filtering and polling only touch what changed.
+  const entries = store.channels.map((channel, index) => ({
+    channel,
+    index,
+    state: "",
+    tr: null,
+    slot: null,
+    up: null,
+    down: null,
+    card: null,
+    cardSlot: null,
+  }));
+
+  const buildRow = (entry) => {
+    const { channel } = entry;
+    const route = `/admin/channels/${encodeURIComponent(channel.id)}`;
+    entry.state = stateOf(channel);
+    entry.slot = h("span", { class: "state-slot" }, stateBadge(channel, sessionFor(channel.id)));
+    entry.up = iconButton("arrow-up", `上移 ${channel.title}`, { variant: "outline", onClick: () => move(channel.id, -1) });
+    entry.down = iconButton("arrow-down", `下移 ${channel.title}`, { variant: "outline", onClick: () => move(channel.id, 1) });
+    entry.tr = h(
+      "tr",
+      {},
+      h("td", {}, h("a", { class: "cell-link", href: route, "data-route": true }, channelCell(channel))),
+      h(
+        "td",
+        {},
+        h(
+          "div",
+          { class: "source-cell" },
+          h("span", { class: "mono truncate", text: sourceURL(channel.upstream, channel.path) }),
+          h("small", { text: channel.upstream ? `来源服务器：${channel.upstream}` : "未设置来源服务器" }),
+        ),
+      ),
+      h("td", {}, badge((channel.ingress || "—").toUpperCase(), "neutral")),
+      h("td", { class: "muted", text: runModeLabel(channel) }),
+      h("td", {}, epgCell(channel)),
+      h("td", {}, entry.slot),
+      h(
+        "td",
+        {},
+        h(
+          "div",
+          { class: "row-actions" },
+          iconButton("play", `预览 ${channel.title}`, { variant: "outline", disabled: channel.disabled, onClick: () => previewChannel(channel) }),
+          entry.up,
+          entry.down,
+          linkButton("配置", route, { iconName: "sliders-horizontal" }),
+        ),
+      ),
+    );
+  };
+
+  const buildCard = (entry) => {
+    const { channel } = entry;
+    const route = `/admin/channels/${encodeURIComponent(channel.id)}`;
+    entry.state = stateOf(channel);
+    entry.cardSlot = h("span", { class: "state-slot" }, stateBadge(channel, sessionFor(channel.id)));
+    entry.card = h(
+      "article",
+      { class: "record" },
+      h("div", { class: "record-head" }, channelCell(channel), entry.cardSlot),
+      h("div", { class: "record-source mono truncate", text: sourceURL(channel.upstream, channel.path) }),
+      h(
+        "div",
+        { class: "record-meta" },
+        h("span", {}, h("small", { text: "格式" }), h("span", { text: (channel.ingress || "—").toUpperCase() })),
+        h("span", {}, h("small", { text: "运行方式" }), h("span", { text: runModeLabel(channel) })),
+        h("span", {}, h("small", { text: "节目单" }), epgCell(channel)),
+      ),
+      h(
+        "div",
+        { class: "record-actions" },
+        linkButton("配置频道", route, { kind: "primary", iconName: "sliders-horizontal" }),
+        button("预览", { iconName: "play", disabled: channel.disabled, onClick: () => previewChannel(channel) }),
+      ),
+    );
+  };
+
+  const emptyCell = h("td", { colspan: 7 });
+  const emptyRow = h("tr", { hidden: true }, emptyCell);
+  const emptyCard = h("div", { hidden: true });
+  let emptyKind = "";
+
+  const clearFilter = () => {
+    filter.value = "";
+    query = "";
+    applyFilter();
+  };
+
+  const makeEmpty = () =>
+    query
+      ? emptyState("没有匹配的频道", "换一个名称、标识符或分组试试。", button("清除筛选", { onClick: clearFilter }))
+      : emptyState("还没有频道", "添加第一个频道，或从 M3U 播放列表批量导入。", linkButton("添加频道", "/admin/channels/new", { kind: "primary", iconName: "plus" }));
+
+  const buildTable = () => {
+    for (const entry of entries) {
+      buildRow(entry);
+      tbody.append(entry.tr);
+    }
+    tbody.append(emptyRow);
+  };
+
+  const buildCards = () => {
+    for (const entry of entries) {
+      buildCard(entry);
+      cards.append(entry.card);
+    }
+    cards.append(emptyCard);
+  };
+
+  const applyFilter = () => {
+    if (mobileMedia.matches) {
+      if (!cards.childElementCount) buildCards();
+    } else if (!tbody.childElementCount) {
+      buildTable();
     }
 
-    for (const channel of visible) {
-      const route = `/admin/channels/${encodeURIComponent(channel.id)}`;
-      const position = store.channels.findIndex((item) => item.id === channel.id);
-      const reorderLocked = Boolean(query);
-
-      const slot = h("span", { class: "state-slot" }, stateBadge(channel, sessionFor(channel.id)));
-      stateSlots.set(channel.id, slot);
-
-      tbody.append(
-        h(
-          "tr",
-          {},
-          h("td", {}, h("a", { class: "cell-link", href: route, "data-route": true }, channelCell(channel))),
-          h(
-            "td",
-            {},
-            h(
-              "div",
-              { class: "source-cell" },
-              h("span", { class: "mono truncate", text: sourceURL(channel.upstream, channel.path) }),
-              h("small", { text: channel.upstream ? `来源服务器：${channel.upstream}` : "未设置来源服务器" }),
-            ),
-          ),
-          h("td", {}, badge((channel.ingress || "—").toUpperCase(), "neutral")),
-          h("td", { class: "muted", text: runModeLabel(channel) }),
-          h("td", {}, epgCell(channel)),
-          h("td", {}, slot),
-          h(
-            "td",
-            {},
-            h(
-              "div",
-              { class: "row-actions" },
-              iconButton("play", `预览 ${channel.title}`, { variant: "outline", disabled: channel.disabled, onClick: () => previewChannel(channel) }),
-              iconButton("arrow-up", `上移 ${channel.title}`, { variant: "outline", disabled: reorderLocked || position <= 0, onClick: () => move(channel.id, -1) }),
-              iconButton("arrow-down", `下移 ${channel.title}`, { variant: "outline", disabled: reorderLocked || position >= store.channels.length - 1, onClick: () => move(channel.id, 1) }),
-              linkButton("配置", route, { iconName: "sliders-horizontal" }),
-            ),
-          ),
-        ),
-      );
-
-      const cardSlot = h("span", { class: "state-slot" }, stateBadge(channel, sessionFor(channel.id)));
-      cards.append(
-        h(
-          "article",
-          { class: "record" },
-          h("div", { class: "record-head" }, channelCell(channel), cardSlot),
-          h("div", { class: "record-source mono truncate", text: sourceURL(channel.upstream, channel.path) }),
-          h(
-            "div",
-            { class: "record-meta" },
-            h("span", {}, h("small", { text: "格式" }), h("span", { text: (channel.ingress || "—").toUpperCase() })),
-            h("span", {}, h("small", { text: "运行方式" }), h("span", { text: runModeLabel(channel) })),
-            h("span", {}, h("small", { text: "节目单" }), epgCell(channel)),
-          ),
-          h(
-            "div",
-            { class: "record-actions" },
-            linkButton("配置频道", route, { kind: "primary", iconName: "sliders-horizontal" }),
-            button("预览", { iconName: "play", disabled: channel.disabled, onClick: () => previewChannel(channel) }),
-          ),
-        ),
-      );
-      stateSlots.set(`card:${channel.id}`, cardSlot);
+    const locked = Boolean(query.trim());
+    let shown = 0;
+    for (const entry of entries) {
+      const visible = matchesQuery(entry.channel, query);
+      if (visible) shown += 1;
+      if (entry.tr) entry.tr.hidden = !visible;
+      if (entry.card) entry.card.hidden = !visible;
+      if (entry.up) entry.up.disabled = locked || entry.index === 0;
+      if (entry.down) entry.down.disabled = locked || entry.index === entries.length - 1;
     }
+
+    count.textContent = query ? `${shown} / ${entries.length} 个频道` : `${entries.length} 个频道`;
+
+    const kind = query ? "filtered" : "blank";
+    if (!shown && emptyKind !== kind) {
+      emptyKind = kind;
+      emptyCell.replaceChildren(makeEmpty());
+      emptyCard.replaceChildren(makeEmpty());
+    }
+    emptyRow.hidden = Boolean(shown);
+    emptyCard.hidden = Boolean(shown);
   };
 
   const repaintStates = () => {
     if (!ctx.alive()) return;
-    for (const channel of store.channels) {
-      const next = () => stateBadge(channel, sessionFor(channel.id));
-      stateSlots.get(channel.id)?.replaceChildren(next());
-      stateSlots.get(`card:${channel.id}`)?.replaceChildren(next());
+    for (const entry of entries) {
+      const state = stateOf(entry.channel);
+      if (state === entry.state) continue;
+      entry.state = state;
+      const session = sessionFor(entry.channel.id);
+      entry.slot?.replaceChildren(stateBadge(entry.channel, session));
+      entry.cardSlot?.replaceChildren(stateBadge(entry.channel, session));
     }
   };
 
   filter.addEventListener("input", () => {
     query = filter.value;
-    draw();
+    applyFilter();
   });
 
-  draw();
+  const onLayoutChange = () => applyFilter();
+  mobileMedia.addEventListener("change", onLayoutChange);
+  ctx.onDispose(() => mobileMedia.removeEventListener("change", onLayoutChange));
+
+  applyFilter();
   ctx.watchStatus(repaintStates);
 
   return frag(
