@@ -78,7 +78,11 @@ func (s *Server) handleDistPlaylist(w http.ResponseWriter, r *http.Request) {
 	}
 	base := s.deps.Catalog.PublicBase()
 	prefix := "/p/" + raw + "/play/"
-	body := s.deps.Catalog.M3U(chs, base, prefix, "")
+	epgURL := ""
+	if s.deps.Cfg.EPG.Enabled {
+		epgURL = epgPublicURL(base)
+	}
+	body := s.deps.Catalog.M3U(chs, base, prefix, "", epgURL)
 	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write([]byte(body))

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"testing"
+	"time"
 )
 
 func FuzzCMAF(f *testing.F) {
@@ -23,6 +24,9 @@ func FuzzCMAF(f *testing.F) {
 		if err != nil {
 			return
 		}
+		// SplitParts is also an untrusted-media boundary and must never panic,
+		// even when handed encrypted, truncated, or otherwise arbitrary bytes.
+		_, _ = init.SplitParts(segmentRaw, 200*time.Millisecond)
 		segment, err := init.Decrypt(segmentRaw, testKeys(t))
 		if err != nil {
 			return
@@ -33,6 +37,13 @@ func FuzzCMAF(f *testing.F) {
 		}
 		if reparsed.Track.Encrypted {
 			t.Fatal("clear init remains protected")
+		}
+		parts, err := reparsed.SplitParts(segment.Clear, 200*time.Millisecond)
+		if err != nil {
+			t.Fatalf("clear segment cannot be split: %v", err)
+		}
+		if len(parts) == 0 {
+			t.Fatal("successful split returned no parts")
 		}
 		if len(segment.Clear) == 0 {
 			t.Fatal("successful decrypt returned empty media")

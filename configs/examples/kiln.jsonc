@@ -40,7 +40,36 @@
     "hls_list_size": 8,
     "log_level": "error",
   },
-  "observe": { "enabled": true },
+  "packager": {
+    "engine": "auto",
+    "playlist_size": 8,
+    "ll_hls": true,
+    "part_target_ms": 500,
+    "start_segments": 3,
+    "prefetch_segments": 3,
+    "max_segment_bytes": 33554432,
+    "grace_sec": 30,
+    "inflight_bytes": 100663296,
+  },
+  "observe": {
+    "enabled": true,
+    // "otlp_endpoint": "http://127.0.0.1:4318",
+    // "otlp_insecure": true,
+    // "trace_sample_ratio": 0.1,
+  },
+  "epg": {
+    "enabled": false,
+    "cache": true,
+    "refresh_interval_min": 360,
+    "max_source_bytes": 67108864,
+    "default_timezone": "Asia/Hong_Kong",
+    "serve_timezone": "keep",
+    "sources": [
+      { "id": "hk-1", "enabled": true, "proxy": "auto" },
+      { "id": "tw-1", "enabled": true, "proxy": "auto" },
+      { "id": "cn-2", "enabled": true, "proxy": "auto" },
+    ],
+  },
   "upstreams": [
     {
       "id": "origin",
@@ -69,6 +98,7 @@
       "idle_timeout_sec": 90,
       "keys_file": "keys.example.txt",
       "restart_on_failure": true,
+      "preferred_audio_languages": ["yue", "zh", "en"],
     },
   ],
 }

@@ -13,20 +13,21 @@ import (
 )
 
 type xmlMPD struct {
-	XMLName                   xml.Name    `xml:"MPD"`
-	Type                      string      `xml:"type,attr"`
-	Profiles                  string      `xml:"profiles,attr"`
-	MinimumUpdatePeriod       string      `xml:"minimumUpdatePeriod,attr"`
-	AvailabilityStartTime     string      `xml:"availabilityStartTime,attr"`
-	TimeShiftBufferDepth      string      `xml:"timeShiftBufferDepth,attr"`
-	SuggestedPresentationDlay string      `xml:"suggestedPresentationDelay,attr"`
-	PublishTime               string      `xml:"publishTime,attr"`
-	MediaPresentationDuration string      `xml:"mediaPresentationDuration,attr"`
-	MaxSegmentDuration        string      `xml:"maxSegmentDuration,attr"`
-	MinBufferTime             string      `xml:"minBufferTime,attr"`
-	BaseURL                   []string    `xml:"BaseURL"`
-	Location                  []string    `xml:"Location"`
-	Periods                   []xmlPeriod `xml:"Period"`
+	XMLName                   xml.Name        `xml:"MPD"`
+	Type                      string          `xml:"type,attr"`
+	Profiles                  string          `xml:"profiles,attr"`
+	MinimumUpdatePeriod       string          `xml:"minimumUpdatePeriod,attr"`
+	AvailabilityStartTime     string          `xml:"availabilityStartTime,attr"`
+	TimeShiftBufferDepth      string          `xml:"timeShiftBufferDepth,attr"`
+	SuggestedPresentationDlay string          `xml:"suggestedPresentationDelay,attr"`
+	PublishTime               string          `xml:"publishTime,attr"`
+	MediaPresentationDuration string          `xml:"mediaPresentationDuration,attr"`
+	MaxSegmentDuration        string          `xml:"maxSegmentDuration,attr"`
+	MinBufferTime             string          `xml:"minBufferTime,attr"`
+	BaseURL                   []string        `xml:"BaseURL"`
+	Location                  []string        `xml:"Location"`
+	UTCTimings                []xmlDescriptor `xml:"UTCTiming"`
+	Periods                   []xmlPeriod     `xml:"Period"`
 }
 
 type xmlPeriod struct {
@@ -158,6 +159,12 @@ func Parse(data []byte, baseURL string) (*Presentation, error) {
 		Dynamic:  strings.EqualFold(doc.Type, "dynamic"),
 		BaseURL:  baseURL,
 		Profiles: doc.Profiles,
+	}
+	for _, timing := range doc.UTCTimings {
+		if strings.TrimSpace(timing.SchemeIDURI) == "" || strings.TrimSpace(timing.Value) == "" {
+			continue
+		}
+		p.UTCTimings = append(p.UTCTimings, UTCTiming{Scheme: strings.TrimSpace(timing.SchemeIDURI), Value: strings.TrimSpace(timing.Value)})
 	}
 	for _, loc := range doc.Location {
 		loc = strings.TrimSpace(loc)

@@ -22,6 +22,8 @@ type NativeAdapter struct {
 	MaxSegmentBytes  int64
 	PrimaryTrackHold time.Duration
 	StallTimeout     time.Duration
+	LLHLS            bool
+	PartTarget       time.Duration
 
 	newFetcher   func(req Request) Fetcher
 	playlistSize int
@@ -62,24 +64,27 @@ func (a *NativeAdapter) Start(ctx context.Context, req Request) (Job, error) {
 		return nil, &FallbackError{Reason: ReasonMissingKey, Allowed: true, Err: err}
 	}
 	native, err := StartNative(ctx, Options{
-		ManifestURL:      req.SourceURL,
-		Dir:              req.WorkDir,
-		Keys:             keys,
-		Fetcher:          a.newFetcher(req),
-		PreferHeight:     req.PreferHeight,
-		PlaylistSize:     a.playlistSize,
-		StartSegments:    a.StartSegments,
-		Prefetch:         a.Prefetch,
-		MaxSegmentBytes:  a.MaxSegmentBytes,
-		PrimaryTrackHold: a.PrimaryTrackHold,
-		StallTimeout:     a.StallTimeout,
-		Gate:             a.gate,
-		InitPool:         a.init,
-		DownloadPool:     a.download,
-		DecryptPool:      a.decrypt,
-		Grace:            a.grace,
-		Now:              a.now,
-		Log:              req.Log,
+		ManifestURL:             req.SourceURL,
+		Dir:                     req.WorkDir,
+		Keys:                    keys,
+		Fetcher:                 a.newFetcher(req),
+		PreferHeight:            req.PreferHeight,
+		PreferredAudioLanguages: append([]string(nil), req.PreferredAudioLanguages...),
+		PlaylistSize:            a.playlistSize,
+		LLHLS:                   a.LLHLS,
+		PartTarget:              a.PartTarget,
+		StartSegments:           a.StartSegments,
+		Prefetch:                a.Prefetch,
+		MaxSegmentBytes:         a.MaxSegmentBytes,
+		PrimaryTrackHold:        a.PrimaryTrackHold,
+		StallTimeout:            a.StallTimeout,
+		Gate:                    a.gate,
+		InitPool:                a.init,
+		DownloadPool:            a.download,
+		DecryptPool:             a.decrypt,
+		Grace:                   a.grace,
+		Now:                     a.now,
+		Log:                     req.Log,
 	})
 	if err != nil {
 		return nil, err
@@ -127,6 +132,14 @@ func (p *nativePublication) Playlist(name string) ([]byte, bool) {
 	return p.pub.Playlist(name)
 }
 
+func (p *nativePublication) PlaylistContext(ctx context.Context, name string, request PlaylistRequest) (PlaylistView, bool, error) {
+	view, ok, err := p.pub.PlaylistContext(ctx, name, hls.PlaylistRequest{
+		PlaylistOptions: hls.PlaylistOptions{Skip: request.Skip},
+		MSN:             request.MSN, Part: request.Part,
+	})
+	return PlaylistView{Body: view.Body, Revision: view.Revision}, ok, err
+}
+
 func (p *nativePublication) Asset(name string) (Asset, bool) {
 	path, ok := p.pub.Asset(name)
 	if !ok {
@@ -137,6 +150,18 @@ func (p *nativePublication) Asset(name string) (Asset, bool) {
 		return Asset{}, false
 	}
 	return Asset{Path: path, Immutable: true, ModTime: st.ModTime()}, true
+}
+
+func (p *nativePublication) AssetContext(ctx context.Context, name string) (Asset, bool, error) {
+	path, ok, err := p.pub.AssetContext(ctx, name)
+	if err != nil || !ok {
+		return Asset{}, ok, err
+	}
+	st, statErr := os.Stat(path)
+	if statErr != nil || st.IsDir() {
+		return Asset{}, false, statErr
+	}
+	return Asset{Path: path, Immutable: true, ModTime: st.ModTime()}, true, nil
 }
 
 type AdaptivePackager struct {

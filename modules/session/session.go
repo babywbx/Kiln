@@ -144,6 +144,8 @@ func (m *Manager) newPackager() packager.Packager {
 	native.MaxSegmentBytes = cfg.MaxSegmentBytes
 	native.PrimaryTrackHold = time.Duration(cfg.PrimaryTrackHoldSec) * time.Second
 	native.StallTimeout = time.Duration(cfg.StallTimeoutSec) * time.Second
+	native.LLHLS = cfg.LLHLS
+	native.PartTarget = time.Duration(cfg.PartTargetMS) * time.Millisecond
 	native.SetInflightBytes(cfg.InflightBytes)
 	ffmpeg := packager.NewFFmpegAdapter(m.ffmpeg, m.egress, m.spawn, onBytesIn)
 	return packager.NewAdaptivePackager(native, ffmpeg, m.log)
@@ -354,15 +356,16 @@ func (m *Manager) startDash(s *Session) error {
 		prefer = s.Channel.PreferHeight
 	}
 	job, err := m.pack.Start(s.ctx, packager.Request{
-		ChannelID:    s.Channel.ID,
-		SourceURL:    s.SourceURL,
-		Keys:         keys,
-		Headers:      headers,
-		UserAgent:    s.Channel.UserAgent,
-		WorkDir:      work,
-		PreferHeight: prefer,
-		Engine:       m.cat.Config().EngineFor(s.Channel),
-		Log:          m.log.With("channel", s.Channel.ID),
+		ChannelID:               s.Channel.ID,
+		SourceURL:               s.SourceURL,
+		Keys:                    keys,
+		Headers:                 headers,
+		UserAgent:               s.Channel.UserAgent,
+		WorkDir:                 work,
+		PreferHeight:            prefer,
+		PreferredAudioLanguages: append([]string(nil), s.Channel.PreferredAudioLanguages...),
+		Engine:                  m.cat.Config().EngineFor(s.Channel),
+		Log:                     m.log.With("channel", s.Channel.ID),
 	})
 	if err != nil {
 		s.LastError = err.Error()
@@ -627,22 +630,26 @@ func packagerStat(job packager.Job) *observe.PackagerStat {
 		return nil
 	}
 	return &observe.PackagerStat{
-		SegmentsPublished: st.SegmentsPublished,
-		SegmentsFetched:   st.SegmentsFetched,
-		SegmentFetchErrs:  st.SegmentFetchErrs,
-		ManifestRefreshes: st.ManifestRefreshes,
-		ManifestErrs:      st.ManifestErrs,
-		Discontinuities:   st.Discontinuities,
-		Reanchors:         st.Reanchors,
-		Reresolves:        st.Reresolves,
-		TrackHolds:        st.TrackHolds,
-		KeyMismatches:     st.KeyMismatches,
-		DecryptSeconds:    st.DecryptSeconds,
-		CacheBytes:        st.CacheBytes,
-		CacheItems:        st.CacheItems,
-		VideoFrontier:     st.VideoFrontier,
-		AudioFrontier:     st.AudioFrontier,
-		AudioTracks:       st.AudioTracks,
+		SegmentsPublished:  st.SegmentsPublished,
+		PartsPublished:     st.PartsPublished,
+		SegmentsFetched:    st.SegmentsFetched,
+		SegmentFetchErrs:   st.SegmentFetchErrs,
+		ManifestRefreshes:  st.ManifestRefreshes,
+		ManifestErrs:       st.ManifestErrs,
+		Discontinuities:    st.Discontinuities,
+		Reanchors:          st.Reanchors,
+		Reresolves:         st.Reresolves,
+		TrackHolds:         st.TrackHolds,
+		KeyMismatches:      st.KeyMismatches,
+		DecryptSeconds:     st.DecryptSeconds,
+		CacheBytes:         st.CacheBytes,
+		CacheItems:         st.CacheItems,
+		VideoFrontier:      st.VideoFrontier,
+		AudioFrontier:      st.AudioFrontier,
+		VideoTracks:        st.VideoTracks,
+		AudioTracks:        st.AudioTracks,
+		TextTracks:         st.TextTracks,
+		ClockOffsetSeconds: st.ClockOffsetSeconds,
 	}
 }
 

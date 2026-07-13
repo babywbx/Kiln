@@ -3,19 +3,25 @@ package hls
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
+
+	"github.com/babywbx/kiln/modules/timedmeta"
 )
 
 type Kind string
 
 const (
-	KindVideo Kind = "video"
-	KindAudio Kind = "audio"
+	KindVideo    Kind = "video"
+	KindAudio    Kind = "audio"
+	KindSubtitle Kind = "subtitle"
 )
 
 type Track struct {
@@ -29,6 +35,7 @@ type Track struct {
 	Height    int
 	Channels  int
 	Lang      string
+	Default   bool
 }
 
 type Config struct {
@@ -39,6 +46,9 @@ type Config struct {
 	Grace time.Duration
 
 	Static bool
+	LLHLS  bool
+
+	PartTarget time.Duration
 
 	MaxSegmentDuration time.Duration
 	Now                func() time.Time
@@ -50,16 +60,57 @@ type Publication struct {
 	Duration      float64
 	At            time.Time
 	Discontinuity bool
+	DateRanges    []timedmeta.DateRange
+}
+
+type PartPublication struct {
+	Track       string
+	MSN         uint64
+	Part        uint64
+	Duration    float64
+	Independent bool
+}
+
+type PlaylistOptions struct {
+	Skip bool
+}
+
+type PlaylistRequest struct {
+	PlaylistOptions
+	AfterRevision uint64
+	MSN           *uint64
+	Part          *uint64
+}
+
+type PlaylistView struct {
+	Body     []byte
+	Revision uint64
+}
+
+var (
+	ErrPlaylistRequestAhead = errors.New("hls: playlist request is too far ahead")
+	ErrPartWithoutMSN       = errors.New("hls: part request requires an MSN")
+)
+
+type partialSegment struct {
+	Name        string
+	MSN         uint64
+	Index       uint64
+	Duration    float64
+	Independent bool
 }
 
 type segment struct {
 	Name          string
 	Seq           uint64
+	MSN           uint64
 	Duration      float64
 	At            time.Time
 	Discontinuity bool
+	DateRanges    []timedmeta.DateRange
 
 	InitName  string
+	Parts     []partialSegment
 	expiresAt time.Time
 }
 
@@ -77,10 +128,14 @@ type track struct {
 	frontier    uint64
 	hasFrontier bool
 	complete    bool
+	parts       []partialSegment
+	hint        *partialSegment
+	partTarget  float64
 
 	encodedSegments int
 	encodedTarget   int
 	encodedEnd      bool
+	staticDirty     bool
 
 	target int
 }
@@ -106,6 +161,30 @@ func segmentName(track string, seq uint64) string {
 	return fmt.Sprintf("%s-%06d.m4s", track, seq)
 }
 
+func subtitleSegmentName(track string, seq uint64) string {
+	return fmt.Sprintf("%s-%06d.vtt", track, seq)
+}
+
+func partName(track string, msn, part uint64) string {
+	return fmt.Sprintf("%s-part-%06d-%03d.m4s", track, msn, part)
+}
+
+func (t *track) nextMSN() uint64 {
+	return t.mediaSequence + uint64(len(t.segments))
+}
+
+func (t *track) hasParts() bool {
+	if len(t.parts) > 0 {
+		return true
+	}
+	for _, s := range t.segments {
+		if len(s.Parts) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 type playlistEncoder struct {
 	media  func(*track, bool) []byte
 	master func([]*track, bool) []byte
@@ -115,13 +194,16 @@ type Publisher struct {
 	cfg Config
 	now func() time.Time
 
-	mu        sync.RWMutex
-	order     []string
-	tracks    map[string]*track
-	playlists map[string][]byte
-	assets    map[string]string
-	playable  bool
-	encoder   playlistEncoder
+	mu         sync.RWMutex
+	order      []string
+	tracks     map[string]*track
+	playlists  map[string][]byte
+	revisions  map[string]uint64
+	assets     map[string]string
+	dateRanges map[string]timedmeta.DateRange
+	playable   bool
+	encoder    playlistEncoder
+	changed    chan struct{}
 }
 
 func New(cfg Config) (*Publisher, error) {
@@ -137,15 +219,21 @@ func New(cfg Config) (*Publisher, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
+	if cfg.LLHLS && cfg.PartTarget <= 0 {
+		cfg.PartTarget = 500 * time.Millisecond
+	}
 	if err := os.MkdirAll(cfg.Dir, 0o750); err != nil {
 		return nil, fmt.Errorf("hls: create output dir: %w", err)
 	}
 	return &Publisher{
-		cfg:       cfg,
-		now:       cfg.Now,
-		tracks:    map[string]*track{},
-		playlists: map[string][]byte{},
-		assets:    map[string]string{},
+		cfg:        cfg,
+		now:        cfg.Now,
+		tracks:     map[string]*track{},
+		playlists:  map[string][]byte{},
+		revisions:  map[string]uint64{},
+		assets:     map[string]string{},
+		dateRanges: map[string]timedmeta.DateRange{},
+		changed:    make(chan struct{}),
 		encoder: playlistEncoder{
 			media:  mediaPlaylist,
 			master: masterPlaylist,
@@ -165,7 +253,11 @@ func (p *Publisher) AddTrack(t Track) error {
 	if p.playable {
 		return fmt.Errorf("hls: cannot add track %s after publishing", t.Name)
 	}
-	p.tracks[t.Name] = &track{Track: t, initAssets: map[string]struct{}{}}
+	partTarget := 0.0
+	if p.cfg.LLHLS {
+		partTarget = p.cfg.PartTarget.Seconds()
+	}
+	p.tracks[t.Name] = &track{Track: t, initAssets: map[string]struct{}{}, partTarget: partTarget}
 	p.order = append(p.order, t.Name)
 	return nil
 }
@@ -200,6 +292,74 @@ func (p *Publisher) PublishSegment(pub Publication, data []byte) error {
 	return p.PublishStaged(pub, staged)
 }
 
+func (p *Publisher) PublishPart(pub PartPublication, data []byte) error {
+	staged, err := p.Stage(data)
+	if err != nil {
+		return err
+	}
+	return p.PublishPartStaged(pub, staged)
+}
+
+func (p *Publisher) PublishPartStaged(pub PartPublication, staged string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	t, ok := p.tracks[pub.Track]
+	if !ok {
+		p.Discard(staged)
+		return fmt.Errorf("hls: unknown track %s", pub.Track)
+	}
+	if !p.cfg.LLHLS {
+		p.Discard(staged)
+		return fmt.Errorf("hls: partial segments are disabled")
+	}
+	if !t.initReady {
+		p.Discard(staged)
+		return fmt.Errorf("hls: track %s has no init segment", pub.Track)
+	}
+	if pub.Duration <= 0 {
+		p.Discard(staged)
+		return fmt.Errorf("hls: track %s part %d has zero duration", pub.Track, pub.Part)
+	}
+	wantMSN := t.nextMSN()
+	if pub.MSN < wantMSN {
+		p.Discard(staged)
+		return nil
+	}
+	if pub.MSN > wantMSN {
+		p.Discard(staged)
+		return fmt.Errorf("hls: part MSN %d is ahead of next MSN %d", pub.MSN, wantMSN)
+	}
+	wantPart := uint64(len(t.parts))
+	if pub.Part < wantPart {
+		p.Discard(staged)
+		return nil
+	}
+	if pub.Part > wantPart {
+		p.Discard(staged)
+		return fmt.Errorf("hls: part %d is ahead of next part %d", pub.Part, wantPart)
+	}
+
+	file := partName(pub.Track, pub.MSN, pub.Part)
+	if err := p.moveIntoPlace(file, staged); err != nil {
+		return err
+	}
+	part := partialSegment{
+		Name:        file,
+		MSN:         pub.MSN,
+		Index:       pub.Part,
+		Duration:    pub.Duration,
+		Independent: pub.Independent,
+	}
+	t.parts = append(t.parts, part)
+	if pub.Duration > t.partTarget {
+		t.partTarget = pub.Duration
+	}
+	p.setHint(t, pub.MSN, pub.Part+1)
+	p.refresh(t)
+	p.signalChange()
+	return nil
+}
+
 func (p *Publisher) PublishStaged(pub Publication, staged string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -208,7 +368,7 @@ func (p *Publisher) PublishStaged(pub Publication, staged string) error {
 		p.Discard(staged)
 		return fmt.Errorf("hls: unknown track %s", pub.Track)
 	}
-	if !t.initReady {
+	if !t.initReady && t.Kind != KindSubtitle {
 		p.Discard(staged)
 		return fmt.Errorf("hls: track %s has no init segment", pub.Track)
 	}
@@ -222,6 +382,9 @@ func (p *Publisher) PublishStaged(pub Publication, staged string) error {
 	}
 
 	file := segmentName(pub.Track, pub.Seq)
+	if t.Kind == KindSubtitle {
+		file = subtitleSegmentName(pub.Track, pub.Seq)
+	}
 	if err := p.moveIntoPlace(file, staged); err != nil {
 		return err
 	}
@@ -230,19 +393,203 @@ func (p *Publisher) PublishStaged(pub Publication, staged string) error {
 		hint = ceilSeconds(p.cfg.MaxSegmentDuration.Seconds())
 	}
 	t.setTarget(hint, pub.Duration)
+	msn := t.nextMSN()
+	parts := t.parts
+	t.parts = nil
 	t.segments = append(t.segments, segment{
 		Name:          file,
 		Seq:           pub.Seq,
+		MSN:           msn,
 		Duration:      pub.Duration,
 		At:            pub.At,
 		Discontinuity: pub.Discontinuity,
 		InitName:      t.initName,
+		Parts:         parts,
 	})
+	if t.Kind == KindVideo {
+		p.ensureTrackDateRanges(t)
+	}
+	metadataChanged := p.applyDateRanges(pub.DateRanges)
 	t.frontier = pub.Seq
 	t.hasFrontier = true
 	p.slide(t)
+	if t.Kind == KindVideo {
+		p.ensureTrackDateRanges(t)
+		p.pruneDateRanges()
+	}
+	if t.hasParts() {
+		p.setHint(t, t.nextMSN(), 0)
+	} else {
+		t.hint = nil
+	}
 	p.refresh(t)
+	if p.playable {
+		for _, changed := range metadataChanged {
+			if changed != t {
+				p.refreshMedia(changed)
+			}
+		}
+	}
+	p.signalChange()
 	return nil
+}
+
+func (p *Publisher) ensureTrackDateRanges(t *track) bool {
+	changed := false
+	for _, dateRange := range sortedDateRanges(p.dateRanges) {
+		if p.upsertTrackDateRange(t, dateRange) {
+			changed = true
+		}
+	}
+	return changed
+}
+
+func (p *Publisher) applyDateRanges(observations []timedmeta.DateRange) []*track {
+	if len(observations) == 0 {
+		return nil
+	}
+	changed := make(map[string]*track)
+	for _, observation := range observations {
+		if observation.ID == "" || observation.StartDate.IsZero() {
+			continue
+		}
+		merged := timedmeta.MergeDateRange(p.dateRanges[observation.ID], observation)
+		p.dateRanges[merged.ID] = merged
+		for _, name := range p.order {
+			t := p.tracks[name]
+			if t.Kind != KindVideo {
+				continue
+			}
+			if p.upsertTrackDateRange(t, merged) {
+				changed[name] = t
+			}
+		}
+	}
+	result := make([]*track, 0, len(changed))
+	for _, name := range p.order {
+		if t, ok := changed[name]; ok {
+			result = append(result, t)
+		}
+	}
+	return result
+}
+
+func (p *Publisher) upsertTrackDateRange(t *track, dateRange timedmeta.DateRange) bool {
+	for segmentIndex := range t.segments {
+		for dateRangeIndex := range t.segments[segmentIndex].DateRanges {
+			if t.segments[segmentIndex].DateRanges[dateRangeIndex].ID == dateRange.ID {
+				if t.segments[segmentIndex].DateRanges[dateRangeIndex].Equal(dateRange) {
+					return false
+				}
+				t.segments[segmentIndex].DateRanges[dateRangeIndex] = dateRange
+				if segmentIndex < t.encodedSegments {
+					t.staticDirty = true
+				}
+				return true
+			}
+		}
+	}
+	segmentIndex := dateRangeSegmentIndex(t.segments, dateRange)
+	if segmentIndex < 0 {
+		return false
+	}
+	t.segments[segmentIndex].DateRanges = append(t.segments[segmentIndex].DateRanges, dateRange)
+	if segmentIndex < t.encodedSegments {
+		t.staticDirty = true
+	}
+	return true
+}
+
+func dateRangeSegmentIndex(segments []segment, dateRange timedmeta.DateRange) int {
+	if dateRange.StartDate.IsZero() {
+		return -1
+	}
+	rangeEnd := dateRangeEnd(dateRange)
+	for index, segment := range segments {
+		if segment.At.IsZero() || segment.Duration <= 0 {
+			continue
+		}
+		segmentEnd := segment.At.Add(time.Duration(segment.Duration * float64(time.Second)))
+		if !dateRange.StartDate.Before(segment.At) && dateRange.StartDate.Before(segmentEnd) {
+			return index
+		}
+		if dateRange.StartDate.Before(segment.At) && (rangeEnd == nil || rangeEnd.After(segment.At)) {
+			return index
+		}
+	}
+	return -1
+}
+
+func dateRangeEnd(dateRange timedmeta.DateRange) *time.Time {
+	if dateRange.EndDate != nil {
+		return dateRange.EndDate
+	}
+	if dateRange.Duration != nil && (dateRange.SCTE35In != "" || dateRange.SCTE35Cmd != "") {
+		end := dateRange.StartDate.Add(*dateRange.Duration)
+		return &end
+	}
+	return nil
+}
+
+func sortedDateRanges(ranges map[string]timedmeta.DateRange) []timedmeta.DateRange {
+	result := make([]timedmeta.DateRange, 0, len(ranges))
+	for _, dateRange := range ranges {
+		result = append(result, dateRange)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].StartDate.Equal(result[j].StartDate) {
+			return result[i].ID < result[j].ID
+		}
+		return result[i].StartDate.Before(result[j].StartDate)
+	})
+	return result
+}
+
+func (p *Publisher) pruneDateRanges() {
+	for id, dateRange := range p.dateRanges {
+		end := dateRangeEnd(dateRange)
+		if end == nil {
+			continue
+		}
+		visible := false
+		for _, name := range p.order {
+			t := p.tracks[name]
+			if t.Kind != KindVideo {
+				continue
+			}
+			for _, segment := range t.segments {
+				for _, attached := range segment.DateRanges {
+					if attached.ID == id {
+						visible = true
+						break
+					}
+				}
+				if visible {
+					break
+				}
+			}
+			if visible || len(t.segments) == 0 {
+				visible = true
+				break
+			}
+			last := t.segments[len(t.segments)-1]
+			if last.At.IsZero() || !last.At.Add(time.Duration(last.Duration*float64(time.Second))).After(*end) {
+				visible = true
+				break
+			}
+		}
+		if !visible {
+			delete(p.dateRanges, id)
+		}
+	}
+}
+
+func (p *Publisher) setHint(t *track, msn, part uint64) {
+	t.hint = &partialSegment{
+		Name:  partName(t.Name, msn, part),
+		MSN:   msn,
+		Index: part,
+	}
 }
 
 func (p *Publisher) slide(t *track) {
@@ -271,6 +618,9 @@ func (p *Publisher) reap(t *track) {
 			continue
 		}
 		p.removeAsset(s.Name)
+		for _, part := range s.Parts {
+			p.removeAsset(part.Name)
+		}
 	}
 	t.tombstones = kept
 
@@ -307,7 +657,7 @@ func (p *Publisher) refresh(changed *track) {
 	for _, name := range p.order {
 		t := p.tracks[name]
 		tracks = append(tracks, t)
-		if !t.initReady || len(t.segments) == 0 {
+		if t.Kind != KindSubtitle && (!t.initReady || len(t.segments) == 0) {
 			return
 		}
 	}
@@ -321,7 +671,7 @@ func (p *Publisher) refresh(changed *track) {
 func (p *Publisher) refreshMedia(t *track) {
 	name := t.playlistName()
 	var next []byte
-	if p.cfg.Static {
+	if p.cfg.Static && !t.hasParts() {
 		next = p.appendStaticPlaylist(t, p.playlists[name])
 	} else {
 		next = p.encoder.media(t, t.complete)
@@ -330,14 +680,16 @@ func (p *Publisher) refreshMedia(t *track) {
 		return
 	}
 	p.playlists[name] = next
+	p.revisions[name]++
 }
 
 func (p *Publisher) appendStaticPlaylist(t *track, current []byte) []byte {
-	if t.encodedSegments == 0 || t.encodedTarget != t.target || t.encodedSegments > len(t.segments) {
+	if t.encodedSegments == 0 || t.encodedTarget != t.target || t.encodedSegments > len(t.segments) || t.staticDirty {
 		next := p.encoder.media(t, t.complete)
 		t.encodedSegments = len(t.segments)
 		t.encodedTarget = t.target
 		t.encodedEnd = t.complete
+		t.staticDirty = false
 		return next
 	}
 
@@ -361,10 +713,12 @@ func (p *Publisher) Complete() {
 	for _, name := range p.order {
 		t := p.tracks[name]
 		t.complete = true
+		t.hint = nil
 		if p.playable {
 			p.refreshMedia(t)
 		}
 	}
+	p.signalChange()
 }
 
 func (p *Publisher) refreshMaster(tracks []*track) {
@@ -373,6 +727,12 @@ func (p *Publisher) refreshMaster(tracks []*track) {
 		return
 	}
 	p.playlists[MasterName] = next
+	p.revisions[MasterName]++
+}
+
+func (p *Publisher) signalChange() {
+	close(p.changed)
+	p.changed = make(chan struct{})
 }
 
 func (p *Publisher) Stage(data []byte) (string, error) {
@@ -429,10 +789,120 @@ func (p *Publisher) Playable() bool {
 }
 
 func (p *Publisher) Playlist(name string) ([]byte, bool) {
+	view, ok := p.PlaylistWithOptions(name, PlaylistOptions{})
+	return view.Body, ok
+}
+
+func (p *Publisher) PlaylistWithOptions(name string, options PlaylistOptions) (PlaylistView, bool) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
+	return p.playlistViewLocked(name, options)
+}
+
+func (p *Publisher) playlistViewLocked(name string, options PlaylistOptions) (PlaylistView, bool) {
 	pl, ok := p.playlists[name]
-	return pl, ok
+	if !ok {
+		return PlaylistView{}, false
+	}
+	if options.Skip {
+		if t := p.trackForPlaylistLocked(name); t != nil && !t.complete && t.hasParts() {
+			pl = mediaPlaylistWithOptions(t, false, options)
+		}
+	}
+	return PlaylistView{Body: pl, Revision: p.revisions[name]}, true
+}
+
+func (p *Publisher) PlaylistContext(ctx context.Context, name string, request PlaylistRequest) (PlaylistView, bool, error) {
+	if request.Part != nil && request.MSN == nil {
+		return PlaylistView{}, false, ErrPartWithoutMSN
+	}
+	for {
+		p.mu.RLock()
+		view, ok := p.playlistViewLocked(name, request.PlaylistOptions)
+		if !ok {
+			p.mu.RUnlock()
+			return PlaylistView{}, false, nil
+		}
+		ready, err := p.playlistRequestReadyLocked(name, request, view.Revision)
+		if ready && request.MSN != nil {
+			if t := p.trackForPlaylistLocked(name); t != nil && *request.MSN < t.mediaSequence {
+				view, _ = p.playlistViewLocked(name, PlaylistOptions{})
+			}
+		}
+		changed := p.changed
+		p.mu.RUnlock()
+		if err != nil {
+			return PlaylistView{}, true, err
+		}
+		if ready {
+			return view, true, nil
+		}
+		select {
+		case <-ctx.Done():
+			return PlaylistView{}, true, ctx.Err()
+		case <-changed:
+		}
+	}
+}
+
+func (p *Publisher) playlistRequestReadyLocked(name string, request PlaylistRequest, revision uint64) (bool, error) {
+	t := p.trackForPlaylistLocked(name)
+	if request.MSN == nil {
+		return revision > request.AfterRevision, nil
+	}
+	if t == nil {
+		return false, fmt.Errorf("hls: blocking reload is only available for media playlists")
+	}
+	if t.complete || *request.MSN < t.mediaSequence {
+		return true, nil
+	}
+
+	lastKnown := t.nextMSN()
+	if len(t.parts) == 0 && lastKnown > 0 {
+		lastKnown--
+	}
+	if *request.MSN > lastKnown+2 {
+		return false, ErrPlaylistRequestAhead
+	}
+	if request.Part == nil {
+		return *request.MSN < t.nextMSN(), nil
+	}
+	if *request.MSN < t.nextMSN() {
+		return true, nil
+	}
+	if *request.MSN == t.nextMSN() && *request.Part < uint64(len(t.parts)) {
+		return true, nil
+	}
+
+	partTarget := t.partTarget
+	if partTarget <= 0 {
+		partTarget = p.cfg.PartTarget.Seconds()
+	}
+	advanceLimit := uint64(3)
+	if partTarget > 0 {
+		advanceLimit = uint64(math.Ceil(3 / partTarget))
+		if advanceLimit < 3 {
+			advanceLimit = 3
+		}
+	}
+	lastPart := uint64(0)
+	if len(t.parts) > 0 {
+		lastPart = t.parts[len(t.parts)-1].Index
+	}
+	if *request.MSN >= t.nextMSN() && *request.Part > lastPart+advanceLimit {
+		return false, ErrPlaylistRequestAhead
+	}
+	return false, nil
+}
+
+func (p *Publisher) trackForPlaylistLocked(name string) *track {
+	for _, trackName := range p.order {
+		t := p.tracks[trackName]
+		if t.playlistName() == name {
+			return t
+		}
+	}
+	return nil
 }
 
 func (p *Publisher) Asset(name string) (string, bool) {
@@ -440,6 +910,37 @@ func (p *Publisher) Asset(name string) (string, bool) {
 	defer p.mu.RUnlock()
 	path, ok := p.assets[name]
 	return path, ok
+}
+
+func (p *Publisher) AssetContext(ctx context.Context, name string) (string, bool, error) {
+	for {
+		p.mu.RLock()
+		if path, ok := p.assets[name]; ok {
+			p.mu.RUnlock()
+			return path, true, nil
+		}
+		active := p.isActiveHintLocked(name)
+		changed := p.changed
+		p.mu.RUnlock()
+		if !active {
+			return "", false, nil
+		}
+		select {
+		case <-ctx.Done():
+			return "", true, ctx.Err()
+		case <-changed:
+		}
+	}
+}
+
+func (p *Publisher) isActiveHintLocked(name string) bool {
+	for _, trackName := range p.order {
+		t := p.tracks[trackName]
+		if !t.complete && t.hint != nil && t.hint.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *Publisher) Frontier() map[string]uint64 {

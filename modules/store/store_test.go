@@ -215,6 +215,94 @@ func TestChannelRevisionRejectsStaleUpdate(t *testing.T) {
 	}
 }
 
+func TestChannelEPGFieldsRoundTrip(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer db.Close()
+
+	want := config.Channel{
+		ID: "news", Title: "News", Upstream: "origin", Path: "/news.m3u8", Ingress: "hls",
+		EPGID: "368359", EPGName: "無綫新聞台", EPGSource: "hk-1",
+		PreferredAudioLanguages: []string{"yue", "zh"},
+	}
+	if err := db.UpsertChannel(want); err != nil {
+		t.Fatalf("upsert channel: %v", err)
+	}
+	got, ok, err := db.GetChannel(want.ID)
+	if err != nil || !ok {
+		t.Fatalf("get channel: found=%v err=%v", ok, err)
+	}
+	if got.EPGID != want.EPGID || got.EPGName != want.EPGName || got.EPGSource != want.EPGSource {
+		t.Fatalf("EPG fields = %#v, want %#v", got, want)
+	}
+	if len(got.PreferredAudioLanguages) != 2 || got.PreferredAudioLanguages[0] != "yue" || got.PreferredAudioLanguages[1] != "zh" {
+		t.Fatalf("preferred audio languages = %v", got.PreferredAudioLanguages)
+	}
+}
+
+func TestSetAllChannelsDisabledReturnsChangedIDs(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer db.Close()
+	for _, channel := range []config.Channel{
+		{ID: "one", Upstream: "origin", Path: "/one", Ingress: "hls"},
+		{ID: "two", Upstream: "origin", Path: "/two", Ingress: "hls", Disabled: true},
+	} {
+		if err := db.UpsertChannel(channel); err != nil {
+			t.Fatalf("upsert %s: %v", channel.ID, err)
+		}
+	}
+	changed, err := db.SetAllChannelsDisabled(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changed) != 1 || changed[0] != "one" {
+		t.Fatalf("disabled changed IDs = %v", changed)
+	}
+	rows, err := db.ListChannelRows(true)
+	if err != nil || !rows[0].Channel.Disabled || !rows[1].Channel.Disabled || rows[0].Revision != 2 || rows[1].Revision != 1 {
+		t.Fatalf("rows after disable = %#v, %v", rows, err)
+	}
+	changed, err = db.SetAllChannelsDisabled(false)
+	if err != nil || len(changed) != 2 {
+		t.Fatalf("enable changed IDs = %v, %v", changed, err)
+	}
+}
+
+func TestEPGSourceRevisionRoundTrip(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer db.Close()
+
+	want := store.EPGSourceRow{
+		ID: "custom", Name: "Custom", URL: "https://epg.example/guide.xml.gz",
+		Timezone: "Asia/Shanghai", Proxy: "auto", Enabled: true,
+	}
+	if err := db.UpsertEPGSource(want); err != nil {
+		t.Fatalf("upsert EPG source: %v", err)
+	}
+	rows, err := db.ListEPGSources()
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("list EPG sources = %#v, %v", rows, err)
+	}
+	if rows[0].URL != want.URL || rows[0].Revision != 1 {
+		t.Fatalf("EPG source = %#v, want %#v", rows[0], want)
+	}
+	want.Enabled = false
+	if err := db.UpsertEPGSourceIfRevision(want, rows[0].Revision); err != nil {
+		t.Fatalf("update EPG source: %v", err)
+	}
+	if err := db.UpsertEPGSourceIfRevision(want, rows[0].Revision); !errors.Is(err, store.ErrRevisionConflict) {
+		t.Fatalf("stale EPG source update error = %v", err)
+	}
+}
+
 func TestAccessLogsCanBeDeletedByAgeAndCleared(t *testing.T) {
 	db, err := store.Open(t.TempDir())
 	if err != nil {

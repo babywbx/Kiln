@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math"
 	"math/bits"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,6 +17,8 @@ import (
 	"github.com/babywbx/kiln/modules/packager/cmaf"
 	"github.com/babywbx/kiln/modules/packager/hls"
 	"github.com/babywbx/kiln/modules/packager/mpd"
+	"github.com/babywbx/kiln/modules/subtitle"
+	"github.com/babywbx/kiln/modules/timedmeta"
 )
 
 type Fetcher interface {
@@ -50,6 +53,29 @@ func audioTrackName(i int, rep mpd.Representation, taken map[string]struct{}) st
 	return name
 }
 
+func videoTrackName(i int, rep, primary mpd.Representation, taken map[string]struct{}) string {
+	if rep.ID == primary.ID {
+		return trackVideo
+	}
+	name := fmt.Sprintf("video-%dp", rep.Height)
+	if rep.Height <= 0 {
+		name = "video-" + slug(rep.ID)
+	}
+	if _, clash := taken[name]; clash || name == "video-" {
+		name = fmt.Sprintf("video-variant-%d", i+1)
+	}
+	return name
+}
+
+func subtitleTrackName(i int, rep mpd.Representation, taken map[string]struct{}) string {
+	language := subtitle.NormalizeLanguage(rep.Lang)
+	name := "subtitle-" + slug(language.Tag)
+	if _, clash := taken[name]; clash || name == "subtitle-" {
+		name = fmt.Sprintf("subtitle-%d", i+1)
+	}
+	return name
+}
+
 func slug(s string) string {
 	var b strings.Builder
 	for _, r := range strings.ToLower(s) {
@@ -64,12 +90,15 @@ func slug(s string) string {
 }
 
 type Options struct {
-	ManifestURL  string
-	Dir          string
-	Keys         cmaf.KeySet
-	Fetcher      Fetcher
-	PreferHeight int
-	PlaylistSize int
+	ManifestURL             string
+	Dir                     string
+	Keys                    cmaf.KeySet
+	Fetcher                 Fetcher
+	PreferHeight            int
+	PreferredAudioLanguages []string
+	PlaylistSize            int
+	LLHLS                   bool
+	PartTarget              time.Duration
 
 	StartSegments int
 
@@ -147,6 +176,9 @@ func (o *Options) applyDefaults() {
 	if o.Log == nil {
 		o.Log = slog.Default()
 	}
+	if o.LLHLS && o.PartTarget <= 0 {
+		o.PartTarget = 500 * time.Millisecond
+	}
 }
 
 type trackState struct {
@@ -155,7 +187,9 @@ type trackState struct {
 	init     *cmaf.Init
 	initHash [sha256.Size]byte
 
-	nextSeq uint64
+	nextSeq          uint64
+	nextMSN          uint64
+	nextPartSequence uint64
 
 	lastTime uint64
 	hasLast  bool
@@ -174,7 +208,7 @@ type trackState struct {
 func newTrackState(name string, rep mpd.Representation, init *cmaf.Init, now time.Time) *trackState {
 	ts := &trackState{
 		name: name, rep: rep, init: init, initHash: sha256.Sum256(init.Clear),
-		nextSeq: 1, lastProgress: now,
+		nextSeq: 1, nextPartSequence: 1, lastProgress: now,
 	}
 	ts.readyMillis.Store(-1)
 	return ts
@@ -215,9 +249,11 @@ func (ts *trackState) observe(size int) {
 }
 
 type Native struct {
-	opts Options
-	now  func() time.Time
-	log  *slog.Logger
+	opts        Options
+	now         func() time.Time
+	sourceNow   func() time.Time
+	clockOffset time.Duration
+	log         *slog.Logger
 
 	pub      *hls.Publisher
 	plan     Plan
@@ -237,9 +273,11 @@ type Native struct {
 
 	forceResolve atomic.Bool
 
-	video *trackState
+	video  *trackState
+	videos []*trackState
 
 	audios []*trackState
+	texts  []*trackState
 
 	cancel      context.CancelFunc
 	done        chan struct{}
@@ -258,28 +296,33 @@ type Native struct {
 	trackHolds        atomic.Uint64
 	keyMismatches     atomic.Uint64
 	decryptNanos      atomic.Int64
+	partsPublished    atomic.Uint64
 }
 
 func (n *Native) Stats() Stats {
 	bytes, items := n.pub.CacheUsage()
 	frontier := n.pub.Frontier()
 	return Stats{
-		AudioTracks:       len(n.audios),
-		SegmentsPublished: n.segmentsPublished.Load(),
-		SegmentsFetched:   n.segmentsFetched.Load(),
-		SegmentFetchErrs:  n.segmentFetchErrs.Load(),
-		ManifestRefreshes: n.manifestRefreshes.Load(),
-		ManifestErrs:      n.manifestErrs.Load(),
-		Discontinuities:   n.discontinuities.Load(),
-		Reanchors:         n.reanchors.Load(),
-		Reresolves:        n.reresolves.Load(),
-		TrackHolds:        n.trackHolds.Load(),
-		KeyMismatches:     n.keyMismatches.Load(),
-		DecryptSeconds:    time.Duration(n.decryptNanos.Load()).Seconds(),
-		CacheBytes:        bytes,
-		CacheItems:        items,
-		VideoFrontier:     frontier[trackVideo],
-		AudioFrontier:     frontier[trackAudio],
+		VideoTracks:        len(n.videos),
+		AudioTracks:        len(n.audios),
+		TextTracks:         len(n.texts),
+		ClockOffsetSeconds: n.clockOffset.Seconds(),
+		SegmentsPublished:  n.segmentsPublished.Load(),
+		PartsPublished:     n.partsPublished.Load(),
+		SegmentsFetched:    n.segmentsFetched.Load(),
+		SegmentFetchErrs:   n.segmentFetchErrs.Load(),
+		ManifestRefreshes:  n.manifestRefreshes.Load(),
+		ManifestErrs:       n.manifestErrs.Load(),
+		Discontinuities:    n.discontinuities.Load(),
+		Reanchors:          n.reanchors.Load(),
+		Reresolves:         n.reresolves.Load(),
+		TrackHolds:         n.trackHolds.Load(),
+		KeyMismatches:      n.keyMismatches.Load(),
+		DecryptSeconds:     time.Duration(n.decryptNanos.Load()).Seconds(),
+		CacheBytes:         bytes,
+		CacheItems:         items,
+		VideoFrontier:      frontier[trackVideo],
+		AudioFrontier:      frontier[trackAudio],
 	}
 }
 
@@ -312,6 +355,15 @@ func StartNative(ctx context.Context, opts Options) (*Native, error) {
 		return nil, &FallbackError{Reason: plan.Reason, Allowed: plan.FallbackAllowed,
 			Err: errors.New("manifest is outside the native support matrix")}
 	}
+	clockOffset, clockSource, clockErr := resolveClockOffset(ctx, pres.UTCTimings, opts.Fetcher, opts.Now, pres.BaseURL)
+	if clockErr != nil {
+		opts.Log.Warn("DASH UTC timing failed; using the local clock", "err", clockErr)
+	}
+	sourceNow := opts.Now
+	if clockSource != "" {
+		sourceNow = func() time.Time { return opts.Now().Add(clockOffset) }
+		opts.Log.Info("DASH clock synchronized", "source", clockSource, "offset_ms", clockOffset.Milliseconds())
+	}
 
 	if !acquireSlot(ctx, opts.InitPool) {
 		return nil, ctx.Err()
@@ -323,21 +375,32 @@ func StartNative(ctx context.Context, opts Options) (*Native, error) {
 		}
 	}()
 
-	videoInit, audioInits, initReservations, err := fetchInits(ctx, opts, plan)
+	videoInits, audioInits, textInits, initReservations, err := fetchInits(ctx, opts, plan)
 	if err != nil {
 		return nil, err
 	}
 	defer releaseReservations(initReservations)
+	videoTracks := make([]cmaf.Track, len(videoInits))
+	for i, init := range videoInits {
+		videoTracks[i] = init.Track
+	}
 	audioTracks := make([]cmaf.Track, len(audioInits))
 	for i, init := range audioInits {
 		audioTracks[i] = init.Track
 	}
-	if err := VerifyTracks(&plan, videoInit.Track, audioTracks, opts.Keys); err != nil {
+	textTracks := make([]cmaf.Track, len(textInits))
+	for i, init := range textInits {
+		textTracks[i] = init.Track
+	}
+	if err := VerifyTrackSet(&plan, videoTracks, audioTracks, textTracks, opts.Keys); err != nil {
 		return nil, &FallbackError{Reason: plan.Reason, Allowed: plan.FallbackAllowed, Err: err}
 	}
 	if len(plan.SkippedAudios) > 0 {
 		opts.Log.Warn("audio renditions left out of the publication",
 			"skipped", plan.SkippedAudios, "carried", len(plan.Audios))
+	}
+	if len(plan.SkippedText) > 0 {
+		opts.Log.Warn("text renditions left out of the publication", "skipped", plan.SkippedText)
 	}
 	if len(plan.UnknownEssential) > 0 {
 		opts.Log.Warn("carrying a representation with an essential property we do not act on",
@@ -353,6 +416,8 @@ func StartNative(ctx context.Context, opts Options) (*Native, error) {
 		PlaylistSize:       opts.PlaylistSize,
 		Grace:              opts.Grace,
 		Static:             !pres.Dynamic,
+		LLHLS:              opts.LLHLS,
+		PartTarget:         opts.PartTarget,
 		MaxSegmentDuration: maxSegmentDuration,
 		Now:                opts.Now,
 	})
@@ -362,27 +427,41 @@ func StartNative(ctx context.Context, opts Options) (*Native, error) {
 
 	now := opts.Now()
 	n := &Native{
-		opts:     opts,
-		now:      opts.Now,
-		log:      opts.Log,
-		pub:      pub,
-		plan:     plan,
-		packMode: packMode(pres, plan),
-		gate:     opts.Gate,
-		download: opts.DownloadPool,
-		decrypt:  opts.DecryptPool,
-		refresh:  pres.Refresh,
-		done:     make(chan struct{}),
-		video:    newTrackState(trackVideo, plan.Video, videoInit, now),
-
+		opts:           opts,
+		now:            opts.Now,
+		sourceNow:      sourceNow,
+		clockOffset:    clockOffset,
+		log:            opts.Log,
+		pub:            pub,
+		plan:           plan,
+		packMode:       packMode(pres, plan),
+		gate:           opts.Gate,
+		download:       opts.DownloadPool,
+		decrypt:        opts.DecryptPool,
+		refresh:        pres.Refresh,
+		done:           make(chan struct{}),
 		epoch:          presentationEpoch(pres),
 		lastManifestOK: now,
 	}
 	taken := map[string]struct{}{}
+	for i, rep := range plan.Videos {
+		name := videoTrackName(i, rep, plan.Video, taken)
+		taken[name] = struct{}{}
+		track := newTrackState(name, rep, videoInits[i], now)
+		n.videos = append(n.videos, track)
+		if rep.ID == plan.Video.ID {
+			n.video = track
+		}
+	}
 	for i, rep := range plan.Audios {
 		name := audioTrackName(i, rep, taken)
 		taken[name] = struct{}{}
 		n.audios = append(n.audios, newTrackState(name, rep, audioInits[i], now))
+	}
+	for i, rep := range plan.Texts {
+		name := subtitleTrackName(i, rep, taken)
+		taken[name] = struct{}{}
+		n.texts = append(n.texts, newTrackState(name, rep, textInits[i], now))
 	}
 	if err := n.registerTracks(); err != nil {
 		return nil, noFallback(plan, err)
@@ -411,7 +490,13 @@ func publicationMaxSegmentDuration(pres *mpd.Presentation, plan Plan) (time.Dura
 		return pres.MaxSegmentDuration, nil
 	}
 	maximum := pres.MaxSegmentDuration
-	for _, rep := range append([]mpd.Representation{plan.Video}, plan.Audios...) {
+	representations := append([]mpd.Representation(nil), plan.Videos...)
+	if len(representations) == 0 && plan.Video.ID != "" {
+		representations = append(representations, plan.Video)
+	}
+	representations = append(representations, plan.Audios...)
+	representations = append(representations, plan.Texts...)
+	for _, rep := range representations {
 		durations := []uint64{rep.Addressing.Duration}
 		if rep.Addressing.Mode == mpd.AddressingTemplateTimeline {
 			durations = make([]uint64, 0, len(rep.Addressing.Timeline))
@@ -506,8 +591,10 @@ func refreshURL(pres *mpd.Presentation, finalURL string) string {
 	return finalURL
 }
 
-func fetchInits(ctx context.Context, opts Options, plan Plan) (*cmaf.Init, []*cmaf.Init, []*byteReservation, error) {
-	reps := append([]mpd.Representation{plan.Video}, plan.Audios...)
+func fetchInits(ctx context.Context, opts Options, plan Plan) ([]*cmaf.Init, []*cmaf.Init, []*cmaf.Init, []*byteReservation, error) {
+	reps := append([]mpd.Representation(nil), plan.Videos...)
+	reps = append(reps, plan.Audios...)
+	reps = append(reps, plan.Texts...)
 	inits := make([]*cmaf.Init, len(reps))
 	reservations := make([]*byteReservation, len(reps))
 	errs := make([]error, len(reps))
@@ -532,20 +619,30 @@ func fetchInits(ctx context.Context, opts Options, plan Plan) (*cmaf.Init, []*cm
 	wg.Wait()
 	if err := errors.Join(errs...); err != nil {
 		releaseReservations(reservations)
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 
-	if inits[0].Track.Kind != cmaf.KindVideo {
-		releaseReservations(reservations)
-		return nil, nil, nil, mismatchedInit()
-	}
-	for _, init := range inits[1:] {
-		if init.Track.Kind != cmaf.KindAudio {
+	videoEnd := len(plan.Videos)
+	audioEnd := videoEnd + len(plan.Audios)
+	for _, init := range inits[:videoEnd] {
+		if init.Track.Kind != cmaf.KindVideo {
 			releaseReservations(reservations)
-			return nil, nil, nil, mismatchedInit()
+			return nil, nil, nil, nil, mismatchedInit()
 		}
 	}
-	return inits[0], inits[1:], reservations, nil
+	for _, init := range inits[videoEnd:audioEnd] {
+		if init.Track.Kind != cmaf.KindAudio {
+			releaseReservations(reservations)
+			return nil, nil, nil, nil, mismatchedInit()
+		}
+	}
+	for _, init := range inits[audioEnd:] {
+		if init.Track.Kind != cmaf.KindText {
+			releaseReservations(reservations)
+			return nil, nil, nil, nil, mismatchedInit()
+		}
+	}
+	return inits[:videoEnd], inits[videoEnd:audioEnd], inits[audioEnd:], reservations, nil
 }
 
 func initByteLimit(opts Options, count int) int64 {
@@ -616,17 +713,24 @@ func loadInit(ctx context.Context, opts Options, rep mpd.Representation, limit i
 }
 
 func (n *Native) registerTracks() error {
-	if err := n.pub.AddTrack(hls.Track{
-		Name:      trackVideo,
-		Kind:      hls.KindVideo,
-		Codec:     n.video.init.Track.Codec,
-		Bandwidth: n.plan.Video.Bandwidth,
-		Width:     n.plan.Video.Width,
-		Height:    n.plan.Video.Height,
-	}); err != nil {
-		return err
+	for _, ts := range n.videos {
+		if err := n.pub.AddTrack(hls.Track{
+			Name:      ts.name,
+			Kind:      hls.KindVideo,
+			Codec:     ts.init.Track.Codec,
+			Bandwidth: ts.rep.Bandwidth,
+			Width:     ts.rep.Width,
+			Height:    ts.rep.Height,
+		}); err != nil {
+			return err
+		}
 	}
-	for _, ts := range n.audios {
+	languages := make([]string, len(n.audios))
+	for i, ts := range n.audios {
+		languages[i] = ts.rep.Lang
+	}
+	preferred := preferredAudioIndex(languages, n.opts.PreferredAudioLanguages)
+	for i, ts := range n.audios {
 		if err := n.pub.AddTrack(hls.Track{
 			Name:      ts.name,
 			Kind:      hls.KindAudio,
@@ -635,11 +739,24 @@ func (n *Native) registerTracks() error {
 			Channels:  ts.rep.AudioChannels,
 			Lang:      ts.rep.Lang,
 			Label:     audioLabel(ts.rep),
+			Default:   i == preferred,
+		}); err != nil {
+			return err
+		}
+	}
+	for _, ts := range n.texts {
+		language := subtitle.NormalizeLanguage(ts.rep.Lang)
+		if err := n.pub.AddTrack(hls.Track{
+			Name: ts.name, Kind: hls.KindSubtitle,
+			Lang: language.Tag, Label: language.Name,
 		}); err != nil {
 			return err
 		}
 	}
 	for _, ts := range n.tracks() {
+		if ts.init.Track.Kind == cmaf.KindText {
+			continue
+		}
 		if err := n.pub.PublishInit(ts.name, ts.init.Clear); err != nil {
 			return err
 		}
@@ -648,7 +765,9 @@ func (n *Native) registerTracks() error {
 }
 
 func (n *Native) tracks() []*trackState {
-	return append([]*trackState{n.video}, n.audios...)
+	tracks := append([]*trackState(nil), n.videos...)
+	tracks = append(tracks, n.audios...)
+	return append(tracks, n.texts...)
 }
 
 func audioLabel(rep mpd.Representation) string {
@@ -659,14 +778,15 @@ func audioLabel(rep mpd.Representation) string {
 }
 
 func (n *Native) publishFirst(ctx context.Context, pres *mpd.Presentation) error {
-	tracks := n.tracks()
+	tracks := append([]*trackState(nil), n.videos...)
+	tracks = append(tracks, n.audios...)
 	errs := make([]error, len(tracks))
 	var wg sync.WaitGroup
 	for i, ts := range tracks {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			segs, err := pres.AvailableSegments(0, ts.rep, n.now())
+			segs, err := pres.AvailableSegments(0, ts.rep, n.sourceNow())
 			if err != nil {
 				errs[i] = err
 				return
@@ -706,7 +826,15 @@ type prepared struct {
 	dur      float64
 	baseTime uint64
 	duration uint64
+	events   []cmaf.EventMessage
+	parts    []preparedPart
 	err      error
+}
+
+type preparedPart struct {
+	staged      string
+	duration    float64
+	independent bool
 }
 
 func (n *Native) publishSegments(ctx context.Context, ts *trackState, segs []mpd.Segment) error {
@@ -740,9 +868,9 @@ func (n *Native) publishSegments(ctx context.Context, ts *trackState, segs []mpd
 		}
 		if result.err != nil {
 			cancel()
-			n.pub.Discard(result.staged)
+			n.discardPrepared(result)
 			for _, pending := range slots[1:] {
-				n.pub.Discard((<-pending.done).staged)
+				n.discardPrepared(<-pending.done)
 			}
 			return result.err
 		}
@@ -752,6 +880,13 @@ func (n *Native) publishSegments(ctx context.Context, ts *trackState, segs []mpd
 		}
 	}
 	return nil
+}
+
+func (n *Native) discardPrepared(result prepared) {
+	n.pub.Discard(result.staged)
+	for _, part := range result.parts {
+		n.pub.Discard(part.staged)
+	}
 }
 
 func presentationEpoch(pres *mpd.Presentation) time.Time {
@@ -794,16 +929,34 @@ func (n *Native) commit(ts *trackState, seg mpd.Segment, p prepared) error {
 			"track", ts.name, "expected_dts", ts.expectedDTS, "got_dts", p.baseTime)
 	}
 
+	for index, part := range p.parts {
+		if ts.nextPartSequence > math.MaxUint32 {
+			return fmt.Errorf("LL-HLS part sequence exhausted on %s", ts.rep.ID)
+		}
+		if err := rewriteStagedPartSequence(part.staged, uint32(ts.nextPartSequence)); err != nil {
+			return fmt.Errorf("number LL-HLS part on %s: %w", ts.rep.ID, err)
+		}
+		if err := n.pub.PublishPartStaged(hls.PartPublication{
+			Track: ts.name, MSN: ts.nextMSN, Part: uint64(index),
+			Duration: part.duration, Independent: part.independent,
+		}, part.staged); err != nil {
+			return err
+		}
+		ts.nextPartSequence++
+		n.partsPublished.Add(1)
+	}
 	pub := hls.Publication{
 		Track:         ts.name,
 		Seq:           ts.nextSeq,
 		Duration:      p.dur,
 		At:            n.segmentTime(ts, seg),
 		Discontinuity: discontinuity,
+		DateRanges:    n.dateRanges(ts, seg, p),
 	}
 	if err := n.pub.PublishStaged(pub, p.staged); err != nil {
 		return err
 	}
+	ts.nextMSN++
 	n.segmentsPublished.Add(1)
 	if discontinuity {
 		n.discontinuities.Add(1)
@@ -818,6 +971,60 @@ func (n *Native) commit(ts *trackState, seg mpd.Segment, p prepared) error {
 	ts.lastProgress = n.now()
 	ts.readyMillis.Store(readyMillis)
 	return nil
+}
+
+func rewriteStagedPartSequence(path string, sequence uint32) error {
+	file, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		return err
+	}
+	if err := cmaf.RewritePartSequence(file, sequence); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return err
+	}
+	return file.Close()
+}
+
+func (n *Native) dateRanges(ts *trackState, seg mpd.Segment, prepared prepared) []timedmeta.DateRange {
+	if ts != n.video || len(prepared.events) == 0 {
+		return nil
+	}
+	anchor := timedmeta.ClockAnchor{
+		WallClock:        n.segmentTime(ts, seg),
+		PresentationTime: prepared.baseTime,
+		TimeScale:        ts.init.Track.Timescale,
+	}
+	if anchor.WallClock.IsZero() || anchor.TimeScale == 0 {
+		return nil
+	}
+	var ranges []timedmeta.DateRange
+	for _, message := range prepared.events {
+		event, err := timedmeta.FromEmsg(timedmeta.Emsg{
+			Version: message.Version, TimeScale: message.Timescale,
+			PresentationTimeDelta: message.PresentationTimeDelta,
+			PresentationTime:      message.PresentationTime,
+			EventDuration:         message.EventDuration, ID: message.ID,
+			SchemeIDURI: message.SchemeIDURI, Value: message.Value,
+			MessageData: message.MessageData, SegmentPresentationTime: prepared.baseTime,
+		})
+		if err != nil {
+			n.log.Warn("timed metadata ignored", "track", ts.name, "err", err)
+			continue
+		}
+		dateRange, ok, err := event.DateRange(anchor)
+		if err != nil {
+			n.log.Warn("timed metadata clock mapping failed", "track", ts.name, "err", err)
+			continue
+		}
+		if ok {
+			ranges = append(ranges, dateRange)
+		}
+	}
+	return ranges
 }
 
 func addUint64(a, b uint64) (uint64, bool) {
@@ -1046,6 +1253,9 @@ func (n *Native) prepare(ctx context.Context, ts *trackState, seg mpd.Segment) (
 	}
 	reservation.shrink(int64(cap(raw)))
 	ts.observe(len(raw))
+	if ts.init.Track.Kind == cmaf.KindText {
+		return n.prepareText(ctx, ts, seg, raw, reservation)
+	}
 
 	pool := n.acquireDecrypt(ctx)
 	if pool == nil {
@@ -1072,9 +1282,13 @@ func (n *Native) prepare(ctx context.Context, ts *trackState, seg mpd.Segment) (
 
 	res.baseTime = clear.BaseTime
 	res.duration = clear.Duration
+	res.events = clear.Events
 	res.dur = seg.Seconds(ts.rep.Addressing.Timescale)
 	if clear.Duration > 0 && ts.init.Track.Timescale > 0 {
 		res.dur = float64(clear.Duration) / float64(ts.init.Track.Timescale)
+	}
+	if n.opts.LLHLS {
+		res.parts = n.prepareParts(ctx, ts, raw, clear.Clear, reservation)
 	}
 	if n.stagePrepare != nil {
 		if err := n.stagePrepare(); err != nil {
@@ -1089,6 +1303,138 @@ func (n *Native) prepare(ctx context.Context, ts *trackState, seg mpd.Segment) (
 		res.err = err
 	}
 	return res
+}
+
+func (n *Native) prepareParts(ctx context.Context, ts *trackState, raw, clear []byte, reservation *byteReservation) []preparedPart {
+	if ts.init.Track.Kind == cmaf.KindText || n.opts.PartTarget <= 0 {
+		return nil
+	}
+	peak := addBytes(int64(cap(raw)), addBytes(int64(cap(clear)), addBytes(int64(len(clear)), int64(len(clear)))))
+	if peak > n.gate.capacity() || !reservation.resizeContext(ctx, peak) {
+		n.log.Warn("LL-HLS parts skipped for memory budget", "track", ts.name, "segment_bytes", len(clear))
+		return nil
+	}
+	parts, err := ts.init.SplitParts(clear, n.opts.PartTarget)
+	if err != nil {
+		n.log.Warn("LL-HLS part split failed; publishing whole segment", "track", ts.name, "err", err)
+		return nil
+	}
+	prepared := make([]preparedPart, 0, len(parts))
+	for index := range parts {
+		duration := float64(parts[index].Duration) / float64(ts.init.Track.Timescale)
+		if duration <= 0 {
+			continue
+		}
+		staged, stageErr := n.pub.Stage(parts[index].Data)
+		parts[index].Data = nil
+		if stageErr != nil {
+			for _, part := range prepared {
+				n.pub.Discard(part.staged)
+			}
+			n.log.Warn("LL-HLS part staging failed; publishing whole segment", "track", ts.name, "err", stageErr)
+			return nil
+		}
+		prepared = append(prepared, preparedPart{
+			staged: staged, duration: duration, independent: parts[index].Independent,
+		})
+	}
+	return prepared
+}
+
+func (n *Native) prepareText(ctx context.Context, ts *trackState, seg mpd.Segment, raw []byte, reservation *byteReservation) (res prepared) {
+	if !reservation.resizeContext(ctx, addBytes(int64(cap(raw)), int64(len(raw)))) {
+		res.err = errors.New("text segment memory budget exhausted")
+		return res
+	}
+	pool := n.acquireDecrypt(ctx)
+	if pool == nil {
+		res.err = ctx.Err()
+		return res
+	}
+	started := time.Now()
+	decoded, err := ts.init.DecodeText(raw, n.opts.Keys)
+	<-pool
+	n.decryptNanos.Add(int64(time.Since(started)))
+	if err != nil {
+		res.err = fmt.Errorf("decode text segment %s#%d: %w", ts.rep.ID, seg.Number, err)
+		return res
+	}
+	if decoded.Timescale == 0 {
+		res.err = fmt.Errorf("decode text segment %s#%d: zero timescale", ts.rep.ID, seg.Number)
+		return res
+	}
+	windowStart, ok := ticksDuration(decoded.BaseTime, uint64(decoded.Timescale))
+	if !ok {
+		res.err = fmt.Errorf("decode text segment %s#%d: start time overflows", ts.rep.ID, seg.Number)
+		return res
+	}
+	windowDuration, ok := ticksDuration(decoded.Duration, uint64(decoded.Timescale))
+	if !ok || windowDuration <= 0 {
+		windowDuration, ok = ticksDuration(seg.Duration, ts.rep.Addressing.Timescale)
+	}
+	if !ok || windowDuration <= 0 || windowStart > time.Duration(math.MaxInt64)-windowDuration {
+		res.err = fmt.Errorf("decode text segment %s#%d: invalid duration", ts.rep.ID, seg.Number)
+		return res
+	}
+	var cues []subtitle.Cue
+	for _, sample := range decoded.Samples {
+		if sample.PresentationTime < 0 {
+			continue
+		}
+		decodeTime, decodeOK := ticksDuration(sample.DecodeTime, uint64(decoded.Timescale))
+		start, startOK := ticksDuration(uint64(sample.PresentationTime), uint64(decoded.Timescale))
+		duration, durationOK := ticksDuration(uint64(sample.Duration), uint64(decoded.Timescale))
+		if !decodeOK || !startOK || !durationOK || duration <= 0 || start > time.Duration(math.MaxInt64)-duration {
+			continue
+		}
+		parsed, parseErr := subtitle.ParseSTPPSample(subtitle.STPPSample{
+			DecodeTime: decodeTime, Start: start, End: start + duration,
+			Duration: duration, Payload: sample.Payload,
+		}, subtitle.TimingParameters{})
+		if parseErr != nil {
+			n.log.Warn("TTML sample ignored", "track", ts.name, "segment", seg.Number, "err", parseErr)
+			continue
+		}
+		cues = append(cues, parsed...)
+	}
+	webvtt, err := subtitle.NewWebVTTSegment(cues, windowStart, windowStart+windowDuration,
+		mpegTimestamp(decoded.BaseTime, uint64(decoded.Timescale)))
+	if err != nil {
+		res.err = err
+		return res
+	}
+	payload, err := subtitle.MarshalWebVTT(webvtt)
+	if err != nil {
+		res.err = err
+		return res
+	}
+	if !reservation.resizeContext(ctx, addBytes(int64(cap(raw)), int64(cap(payload)))) {
+		res.err = errors.New("WebVTT segment memory budget exhausted")
+		return res
+	}
+	res.staged, err = n.pub.Stage(payload)
+	if err != nil {
+		res.err = err
+		return res
+	}
+	res.baseTime = decoded.BaseTime
+	res.duration = decoded.Duration
+	res.events = decoded.Events
+	res.dur = windowDuration.Seconds()
+	reservation.release()
+	n.observeBudget("staged_text")
+	return res
+}
+
+func mpegTimestamp(ticks, timescale uint64) uint64 {
+	if timescale == 0 {
+		return 0
+	}
+	whole := ticks / timescale
+	if whole > math.MaxUint64/90000 {
+		return 0
+	}
+	return (whole*90000 + (ticks%timescale)*90000/timescale) & ((1 << 33) - 1)
 }
 
 func (n *Native) run(ctx context.Context, pres *mpd.Presentation) {
@@ -1213,7 +1559,7 @@ func (e *fatalError) Unwrap() error { return e.err }
 
 func (n *Native) refreshPlan(ctx context.Context, pres *mpd.Presentation) error {
 	var replan *Plan
-	for i, ts := range n.tracks() {
+	for _, ts := range n.tracks() {
 		if rep, ok := findRepresentation(pres, ts.rep.ID); ok {
 			ts.rep = rep
 			continue
@@ -1226,8 +1572,12 @@ func (n *Native) refreshPlan(ctx context.Context, pres *mpd.Presentation) error 
 			}
 			replan = &plan
 		}
-		rep, ok := replacementFor(*replan, ts, i)
+		rep, ok := replacementFor(*replan, ts)
 		if !ok {
+			if ts.init.Track.Kind == cmaf.KindText {
+				n.log.Warn("subtitle representation disappeared from the manifest", "track", ts.name, "representation", ts.rep.ID)
+				continue
+			}
 			return &fatalError{fmt.Errorf("representation %s disappeared from the manifest", ts.rep.ID)}
 		}
 		n.log.Warn("representation was replaced in the manifest",
@@ -1240,20 +1590,40 @@ func (n *Native) refreshPlan(ctx context.Context, pres *mpd.Presentation) error 
 	return nil
 }
 
-func replacementFor(plan Plan, ts *trackState, index int) (mpd.Representation, bool) {
-	if index == 0 {
-		return plan.Video, plan.Video.ID != ""
-	}
-	if ts.rep.Lang != "" {
-		for _, a := range plan.Audios {
-			if a.Lang == ts.rep.Lang {
-				return a, true
+func replacementFor(plan Plan, ts *trackState) (mpd.Representation, bool) {
+	switch ts.init.Track.Kind {
+	case cmaf.KindVideo:
+		if ts.name == trackVideo {
+			return plan.Video, plan.Video.ID != ""
+		}
+		for _, video := range plan.Videos {
+			if video.Width == ts.rep.Width && video.Height == ts.rep.Height {
+				return video, true
 			}
 		}
-	}
-	audio := index - 1
-	if audio < len(plan.Audios) {
-		return plan.Audios[audio], true
+	case cmaf.KindAudio:
+		for _, audio := range plan.Audios {
+			if ts.rep.Lang != "" && audio.Lang == ts.rep.Lang {
+				return audio, true
+			}
+		}
+		for _, audio := range plan.Audios {
+			if ts.rep.Group != "" && audio.Group == ts.rep.Group {
+				return audio, true
+			}
+		}
+		if len(plan.Audios) == 1 {
+			return plan.Audios[0], true
+		}
+	case cmaf.KindText:
+		for _, text := range plan.Texts {
+			if ts.rep.Lang != "" && text.Lang == ts.rep.Lang {
+				return text, true
+			}
+		}
+		if len(plan.Texts) == 1 {
+			return plan.Texts[0], true
+		}
 	}
 	return mpd.Representation{}, false
 }
@@ -1285,11 +1655,17 @@ func (n *Native) advance(ctx context.Context, pres *mpd.Presentation) error {
 		}()
 	}
 	wg.Wait()
+	for i, ts := range tracks {
+		if ts.init.Track.Kind == cmaf.KindText && errs[i] != nil {
+			n.log.Warn("subtitle rendition advance failed", "track", ts.name, "err", errs[i])
+			errs[i] = nil
+		}
+	}
 	return errors.Join(errs...)
 }
 
 func (n *Native) advanceTrack(ctx context.Context, pres *mpd.Presentation, ts *trackState) error {
-	segs, err := pres.AvailableSegments(0, ts.rep, n.now())
+	segs, err := pres.AvailableSegments(0, ts.rep, n.sourceNow())
 	if err != nil {
 		return err
 	}
@@ -1336,8 +1712,8 @@ func (n *Native) holdBehindVideo(ts *trackState, pending []mpd.Segment) []mpd.Se
 	for i, seg := range pending {
 		if start, ok := millis(seg.Time, timescale); ok && start > limit {
 			n.trackHolds.Add(1)
-			n.log.Info("holding audio behind the video watermark", "track", ts.name,
-				"video_ready_ms", watermark, "audio_start_ms", start, "held", len(pending)-i)
+			n.log.Info("holding rendition behind the primary video watermark", "track", ts.name,
+				"video_ready_ms", watermark, "rendition_start_ms", start, "held", len(pending)-i)
 			return pending[:i]
 		}
 	}

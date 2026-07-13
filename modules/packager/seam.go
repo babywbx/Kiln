@@ -9,15 +9,16 @@ import (
 )
 
 type Request struct {
-	ChannelID    string
-	SourceURL    string
-	Keys         []config.KeyPair
-	Headers      map[string]string
-	UserAgent    string
-	WorkDir      string
-	PreferHeight int
-	Engine       string
-	Log          *slog.Logger
+	ChannelID               string
+	SourceURL               string
+	Keys                    []config.KeyPair
+	Headers                 map[string]string
+	UserAgent               string
+	WorkDir                 string
+	PreferHeight            int
+	PreferredAudioLanguages []string
+	Engine                  string
+	Log                     *slog.Logger
 }
 
 const (
@@ -56,6 +57,7 @@ type Job interface {
 
 type Stats struct {
 	SegmentsPublished uint64 `json:"segments_published,omitempty"`
+	PartsPublished    uint64 `json:"parts_published,omitempty"`
 	SegmentsFetched   uint64 `json:"segments_fetched,omitempty"`
 	SegmentFetchErrs  uint64 `json:"segment_fetch_errors,omitempty"`
 	ManifestRefreshes uint64 `json:"manifest_refreshes,omitempty"`
@@ -74,13 +76,34 @@ type Stats struct {
 	VideoFrontier uint64 `json:"video_frontier,omitempty"`
 	AudioFrontier uint64 `json:"audio_frontier,omitempty"`
 
-	AudioTracks int `json:"audio_tracks,omitempty"`
+	VideoTracks        int     `json:"video_tracks,omitempty"`
+	AudioTracks        int     `json:"audio_tracks,omitempty"`
+	TextTracks         int     `json:"text_tracks,omitempty"`
+	ClockOffsetSeconds float64 `json:"clock_offset_seconds,omitempty"`
 }
 
 type Publication interface {
 	Master() string
 	Playlist(name string) ([]byte, bool)
 	Asset(name string) (Asset, bool)
+}
+
+type PlaylistRequest struct {
+	Skip bool
+	MSN  *uint64
+	Part *uint64
+}
+
+type PlaylistView struct {
+	Body     []byte
+	Revision uint64
+}
+
+// ContextPublication is implemented by native LL-HLS publications. Keeping it
+// optional preserves the same HTTP seam for ffmpeg and passthrough engines.
+type ContextPublication interface {
+	PlaylistContext(context.Context, string, PlaylistRequest) (PlaylistView, bool, error)
+	AssetContext(context.Context, string) (Asset, bool, error)
 }
 
 type Asset struct {

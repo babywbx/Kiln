@@ -16,6 +16,9 @@ http://origin.example.com:8080/stream/demo/news/master.m3u8?u=demo&p=demo
 	if entries[0].Title != "News Channel" || entries[0].Group != "News" {
 		t.Fatalf("%+v", entries[0])
 	}
+	if entries[0].TvgID != "source-news" || entries[0].TvgName != "News Channel" {
+		t.Fatalf("epg metadata not preserved: %+v", entries[0])
+	}
 	sug := SuggestImport(entries, ImportOptions{DefaultUpstream: "origin"})
 	if sug[0].SuggestedPath != "/live/null" || sug[0].SuggestedIngress != "dash" {
 		t.Fatalf("tv map %+v", sug[0])

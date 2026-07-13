@@ -22,7 +22,7 @@ type DB struct {
 
 var ErrRevisionConflict = errors.New("store revision conflict")
 
-const currentSchemaVersion = 6
+const currentSchemaVersion = 8
 
 func Open(dataDir string) (*DB, error) {
 	if err := os.MkdirAll(dataDir, 0o750); err != nil {
@@ -101,6 +101,12 @@ func applyMigration(tx *sql.Tx, version int) error {
 		return err
 	case 6:
 		_, err := tx.Exec(schemaV6)
+		return err
+	case 7:
+		_, err := tx.Exec(schemaV7)
+		return err
+	case 8:
+		_, err := tx.Exec(schemaV8)
 		return err
 	default:
 		return fmt.Errorf("unknown schema version %d", version)
@@ -216,11 +222,59 @@ const schemaV6 = `
 ALTER TABLE channels ADD COLUMN keys TEXT NOT NULL DEFAULT '';
 `
 
+const schemaV7 = `
+ALTER TABLE channels ADD COLUMN epg_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE channels ADD COLUMN epg_name TEXT NOT NULL DEFAULT '';
+ALTER TABLE channels ADD COLUMN epg_source TEXT NOT NULL DEFAULT '';
+CREATE TABLE epg_sources (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL DEFAULT '',
+  url TEXT NOT NULL DEFAULT '',
+  timezone TEXT NOT NULL DEFAULT '',
+  proxy TEXT NOT NULL DEFAULT 'auto',
+  enabled INTEGER NOT NULL DEFAULT 0,
+  revision INTEGER NOT NULL DEFAULT 1,
+  updated_at INTEGER NOT NULL DEFAULT 0
+);
+`
+
+const schemaV8 = `
+ALTER TABLE channels ADD COLUMN preferred_audio_languages_json TEXT NOT NULL DEFAULT '[]';
+`
+
 func (db *DB) SeedFromConfig(cfg config.File) error {
 	if err := db.seedChannels(cfg); err != nil {
 		return err
 	}
-	return db.seedEgress(cfg)
+	if err := db.seedEgress(cfg); err != nil {
+		return err
+	}
+	return db.seedEPGSources(cfg)
+}
+
+func (db *DB) seedEPGSources(cfg config.File) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	var count int
+	if err := db.sql.QueryRow(`SELECT COUNT(1) FROM epg_sources`).Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 || len(cfg.EPG.Sources) == 0 {
+		return nil
+	}
+	now := time.Now().Unix()
+	tx, err := db.sql.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, source := range cfg.EPG.Sources {
+		if _, err := tx.Exec(`INSERT INTO epg_sources(id, name, url, timezone, proxy, enabled, updated_at)
+			VALUES (?,?,?,?,?,?,?)`, source.ID, source.Name, source.URL, source.Timezone, source.Proxy, boolInt(source.Enabled), now); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (db *DB) seedChannels(cfg config.File) error {
@@ -627,13 +681,14 @@ func insertChannelTx(tx *sql.Tx, ch config.Channel, sort int, now int64) error {
 		hj = []byte("{}")
 	}
 	_, err := tx.Exec(`INSERT INTO channels(
-		id, title, group_name, logo_url, upstream, path, ingress, disabled, on_demand, autostart,
-		idle_timeout_sec, max_viewers, keys_file, keys, user_agent, headers_json, restart_on_failure, prefer_height, packager, sort_order, updated_at
-	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		ch.ID, ch.Title, ch.Group, ch.LogoURL, ch.Upstream, ch.Path, ch.Ingress,
+		id, title, group_name, logo_url, epg_id, epg_name, epg_source, upstream, path, ingress, disabled, on_demand, autostart,
+		idle_timeout_sec, max_viewers, keys_file, keys, user_agent, headers_json, restart_on_failure, prefer_height, packager,
+		preferred_audio_languages_json, sort_order, updated_at
+	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		ch.ID, ch.Title, ch.Group, ch.LogoURL, ch.EPGID, ch.EPGName, ch.EPGSource, ch.Upstream, ch.Path, ch.Ingress,
 		boolInt(ch.Disabled), boolInt(ch.OnDemand), boolInt(ch.Autostart),
 		ch.IdleTimeoutSec, ch.MaxViewers, ch.KeysFile, ch.Keys, ch.UserAgent, string(hj),
-		boolInt(ch.RestartOnFailure), ch.PreferHeight, ch.Packager, sort, now,
+		boolInt(ch.RestartOnFailure), ch.PreferHeight, ch.Packager, encodeStrings(ch.PreferredAudioLanguages), sort, now,
 	)
 	return err
 }
@@ -677,6 +732,25 @@ func encodeHeaders(h map[string]string) string {
 	return string(b)
 }
 
+func decodeStrings(s string) []string {
+	var out []string
+	if err := json.Unmarshal([]byte(s), &out); err != nil {
+		return nil
+	}
+	return out
+}
+
+func encodeStrings(values []string) string {
+	if values == nil {
+		return "[]"
+	}
+	b, err := json.Marshal(values)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
+}
+
 type ChannelRow struct {
 	Channel   config.Channel
 	SortOrder int
@@ -689,12 +763,12 @@ func scanChannelRow(row interface {
 }) (ChannelRow, error) {
 	var ch config.Channel
 	var disabled, onDemand, autostart, restart int
-	var headers string
+	var headers, preferredAudioLanguages string
 	var sort, revision, updated int64
 	err := row.Scan(
-		&ch.ID, &ch.Title, &ch.Group, &ch.LogoURL, &ch.Upstream, &ch.Path, &ch.Ingress,
+		&ch.ID, &ch.Title, &ch.Group, &ch.LogoURL, &ch.EPGID, &ch.EPGName, &ch.EPGSource, &ch.Upstream, &ch.Path, &ch.Ingress,
 		&disabled, &onDemand, &autostart, &ch.IdleTimeoutSec, &ch.MaxViewers, &ch.KeysFile, &ch.Keys, &ch.UserAgent,
-		&headers, &restart, &ch.PreferHeight, &ch.Packager, &sort, &revision, &updated,
+		&headers, &restart, &ch.PreferHeight, &ch.Packager, &preferredAudioLanguages, &sort, &revision, &updated,
 	)
 	if err != nil {
 		return ChannelRow{}, err
@@ -704,14 +778,16 @@ func scanChannelRow(row interface {
 	ch.Autostart = intBool(autostart)
 	ch.RestartOnFailure = intBool(restart)
 	ch.Headers = decodeHeaders(headers)
+	ch.PreferredAudioLanguages = decodeStrings(preferredAudioLanguages)
 	return ChannelRow{Channel: ch, SortOrder: int(sort), Revision: revision, UpdatedAt: updated}, nil
 }
 
 func (db *DB) ListChannelRows(includeDisabled bool) ([]ChannelRow, error) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	q := `SELECT id, title, group_name, logo_url, upstream, path, ingress, disabled, on_demand, autostart,
-		idle_timeout_sec, max_viewers, keys_file, keys, user_agent, headers_json, restart_on_failure, prefer_height, packager, sort_order, revision, updated_at
+	q := `SELECT id, title, group_name, logo_url, epg_id, epg_name, epg_source, upstream, path, ingress, disabled, on_demand, autostart,
+		idle_timeout_sec, max_viewers, keys_file, keys, user_agent, headers_json, restart_on_failure, prefer_height, packager,
+		preferred_audio_languages_json, sort_order, revision, updated_at
 		FROM channels`
 	if !includeDisabled {
 		q += ` WHERE disabled = 0`
@@ -753,8 +829,9 @@ func (db *DB) GetChannel(id string) (config.Channel, bool, error) {
 func (db *DB) GetChannelRow(id string) (ChannelRow, bool, error) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	row := db.sql.QueryRow(`SELECT id, title, group_name, logo_url, upstream, path, ingress, disabled, on_demand, autostart,
-		idle_timeout_sec, max_viewers, keys_file, keys, user_agent, headers_json, restart_on_failure, prefer_height, packager, sort_order, revision, updated_at
+	row := db.sql.QueryRow(`SELECT id, title, group_name, logo_url, epg_id, epg_name, epg_source, upstream, path, ingress, disabled, on_demand, autostart,
+		idle_timeout_sec, max_viewers, keys_file, keys, user_agent, headers_json, restart_on_failure, prefer_height, packager,
+		preferred_audio_languages_json, sort_order, revision, updated_at
 		FROM channels WHERE id = ?`, id)
 	ch, err := scanChannelRow(row)
 	if err == sql.ErrNoRows {
@@ -801,13 +878,13 @@ func (db *DB) UpsertChannelsIfRevisions(channels []config.Channel, revisions map
 			continue
 		}
 		result, err := tx.Exec(`UPDATE channels SET
-			title=?, group_name=?, logo_url=?, upstream=?, path=?, ingress=?, disabled=?, on_demand=?, autostart=?,
+			title=?, group_name=?, logo_url=?, epg_id=?, epg_name=?, epg_source=?, upstream=?, path=?, ingress=?, disabled=?, on_demand=?, autostart=?,
 			idle_timeout_sec=?, max_viewers=?, keys_file=?, keys=?, user_agent=?, headers_json=?, restart_on_failure=?,
-			prefer_height=?, packager=?, revision=revision+1, updated_at=? WHERE id=? AND revision=?`,
-			ch.Title, ch.Group, ch.LogoURL, ch.Upstream, ch.Path, ch.Ingress, boolInt(ch.Disabled),
+			prefer_height=?, packager=?, preferred_audio_languages_json=?, revision=revision+1, updated_at=? WHERE id=? AND revision=?`,
+			ch.Title, ch.Group, ch.LogoURL, ch.EPGID, ch.EPGName, ch.EPGSource, ch.Upstream, ch.Path, ch.Ingress, boolInt(ch.Disabled),
 			boolInt(ch.OnDemand), boolInt(ch.Autostart), ch.IdleTimeoutSec, ch.MaxViewers, ch.KeysFile, ch.Keys,
 			ch.UserAgent, encodeHeaders(ch.Headers), boolInt(ch.RestartOnFailure), ch.PreferHeight,
-			ch.Packager, now, ch.ID, expected)
+			ch.Packager, encodeStrings(ch.PreferredAudioLanguages), now, ch.ID, expected)
 		if err != nil {
 			return err
 		}
@@ -822,14 +899,14 @@ func (db *DB) upsertChannel(ch config.Channel, expectedRevision int64) error {
 	now := time.Now().Unix()
 	if expectedRevision > 0 {
 		result, err := db.sql.Exec(`UPDATE channels SET
-			title=?, group_name=?, logo_url=?, upstream=?, path=?, ingress=?, disabled=?, on_demand=?, autostart=?,
+			title=?, group_name=?, logo_url=?, epg_id=?, epg_name=?, epg_source=?, upstream=?, path=?, ingress=?, disabled=?, on_demand=?, autostart=?,
 			idle_timeout_sec=?, max_viewers=?, keys_file=?, keys=?, user_agent=?, headers_json=?, restart_on_failure=?,
-			prefer_height=?, packager=?, revision=revision+1, updated_at=?
+			prefer_height=?, packager=?, preferred_audio_languages_json=?, revision=revision+1, updated_at=?
 			WHERE id=? AND revision=?`,
-			ch.Title, ch.Group, ch.LogoURL, ch.Upstream, ch.Path, ch.Ingress,
+			ch.Title, ch.Group, ch.LogoURL, ch.EPGID, ch.EPGName, ch.EPGSource, ch.Upstream, ch.Path, ch.Ingress,
 			boolInt(ch.Disabled), boolInt(ch.OnDemand), boolInt(ch.Autostart),
 			ch.IdleTimeoutSec, ch.MaxViewers, ch.KeysFile, ch.Keys, ch.UserAgent, encodeHeaders(ch.Headers),
-			boolInt(ch.RestartOnFailure), ch.PreferHeight, ch.Packager, now, ch.ID, expectedRevision,
+			boolInt(ch.RestartOnFailure), ch.PreferHeight, ch.Packager, encodeStrings(ch.PreferredAudioLanguages), now, ch.ID, expectedRevision,
 		)
 		if err != nil {
 			return err
@@ -839,22 +916,24 @@ func (db *DB) upsertChannel(ch config.Channel, expectedRevision int64) error {
 	var maxSort int
 	_ = db.sql.QueryRow(`SELECT COALESCE(MAX(sort_order), -1) FROM channels`).Scan(&maxSort)
 	_, err := db.sql.Exec(`INSERT INTO channels(
-		id, title, group_name, logo_url, upstream, path, ingress, disabled, on_demand, autostart,
-		idle_timeout_sec, max_viewers, keys_file, keys, user_agent, headers_json, restart_on_failure, prefer_height, packager, sort_order, updated_at
-	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		id, title, group_name, logo_url, epg_id, epg_name, epg_source, upstream, path, ingress, disabled, on_demand, autostart,
+		idle_timeout_sec, max_viewers, keys_file, keys, user_agent, headers_json, restart_on_failure, prefer_height, packager,
+		preferred_audio_languages_json, sort_order, updated_at
+	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 	ON CONFLICT(id) DO UPDATE SET
 		title=excluded.title, group_name=excluded.group_name, logo_url=excluded.logo_url,
+		epg_id=excluded.epg_id, epg_name=excluded.epg_name, epg_source=excluded.epg_source,
 		upstream=excluded.upstream, path=excluded.path, ingress=excluded.ingress,
 		disabled=excluded.disabled, on_demand=excluded.on_demand, autostart=excluded.autostart,
 		idle_timeout_sec=excluded.idle_timeout_sec, max_viewers=excluded.max_viewers,
 		keys_file=excluded.keys_file, keys=excluded.keys, user_agent=excluded.user_agent, headers_json=excluded.headers_json,
 		restart_on_failure=excluded.restart_on_failure, prefer_height=excluded.prefer_height,
-		packager=excluded.packager,
+		packager=excluded.packager, preferred_audio_languages_json=excluded.preferred_audio_languages_json,
 		revision=channels.revision+1, updated_at=excluded.updated_at`,
-		ch.ID, ch.Title, ch.Group, ch.LogoURL, ch.Upstream, ch.Path, ch.Ingress,
+		ch.ID, ch.Title, ch.Group, ch.LogoURL, ch.EPGID, ch.EPGName, ch.EPGSource, ch.Upstream, ch.Path, ch.Ingress,
 		boolInt(ch.Disabled), boolInt(ch.OnDemand), boolInt(ch.Autostart),
 		ch.IdleTimeoutSec, ch.MaxViewers, ch.KeysFile, ch.Keys, ch.UserAgent, encodeHeaders(ch.Headers),
-		boolInt(ch.RestartOnFailure), ch.PreferHeight, ch.Packager, maxSort+1, now,
+		boolInt(ch.RestartOnFailure), ch.PreferHeight, ch.Packager, encodeStrings(ch.PreferredAudioLanguages), maxSort+1, now,
 	)
 	return err
 }
@@ -932,6 +1011,117 @@ func (db *DB) DeleteChannelIfRevision(id string, expectedRevision int64) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	result, err := db.sql.Exec(`DELETE FROM channels WHERE id = ? AND revision = ?`, id, expectedRevision)
+	if err != nil {
+		return err
+	}
+	return revisionResult(result)
+}
+
+func (db *DB) SetAllChannelsDisabled(disabled bool) ([]string, error) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	tx, err := db.sql.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	rows, err := tx.Query(`SELECT id FROM channels WHERE disabled != ? ORDER BY sort_order, id`, boolInt(disabled))
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if len(ids) > 0 {
+		if _, err := tx.Exec(`UPDATE channels SET disabled=?, revision=revision+1, updated_at=? WHERE disabled != ?`,
+			boolInt(disabled), time.Now().Unix(), boolInt(disabled)); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return ids, nil
+}
+
+type EPGSourceRow struct {
+	ID        string `json:"id"`
+	Name      string `json:"name,omitempty"`
+	URL       string `json:"url,omitempty"`
+	Timezone  string `json:"timezone,omitempty"`
+	Proxy     string `json:"proxy"`
+	Enabled   bool   `json:"enabled"`
+	Revision  int64  `json:"revision"`
+	UpdatedAt int64  `json:"updated_at"`
+}
+
+func (db *DB) ListEPGSources() ([]EPGSourceRow, error) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	rows, err := db.sql.Query(`SELECT id, name, url, timezone, proxy, enabled, revision, updated_at
+		FROM epg_sources ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []EPGSourceRow{}
+	for rows.Next() {
+		var row EPGSourceRow
+		var enabled int
+		if err := rows.Scan(&row.ID, &row.Name, &row.URL, &row.Timezone, &row.Proxy, &enabled, &row.Revision, &row.UpdatedAt); err != nil {
+			return nil, err
+		}
+		row.Enabled = intBool(enabled)
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+func (db *DB) UpsertEPGSource(row EPGSourceRow) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	return db.upsertEPGSource(row, 0)
+}
+
+func (db *DB) UpsertEPGSourceIfRevision(row EPGSourceRow, expectedRevision int64) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	return db.upsertEPGSource(row, expectedRevision)
+}
+
+func (db *DB) upsertEPGSource(row EPGSourceRow, expectedRevision int64) error {
+	now := time.Now().Unix()
+	if expectedRevision > 0 {
+		result, err := db.sql.Exec(`UPDATE epg_sources SET name=?, url=?, timezone=?, proxy=?, enabled=?,
+			revision=revision+1, updated_at=? WHERE id=? AND revision=?`,
+			row.Name, row.URL, row.Timezone, row.Proxy, boolInt(row.Enabled), now, row.ID, expectedRevision)
+		if err != nil {
+			return err
+		}
+		return revisionResult(result)
+	}
+	_, err := db.sql.Exec(`INSERT INTO epg_sources(id, name, url, timezone, proxy, enabled, updated_at)
+		VALUES (?,?,?,?,?,?,?)
+		ON CONFLICT(id) DO UPDATE SET name=excluded.name, url=excluded.url, timezone=excluded.timezone,
+		proxy=excluded.proxy, enabled=excluded.enabled, revision=epg_sources.revision+1,
+		updated_at=excluded.updated_at`,
+		row.ID, row.Name, row.URL, row.Timezone, row.Proxy, boolInt(row.Enabled), now)
+	return err
+}
+
+func (db *DB) DeleteEPGSourceIfRevision(id string, expectedRevision int64) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	result, err := db.sql.Exec(`DELETE FROM epg_sources WHERE id=? AND revision=?`, id, expectedRevision)
 	if err != nil {
 		return err
 	}

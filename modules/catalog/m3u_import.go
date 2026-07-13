@@ -13,6 +13,7 @@ type ParsedM3UEntry struct {
 	Group             string `json:"group,omitempty"`
 	LogoURL           string `json:"logo_url,omitempty"`
 	TvgID             string `json:"tvg_id,omitempty"`
+	TvgName           string `json:"tvg_name,omitempty"`
 	URL               string `json:"url"`
 	SuggestedID       string `json:"suggested_id,omitempty"`
 	SuggestedUpstream string `json:"suggested_upstream,omitempty"`
@@ -49,10 +50,10 @@ func ParseM3U(raw string) []ParsedM3UEntry {
 						e.Group = v
 					case "tvg-logo":
 						e.LogoURL = v
-					case "tvg-id", "tvg-name":
-						if e.TvgID == "" {
-							e.TvgID = v
-						}
+					case "tvg-id":
+						e.TvgID = v
+					case "tvg-name":
+						e.TvgName = v
 					}
 				}
 			} else if i := strings.LastIndex(line, ","); i >= 0 {

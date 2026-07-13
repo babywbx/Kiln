@@ -44,8 +44,43 @@ log_level = "error"
 prefer_height = 1080
 low_latency = true
 
+[packager]
+engine = "auto"
+playlist_size = 8
+ll_hls = true
+part_target_ms = 500
+start_segments = 3
+prefetch_segments = 3
+max_segment_bytes = 33554432
+grace_sec = 30
+inflight_bytes = 100663296
+
 [observe]
 enabled = true
+
+[epg]
+enabled = true
+cache = true
+cache_dir = "/var/lib/kiln/data/epg"
+refresh_interval_min = 360
+max_source_bytes = 67108864
+default_timezone = "Asia/Hong_Kong"
+serve_timezone = "keep"
+
+[[epg.sources]]
+id = "hk-1"
+enabled = true
+proxy = "auto"
+
+[[epg.sources]]
+id = "tw-1"
+enabled = true
+proxy = "auto"
+
+[[epg.sources]]
+id = "cn-2"
+enabled = true
+proxy = "auto"
 
 [[upstreams]]
 id = "origin"
@@ -55,6 +90,9 @@ base_url = "http://origin.example.com:8000"
 id = "demo-news"
 title = "News Channel"
 group = "News"
+epg_id = "channel-news"
+epg_name = "News Channel"
+epg_source = "hk-1"
 upstream = "origin"
 path = "/live/demo-dash"
 ingress = "dash"
@@ -62,11 +100,15 @@ on_demand = true
 idle_timeout_sec = 120
 keys_file = "/etc/kiln/keys.txt"
 restart_on_failure = true
+preferred_audio_languages = ["yue", "zh", "en"]
 
 [[channels]]
 id = "demo-uhd"
 title = "UHD Channel"
 group = "News"
+epg_id = "channel-uhd"
+epg_name = "UHD Channel"
+epg_source = "hk-1"
 upstream = "origin"
 path = "/live/uhd"
 ingress = "dash"
@@ -74,3 +116,4 @@ on_demand = true
 idle_timeout_sec = 120
 keys_file = "/etc/kiln/keys.txt"
 restart_on_failure = true
+preferred_audio_languages = ["yue", "zh", "en"]

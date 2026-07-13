@@ -18,6 +18,18 @@ data_dir = "./data"
 [auth]
 token_ttl_hours = 1
 
+[epg]
+enabled = true
+cache = false
+refresh_interval_min = 30
+max_source_bytes = 1048576
+default_timezone = "Asia/Hong_Kong"
+
+[[epg.sources]]
+id = "hk-1"
+enabled = true
+proxy = "auto"
+
 [[auth.users]]
 username = "admin"
 password_hash = "$2a$10$8JxhvnpdTX/TrOTi1XaYWuPlrZK1aw3ANgGIWpTO6KtD2M432w7Ie"
@@ -34,6 +46,7 @@ upstream = "origin"
 path = "/a/b"
 ingress = "hls"
 on_demand = true
+preferred_audio_languages = ["yue", "zh"]
 `
 	if err := os.WriteFile(tomlPath, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
@@ -48,11 +61,28 @@ on_demand = true
 	if len(cfg.Channels) != 1 || cfg.Channels[0].ID != "ch1" {
 		t.Fatalf("channels %+v", cfg.Channels)
 	}
+	if got := cfg.Channels[0].PreferredAudioLanguages; len(got) != 2 || got[0] != "yue" || got[1] != "zh" {
+		t.Fatalf("preferred audio languages = %v", got)
+	}
 	if cfg.FFmpeg.Mode != FFmpegModeNative || cfg.FFmpeg.DockerImage != "kiln:local" {
 		t.Fatalf("ffmpeg defaults: %+v", cfg.FFmpeg)
 	}
 	if cfg.FFmpeg.Dependency() != "ffmpeg" || cfg.FFmpeg.Mode.IsDocker() {
 		t.Fatalf("native ffmpeg behavior: %+v", cfg.FFmpeg)
+	}
+	if cfg.Packager.PartTargetMS != 500 {
+		t.Fatalf("part target default = %d, want 500", cfg.Packager.PartTargetMS)
+	}
+	invalidPartTarget := cfg
+	invalidPartTarget.Packager.PartTargetMS = 20
+	if err := invalidPartTarget.validate(); err == nil {
+		t.Fatal("invalid LL-HLS part target accepted")
+	}
+	if !cfg.EPG.Enabled || cfg.EPG.CacheEnabled() || cfg.EPG.RefreshIntervalMin != 30 {
+		t.Fatalf("epg config: %+v", cfg.EPG)
+	}
+	if cfg.EPG.CacheDir != filepath.Join(cfg.Server.DataDir, "epg") || len(cfg.EPG.Sources) != 1 || cfg.EPG.Sources[0].ID != "hk-1" {
+		t.Fatalf("epg defaults/sources: %+v", cfg.EPG)
 	}
 	dockerCfg := cfg
 	dockerCfg.FFmpeg.Mode = FFmpegModeDocker

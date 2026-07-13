@@ -225,6 +225,30 @@ func (r *Router) ClientForChannel(hintProxyID, channelID string, timeout time.Du
 	return &http.Client{Timeout: timeout, Transport: rt}, nil
 }
 
+func (r *Router) ClientForProxy(proxyID string, timeout time.Duration) (*http.Client, error) {
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	if proxyID == "" {
+		proxyID = Direct
+	}
+	decision := Decision{ProxyID: proxyID}
+	if proxyID != Direct {
+		r.mu.RLock()
+		proxyURL, ok := r.profiles[proxyID]
+		r.mu.RUnlock()
+		if !ok {
+			return nil, fmt.Errorf("unknown proxy %q", proxyID)
+		}
+		decision.ProxyURL = proxyURL
+	}
+	fixed, err := r.fixedClient(decision)
+	if err != nil {
+		return nil, err
+	}
+	return &http.Client{Timeout: timeout, Transport: fixed.Transport}, nil
+}
+
 type routingTransport struct {
 	router    *Router
 	channelID string

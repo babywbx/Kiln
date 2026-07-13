@@ -13,6 +13,10 @@ import (
 	"github.com/babywbx/kiln/modules/observe"
 	"github.com/babywbx/kiln/modules/proxyegress"
 	"github.com/babywbx/kiln/modules/security"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
 )
 
 type Client struct {
@@ -86,6 +90,7 @@ func New(opt Options) *Client {
 
 type Result struct {
 	Body        io.ReadCloser
+	Header      http.Header
 	StatusCode  int
 	ContentType string
 	FinalURL    string
@@ -101,10 +106,32 @@ type Request struct {
 }
 
 func (c *Client) Get(ctx context.Context, req Request) (Result, error) {
+	return c.Do(ctx, http.MethodGet, req)
+}
+
+func (c *Client) Do(ctx context.Context, method string, req Request) (result Result, resultErr error) {
+	host := ""
+	if parsed, err := url.Parse(req.URL); err == nil {
+		host = parsed.Hostname()
+	}
+	ctx, span := otel.Tracer("kiln/pull").Start(ctx, "upstream.request")
+	span.SetAttributes(attribute.String("http.request.method", method), attribute.String("server.address", host))
+	defer func() {
+		if resultErr != nil {
+			span.RecordError(resultErr)
+			span.SetStatus(codes.Error, "upstream request failed")
+		} else {
+			span.SetAttributes(attribute.Int("http.response.status_code", result.StatusCode))
+		}
+		span.End()
+	}()
 	if err := security.MediaHostOK(req.URL, c.allowed); err != nil {
 		return Result{}, apperr.Wrap(apperr.CodeForbidden, 403, "upstream host not allowed", err)
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, req.URL, nil)
+	if method != http.MethodGet && method != http.MethodHead {
+		return Result{}, apperr.New(apperr.CodeInvalid, 400, "unsupported upstream method")
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, method, req.URL, nil)
 	if err != nil {
 		return Result{}, apperr.Wrap(apperr.CodeInvalid, 400, "bad upstream url", err)
 	}
@@ -116,6 +143,7 @@ func (c *Client) Get(ctx context.Context, req Request) (Result, error) {
 			httpReq.Header.Set(k, v)
 		}
 	}
+	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(httpReq.Header))
 
 	client := c.fallback
 	proxyID := proxyegress.Direct
@@ -152,6 +180,7 @@ func (c *Client) Get(ctx context.Context, req Request) (Result, error) {
 	body := &countingReadCloser{rc: resp.Body, obs: c.observe}
 	return Result{
 		Body:        body,
+		Header:      resp.Header.Clone(),
 		StatusCode:  resp.StatusCode,
 		ContentType: resp.Header.Get("Content-Type"),
 		FinalURL:    resp.Request.URL.String(),

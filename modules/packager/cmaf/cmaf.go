@@ -16,6 +16,7 @@ type Kind string
 const (
 	KindVideo Kind = "video"
 	KindAudio Kind = "audio"
+	KindText  Kind = "text"
 )
 
 var supportedSchemes = map[string]struct{}{"cenc": {}, "cbcs": {}}
@@ -109,6 +110,9 @@ func parseInit(raw []byte) (*Init, error) {
 	if err != nil {
 		return nil, unsupportedf(ReasonScheme, "%v", err)
 	}
+	if err := prepareTextProtection(trak.Mdia.Minf.Stbl.Stsd, trak.Tkhd.TrackID, &di); err != nil {
+		return nil, err
+	}
 
 	track := Track{ID: trak.Tkhd.TrackID}
 	track.Timescale = trak.Mdia.Mdhd.Timescale
@@ -144,21 +148,74 @@ func parseInit(raw []byte) (*Init, error) {
 	return &Init{Clear: buf.Bytes(), Track: track, di: di}, nil
 }
 
+func prepareTextProtection(stsd *mp4.StsdBox, trackID uint32, di *mp4.DecryptInfo) error {
+	if stsd.Stpp == nil {
+		return nil
+	}
+	var protection *mp4.SinfBox
+	kept := make([]mp4.Box, 0, len(stsd.Stpp.Children))
+	for _, child := range stsd.Stpp.Children {
+		if sinf, ok := child.(*mp4.SinfBox); ok {
+			if protection != nil {
+				return unsupportedf(ReasonMultiSampleEntry, "stpp carries more than one sinf")
+			}
+			protection = sinf
+			continue
+		}
+		kept = append(kept, child)
+	}
+	if protection == nil {
+		return nil
+	}
+	if protection.Frma == nil || protection.Frma.DataFormat != "stpp" {
+		return unsupportedf(ReasonSampleEntry, "stpp protection has no stpp original format")
+	}
+	if protection.Schm == nil {
+		return unsupportedf(ReasonScheme, "stpp protection has no schm")
+	}
+	if _, ok := supportedSchemes[protection.Schm.SchemeType]; !ok {
+		return unsupportedf(ReasonScheme, "scheme %s", protection.Schm.SchemeType)
+	}
+	if protection.Schi == nil || protection.Schi.Tenc == nil {
+		return unsupportedf(ReasonMissingKID, "no tenc for text track %d", trackID)
+	}
+
+	found := false
+	for index := range di.TrackInfos {
+		if di.TrackInfos[index].TrackID == trackID {
+			di.TrackInfos[index].Sinf = protection
+			found = true
+			break
+		}
+	}
+	if !found {
+		return unsupportedf(ReasonNotFragmented, "no decrypt info for text track %d", trackID)
+	}
+	stsd.Stpp.Children = kept
+	return nil
+}
+
 func describeSampleEntry(stsd *mp4.StsdBox, track *Track) error {
 	var video *mp4.VisualSampleEntryBox
 	var audio *mp4.AudioSampleEntryBox
+	var text *mp4.StppBox
 	for _, child := range stsd.Children {
 		switch entry := child.(type) {
 		case *mp4.VisualSampleEntryBox:
-			if video != nil || audio != nil {
+			if video != nil || audio != nil || text != nil {
 				return unsupportedf(ReasonMultiSampleEntry, "more than one sample entry")
 			}
 			video = entry
 		case *mp4.AudioSampleEntryBox:
-			if video != nil || audio != nil {
+			if video != nil || audio != nil || text != nil {
 				return unsupportedf(ReasonMultiSampleEntry, "more than one sample entry")
 			}
 			audio = entry
+		case *mp4.StppBox:
+			if video != nil || audio != nil || text != nil {
+				return unsupportedf(ReasonMultiSampleEntry, "more than one sample entry")
+			}
+			text = entry
 		default:
 			return unsupportedf(ReasonSampleEntry, "sample entry %s", child.Type())
 		}
@@ -186,6 +243,9 @@ func describeSampleEntry(stsd *mp4.StsdBox, track *Track) error {
 		track.Codec = codec
 		track.Channels = audio.ChannelCount
 		track.SampleRate = int(audio.SampleRate)
+	case text != nil:
+		track.Kind = KindText
+		track.Codec = "stpp"
 	default:
 		return unsupportedf(ReasonNoTrack, "stsd has no sample entry")
 	}
@@ -196,6 +256,7 @@ type Segment struct {
 	Clear    []byte
 	BaseTime uint64
 	Duration uint64
+	Events   []EventMessage
 }
 
 func (i *Init) Decrypt(raw []byte, keys KeySet) (*Segment, error) {
@@ -216,6 +277,35 @@ func (i *Init) decryptOwnedReserved(raw []byte, keys KeySet, reserve func(int64)
 }
 
 func (i *Init) decryptChecked(raw []byte, keys KeySet, reserve func(int64) error) (*Segment, error) {
+	seg, err := i.decodeMediaSegment(raw, keys)
+	if err != nil {
+		return nil, err
+	}
+
+	base, dur, err := segmentTiming(seg, i.di, i.Track.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	size := int64(seg.Size())
+	if reserve != nil {
+		if err := reserve(size); err != nil {
+			return nil, err
+		}
+	}
+	buf := bytes.NewBuffer(make([]byte, 0, size))
+	if err := seg.Encode(buf); err != nil {
+		return nil, fmt.Errorf("encode clear segment: %w", err)
+	}
+	return &Segment{
+		Clear:    buf.Bytes(),
+		BaseTime: base,
+		Duration: dur,
+		Events:   eventMessages(seg),
+	}, nil
+}
+
+func (i *Init) decodeMediaSegment(raw []byte, keys KeySet) (*mp4.MediaSegment, error) {
 	f, err := decodeOwnedSegment(raw)
 	if err != nil {
 		return nil, fmt.Errorf("decode media segment: %w", err)
@@ -237,22 +327,7 @@ func (i *Init) decryptChecked(raw []byte, keys KeySet, reserve func(int64) error
 		}
 	}
 
-	base, dur, err := segmentTiming(seg, i.di, i.Track.ID)
-	if err != nil {
-		return nil, err
-	}
-
-	size := int64(seg.Size())
-	if reserve != nil {
-		if err := reserve(size); err != nil {
-			return nil, err
-		}
-	}
-	buf := bytes.NewBuffer(make([]byte, 0, size))
-	if err := seg.Encode(buf); err != nil {
-		return nil, fmt.Errorf("encode clear segment: %w", err)
-	}
-	return &Segment{Clear: buf.Bytes(), BaseTime: base, Duration: dur}, nil
+	return seg, nil
 }
 
 func decodeOwnedSegment(raw []byte) (*mp4.File, error) {
@@ -271,7 +346,7 @@ func decodeOwnedSegment(raw []byte) (*mp4.File, error) {
 			if start > uint64(len(raw)) || size > uint64(len(raw))-start {
 				return nil, errors.New("mdat payload is outside the segment")
 			}
-			mdat.SetData(raw[start : start+size])
+			mdat.SetData(raw[start : start+size : start+size])
 		}
 	}
 	return f, nil

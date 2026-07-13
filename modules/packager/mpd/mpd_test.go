@@ -18,6 +18,7 @@ const liveManifest = `<?xml version="1.0"?>
      timeShiftBufferDepth="PT30S"
      suggestedPresentationDelay="PT6S"
      minBufferTime="PT4S">
+  <UTCTiming schemeIdUri="urn:mpeg:dash:utc:http-xsdate:2014" value="https://time.example.com/utc"/>
   <BaseURL>https://cdn.example.com/live/</BaseURL>
   <Period id="p0" start="PT0S">
     <AdaptationSet contentType="video" mimeType="video/mp4" codecs="hvc1.1.6.L120">
@@ -64,6 +65,9 @@ func TestParseLiveAttributes(t *testing.T) {
 	want := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	if !p.AvailabilityStartTime.Equal(want) {
 		t.Errorf("availabilityStartTime = %v, want %v", p.AvailabilityStartTime, want)
+	}
+	if len(p.UTCTimings) != 1 || p.UTCTimings[0].Scheme != "urn:mpeg:dash:utc:http-xsdate:2014" || p.UTCTimings[0].Value != "https://time.example.com/utc" {
+		t.Fatalf("UTC timings = %#v", p.UTCTimings)
 	}
 }
 

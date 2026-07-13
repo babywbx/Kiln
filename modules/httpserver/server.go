@@ -3,6 +3,8 @@ package httpserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -11,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,14 +23,20 @@ import (
 	"github.com/babywbx/kiln/modules/catalog"
 	"github.com/babywbx/kiln/modules/config"
 	"github.com/babywbx/kiln/modules/egress"
+	"github.com/babywbx/kiln/modules/epg"
 	"github.com/babywbx/kiln/modules/logging"
 	"github.com/babywbx/kiln/modules/observe"
+	"github.com/babywbx/kiln/modules/packager"
 	"github.com/babywbx/kiln/modules/proxyegress"
 	"github.com/babywbx/kiln/modules/pull"
 	"github.com/babywbx/kiln/modules/security"
 	"github.com/babywbx/kiln/modules/session"
 	"github.com/babywbx/kiln/modules/store"
 	"github.com/babywbx/kiln/modules/version"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
 )
 
 type Deps struct {
@@ -37,6 +46,7 @@ type Deps struct {
 	Sessions *session.Manager
 	Observe  *observe.Service
 	Store    *store.DB
+	EPG      *epg.Service
 	Egress   *proxyegress.Router
 	Log      *slog.Logger
 	Allowed  map[string]struct{}
@@ -87,6 +97,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /healthz", s.handleHealth)
 	s.mux.HandleFunc("GET /readyz", s.handleReady)
+	s.mux.HandleFunc("GET /metrics", s.handleMetrics)
 	s.mux.HandleFunc("GET /", s.handleRoot)
 	s.mux.HandleFunc("GET /admin", s.handleAdminUI)
 	s.mux.HandleFunc("GET /admin/", s.handleAdminUI)
@@ -96,12 +107,24 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/channels", s.requireAuth(s.handleChannels))
 	s.mux.HandleFunc("GET /v1/status", s.requireAuth(s.handleStatus))
 	s.mux.HandleFunc("GET /v1/playlist.m3u", s.requireAuth(s.handlePlaylist))
+	s.mux.HandleFunc("GET /v1/epg.xml", s.handleEPGXML)
+	s.mux.HandleFunc("GET /v1/epg.xml.gz", s.handleEPGGzip)
+	s.mux.HandleFunc("GET /v1/logo/{id}", s.handleChannelLogo)
 
 	s.mux.HandleFunc("GET /v1/admin/channels", s.requireAuth(s.handleAdminListChannels))
 	s.mux.HandleFunc("GET /v1/admin/channels/{id}", s.requireAuth(s.handleAdminGetChannel))
 	s.mux.HandleFunc("POST /v1/admin/channels", s.requireAuth(s.handleAdminUpsertChannel))
 	s.mux.HandleFunc("PUT /v1/admin/channels/{id}", s.requireAuth(s.handleAdminUpsertChannel))
 	s.mux.HandleFunc("DELETE /v1/admin/channels/{id}", s.requireAuth(s.handleAdminDeleteChannel))
+	s.mux.HandleFunc("POST /v1/admin/channels/enable-all", s.requireAuth(s.handleAdminEnableAllChannels))
+	s.mux.HandleFunc("POST /v1/admin/channels/disable-all", s.requireAuth(s.handleAdminDisableAllChannels))
+	s.mux.HandleFunc("GET /v1/admin/epg/presets", s.requireAuth(s.handleAdminEPGPresets))
+	s.mux.HandleFunc("GET /v1/admin/epg/sources", s.requireAuth(s.handleAdminEPGSources))
+	s.mux.HandleFunc("POST /v1/admin/epg/sources", s.requireAuth(s.handleAdminCreateEPGSource))
+	s.mux.HandleFunc("PUT /v1/admin/epg/sources/{id}", s.requireAuth(s.handleAdminUpdateEPGSource))
+	s.mux.HandleFunc("DELETE /v1/admin/epg/sources/{id}", s.requireAuth(s.handleAdminDeleteEPGSource))
+	s.mux.HandleFunc("GET /v1/admin/epg/matches", s.requireAuth(s.handleAdminEPGMatches))
+	s.mux.HandleFunc("POST /v1/admin/epg/refresh", s.requireAuth(s.handleAdminEPGRefresh))
 	s.mux.HandleFunc("GET /v1/admin/upstreams", s.requireAuth(s.handleAdminUpstreams))
 	s.mux.HandleFunc("GET /v1/admin/access-tokens", s.requireAuth(s.handleAdminListTokens))
 	s.mux.HandleFunc("POST /v1/admin/access-tokens", s.requireAuth(s.handleAdminCreateToken))
@@ -139,6 +162,10 @@ func (s *Server) routes() {
 
 func (s *Server) withMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		traceContext := otel.GetTextMapPropagator().Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+		traceContext, span := otel.Tracer("kiln/httpserver").Start(traceContext, "http.server")
+		r = r.WithContext(traceContext)
+		span.SetAttributes(attribute.String("http.request.method", r.Method))
 		start := time.Now()
 		s.deps.Observe.IncRequest()
 		reqID := r.Header.Get("X-Request-ID")
@@ -166,6 +193,14 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 				writeAppErr(ww, apperr.Internal(nil))
 			}
 			level := logging.AccessLevel(r.URL.Path, ww.code)
+			span.SetAttributes(attribute.Int("http.response.status_code", ww.code))
+			if r.Pattern != "" {
+				span.SetAttributes(attribute.String("http.route", r.Pattern))
+			}
+			if ww.code >= http.StatusInternalServerError {
+				span.SetStatus(codes.Error, http.StatusText(ww.code))
+			}
+			span.End()
 			s.deps.Log.Log(r.Context(), level, "request",
 				"remote", clientIP(r),
 				"method", r.Method,
@@ -365,6 +400,17 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.deps.Observe.Snapshot())
 }
 
+func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	if !s.deps.Cfg.Observe.Enabled {
+		writeAppErr(w, apperr.ErrNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	if err := s.deps.Observe.WritePrometheus(w); err != nil {
+		s.deps.Log.Error("write metrics failed", "err", err)
+	}
+}
+
 func (s *Server) handlePlaylist(w http.ResponseWriter, r *http.Request) {
 	tok := extractToken(r)
 	chs, err := s.deps.Catalog.List(false)
@@ -376,7 +422,12 @@ func (s *Server) handlePlaylist(w http.ResponseWriter, r *http.Request) {
 	if c.Role != "admin" && len(c.ChannelIDs) > 0 {
 		chs = s.deps.Catalog.FilterByIDs(chs, c.ChannelIDs)
 	}
-	body := s.deps.Catalog.M3U(chs, s.deps.Catalog.PublicBase(), "/v1/play/", tok)
+	base := s.deps.Catalog.PublicBase()
+	epgURL := ""
+	if s.deps.Cfg.EPG.Enabled {
+		epgURL = epgPublicURL(base)
+	}
+	body := s.deps.Catalog.M3U(chs, base, "/v1/play/", tok, epgURL)
 	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write([]byte(body))
@@ -518,7 +569,11 @@ func (s *Server) handlePlayLiveFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if strings.HasSuffix(file, ".m3u8") {
-		body, ok := pub.Playlist(file)
+		body, ok, err := playlistForRequest(r, pub, file)
+		if err != nil {
+			writeAppErr(w, apperr.New(apperr.CodeInvalid, http.StatusBadRequest, err.Error()))
+			return
+		}
 		if !ok {
 			writeAppErr(w, apperr.ErrNotFound)
 			return
@@ -528,6 +583,19 @@ func (s *Server) handlePlayLiveFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	asset, ok := pub.Asset(file)
+	if !ok {
+		if contextual, supportsContext := pub.(packager.ContextPublication); supportsContext {
+			var err error
+			asset, ok, err = contextual.AssetContext(r.Context(), file)
+			if err != nil {
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					return
+				}
+				writeAppErr(w, apperr.New(apperr.CodeInvalid, http.StatusBadRequest, err.Error()))
+				return
+			}
+		}
+	}
 	if !ok {
 		writeAppErr(w, apperr.ErrNotFound)
 		return
@@ -547,6 +615,68 @@ func (s *Server) handlePlayLiveFile(w http.ResponseWriter, r *http.Request) {
 	setAssetCacheHeaders(w, asset.Immutable)
 	http.ServeContent(w, r, file, asset.ModTime, f)
 	s.deps.Observe.AddBytesOut(st.Size())
+}
+
+func playlistForRequest(r *http.Request, publication packager.Publication, name string) ([]byte, bool, error) {
+	request, lowLatency, err := parseHLSPlaylistRequest(r)
+	if err != nil {
+		return nil, false, err
+	}
+	contextual, supportsContext := publication.(packager.ContextPublication)
+	if !lowLatency || !supportsContext {
+		body, ok := publication.Playlist(name)
+		return body, ok, nil
+	}
+	view, ok, err := contextual.PlaylistContext(r.Context(), name, request)
+	if err != nil {
+		return nil, ok, err
+	}
+	return view.Body, ok, nil
+}
+
+func parseHLSPlaylistRequest(r *http.Request) (packager.PlaylistRequest, bool, error) {
+	query := r.URL.Query()
+	request := packager.PlaylistRequest{}
+	lowLatency := false
+	if raw, present := query["_HLS_skip"]; present {
+		lowLatency = true
+		value := ""
+		if len(raw) > 0 {
+			value = strings.ToUpper(strings.TrimSpace(raw[0]))
+		}
+		if value != "YES" && value != "V2" {
+			return request, true, fmt.Errorf("_HLS_skip must be YES or v2")
+		}
+		request.Skip = true
+	}
+	parseUint := func(key string) (*uint64, error) {
+		raw, present := query[key]
+		if !present {
+			return nil, nil
+		}
+		lowLatency = true
+		if len(raw) == 0 || strings.TrimSpace(raw[0]) == "" {
+			return nil, fmt.Errorf("%s requires an unsigned integer", key)
+		}
+		value, parseErr := strconv.ParseUint(raw[0], 10, 64)
+		if parseErr != nil {
+			return nil, fmt.Errorf("%s requires an unsigned integer", key)
+		}
+		return &value, nil
+	}
+	var err error
+	request.MSN, err = parseUint("_HLS_msn")
+	if err != nil {
+		return request, lowLatency, err
+	}
+	request.Part, err = parseUint("_HLS_part")
+	if err != nil {
+		return request, lowLatency, err
+	}
+	if request.Part != nil && request.MSN == nil {
+		return request, lowLatency, fmt.Errorf("_HLS_part requires _HLS_msn")
+	}
+	return request, lowLatency, nil
 }
 
 // setAssetCacheHeaders overrides the global no-store for published media.

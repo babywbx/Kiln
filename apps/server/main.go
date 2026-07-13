@@ -10,12 +10,14 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/babywbx/kiln/modules/auth"
 	"github.com/babywbx/kiln/modules/catalog"
 	"github.com/babywbx/kiln/modules/config"
+	"github.com/babywbx/kiln/modules/epg"
 	"github.com/babywbx/kiln/modules/httpserver"
 	"github.com/babywbx/kiln/modules/logging"
 	"github.com/babywbx/kiln/modules/observe"
@@ -23,6 +25,7 @@ import (
 	"github.com/babywbx/kiln/modules/pull"
 	"github.com/babywbx/kiln/modules/session"
 	"github.com/babywbx/kiln/modules/store"
+	"github.com/babywbx/kiln/modules/telemetry"
 	"github.com/babywbx/kiln/modules/version"
 )
 
@@ -44,6 +47,11 @@ func main() {
 		Color:  cfg.Logging.Color,
 	})
 	slog.SetDefault(log)
+	shutdownTelemetry, err := telemetry.Setup(context.Background(), cfg.Observe, version.Version)
+	if err != nil {
+		log.Warn("OpenTelemetry setup failed", "err", err)
+		shutdownTelemetry = func(context.Context) error { return nil }
+	}
 
 	// GOMEMLIMIT set by the environment wins, so an operator can always override
 	// the file without editing it.
@@ -77,6 +85,11 @@ func main() {
 		log.Error("egress router failed", "err", err)
 		os.Exit(1)
 	}
+	epgSvc, err := buildEPGService(cfg, db, egressRouter, log)
+	if err != nil {
+		log.Error("EPG init failed", "err", err)
+		os.Exit(1)
+	}
 
 	obs := observe.New()
 	allowed := cfg.AllowedHostSet()
@@ -97,6 +110,9 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	sessions.Start(ctx)
+	if epgSvc != nil {
+		epgSvc.Start(ctx)
+	}
 
 	srv := httpserver.New(httpserver.Deps{
 		Cfg:      cfg,
@@ -105,6 +121,7 @@ func main() {
 		Sessions: sessions,
 		Observe:  obs,
 		Store:    db,
+		EPG:      epgSvc,
 		Egress:   egressRouter,
 		Log:      log,
 		Allowed:  allowed,
@@ -127,6 +144,7 @@ func main() {
 		"egress_default", cfg.Egress.Default,
 		"playlist_policy", cfg.Egress.PlaylistPolicy,
 		"db", filepath.Join(cfg.Server.DataDir, "kiln.db"),
+		"epg_sources", activeEPGSourceCount(epgSvc),
 		"admin", "/admin",
 	)
 
@@ -141,9 +159,74 @@ func main() {
 	shctx, shcancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer shcancel()
 	_ = srv.Shutdown(shctx)
+	if err := shutdownTelemetry(shctx); err != nil {
+		log.Warn("OpenTelemetry shutdown failed", "err", err)
+	}
 	cancel()
 	sessions.Shutdown()
 	log.Info("shutting down")
+}
+
+func buildEPGService(cfg config.File, db *store.DB, router *proxyegress.Router, log *slog.Logger) (*epg.Service, error) {
+	if !cfg.EPG.Enabled {
+		return nil, nil
+	}
+	rows, err := db.ListEPGSources()
+	if err != nil {
+		return nil, err
+	}
+	overrides := make([]epg.SourceOverride, 0, len(rows))
+	for _, row := range rows {
+		overrides = append(overrides, epg.SourceOverride{
+			ID: row.ID, Name: row.Name, URL: row.URL, Timezone: row.Timezone, Proxy: row.Proxy,
+			Enabled: row.Enabled, Revision: row.Revision, UpdatedAt: row.UpdatedAt,
+		})
+	}
+	configured := epg.ConfigureSources(overrides)
+	sources := make([]epg.Source, 0, len(configured))
+	for _, source := range configured {
+		if source.Enabled {
+			sources = append(sources, source.Source)
+		}
+	}
+
+	var cache epg.CacheStore
+	if cfg.EPG.CacheEnabled() {
+		switch strings.ToLower(strings.TrimSpace(cfg.EPG.CacheDir)) {
+		case "", "memory", ":memory:":
+			cache = epg.NewMemoryStore()
+		default:
+			cache, err = epg.NewDiskStore(cfg.EPG.CacheDir)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	fetcher := &epg.Fetcher{
+		MaxSourceBytes: cfg.EPG.MaxSourceBytes,
+		UserAgent:      "Kiln EPG",
+		ClientForSource: func(source epg.Source) (*http.Client, error) {
+			proxy := strings.TrimSpace(source.Proxy)
+			if proxy == "" || proxy == "auto" {
+				return router.ClientForChannel("", "", 45*time.Second)
+			}
+			return router.ClientForProxy(proxy, 45*time.Second)
+		},
+	}
+	return epg.NewService(epg.ServiceConfig{
+		Sources: sources, DefaultTimezone: cfg.EPG.DefaultTimezone,
+		RefreshInterval: time.Duration(cfg.EPG.RefreshIntervalMin) * time.Minute,
+		OnError: func(err error) {
+			log.Warn("EPG refresh failed", "err", err)
+		},
+	}, fetcher, cache), nil
+}
+
+func activeEPGSourceCount(service *epg.Service) int {
+	if service == nil {
+		return 0
+	}
+	return len(service.Sources())
 }
 
 func abs(p string) string {

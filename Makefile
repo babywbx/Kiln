@@ -1,6 +1,6 @@
 .PHONY: build test coverage run tidy hash keys fmt vet lint vuln ci clean audit-admin-ui \
         docker docker-multiarch docker-verify docker-smoke docker-reap fixtures \
-        media-oracle test-safety benchmark-performance
+        media-oracle test-safety benchmark-performance soak
 
 VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT   ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
@@ -33,6 +33,10 @@ test-safety:
 
 benchmark-performance:
 	go test ./modules/packager/... -run '^$$' -bench . -benchmem
+
+soak:
+	go run ./apps/soak -server "$(or $(SOAK_SERVER),http://127.0.0.1:8080)" \
+		-duration "$(or $(SOAK_DURATION),24h)" $(SOAK_ARGS)
 
 coverage:
 	go test -race -coverprofile=coverage.out ./...

@@ -24,6 +24,7 @@ type File struct {
 	Logging   Logging        `json:"logging" toml:"logging"`
 	Proxies   []ProxyProfile `json:"proxies" toml:"proxies"`
 	Egress    Egress         `json:"egress" toml:"egress"`
+	EPG       EPG            `json:"epg" toml:"epg"`
 }
 
 type ProxyProfile struct {
@@ -47,6 +48,30 @@ type EgressRule struct {
 	Pattern  string `json:"pattern" toml:"pattern"`
 	Proxy    string `json:"proxy" toml:"proxy"`
 	Disabled bool   `json:"disabled" toml:"disabled"`
+}
+
+type EPG struct {
+	Enabled            bool        `json:"enabled" toml:"enabled"`
+	Cache              *bool       `json:"cache,omitempty" toml:"cache,omitempty"`
+	CacheDir           string      `json:"cache_dir" toml:"cache_dir"`
+	RefreshIntervalMin int         `json:"refresh_interval_min" toml:"refresh_interval_min"`
+	MaxSourceBytes     int64       `json:"max_source_bytes" toml:"max_source_bytes"`
+	DefaultTimezone    string      `json:"default_timezone" toml:"default_timezone"`
+	ServeTimezone      string      `json:"serve_timezone" toml:"serve_timezone"`
+	Sources            []EPGSource `json:"sources" toml:"sources"`
+}
+
+func (e EPG) CacheEnabled() bool {
+	return e.Cache == nil || *e.Cache
+}
+
+type EPGSource struct {
+	ID       string `json:"id" toml:"id"`
+	Name     string `json:"name,omitempty" toml:"name,omitempty"`
+	URL      string `json:"url,omitempty" toml:"url,omitempty"`
+	Timezone string `json:"timezone,omitempty" toml:"timezone,omitempty"`
+	Proxy    string `json:"proxy,omitempty" toml:"proxy,omitempty"`
+	Enabled  bool   `json:"enabled" toml:"enabled"`
 }
 
 type Server struct {
@@ -104,6 +129,9 @@ type Channel struct {
 	Title          string `json:"title" toml:"title"`
 	Group          string `json:"group" toml:"group"`
 	LogoURL        string `json:"logo_url" toml:"logo_url"`
+	EPGID          string `json:"epg_id" toml:"epg_id"`
+	EPGName        string `json:"epg_name" toml:"epg_name"`
+	EPGSource      string `json:"epg_source" toml:"epg_source"`
 	Upstream       string `json:"upstream" toml:"upstream"`
 	Path           string `json:"path" toml:"path"`
 	Ingress        string `json:"ingress" toml:"ingress"`
@@ -116,17 +144,22 @@ type Channel struct {
 	// Keys holds kid:key lines inline. A deployed server often has no convenient
 	// path to drop a file at, so the admin form writes them here instead. It
 	// takes precedence over KeysFile when both are set.
-	Keys             string            `json:"keys" toml:"keys"`
-	UserAgent        string            `json:"user_agent" toml:"user_agent"`
-	Headers          map[string]string `json:"headers" toml:"headers"`
-	RestartOnFailure bool              `json:"restart_on_failure" toml:"restart_on_failure"`
-	PreferHeight     int               `json:"prefer_height" toml:"prefer_height"`
+	Keys                    string            `json:"keys" toml:"keys"`
+	UserAgent               string            `json:"user_agent" toml:"user_agent"`
+	Headers                 map[string]string `json:"headers" toml:"headers"`
+	RestartOnFailure        bool              `json:"restart_on_failure" toml:"restart_on_failure"`
+	PreferHeight            int               `json:"prefer_height" toml:"prefer_height"`
+	PreferredAudioLanguages []string          `json:"preferred_audio_languages,omitempty" toml:"preferred_audio_languages,omitempty"`
 	// Packager overrides the global engine strategy for this channel.
 	Packager string `json:"packager" toml:"packager"`
 }
 
 type Observe struct {
-	Enabled bool `json:"enabled" toml:"enabled"`
+	Enabled          bool    `json:"enabled" toml:"enabled"`
+	OTLPEndpoint     string  `json:"otlp_endpoint,omitempty" toml:"otlp_endpoint,omitempty"`
+	OTLPInsecure     bool    `json:"otlp_insecure,omitempty" toml:"otlp_insecure,omitempty"`
+	TraceSampleRatio float64 `json:"trace_sample_ratio,omitempty" toml:"trace_sample_ratio,omitempty"`
+	ServiceName      string  `json:"service_name,omitempty" toml:"service_name,omitempty"`
 }
 
 type FFmpegMode string
@@ -164,6 +197,8 @@ type Packager struct {
 	// Engine is the default strategy: auto | native | ffmpeg.
 	Engine           string `json:"engine" toml:"engine"`
 	PlaylistSize     int    `json:"playlist_size" toml:"playlist_size"`
+	LLHLS            bool   `json:"ll_hls" toml:"ll_hls"`
+	PartTargetMS     int    `json:"part_target_ms" toml:"part_target_ms"`
 	StartSegments    int    `json:"start_segments" toml:"start_segments"`
 	PrefetchSegments int    `json:"prefetch_segments" toml:"prefetch_segments"`
 	MaxSegmentBytes  int64  `json:"max_segment_bytes" toml:"max_segment_bytes"`
@@ -360,6 +395,9 @@ func (c *File) applyDefaults() {
 	if c.Packager.PlaylistSize <= 0 {
 		c.Packager.PlaylistSize = 8
 	}
+	if c.Packager.PartTargetMS <= 0 {
+		c.Packager.PartTargetMS = 500
+	}
 	if c.Packager.StartSegments <= 0 {
 		c.Packager.StartSegments = 3
 	}
@@ -382,6 +420,12 @@ func (c *File) applyDefaults() {
 		c.Packager.InflightBytes = 96 << 20
 	}
 	c.Observe.Enabled = true
+	if c.Observe.TraceSampleRatio <= 0 {
+		c.Observe.TraceSampleRatio = 1
+	}
+	if c.Observe.ServiceName == "" {
+		c.Observe.ServiceName = "kiln"
+	}
 	if c.Logging.Level == "" {
 		c.Logging.Level = "info"
 	}
@@ -408,6 +452,30 @@ func (c *File) applyDefaults() {
 	}
 	if c.Egress.DockerProxyHost == "" {
 		c.Egress.DockerProxyHost = "host.docker.internal"
+	}
+	if c.EPG.Cache == nil {
+		cache := true
+		c.EPG.Cache = &cache
+	}
+	if c.EPG.CacheDir == "" {
+		c.EPG.CacheDir = filepath.Join(c.Server.DataDir, "epg")
+	}
+	if c.EPG.RefreshIntervalMin <= 0 {
+		c.EPG.RefreshIntervalMin = 360
+	}
+	if c.EPG.MaxSourceBytes <= 0 {
+		c.EPG.MaxSourceBytes = 64 << 20
+	}
+	if c.EPG.DefaultTimezone == "" {
+		c.EPG.DefaultTimezone = "Asia/Hong_Kong"
+	}
+	if c.EPG.ServeTimezone == "" {
+		c.EPG.ServeTimezone = "keep"
+	}
+	for i := range c.EPG.Sources {
+		if c.EPG.Sources[i].Proxy == "" {
+			c.EPG.Sources[i].Proxy = "auto"
+		}
 	}
 	for i := range c.Channels {
 		ch := &c.Channels[i]
@@ -549,6 +617,50 @@ func (c File) validate() error {
 		}
 		if _, ok := proxyIDs[rule.Proxy]; !ok {
 			return fmt.Errorf("egress rule references unknown proxy %q", rule.Proxy)
+		}
+	}
+	if c.EPG.ServeTimezone != "keep" {
+		return fmt.Errorf("epg.serve_timezone must be keep")
+	}
+	if c.Packager.PartTargetMS < 100 || c.Packager.PartTargetMS > 5000 {
+		return fmt.Errorf("packager.part_target_ms must be between 100 and 5000")
+	}
+	if c.Observe.TraceSampleRatio < 0 || c.Observe.TraceSampleRatio > 1 {
+		return fmt.Errorf("observe.trace_sample_ratio must be between 0 and 1")
+	}
+	if c.Observe.OTLPEndpoint != "" {
+		u, err := url.ParseRequestURI(c.Observe.OTLPEndpoint)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("observe.otlp_endpoint invalid")
+		}
+	}
+	if _, err := time.LoadLocation(c.EPG.DefaultTimezone); err != nil {
+		return fmt.Errorf("epg.default_timezone invalid: %w", err)
+	}
+	epgIDs := map[string]struct{}{}
+	for _, source := range c.EPG.Sources {
+		if source.ID == "" {
+			return fmt.Errorf("epg source requires id")
+		}
+		if _, exists := epgIDs[source.ID]; exists {
+			return fmt.Errorf("duplicate epg source id %q", source.ID)
+		}
+		epgIDs[source.ID] = struct{}{}
+		if source.URL != "" {
+			u, err := url.ParseRequestURI(source.URL)
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+				return fmt.Errorf("epg source %q url invalid", source.ID)
+			}
+		}
+		if source.Timezone != "" {
+			if _, err := time.LoadLocation(source.Timezone); err != nil {
+				return fmt.Errorf("epg source %q timezone invalid: %w", source.ID, err)
+			}
+		}
+		if source.Proxy != "auto" {
+			if _, ok := proxyIDs[source.Proxy]; !ok {
+				return fmt.Errorf("epg source %q references unknown proxy %q", source.ID, source.Proxy)
+			}
 		}
 	}
 	return nil

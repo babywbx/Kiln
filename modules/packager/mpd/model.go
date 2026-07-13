@@ -20,7 +20,13 @@ type Presentation struct {
 	SuggestedPresentationDelay time.Duration
 	MediaPresentationDuration  time.Duration
 	MaxSegmentDuration         time.Duration
+	UTCTimings                 []UTCTiming
 	Periods                    []Period
+}
+
+type UTCTiming struct {
+	Scheme string
+	Value  string
 }
 
 type Period struct {
@@ -91,6 +97,7 @@ type TimelineEntry struct {
 
 func (r Representation) IsVideo() bool { return r.Type == TypeVideo }
 func (r Representation) IsAudio() bool { return r.Type == TypeAudio }
+func (r Representation) IsText() bool  { return r.Type == TypeText }
 
 type Segment struct {
 	Number   uint64

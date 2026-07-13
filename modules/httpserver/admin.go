@@ -247,6 +247,31 @@ func (s *Server) handleAdminDeleteChannel(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+func (s *Server) handleAdminEnableAllChannels(w http.ResponseWriter, r *http.Request) {
+	s.handleAdminSetAllChannelsDisabled(w, r, false)
+}
+
+func (s *Server) handleAdminDisableAllChannels(w http.ResponseWriter, r *http.Request) {
+	s.handleAdminSetAllChannelsDisabled(w, r, true)
+}
+
+func (s *Server) handleAdminSetAllChannelsDisabled(w http.ResponseWriter, r *http.Request, disabled bool) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	ids, err := s.deps.Catalog.SetAllDisabled(disabled)
+	if err != nil {
+		writeAppErr(w, apperr.Internal(err))
+		return
+	}
+	if disabled {
+		for _, id := range ids {
+			_ = s.deps.Sessions.StopChannel(id)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "changed": len(ids), "channel_ids": ids})
+}
+
 func (s *Server) handleAdminUpstreams(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r) {
 		return
@@ -625,6 +650,12 @@ func (s *Server) handleAdminImportM3U(w http.ResponseWriter, r *http.Request) {
 		}
 		if e.LogoURL != "" {
 			ch.LogoURL = e.LogoURL
+		}
+		if e.TvgID != "" {
+			ch.EPGID = e.TvgID
+		}
+		if e.TvgName != "" {
+			ch.EPGName = e.TvgName
 		}
 		ch.Upstream = up
 		ch.Path = e.SuggestedPath

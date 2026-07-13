@@ -2,6 +2,7 @@ package httpserver_test
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -19,12 +20,185 @@ import (
 	"github.com/babywbx/kiln/modules/auth"
 	"github.com/babywbx/kiln/modules/catalog"
 	"github.com/babywbx/kiln/modules/config"
+	"github.com/babywbx/kiln/modules/epg"
 	"github.com/babywbx/kiln/modules/httpserver"
 	"github.com/babywbx/kiln/modules/observe"
 	"github.com/babywbx/kiln/modules/pull"
 	"github.com/babywbx/kiln/modules/session"
 	"github.com/babywbx/kiln/modules/store"
 )
+
+func TestEPGEndToEnd(t *testing.T) {
+	var fetches int
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fetches++
+		w.Header().Set("Content-Type", "application/xml")
+		_, _ = io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?>
+<tv><channel id="368359"><display-name>無綫新聞台</display-name></channel>
+<programme channel="368359" start="20260713090000 +0800" stop="20260713100000 +0800"><title>早晨新聞</title></programme></tv>`)
+	}))
+	t.Cleanup(origin.Close)
+
+	hash, err := auth.HashPassword("secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	cache := false
+	cfg := config.File{
+		Server: config.Server{PublicBaseURL: "http://kiln.test", DataDir: dir, ReadTimeout: 5, IdleTimeout: 30},
+		Auth: config.Auth{TokenIssuer: "kiln", TokenAudience: "kiln", Users: []config.User{{
+			Username: "admin", PasswordHash: hash, Role: "admin",
+		}}},
+		Security: config.Security{MaxBodyBytes: 1 << 20},
+		EPG: config.EPG{Enabled: true, Cache: &cache, Sources: []config.EPGSource{{
+			ID: "fixture", Name: "Fixture", URL: origin.URL, Timezone: "Asia/Hong_Kong", Proxy: "direct", Enabled: true,
+		}}},
+		Channels: []config.Channel{{
+			ID: "demo", Title: "無綫新聞台", EPGID: "368359", EPGName: "無綫新聞台", EPGSource: "fixture",
+			Ingress: "hls", OnDemand: true,
+		}},
+	}
+	db, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := db.SeedFromConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	authSvc, err := auth.New(cfg.Auth, time.Hour, auth.Options{DataDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	login, err := authSvc.Login("admin", "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := epg.Source{ID: "fixture", Name: "Fixture", URL: origin.URL, Timezone: "Asia/Hong_Kong", Proxy: "direct"}
+	epgSvc := epg.NewService(epg.ServiceConfig{Sources: []epg.Source{source}}, &epg.Fetcher{}, nil)
+	srv := httpserver.New(httpserver.Deps{
+		Cfg: cfg, Auth: authSvc, Catalog: catalog.New(cfg, db), Observe: observe.New(), Store: db, EPG: epgSvc,
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	plain, err := http.Get(ts.URL + "/v1/epg.xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plainBody, _ := io.ReadAll(plain.Body)
+	_ = plain.Body.Close()
+	if plain.StatusCode != http.StatusOK || !strings.Contains(string(plainBody), `channel id="demo"`) ||
+		!strings.Contains(string(plainBody), `<programme`) || !strings.Contains(string(plainBody), `channel="demo"`) {
+		t.Fatalf("plain EPG %d %s", plain.StatusCode, plainBody)
+	}
+	if fetches != 1 {
+		t.Fatalf("cache=false should refresh before serving, fetches=%d", fetches)
+	}
+
+	compressed, err := http.Get(ts.URL + "/v1/epg.xml.gz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	zipReader, err := gzip.NewReader(compressed.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compressedBody, _ := io.ReadAll(zipReader)
+	_ = zipReader.Close()
+	_ = compressed.Body.Close()
+	if compressed.StatusCode != http.StatusOK || !strings.Contains(string(compressedBody), `channel id="demo"`) {
+		t.Fatalf("gzip EPG %d %s", compressed.StatusCode, compressedBody)
+	}
+	if fetches != 2 {
+		t.Fatalf("gzip read should also refresh with cache=false, fetches=%d", fetches)
+	}
+
+	playlist := adminJSON(t, http.MethodGet, ts.URL+"/v1/playlist.m3u", login.Token, nil)
+	if playlist.StatusCode != http.StatusOK ||
+		!strings.Contains(string(playlist.Body), `x-tvg-url="http://kiln.test/v1/epg.xml.gz"`) ||
+		!strings.Contains(string(playlist.Body), `tvg-logo="http://kiln.test/v1/logo/demo"`) {
+		t.Fatalf("EPG playlist %d %s", playlist.StatusCode, playlist.Body)
+	}
+
+	presets := adminJSON(t, http.MethodGet, ts.URL+"/v1/admin/epg/presets", login.Token, nil)
+	if presets.StatusCode != http.StatusOK || !strings.Contains(string(presets.Body), `"hk-1"`) {
+		t.Fatalf("EPG presets %d %s", presets.StatusCode, presets.Body)
+	}
+	sources := adminJSON(t, http.MethodGet, ts.URL+"/v1/admin/epg/sources", login.Token, nil)
+	if sources.StatusCode != http.StatusOK || !strings.Contains(string(sources.Body), `"fixture"`) {
+		t.Fatalf("EPG sources %d %s", sources.StatusCode, sources.Body)
+	}
+	matches := adminJSON(t, http.MethodGet, ts.URL+"/v1/admin/epg/matches", login.Token, nil)
+	if matches.StatusCode != http.StatusOK || !strings.Contains(string(matches.Body), `"status":"matched"`) {
+		t.Fatalf("EPG matches %d %s", matches.StatusCode, matches.Body)
+	}
+
+	created := adminJSON(t, http.MethodPost, ts.URL+"/v1/admin/epg/sources", login.Token, map[string]any{
+		"id": "backup", "name": "Backup", "url": origin.URL, "timezone": "Asia/Hong_Kong", "proxy": "direct", "enabled": false,
+	})
+	if created.StatusCode != http.StatusCreated {
+		t.Fatalf("create EPG source %d %s", created.StatusCode, created.Body)
+	}
+	var createdBody struct {
+		Source epg.ConfiguredSource `json:"source"`
+	}
+	if err := json.Unmarshal(created.Body, &createdBody); err != nil || createdBody.Source.Revision == 0 {
+		t.Fatalf("created EPG source = %+v, err=%v", createdBody, err)
+	}
+	update := map[string]any{
+		"id": "backup", "name": "Backup 2", "url": origin.URL, "timezone": "Asia/Hong_Kong", "proxy": "auto", "enabled": true,
+	}
+	missingRevision := adminJSON(t, http.MethodPut, ts.URL+"/v1/admin/epg/sources/backup", login.Token, update)
+	if missingRevision.StatusCode != http.StatusPreconditionRequired {
+		t.Fatalf("missing EPG source revision %d %s", missingRevision.StatusCode, missingRevision.Body)
+	}
+	updated := adminJSONHeaders(t, http.MethodPut, ts.URL+"/v1/admin/epg/sources/backup", login.Token, update,
+		map[string]string{"If-Match": strconv.FormatInt(createdBody.Source.Revision, 10)})
+	if updated.StatusCode != http.StatusOK {
+		t.Fatalf("update EPG source %d %s", updated.StatusCode, updated.Body)
+	}
+	stale := adminJSONHeaders(t, http.MethodPut, ts.URL+"/v1/admin/epg/sources/backup", login.Token, update,
+		map[string]string{"If-Match": strconv.FormatInt(createdBody.Source.Revision, 10)})
+	if stale.StatusCode != http.StatusConflict {
+		t.Fatalf("stale EPG source update %d %s", stale.StatusCode, stale.Body)
+	}
+	var updatedBody struct {
+		Source epg.ConfiguredSource `json:"source"`
+	}
+	if err := json.Unmarshal(updated.Body, &updatedBody); err != nil {
+		t.Fatal(err)
+	}
+	deleted := adminJSONHeaders(t, http.MethodDelete, ts.URL+"/v1/admin/epg/sources/backup", login.Token, nil,
+		map[string]string{"If-Match": strconv.FormatInt(updatedBody.Source.Revision, 10)})
+	if deleted.StatusCode != http.StatusOK {
+		t.Fatalf("delete EPG source %d %s", deleted.StatusCode, deleted.Body)
+	}
+	refreshed := adminJSON(t, http.MethodPost, ts.URL+"/v1/admin/epg/refresh", login.Token, nil)
+	if refreshed.StatusCode != http.StatusOK || !strings.Contains(string(refreshed.Body), `"statuses"`) {
+		t.Fatalf("refresh EPG %d %s", refreshed.StatusCode, refreshed.Body)
+	}
+}
+
+func TestEPGUnavailableReturnsLegalEmptyDocument(t *testing.T) {
+	cache := true
+	server := httpserver.New(httpserver.Deps{
+		Cfg: config.File{
+			Server: config.Server{ReadTimeout: 5, IdleTimeout: 30},
+			EPG:    config.EPG{Enabled: true, Cache: &cache},
+		},
+		Observe: observe.New(),
+		Log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	request := httptest.NewRequest(http.MethodGet, "/v1/epg.xml", nil)
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `<tv generator-info-name="Kiln"></tv>`) {
+		t.Fatalf("empty EPG %d %s", response.Code, response.Body.String())
+	}
+}
 
 func TestHLSPlayEndToEnd(t *testing.T) {
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -84,7 +258,8 @@ func TestHLSPlayEndToEnd(t *testing.T) {
 			IdleTimeoutSec: 30,
 			UserAgent:      "kiln-test",
 		}},
-		FFmpeg: config.FFmpeg{Binary: "ffmpeg", HLSTime: 2, HLSListSize: 4},
+		FFmpeg:  config.FFmpeg{Binary: "ffmpeg", HLSTime: 2, HLSListSize: 4},
+		Observe: config.Observe{Enabled: true},
 	}
 	cfg.Security.PlayRequireAuth = true
 	allowed := cfg.AllowedHostSet()
@@ -128,6 +303,15 @@ func TestHLSPlayEndToEnd(t *testing.T) {
 
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
+	metrics, err := http.Get(ts.URL + "/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	metricsBody, _ := io.ReadAll(metrics.Body)
+	_ = metrics.Body.Close()
+	if metrics.StatusCode != http.StatusOK || !strings.Contains(string(metricsBody), "kiln_http_requests_total") {
+		t.Fatalf("metrics %d %s", metrics.StatusCode, metricsBody)
+	}
 
 	adminPage, err := http.Get(ts.URL + "/admin/channels/demo")
 	if err != nil {
@@ -210,6 +394,25 @@ func TestHLSPlayEndToEnd(t *testing.T) {
 	plb, _ := io.ReadAll(pl.Body)
 	if pl.StatusCode != 200 || !strings.Contains(string(plb), "demo") {
 		t.Fatalf("playlist.m3u %d %s", pl.StatusCode, plb)
+	}
+
+	disabled := adminJSON(t, http.MethodPost, ts.URL+"/v1/admin/channels/disable-all", login.Token, map[string]any{})
+	if disabled.StatusCode != http.StatusOK || !strings.Contains(string(disabled.Body), `"changed":1`) {
+		t.Fatalf("disable all %d %s", disabled.StatusCode, disabled.Body)
+	}
+	if _, running := sessions.Get("demo"); running {
+		t.Fatal("disable-all left the channel session running")
+	}
+	disabledRow, ok, err := db.GetChannelRow("demo")
+	if err != nil || !ok || !disabledRow.Channel.Disabled {
+		t.Fatalf("disabled channel row = %#v, found=%v err=%v", disabledRow, ok, err)
+	}
+	enabled := adminJSON(t, http.MethodPost, ts.URL+"/v1/admin/channels/enable-all", login.Token, map[string]any{})
+	if enabled.StatusCode != http.StatusOK || !strings.Contains(string(enabled.Body), `"changed":1`) {
+		t.Fatalf("enable all %d %s", enabled.StatusCode, enabled.Body)
+	}
+	if _, running := sessions.Get("demo"); running {
+		t.Fatal("enable-all unexpectedly started the channel session")
 	}
 
 	detail := adminJSON(t, http.MethodGet, ts.URL+"/v1/admin/channels/demo", login.Token, nil)

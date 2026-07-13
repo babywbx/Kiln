@@ -8,6 +8,7 @@ import (
 
 	"github.com/babywbx/kiln/modules/apperr"
 	"github.com/babywbx/kiln/modules/config"
+	"github.com/babywbx/kiln/modules/epg"
 	"github.com/babywbx/kiln/modules/store"
 )
 
@@ -21,6 +22,9 @@ type ChannelView struct {
 	Title     string `json:"title"`
 	Group     string `json:"group,omitempty"`
 	LogoURL   string `json:"logo_url,omitempty"`
+	EPGID     string `json:"epg_id,omitempty"`
+	EPGName   string `json:"epg_name,omitempty"`
+	EPGSource string `json:"epg_source,omitempty"`
 	Ingress   string `json:"ingress"`
 	OnDemand  bool   `json:"on_demand"`
 	Autostart bool   `json:"autostart"`
@@ -30,11 +34,12 @@ type ChannelView struct {
 	KeysFile  string `json:"keys_file,omitempty"`
 	// Keys is the masked form: the KID, which is public, and a placeholder in
 	// place of the key, which never leaves the server.
-	Keys      string `json:"keys,omitempty"`
-	PreferH   int    `json:"prefer_height,omitempty"`
-	SortOrder int    `json:"sort_order"`
-	Revision  int64  `json:"revision,omitempty"`
-	PlayURL   string `json:"play_url,omitempty"`
+	Keys                    string   `json:"keys,omitempty"`
+	PreferH                 int      `json:"prefer_height,omitempty"`
+	PreferredAudioLanguages []string `json:"preferred_audio_languages,omitempty"`
+	SortOrder               int      `json:"sort_order"`
+	Revision                int64    `json:"revision,omitempty"`
+	PlayURL                 string   `json:"play_url,omitempty"`
 }
 
 func New(cfg config.File, db *store.DB) *Service {
@@ -78,10 +83,12 @@ func (s *Service) ListViews(publicBase string, includeDisabled bool) ([]ChannelV
 			}
 			view := ChannelView{
 				ID: ch.ID, Title: title, Group: ch.Group, LogoURL: ch.LogoURL,
+				EPGID: ch.EPGID, EPGName: ch.EPGName, EPGSource: ch.EPGSource,
 				Ingress: ch.Ingress, OnDemand: ch.OnDemand, Autostart: ch.Autostart, Upstream: ch.Upstream,
 				Path: ch.Path, Disabled: ch.Disabled, KeysFile: ch.KeysFile,
 				Keys: config.MaskKeys(ch.Keys), PreferH: ch.PreferHeight,
-				SortOrder: row.SortOrder, Revision: row.Revision,
+				PreferredAudioLanguages: append([]string(nil), ch.PreferredAudioLanguages...),
+				SortOrder:               row.SortOrder, Revision: row.Revision,
 			}
 			if publicBase != "" && !ch.Disabled {
 				view.PlayURL = publicBase + "/v1/play/" + ch.ID + "/index.m3u8"
@@ -102,10 +109,12 @@ func (s *Service) ListViews(publicBase string, includeDisabled bool) ([]ChannelV
 		}
 		view := ChannelView{
 			ID: ch.ID, Title: title, Group: ch.Group, LogoURL: ch.LogoURL,
+			EPGID: ch.EPGID, EPGName: ch.EPGName, EPGSource: ch.EPGSource,
 			Ingress: ch.Ingress, OnDemand: ch.OnDemand, Autostart: ch.Autostart, Upstream: ch.Upstream,
 			Path: ch.Path, Disabled: ch.Disabled, KeysFile: ch.KeysFile,
 			Keys: config.MaskKeys(ch.Keys), PreferH: ch.PreferHeight,
-			SortOrder: i,
+			PreferredAudioLanguages: append([]string(nil), ch.PreferredAudioLanguages...),
+			SortOrder:               i,
 		}
 		if publicBase != "" && !ch.Disabled {
 			view.PlayURL = publicBase + "/v1/play/" + ch.ID + "/index.m3u8"
@@ -209,6 +218,9 @@ func normalizeChannel(ch config.Channel) config.Channel {
 	if ch.Ingress == "dash" {
 		ch.RestartOnFailure = true
 	}
+	for i := range ch.PreferredAudioLanguages {
+		ch.PreferredAudioLanguages[i] = strings.TrimSpace(ch.PreferredAudioLanguages[i])
+	}
 	if !ch.OnDemand && !ch.Autostart {
 		ch.OnDemand = true
 	}
@@ -227,6 +239,13 @@ func (s *Service) DeleteIfRevision(id string, expectedRevision int64) error {
 		return fmt.Errorf("store not available")
 	}
 	return s.db.DeleteChannelIfRevision(id, expectedRevision)
+}
+
+func (s *Service) SetAllDisabled(disabled bool) ([]string, error) {
+	if s.db == nil {
+		return nil, fmt.Errorf("store not available")
+	}
+	return s.db.SetAllChannelsDisabled(disabled)
 }
 
 func (s *Service) SourceURL(ch config.Channel) (string, error) {
@@ -249,9 +268,13 @@ func (s *Service) Upstreams() []config.Upstream {
 	return append([]config.Upstream(nil), s.cfg.Upstreams...)
 }
 
-func (s *Service) M3U(channels []config.Channel, publicBase, playPathPrefix, token string) string {
+func (s *Service) M3U(channels []config.Channel, publicBase, playPathPrefix, token, epgURL string) string {
 	var b strings.Builder
-	b.WriteString("#EXTM3U\n")
+	b.WriteString("#EXTM3U")
+	if epgURL != "" {
+		fmt.Fprintf(&b, ` x-tvg-url="%s"`, escapeAttr(epgURL))
+	}
+	b.WriteByte('\n')
 	for _, ch := range channels {
 		if ch.Disabled {
 			continue
@@ -264,10 +287,24 @@ func (s *Service) M3U(channels []config.Channel, publicBase, playPathPrefix, tok
 		if ch.Group != "" {
 			fmt.Fprintf(&b, ` group-title="%s"`, escapeAttr(ch.Group))
 		}
-		if ch.LogoURL != "" {
-			fmt.Fprintf(&b, ` tvg-logo="%s"`, escapeAttr(ch.LogoURL))
+		logoURL := ch.LogoURL
+		if logoURL == "" {
+			logoName := ch.EPGName
+			if logoName == "" {
+				logoName = title
+			}
+			if candidates := epg.LogoCandidates(logoName); len(candidates) > 0 {
+				logoURL = strings.TrimRight(publicBase, "/") + "/v1/logo/" + url.PathEscape(ch.ID)
+			}
 		}
-		fmt.Fprintf(&b, ` tvg-id="%s",%s`, escapeAttr(ch.ID), title)
+		if logoURL != "" {
+			fmt.Fprintf(&b, ` tvg-logo="%s"`, escapeAttr(logoURL))
+		}
+		epgName := ch.EPGName
+		if epgName == "" {
+			epgName = title
+		}
+		fmt.Fprintf(&b, ` tvg-id="%s" tvg-name="%s",%s`, escapeAttr(ch.ID), escapeAttr(epgName), title)
 		b.WriteByte('\n')
 		u := publicBase + playPathPrefix + ch.ID + "/index.m3u8"
 		if token != "" {

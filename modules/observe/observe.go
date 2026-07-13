@@ -41,22 +41,26 @@ type SessionStat struct {
 // imported from the packager, which already depends on this module through the
 // pull client.
 type PackagerStat struct {
-	SegmentsPublished uint64  `json:"segments_published,omitempty"`
-	SegmentsFetched   uint64  `json:"segments_fetched,omitempty"`
-	SegmentFetchErrs  uint64  `json:"segment_fetch_errors,omitempty"`
-	ManifestRefreshes uint64  `json:"manifest_refreshes,omitempty"`
-	ManifestErrs      uint64  `json:"manifest_errors,omitempty"`
-	Discontinuities   uint64  `json:"discontinuities,omitempty"`
-	Reanchors         uint64  `json:"reanchors,omitempty"`
-	Reresolves        uint64  `json:"reresolves,omitempty"`
-	TrackHolds        uint64  `json:"track_holds,omitempty"`
-	KeyMismatches     uint64  `json:"key_mismatches,omitempty"`
-	DecryptSeconds    float64 `json:"decrypt_seconds,omitempty"`
-	CacheBytes        int64   `json:"cache_bytes,omitempty"`
-	CacheItems        int     `json:"cache_items,omitempty"`
-	VideoFrontier     uint64  `json:"video_frontier,omitempty"`
-	AudioFrontier     uint64  `json:"audio_frontier,omitempty"`
-	AudioTracks       int     `json:"audio_tracks,omitempty"`
+	SegmentsPublished  uint64  `json:"segments_published,omitempty"`
+	PartsPublished     uint64  `json:"parts_published,omitempty"`
+	SegmentsFetched    uint64  `json:"segments_fetched,omitempty"`
+	SegmentFetchErrs   uint64  `json:"segment_fetch_errors,omitempty"`
+	ManifestRefreshes  uint64  `json:"manifest_refreshes,omitempty"`
+	ManifestErrs       uint64  `json:"manifest_errors,omitempty"`
+	Discontinuities    uint64  `json:"discontinuities,omitempty"`
+	Reanchors          uint64  `json:"reanchors,omitempty"`
+	Reresolves         uint64  `json:"reresolves,omitempty"`
+	TrackHolds         uint64  `json:"track_holds,omitempty"`
+	KeyMismatches      uint64  `json:"key_mismatches,omitempty"`
+	DecryptSeconds     float64 `json:"decrypt_seconds,omitempty"`
+	CacheBytes         int64   `json:"cache_bytes,omitempty"`
+	CacheItems         int     `json:"cache_items,omitempty"`
+	VideoFrontier      uint64  `json:"video_frontier,omitempty"`
+	AudioFrontier      uint64  `json:"audio_frontier,omitempty"`
+	VideoTracks        int     `json:"video_tracks,omitempty"`
+	AudioTracks        int     `json:"audio_tracks,omitempty"`
+	TextTracks         int     `json:"text_tracks,omitempty"`
+	ClockOffsetSeconds float64 `json:"clock_offset_seconds,omitempty"`
 }
 
 type Snapshot struct {

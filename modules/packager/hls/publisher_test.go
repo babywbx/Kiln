@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/babywbx/kiln/modules/timedmeta"
 )
 
 type clock struct{ t time.Time }
@@ -78,6 +80,22 @@ func TestRefreshesOnlyChangedPlaylists(t *testing.T) {
 	}
 	if masterCalls != 1 {
 		t.Errorf("master calls = %d, want 1", masterCalls)
+	}
+}
+
+func TestMasterHonorsPreferredDefaultAudio(t *testing.T) {
+	got := string(masterPlaylist([]*track{
+		{Track: Track{Name: "video", Kind: KindVideo, Codec: "hvc1", Bandwidth: 1000}},
+		{Track: Track{Name: "audio-zh", Kind: KindAudio, Codec: "mp4a", Lang: "zho"}},
+		{Track: Track{Name: "audio-yue", Kind: KindAudio, Codec: "mp4a", Lang: "yue", Default: true}},
+	}, true))
+	for _, want := range []string{
+		`LANGUAGE="zho",DEFAULT=NO`,
+		`LANGUAGE="yue",DEFAULT=YES`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("master missing %q:\n%s", want, got)
+		}
 	}
 }
 
@@ -501,5 +519,45 @@ func TestStaticPublicationAppendsWithoutReencodingHistory(t *testing.T) {
 	}
 	if !strings.Contains(string(final), "#EXT-X-ENDLIST") {
 		t.Fatal("completed playlist has no ENDLIST")
+	}
+}
+
+func TestStaticDateRangeDoesNotDisableIncrementalAppend(t *testing.T) {
+	t.Parallel()
+
+	p, err := New(Config{Dir: t.TempDir(), Static: true, MaxSegmentDuration: 2 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.AddTrack(Track{Name: "video-main", Kind: KindVideo, Codec: "avc1.42C00C"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.PublishInit("video-main", []byte("init")); err != nil {
+		t.Fatal(err)
+	}
+	mediaCalls := 0
+	p.encoder.media = func(track *track, endList bool) []byte {
+		mediaCalls++
+		return mediaPlaylist(track, endList)
+	}
+	start := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
+	if err := p.PublishSegment(Publication{
+		Track: "video-main", Seq: 1, Duration: 2, At: start,
+		DateRanges: []timedmeta.DateRange{{
+			ID: "scte35-7", Class: "com.apple.hls.scte35", StartDate: start, SCTE35Out: "0xFC01",
+		}},
+	}, []byte("segment")); err != nil {
+		t.Fatal(err)
+	}
+	for sequence := uint64(2); sequence <= 100; sequence++ {
+		if err := p.PublishSegment(Publication{
+			Track: "video-main", Seq: sequence, Duration: 2,
+			At: start.Add(time.Duration(sequence-1) * 2 * time.Second),
+		}, []byte("segment")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if mediaCalls != 1 {
+		t.Fatalf("full media encodes = %d, want 1", mediaCalls)
 	}
 }

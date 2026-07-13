@@ -145,6 +145,36 @@ func TestPlaylistRewritePolicy(t *testing.T) {
 	}
 }
 
+func TestClientForProxyForcesDirectOrNamedProfile(t *testing.T) {
+	r, err := NewRouter(Config{
+		Default:  "p1",
+		Profiles: []Profile{{ID: "p1", URL: "http://127.0.0.1:7890"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	direct, err := r.ClientForProxy(Direct, 7*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directTransport := direct.Transport.(*http.Transport)
+	if directTransport.Proxy != nil || direct.Timeout != 7*time.Second {
+		t.Fatalf("direct client not fixed direct: %#v", direct)
+	}
+	proxied, err := r.ClientForProxy("p1", 9*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyTransport := proxied.Transport.(*http.Transport)
+	proxyURL, err := proxyTransport.Proxy(&http.Request{URL: &url.URL{Scheme: "https", Host: "example.com"}})
+	if err != nil || proxyURL.String() != "http://127.0.0.1:7890" || proxied.Timeout != 9*time.Second {
+		t.Fatalf("named proxy client = url %v timeout %v err %v", proxyURL, proxied.Timeout, err)
+	}
+	if _, err := r.ClientForProxy("missing", time.Second); err == nil {
+		t.Fatal("unknown proxy unexpectedly accepted")
+	}
+}
+
 // ffmpeg cannot use a SOCKS proxy. Handing it one used to emit an http_proxy it
 // silently ignored, fetching the media direct — report the misroute instead.
 func TestEnvForFFmpegRejectsSocksRoute(t *testing.T) {
