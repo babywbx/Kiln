@@ -2,6 +2,7 @@
 package hls
 
 import (
+	"bytes"
 	"fmt"
 	"math"
 	"os"
@@ -100,6 +101,11 @@ func segmentName(track string, seq uint64) string {
 	return fmt.Sprintf("%s-%06d.m4s", track, seq)
 }
 
+type playlistEncoder struct {
+	media  func(*track, bool) []byte
+	master func([]*track, bool) []byte
+}
+
 type Publisher struct {
 	cfg Config
 	now func() time.Time
@@ -110,6 +116,7 @@ type Publisher struct {
 	playlists map[string][]byte
 	assets    map[string]string
 	playable  bool
+	encoder   playlistEncoder
 }
 
 func New(cfg Config) (*Publisher, error) {
@@ -134,6 +141,10 @@ func New(cfg Config) (*Publisher, error) {
 		tracks:    map[string]*track{},
 		playlists: map[string][]byte{},
 		assets:    map[string]string{},
+		encoder: playlistEncoder{
+			media:  mediaPlaylist,
+			master: masterPlaylist,
+		},
 	}, nil
 }
 
@@ -224,7 +235,7 @@ func (p *Publisher) PublishStaged(pub Publication, staged string) error {
 	t.frontier = pub.Seq
 	t.hasFrontier = true
 	p.slide(t)
-	p.refresh()
+	p.refresh(t)
 	return nil
 }
 
@@ -280,32 +291,42 @@ func (p *Publisher) removeAsset(name string) bool {
 	return err == nil || os.IsNotExist(err)
 }
 
-func (p *Publisher) refresh() {
-	ready := true
+func (p *Publisher) refresh(changed *track) {
+	if p.playable {
+		p.refreshMedia(changed)
+		return
+	}
+
 	tracks := make([]*track, 0, len(p.order))
 	for _, name := range p.order {
 		t := p.tracks[name]
 		tracks = append(tracks, t)
 		if !t.initReady || len(t.segments) == 0 {
-			ready = false
+			return
 		}
-	}
-	if !ready {
-		return
 	}
 	p.playable = true
-
 	for _, t := range tracks {
-		next := mediaPlaylist(t, p.cfg.Static)
-		if cur, ok := p.playlists[t.playlistName()]; ok && string(cur) == string(next) {
-			continue
-		}
-		p.playlists[t.playlistName()] = next
+		p.refreshMedia(t)
 	}
-	master := masterPlaylist(tracks, true)
-	if cur, ok := p.playlists[MasterName]; !ok || string(cur) != string(master) {
-		p.playlists[MasterName] = master
+	p.refreshMaster(tracks)
+}
+
+func (p *Publisher) refreshMedia(t *track) {
+	name := t.playlistName()
+	next := p.encoder.media(t, p.cfg.Static)
+	if cur, ok := p.playlists[name]; ok && bytes.Equal(cur, next) {
+		return
 	}
+	p.playlists[name] = next
+}
+
+func (p *Publisher) refreshMaster(tracks []*track) {
+	next := p.encoder.master(tracks, true)
+	if cur, ok := p.playlists[MasterName]; ok && bytes.Equal(cur, next) {
+		return
+	}
+	p.playlists[MasterName] = next
 }
 
 func (p *Publisher) Stage(data []byte) (string, error) {

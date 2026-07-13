@@ -45,6 +45,42 @@ func publish(t *testing.T, p *Publisher, track string, seq uint64, dur float64) 
 	}
 }
 
+func TestRefreshesOnlyChangedPlaylists(t *testing.T) {
+	p, _, _ := newTestPublisher(t, 4, time.Minute)
+	mediaCalls := map[string]int{}
+	masterCalls := 0
+	p.encoder = playlistEncoder{
+		media: func(track *track, static bool) []byte {
+			mediaCalls[track.Name]++
+			return mediaPlaylist(track, static)
+		},
+		master: func(tracks []*track, audioGroups bool) []byte {
+			masterCalls++
+			return masterPlaylist(tracks, audioGroups)
+		},
+	}
+
+	publish(t, p, "video-main", 1, 2)
+	if len(mediaCalls) != 0 || masterCalls != 0 {
+		t.Fatalf("encoded before playable: media=%v master=%d", mediaCalls, masterCalls)
+	}
+	publish(t, p, "audio-main", 1, 2)
+	if mediaCalls["video-main"] != 1 || mediaCalls["audio-main"] != 1 || masterCalls != 1 {
+		t.Fatalf("initial calls: media=%v master=%d", mediaCalls, masterCalls)
+	}
+
+	publish(t, p, "video-main", 2, 2)
+	if mediaCalls["video-main"] != 2 {
+		t.Errorf("video calls = %d, want 2", mediaCalls["video-main"])
+	}
+	if mediaCalls["audio-main"] != 1 {
+		t.Errorf("audio calls = %d, want 1", mediaCalls["audio-main"])
+	}
+	if masterCalls != 1 {
+		t.Errorf("master calls = %d, want 1", masterCalls)
+	}
+}
+
 func TestNotPlayableUntilAllTracksHaveMedia(t *testing.T) {
 	p, _, _ := newTestPublisher(t, 4, time.Minute)
 	if p.Playable() {
