@@ -53,11 +53,15 @@ const STATE_BADGES = {
   failed: ["失败", "danger"],
 };
 
+export function sessionStateBadge(state) {
+  const [label, tone] = STATE_BADGES[state] || [state || "未知", "neutral"];
+  return badge(label, tone);
+}
+
 export function stateBadge(channel, session) {
   if (channel?.disabled) return badge("已停用", "danger");
   if (!session) return badge("待机", "neutral");
-  const [label, tone] = STATE_BADGES[session.state] || [session.state || "未知", "neutral"];
-  return badge(label, tone);
+  return sessionStateBadge(session.state);
 }
 
 export function runModeLabel(channel) {

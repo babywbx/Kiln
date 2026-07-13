@@ -1,7 +1,7 @@
 import { formatBytes, formatClock, formatDuration, formatNumber, frag, h } from "/admin/assets/core/dom.js";
 import { endpoints } from "/admin/assets/core/api.js";
 import { loadCatalog, refreshStatus, store } from "/admin/assets/core/store.js";
-import { badge, button, card, emptyState, linkButton, pageHead, table } from "/admin/assets/ui/kit.js";
+import { badge, button, card, emptyState, linkButton, pageHead, sessionStateBadge, table } from "/admin/assets/ui/kit.js";
 import { confirmDialog, toast, toastError } from "/admin/assets/ui/overlay.js";
 
 const ENGINE_LABELS = {
@@ -134,10 +134,4 @@ export async function renderOverview(ctx) {
       ),
     ),
   );
-}
-
-function sessionStateBadge(state) {
-  const map = { running: ["运行中", "success"], starting: ["正在启动", "warning"], restarting: ["正在重启", "warning"], failed: ["失败", "danger"] };
-  const [label, tone] = map[state] || [state || "未知", "neutral"];
-  return badge(label, tone);
 }
