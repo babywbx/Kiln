@@ -198,7 +198,8 @@ export function attachMenu(anchor, items) {
     else if (event.key === "Escape" || event.key === "Tab") dismiss();
   });
 
-  return { close: () => menu.hidePopover() };
+  // Removing an open popover auto-hides it.
+  return { close: () => menu.hidePopover(), dispose: () => menu.remove() };
 }
 
 export async function copyText(value, message = "已复制") {

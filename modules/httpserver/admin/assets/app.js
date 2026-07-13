@@ -116,7 +116,7 @@ function buildShell() {
 
   const node = h("div", { class: "shell" }, scrim, sidebar, h("div", { class: "column" }, topbar, main));
 
-  attachMenu(accountButton, [{ label: "退出登录", icon: "log-out", tone: "danger", onSelect: () => logout(true) }]);
+  const accountMenu = attachMenu(accountButton, [{ label: "退出登录", icon: "log-out", tone: "danger", onSelect: () => logout(true) }]);
 
   collapse.addEventListener("click", () => {
     const compact = node.classList.toggle("is-compact");
@@ -141,10 +141,15 @@ function buildShell() {
     const sessions = store.status?.sessions?.length || 0;
     instanceDetail.textContent = store.online ? (sessions ? `${sessions} 个活动会话` : "没有活动会话") : "正在重试连接";
   };
-  subscribe(paintInstance);
+  const unsubscribe = subscribe(paintInstance);
   paintInstance();
 
-  return { node, main, nav, pageTitle, scrim, progress };
+  const dispose = () => {
+    unsubscribe();
+    accountMenu.dispose();
+  };
+
+  return { node, main, nav, pageTitle, scrim, progress, dispose };
 }
 
 function setLoading(active) {
@@ -209,6 +214,7 @@ function showRouteError(error) {
 
 function showLogin() {
   stopPolling();
+  shell?.dispose();
   shell = null;
   closeModal();
   root.replaceChildren(renderLogin(showApp));
