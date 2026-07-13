@@ -48,6 +48,7 @@ type PackagerStat struct {
 	ManifestErrs      uint64  `json:"manifest_errors,omitempty"`
 	Discontinuities   uint64  `json:"discontinuities,omitempty"`
 	Reanchors         uint64  `json:"reanchors,omitempty"`
+	Reresolves        uint64  `json:"reresolves,omitempty"`
 	TrackHolds        uint64  `json:"track_holds,omitempty"`
 	KeyMismatches     uint64  `json:"key_mismatches,omitempty"`
 	DecryptSeconds    float64 `json:"decrypt_seconds,omitempty"`

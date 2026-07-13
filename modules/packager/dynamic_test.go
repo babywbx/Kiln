@@ -14,31 +14,28 @@ import (
 	"github.com/babywbx/kiln/modules/packager/mpd"
 )
 
-// liveOrigin is a scripted DASH origin. The manifest it serves, and which media
-// each segment URL maps to, are both under the test's control, so live-edge
-// behaviour can be exercised without waiting on wall-clock time.
 type liveOrigin struct {
 	t *testing.T
 
 	mu sync.Mutex
-	// timelineStart is the S@t of the first segment on offer.
+
 	timelineStart uint64
-	// videoCount/audioCount are how many segments each timeline advertises. They
-	// are separate so a track can be made to stall while the other keeps going.
+
 	videoCount int
 	audioCount int
-	// videoChunks/audioChunks map a segment index to a fixture file.
+
 	videoChunks []string
 	audioChunks []string
 	videoInit   string
 	audioInit   string
-	// audios is the audio adaptation sets on offer. Every one of them serves the
-	// same media: what is under test is the topology, not the content.
+
 	audios []audioSet
+
+	prefix string
+
+	videoID string
 }
 
-// audioSet is one audio adaptation set. prefix is the path its segments live
-// under, so each set is addressable on its own.
 type audioSet struct {
 	prefix string
 	lang   string
@@ -59,8 +56,7 @@ const (
 func newLiveOrigin(t *testing.T) *liveOrigin {
 	return &liveOrigin{
 		t: t,
-		// Start the timeline well past zero so a rollback to zero is a genuine
-		// step backwards rather than a no-op.
+
 		timelineStart: 6000,
 		videoCount:    3,
 		audioCount:    3,
@@ -69,7 +65,15 @@ func newLiveOrigin(t *testing.T) *liveOrigin {
 		videoChunks:   []string{"chunk-stream0-00001.m4s", "chunk-stream0-00002.m4s", "chunk-stream0-00003.m4s"},
 		audioChunks:   []string{"chunk-stream1-00001.m4s", "chunk-stream1-00002.m4s", "chunk-stream1-00002.m4s"},
 		audios:        []audioSet{{prefix: "a", reps: []audioRep{{id: "a0", bandwidth: 32000}}}},
+		videoID:       "v0",
 	}
+}
+
+func (o *liveOrigin) rename(video, audio string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.videoID = video
+	o.audios[0].reps[0].id = audio
 }
 
 func (o *liveOrigin) manifest() []byte {
@@ -89,21 +93,21 @@ func (o *liveOrigin) manifestFrom(start uint64) []byte {
   <Period id="0" start="PT0S">
     <AdaptationSet contentType="video" mimeType="video/mp4" codecs="hvc1.1.6.L60.90">
       <ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011" value="cenc"/>
-      <SegmentTemplate timescale="%d" initialization="v/init.m4s" media="v/seg-$Number$.m4s" startNumber="1">
+      <SegmentTemplate timescale="%d" initialization="%sv/init.m4s" media="%sv/seg-$Number$.m4s" startNumber="1">
         <SegmentTimeline><S t="%d" d="%d" r="%d"/></SegmentTimeline>
       </SegmentTemplate>
-      <Representation id="v0" bandwidth="120000" width="320" height="180"/>
+      <Representation id="%s" bandwidth="120000" width="320" height="180"/>
     </AdaptationSet>`,
-		liveTimescale, start, liveSegTicks, o.videoCount-1)
+		liveTimescale, o.prefix, o.prefix, start, liveSegTicks, o.videoCount-1, o.videoID)
 
 	for i, set := range o.audios {
 		out = fmt.Appendf(out, `
     <AdaptationSet id="%d" contentType="audio" mimeType="audio/mp4" codecs="mp4a.40.2" lang="%s">
       <ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011" value="cenc"/>
-      <SegmentTemplate timescale="%d" initialization="%s/init.m4s" media="%s/seg-$Number$.m4s" startNumber="1">
+      <SegmentTemplate timescale="%d" initialization="%s%s/init.m4s" media="%s%s/seg-$Number$.m4s" startNumber="1">
         <SegmentTimeline><S t="%d" d="%d" r="%d"/></SegmentTimeline>
       </SegmentTemplate>`,
-			i+1, set.lang, liveTimescale, set.prefix, set.prefix, start, liveSegTicks, o.audioCount-1)
+			i+1, set.lang, liveTimescale, o.prefix, set.prefix, o.prefix, set.prefix, start, liveSegTicks, o.audioCount-1)
 		for _, rep := range set.reps {
 			if rep.codecs != "" {
 				out = fmt.Appendf(out, "\n      <Representation id=%q bandwidth=\"%d\" codecs=%q/>", rep.id, rep.bandwidth, rep.codecs)
@@ -116,7 +120,6 @@ func (o *liveOrigin) manifestFrom(start uint64) []byte {
 	return append(out, "\n  </Period>\n</MPD>"...)
 }
 
-// grow extends every timeline, which is what the origin does as time passes.
 func (o *liveOrigin) grow(segments int) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -124,15 +127,12 @@ func (o *liveOrigin) grow(segments int) {
 	o.audioCount += segments
 }
 
-// stallVideo keeps the audio timeline growing while the video timeline stops,
-// which is how a struggling primary track looks from the outside.
 func (o *liveOrigin) stallVideo(extraAudio int) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.audioCount += extraAudio
 }
 
-// Fetch resolves manifest, init and media URLs against the fixture files.
 func (o *liveOrigin) Fetch(_ context.Context, url string) ([]byte, string, error) {
 	if strings.Contains(url, "stream.mpd") {
 		return o.manifest(), url, nil
@@ -142,6 +142,9 @@ func (o *liveOrigin) Fetch(_ context.Context, url string) ([]byte, string, error
 	defer o.mu.Unlock()
 
 	base := url[strings.LastIndex(url, "/live/")+len("/live/"):]
+	if o.prefix != "" {
+		base = strings.TrimPrefix(base, o.prefix)
+	}
 	kind, name, ok := strings.Cut(base, "/")
 	if !ok {
 		return nil, "", fmt.Errorf("unexpected url %s", url)
@@ -158,8 +161,7 @@ func (o *liveOrigin) Fetch(_ context.Context, url string) ([]byte, string, error
 	if _, err := fmt.Sscanf(name, "seg-%d.m4s", &index); err != nil {
 		return nil, "", fmt.Errorf("unexpected url %s", url)
 	}
-	// Segment numbers start at 1 and the timeline can be re-anchored, so wrap
-	// onto the available fixture chunks rather than running off the end.
+
 	chunks := o.audioChunks
 	if video {
 		chunks = o.videoChunks
@@ -199,9 +201,6 @@ func (c *fakeClock) advance(d time.Duration) {
 	c.t = c.t.Add(d)
 }
 
-// startLive brings up a native publication against the scripted origin. The
-// background loop is stopped immediately so the test drives advance() itself
-// and never races a timer.
 func startLive(t *testing.T, origin *liveOrigin, clock *fakeClock) (*Native, string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -223,8 +222,7 @@ func startLive(t *testing.T, origin *liveOrigin, clock *fakeClock) (*Native, str
 }
 
 func newClock() *fakeClock {
-	// 12 s past availabilityStartTime: the three 2 s segments the origin offers
-	// from t=6000 are all fully published.
+
 	return &fakeClock{t: time.Date(2026, 1, 1, 0, 0, 12, 0, time.UTC)}
 }
 
@@ -246,8 +244,6 @@ func parseManifest(t *testing.T, origin *liveOrigin) *mpd.Presentation {
 	return pres
 }
 
-// A live source addressed by SegmentTemplate + SegmentTimeline is the shape
-// production actually uses, and the shipped static fixtures cannot cover it.
 func TestDynamicSourcePublishesContiguousSegments(t *testing.T) {
 	origin := newLiveOrigin(t)
 	clock := newClock()
@@ -260,7 +256,7 @@ func TestDynamicSourcePublishesContiguousSegments(t *testing.T) {
 	if got := strings.Count(pl, ".m4s"); got != 3 {
 		t.Fatalf("playlist has %d segments, want 3:\n%s", got, pl)
 	}
-	// The fixture chunks are contiguous, so nothing here is a real break.
+
 	if strings.Contains(pl, "#EXT-X-DISCONTINUITY\n") {
 		t.Errorf("contiguous segments were marked as a discontinuity:\n%s", pl)
 	}
@@ -269,9 +265,6 @@ func TestDynamicSourcePublishesContiguousSegments(t *testing.T) {
 	}
 }
 
-// An origin whose timeline restarts must not deadlock the channel. This is the
-// case that a publisher keyed on upstream segment numbers gets wrong: the new
-// numbers land below the frontier and every segment is discarded as late.
 func TestRolloverReanchorsInsteadOfStalling(t *testing.T) {
 	origin := newLiveOrigin(t)
 	clock := newClock()
@@ -282,7 +275,6 @@ func TestRolloverReanchorsInsteadOfStalling(t *testing.T) {
 		t.Fatalf("re-anchored during a normal start")
 	}
 
-	// The origin restarts: same segment numbers, timeline back at zero.
 	origin.rollback()
 	if err := n.advance(context.Background(), parseManifest(t, origin)); err != nil {
 		t.Fatalf("advance after rollover: %v", err)
@@ -301,14 +293,11 @@ func TestRolloverReanchorsInsteadOfStalling(t *testing.T) {
 	assertSequenceIncreases(t, pl)
 }
 
-// A stream that simply stops producing must relocate the live edge rather than
-// refresh the manifest forever while publishing nothing.
 func TestNoProgressTriggersReanchor(t *testing.T) {
 	origin := newLiveOrigin(t)
 	clock := newClock()
 	n, _ := startLive(t, origin, clock)
 
-	// The manifest keeps advertising the same window, and time passes.
 	clock.advance(31 * time.Second)
 	if err := n.advance(context.Background(), parseManifest(t, origin)); err != nil {
 		t.Fatalf("advance: %v", err)
@@ -319,17 +308,11 @@ func TestNoProgressTriggersReanchor(t *testing.T) {
 	assertSequenceIncreases(t, videoPlaylist(t, n))
 }
 
-// Audio and video are never paired by segment number, but audio must not run
-// away from a struggling video either: its own playlist window would slide past
-// the audio a player stalled on video still needs. The bound is media time, and
-// it expires into the no-progress re-anchor rather than blocking forever.
 func TestAudioIsHeldBehindAStalledVideo(t *testing.T) {
 	origin := newLiveOrigin(t)
 	clock := newClock()
 	n, _ := startLive(t, origin, clock)
 
-	// Video stops producing. Audio keeps going, and stays available as the live
-	// edge moves, but not long enough for video to give up yet.
 	origin.stallVideo(20)
 	clock.advance(20 * time.Second)
 	if err := n.advance(context.Background(), parseManifest(t, origin)); err != nil {
@@ -352,8 +335,6 @@ func TestAudioIsHeldBehindAStalledVideo(t *testing.T) {
 		t.Fatalf("audio did not advance at all (%d ms); the hold is too tight", audio)
 	}
 
-	// The hold has an expiry: a video that is not advancing eventually stops
-	// being trusted, and both tracks relocate to the live edge.
 	clock.advance(15 * time.Second)
 	if err := n.advance(context.Background(), parseManifest(t, origin)); err != nil {
 		t.Fatalf("advance after the hold expired: %v", err)
@@ -365,11 +346,6 @@ func TestAudioIsHeldBehindAStalledVideo(t *testing.T) {
 
 const entryURL = "https://origin.example.com/live/stream.mpd"
 
-// rotatingOrigin redirects every request for the entry URL to a fresh session,
-// the way a CDN that load-balances by redirect does. The sessions are not in
-// step: a newly handed-out one lags a segment behind. Re-resolving the entry URL
-// on every refresh therefore reads as the timeline rolling backwards, and the
-// channel would re-anchor, and stutter, every few seconds.
 type rotatingOrigin struct {
 	*liveOrigin
 
@@ -401,7 +377,6 @@ func (o *rotatingOrigin) Fetch(ctx context.Context, url string) ([]byte, string,
 	session := o.sessions
 	o.rmu.Unlock()
 
-	// Every session after the first lags one segment behind.
 	start := o.timelineStart
 	if session > 1 {
 		start -= liveSegTicks
@@ -440,8 +415,6 @@ func startRotating(t *testing.T, origin *rotatingOrigin, clock *fakeClock) *Nati
 	return n
 }
 
-// Refreshing must stay on the manifest we already resolved. Going back to the
-// entry URL each time hands us a different edge, and edges are not in step.
 func TestManifestRefreshStaysOnTheResolvedSession(t *testing.T) {
 	origin := newRotatingOrigin(t)
 	n := startRotating(t, origin, newClock())
@@ -467,8 +440,6 @@ func TestManifestRefreshStaysOnTheResolvedSession(t *testing.T) {
 	}
 }
 
-// Pinning must not become a trap. A session that dies has to send us back to the
-// entry URL, which is the only thing that can hand out a live one.
 func TestExpiredSessionReresolvesTheEntryURL(t *testing.T) {
 	origin := newRotatingOrigin(t)
 	n := startRotating(t, origin, newClock())
@@ -486,8 +457,6 @@ func TestExpiredSessionReresolvesTheEntryURL(t *testing.T) {
 	}
 }
 
-// The counters have to reflect real work, otherwise they are decoration that
-// makes a stalled channel look healthy.
 func TestStatsReflectPublishedWork(t *testing.T) {
 	origin := newLiveOrigin(t)
 	clock := newClock()
@@ -526,8 +495,6 @@ func TestStatsReflectPublishedWork(t *testing.T) {
 	}
 }
 
-// The published sequence is ours and only ever moves forward, whatever the
-// origin does to its own numbering.
 func assertSequenceIncreases(t *testing.T, playlist string) {
 	t.Helper()
 	var last string
@@ -546,8 +513,6 @@ func assertSequenceIncreases(t *testing.T, playlist string) {
 	}
 }
 
-// Every segment in a playlist must be fetchable. A re-anchor that renamed or
-// dropped an asset out from under the window would break players mid-stream.
 func TestPlaylistNeverReferencesAMissingAsset(t *testing.T) {
 	origin := newLiveOrigin(t)
 	clock := newClock()

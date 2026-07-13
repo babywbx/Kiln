@@ -633,6 +633,7 @@ func packagerStat(job packager.Job) *observe.PackagerStat {
 		ManifestErrs:      st.ManifestErrs,
 		Discontinuities:   st.Discontinuities,
 		Reanchors:         st.Reanchors,
+		Reresolves:        st.Reresolves,
 		TrackHolds:        st.TrackHolds,
 		KeyMismatches:     st.KeyMismatches,
 		DecryptSeconds:    st.DecryptSeconds,
