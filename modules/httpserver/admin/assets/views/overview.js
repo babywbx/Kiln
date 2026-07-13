@@ -55,7 +55,7 @@ export async function renderOverview(ctx) {
     { class: "health-row" },
     h("div", { class: "health-item" }, h("span", {}, h("strong", { text: "HTTP 服务" }), httpDetail), httpBadge),
     h("div", { class: "health-item" }, h("span", {}, h("strong", { text: "并发协程" }), h("small", { text: "Go runtime" })), goroutines),
-    h("div", { class: "health-item" }, h("span", {}, h("strong", { text: "最近同步" }), h("small", { text: "每 4 秒自动刷新" })), syncedAt),
+    h("div", { class: "health-item" }, h("span", {}, h("strong", { text: "最近同步" }), h("small", { text: "每秒自动刷新" })), syncedAt),
   );
   let lastOnline = null;
 

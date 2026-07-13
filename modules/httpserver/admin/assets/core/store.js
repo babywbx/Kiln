@@ -1,6 +1,6 @@
 import { endpoints, hasSession, isAbort } from "/admin/assets/core/api.js";
 
-const POLL_INTERVAL_MS = 4000;
+const POLL_INTERVAL_MS = 1000;
 
 export const store = {
   me: null,
