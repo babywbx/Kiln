@@ -60,11 +60,12 @@ export async function renderChannels(ctx) {
       : `${store.channels.length} 个频道`;
 
     if (!visible.length) {
-      const empty = query
-        ? emptyState("没有匹配的频道", "换一个名称、标识符或分组试试。", button("清除筛选", { onClick: () => { filter.value = ""; query = ""; draw(); } }))
-        : emptyState("还没有频道", "添加第一个频道，或从 M3U 播放列表批量导入。", linkButton("添加频道", "/admin/channels/new", { kind: "primary", iconName: "plus" }));
-      tbody.append(h("tr", {}, h("td", { colspan: 7 }, empty)));
-      cards.append(empty.cloneNode(true));
+      const makeEmpty = () =>
+        query
+          ? emptyState("没有匹配的频道", "换一个名称、标识符或分组试试。", button("清除筛选", { onClick: () => { filter.value = ""; query = ""; draw(); } }))
+          : emptyState("还没有频道", "添加第一个频道，或从 M3U 播放列表批量导入。", linkButton("添加频道", "/admin/channels/new", { kind: "primary", iconName: "plus" }));
+      tbody.append(h("tr", {}, h("td", { colspan: 7 }, makeEmpty())));
+      cards.append(makeEmpty());
       return;
     }
 
