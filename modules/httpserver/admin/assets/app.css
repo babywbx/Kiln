@@ -894,18 +894,8 @@ dialog::backdrop { background: rgb(10 10 9 / 48%); backdrop-filter: blur(3px); }
 .toast-warning > .icon { color: var(--warning); }
 .toast-info > .icon { color: var(--info); }
 
-.skeleton-page { display: grid; gap: 12px; }
-.skeleton {
-  height: 96px;
-  border-radius: var(--r-lg);
-  background: linear-gradient(90deg, var(--surface-soft), var(--surface-hover), var(--surface-soft));
-  background-size: 200% 100%;
-  animation: shimmer 1.3s infinite;
-}
-
 @keyframes toast-in { from { opacity: 0; transform: translateY(10px) scale(.97); } }
 @keyframes toast-out { to { opacity: 0; transform: translateY(6px) scale(.98); } }
-@keyframes shimmer { to { background-position: -200% 0; } }
 
 /* ---------------------------------------------------------------- responsive */
 

@@ -63,18 +63,6 @@ export function icon(name, size = 20) {
   return svg;
 }
 
-export function hydrateIcons(root = document) {
-  for (const slot of root.querySelectorAll("[data-icon]")) {
-    const glyph = icon(slot.dataset.icon, Number(slot.dataset.iconSize) || 20);
-    if (slot.className) glyph.setAttribute("class", `icon ${slot.className}`);
-    slot.replaceWith(glyph);
-  }
-}
-
-export function clear(node) {
-  node.replaceChildren();
-}
-
 const numberFormat = new Intl.NumberFormat("zh-Hans");
 
 export function formatNumber(value) {

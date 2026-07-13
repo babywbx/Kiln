@@ -145,10 +145,6 @@ export function table(headers, rows) {
   );
 }
 
-export function skeleton() {
-  return h("div", { class: "skeleton-page" }, Array.from({ length: 3 }, () => h("div", { class: "skeleton" })));
-}
-
 export function channelAvatar(channel, size = 38) {
   const box = h("span", { class: "avatar avatar-channel", style: { width: `${size}px`, height: `${size}px` } });
   box.textContent = initials(channel.title || channel.id);
