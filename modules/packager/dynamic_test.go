@@ -390,6 +390,58 @@ type rotatingOrigin struct {
 	dead     bool
 }
 
+type finalizingOrigin struct {
+	*liveOrigin
+	mu       sync.Mutex
+	failed   bool
+	failOnce string
+}
+
+func (o *finalizingOrigin) Fetch(ctx context.Context, url string) ([]byte, string, error) {
+	o.mu.Lock()
+	if !o.failed && strings.Contains(url, o.failOnce) {
+		o.failed = true
+		o.mu.Unlock()
+		return nil, "", fmt.Errorf("transient final segment failure")
+	}
+	o.mu.Unlock()
+	return o.liveOrigin.Fetch(ctx, url)
+}
+
+func TestDynamicFinalizationRetriesBeforeWritingEndList(t *testing.T) {
+	base := newLiveOrigin(t)
+	origin := &finalizingOrigin{liveOrigin: base, failOnce: "v/seg-4.m4s"}
+	clock := newClock()
+	n, err := StartNative(context.Background(), Options{
+		ManifestURL:   "https://origin.example.com/live/stream.mpd",
+		Dir:           t.TempDir(),
+		Keys:          keys(t),
+		Fetcher:       origin,
+		StartSegments: 3,
+		PlaylistSize:  10,
+		Now:           clock.now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = n.Stop() })
+
+	base.grow(1)
+	base.finish()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		playlist := videoPlaylist(t, n)
+		if strings.Contains(playlist, "#EXT-X-ENDLIST") {
+			if got := strings.Count(playlist, ".m4s"); got != 4 {
+				t.Fatalf("finalized playlist has %d segments, want 4:\n%s", got, playlist)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("publication did not finalize:\n%s", videoPlaylist(t, n))
+}
+
 func newRotatingOrigin(t *testing.T) *rotatingOrigin {
 	return &rotatingOrigin{liveOrigin: newLiveOrigin(t), hits: map[string]int{}}
 }

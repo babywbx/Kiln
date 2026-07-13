@@ -178,6 +178,16 @@ func TestCompletedStaticPublicationStaysAliveUntilStopped(t *testing.T) {
 	}
 }
 
+func TestPublishedInitBytesAreReleasedFromTrackState(t *testing.T) {
+	job, _ := runNative(t, "hevc")
+	waitForStaticCompletion(t, job)
+	for _, track := range job.tracks() {
+		if track.init.Clear != nil {
+			t.Fatalf("track %s retains %d published init bytes", track.name, len(track.init.Clear))
+		}
+	}
+}
+
 // The whole point of the native path: no MPEG-TS, no external process, and no
 // stray copies of the media on disk.
 func TestNativeWritesOnlyFinalAssets(t *testing.T) {
@@ -488,15 +498,16 @@ func TestLoadInitUsesTheSharedReservationPath(t *testing.T) {
 		Gate:            newByteGate(defaultInflightBytes),
 		DownloadPool:    make(chan struct{}, 1),
 	}
-	_, err = loadInit(context.Background(), opts, mpd.Representation{
+	_, reservation, err := loadInit(context.Background(), opts, mpd.Representation{
 		ID: "video",
 		Addressing: mpd.Addressing{
 			InitURL: "https://origin.example.com/init.m4s",
 		},
-	})
+	}, defaultMaxInitBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
+	reservation.release()
 	if got := f.reservedCalls.Load(); got != 1 {
 		t.Fatalf("reserved init fetches = %d, want 1", got)
 	}
@@ -516,6 +527,12 @@ func TestDownloadPoolAllowsOneOversizedSegment(t *testing.T) {
 	n := &Native{opts: Options{MaxSegmentBytes: 64 << 20}, gate: newByteGate(8 << 20)}
 	if got := cap(n.downloadPool()); got != 1 {
 		t.Fatalf("download slots = %d, want 1", got)
+	}
+}
+
+func TestDownloadPoolLeavesRoomForDecryptGrowth(t *testing.T) {
+	if got := downloadSlots(1<<20, 32<<10); got != 31 {
+		t.Fatalf("download slots = %d, want 31", got)
 	}
 }
 

@@ -209,6 +209,20 @@ func (r *byteReservation) release() {
 	}
 }
 
+func (r *byteReservation) releaseCallback() {
+	r.mu.Lock()
+	if r.released {
+		r.mu.Unlock()
+		return
+	}
+	onRelease := r.onRelease
+	r.onRelease = nil
+	r.mu.Unlock()
+	if onRelease != nil {
+		onRelease()
+	}
+}
+
 func normalizedBytes(n int64) int64 {
 	if n <= 0 {
 		return 1

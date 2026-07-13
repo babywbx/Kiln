@@ -1,8 +1,8 @@
 package packager
 
 import (
-	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -85,6 +85,7 @@ type Options struct {
 	StallTimeout time.Duration
 
 	Gate         *byteGate
+	InitPool     chan struct{}
 	DownloadPool chan struct{}
 	DecryptPool  chan struct{}
 	Now          func() time.Time
@@ -95,6 +96,7 @@ const (
 	defaultStartSegments    = 3
 	defaultPrefetch         = 3
 	defaultMaxSegmentBytes  = 32 << 20
+	defaultMaxInitBytes     = 4 << 20
 	defaultReanchorAfter    = 30 * time.Second
 	defaultPrimaryTrackHold = 12 * time.Second
 	defaultStallTimeout     = 3 * time.Minute
@@ -121,6 +123,9 @@ func (o *Options) applyDefaults() {
 	if o.DownloadPool == nil {
 		o.DownloadPool = make(chan struct{}, downloadSlots(o.Gate.capacity(), o.MaxSegmentBytes))
 	}
+	if o.InitPool == nil {
+		o.InitPool = make(chan struct{}, 1)
+	}
 	if o.DecryptPool == nil {
 		if o.DecryptWorkers <= 0 {
 			o.DecryptWorkers = decryptSlots(o.Gate.capacity(), o.MaxSegmentBytes)
@@ -145,9 +150,10 @@ func (o *Options) applyDefaults() {
 }
 
 type trackState struct {
-	name string
-	rep  mpd.Representation
-	init *cmaf.Init
+	name     string
+	rep      mpd.Representation
+	init     *cmaf.Init
+	initHash [sha256.Size]byte
 
 	nextSeq uint64
 
@@ -166,7 +172,10 @@ type trackState struct {
 }
 
 func newTrackState(name string, rep mpd.Representation, init *cmaf.Init, now time.Time) *trackState {
-	ts := &trackState{name: name, rep: rep, init: init, nextSeq: 1, lastProgress: now}
+	ts := &trackState{
+		name: name, rep: rep, init: init, initHash: sha256.Sum256(init.Clear),
+		nextSeq: 1, lastProgress: now,
+	}
 	ts.readyMillis.Store(-1)
 	return ts
 }
@@ -304,10 +313,21 @@ func StartNative(ctx context.Context, opts Options) (*Native, error) {
 			Err: errors.New("manifest is outside the native support matrix")}
 	}
 
-	videoInit, audioInits, err := fetchInits(ctx, opts, plan)
+	if !acquireSlot(ctx, opts.InitPool) {
+		return nil, ctx.Err()
+	}
+	initSlotHeld := true
+	defer func() {
+		if initSlotHeld {
+			<-opts.InitPool
+		}
+	}()
+
+	videoInit, audioInits, initReservations, err := fetchInits(ctx, opts, plan)
 	if err != nil {
 		return nil, err
 	}
+	defer releaseReservations(initReservations)
 	audioTracks := make([]cmaf.Track, len(audioInits))
 	for i, init := range audioInits {
 		audioTracks[i] = init.Track
@@ -367,6 +387,12 @@ func StartNative(ctx context.Context, opts Options) (*Native, error) {
 	if err := n.registerTracks(); err != nil {
 		return nil, noFallback(plan, err)
 	}
+	for _, track := range n.tracks() {
+		track.init.Clear = nil
+	}
+	releaseReservations(initReservations)
+	<-opts.InitPool
+	initSlotHeld = false
 
 	runCtx, cancel := context.WithCancel(context.Background())
 	n.cancel = cancel
@@ -480,33 +506,62 @@ func refreshURL(pres *mpd.Presentation, finalURL string) string {
 	return finalURL
 }
 
-func fetchInits(ctx context.Context, opts Options, plan Plan) (*cmaf.Init, []*cmaf.Init, error) {
+func fetchInits(ctx context.Context, opts Options, plan Plan) (*cmaf.Init, []*cmaf.Init, []*byteReservation, error) {
 	reps := append([]mpd.Representation{plan.Video}, plan.Audios...)
 	inits := make([]*cmaf.Init, len(reps))
+	reservations := make([]*byteReservation, len(reps))
 	errs := make([]error, len(reps))
+	limit := initByteLimit(opts, len(reps))
 
+	jobs := make(chan int)
 	var wg sync.WaitGroup
-	for i, rep := range reps {
+	workers := min(2, len(reps))
+	for range workers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			inits[i], errs[i] = loadInit(ctx, opts, rep)
+			for i := range jobs {
+				inits[i], reservations[i], errs[i] = loadInit(ctx, opts, reps[i], limit)
+			}
 		}()
 	}
+	for i := range reps {
+		jobs <- i
+	}
+	close(jobs)
 	wg.Wait()
 	if err := errors.Join(errs...); err != nil {
-		return nil, nil, err
+		releaseReservations(reservations)
+		return nil, nil, nil, err
 	}
 
 	if inits[0].Track.Kind != cmaf.KindVideo {
-		return nil, nil, mismatchedInit()
+		releaseReservations(reservations)
+		return nil, nil, nil, mismatchedInit()
 	}
 	for _, init := range inits[1:] {
 		if init.Track.Kind != cmaf.KindAudio {
-			return nil, nil, mismatchedInit()
+			releaseReservations(reservations)
+			return nil, nil, nil, mismatchedInit()
 		}
 	}
-	return inits[0], inits[1:], nil
+	return inits[0], inits[1:], reservations, nil
+}
+
+func initByteLimit(opts Options, count int) int64 {
+	limit := min(opts.MaxSegmentBytes, int64(defaultMaxInitBytes))
+	if count > 0 {
+		limit = min(limit, opts.Gate.capacity()/int64(count+2))
+	}
+	return max(limit, 1)
+}
+
+func releaseReservations(reservations []*byteReservation) {
+	for _, reservation := range reservations {
+		if reservation != nil {
+			reservation.release()
+		}
+	}
 }
 
 func mismatchedInit() error {
@@ -514,25 +569,50 @@ func mismatchedInit() error {
 		Err: errors.New("init segments do not match the manifest content types")}
 }
 
-func loadInit(ctx context.Context, opts Options, rep mpd.Representation) (*cmaf.Init, error) {
+func loadInit(ctx context.Context, opts Options, rep mpd.Representation, limit int64) (*cmaf.Init, *byteReservation, error) {
 	if rep.Addressing.InitURL == "" {
-		return nil, &FallbackError{Reason: ReasonAddressing, Allowed: true,
+		return nil, nil, &FallbackError{Reason: ReasonAddressing, Allowed: true,
 			Err: fmt.Errorf("representation %s has no initialization segment", rep.ID)}
 	}
 	raw, _, reservation, err := fetchBounded(ctx, opts.Fetcher, opts.Gate, opts.DownloadPool,
-		opts.MaxSegmentBytes, rep.Addressing.InitURL)
+		limit, rep.Addressing.InitURL)
 	if err != nil {
-		return nil, fmt.Errorf("fetch init %s: %w", rep.ID, err)
+		return nil, nil, fmt.Errorf("fetch init %s: %w", rep.ID, err)
 	}
-	defer reservation.release()
+	reservation.releaseCallback()
+	if !reservation.resizeContext(ctx, addBytes(int64(cap(raw)), limit)) {
+		reservation.release()
+		return nil, nil, fmt.Errorf("parse init %s: init memory budget exhausted", rep.ID)
+	}
 	init, err := cmaf.ParseInit(raw)
 	if err != nil {
+		reservation.release()
 		if u, ok := cmaf.Unsupported(err); ok {
-			return nil, &FallbackError{Reason: u.Reason, Allowed: true, Err: err}
+			return nil, nil, &FallbackError{Reason: u.Reason, Allowed: true, Err: err}
 		}
-		return nil, fmt.Errorf("parse init %s: %w", rep.ID, err)
+		return nil, nil, fmt.Errorf("parse init %s: %w", rep.ID, err)
 	}
-	return init, nil
+	if int64(len(init.Clear)) > limit {
+		reservation.release()
+		return nil, nil, fmt.Errorf("parse init %s: clear init is too large", rep.ID)
+	}
+	clearBytes := int64(cap(init.Clear))
+	if !reservation.resizeContext(ctx, addBytes(int64(cap(raw)), clearBytes)) {
+		reservation.release()
+		return nil, nil, fmt.Errorf("parse init %s: init memory budget exhausted", rep.ID)
+	}
+	if cap(init.Clear) != len(init.Clear) {
+		peak := addBytes(addBytes(int64(cap(raw)), clearBytes), int64(len(init.Clear)))
+		if !reservation.resizeContext(ctx, peak) {
+			reservation.release()
+			return nil, nil, fmt.Errorf("parse init %s: init memory budget exhausted", rep.ID)
+		}
+		exact := make([]byte, len(init.Clear))
+		copy(exact, init.Clear)
+		init.Clear = exact
+	}
+	reservation.shrink(int64(cap(init.Clear)))
+	return init, reservation, nil
 }
 
 func (n *Native) registerTracks() error {
@@ -834,6 +914,12 @@ func downloadWorkingSet(maxSegment int64) int64 {
 func downloadSlots(budget, maxSegment int64) int {
 	peak := downloadWorkingSet(maxSegment)
 	slots := int(budget / peak)
+	if budget > maxSegment && maxSegment > 0 {
+		withDecryptReserve := int((budget - maxSegment) / maxSegment)
+		if withDecryptReserve < slots {
+			slots = withDecryptReserve
+		}
+	}
 	if slots < 1 {
 		return 1
 	}
@@ -1031,11 +1117,6 @@ func (n *Native) run(ctx context.Context, pres *mpd.Presentation) {
 		case <-timer.C:
 		}
 
-		if err := n.checkStalled(); err != nil {
-			n.fail(err)
-			return
-		}
-
 		n.manifestRefreshes.Add(1)
 		next, err := n.refreshManifest(ctx)
 		if err != nil {
@@ -1048,20 +1129,23 @@ func (n *Native) run(ctx context.Context, pres *mpd.Presentation) {
 			continue
 		}
 		n.lastManifestOK = n.now()
-		if err := n.advance(ctx, next); err != nil {
+		advanceErr := n.advance(ctx, next)
+		if advanceErr != nil {
 			if ctx.Err() != nil {
 				return
 			}
 			var fatal *fatalError
-			if errors.As(err, &fatal) {
-				n.fail(err)
+			if errors.As(advanceErr, &fatal) {
+				n.fail(advanceErr)
 				return
 			}
-			n.log.Warn("segment publish failed", "err", err)
-		}
-		if !next.Dynamic {
+			n.log.Warn("segment publish failed", "err", advanceErr)
+		} else if !next.Dynamic {
 			n.pub.Complete()
 			<-ctx.Done()
+			return
+		} else if err := n.checkStalled(); err != nil {
+			n.fail(err)
 			return
 		}
 		if p := next.MinimumUpdatePeriod; p > 0 {
@@ -1286,10 +1370,12 @@ func (n *Native) reanchor(ctx context.Context, ts *trackState, reason string) er
 	count := n.reanchors.Add(1)
 	n.log.Warn("live re-anchor", "track", ts.name, "reason", reason, "count", count)
 
-	init, err := loadInit(ctx, n.opts, ts.rep)
+	limit := min(n.opts.MaxSegmentBytes, int64(defaultMaxInitBytes))
+	init, reservation, err := loadInit(ctx, n.opts, ts.rep, limit)
 	if err != nil {
 		return err
 	}
+	defer reservation.release()
 
 	if init.Track.Codec != ts.init.Track.Codec {
 		return &fatalError{fmt.Errorf("codec changed from %s to %s on %s; cannot continue natively",
@@ -1301,13 +1387,16 @@ func (n *Native) reanchor(ctx context.Context, ts *trackState, reason string) er
 		}
 	}
 
-	if !bytes.Equal(init.Clear, ts.init.Clear) {
+	initHash := sha256.Sum256(init.Clear)
+	if initHash != ts.initHash {
 		if err := n.pub.PublishInit(ts.name, init.Clear); err != nil {
 			return err
 		}
 		n.log.Info("init segment changed", "track", ts.name)
 	}
+	init.Clear = nil
 	ts.init = init
+	ts.initHash = initHash
 	ts.hasLast = false
 	ts.hasExpected = false
 	ts.forceDiscontinuity = true
