@@ -113,6 +113,8 @@ export const endpoints = {
     }),
   reorderChannels: (ids, revisions) =>
     api("/v1/admin/channels/reorder", { method: "PUT", body: JSON.stringify({ ids, revisions }) }),
+  enableAllChannels: () => api("/v1/admin/channels/enable-all", { method: "POST", body: "{}" }),
+  disableAllChannels: () => api("/v1/admin/channels/disable-all", { method: "POST", body: "{}" }),
   probeChannel: (id) => api(`/v1/admin/channels/${encodeURIComponent(id)}/probe`, { method: "POST", body: "{}" }),
   warmupChannel: (id) => api(`/v1/admin/channels/${encodeURIComponent(id)}/warmup`, { method: "POST", body: "{}" }),
   previewChannel: (id) => api(`/v1/admin/channels/${encodeURIComponent(id)}/preview`, { method: "POST", body: "{}" }),
@@ -140,6 +142,23 @@ export const endpoints = {
   saveEgress: (body, revision) =>
     api("/v1/admin/egress", { method: "PUT", headers: { "If-Match": String(revision || 0) }, body: JSON.stringify(body) }),
   testEgress: (body) => api("/v1/admin/egress/test", { method: "POST", body: JSON.stringify(body) }),
+
+  epgPresets: (signal) => api("/v1/admin/epg/presets", { signal }),
+  epgSources: (signal) => api("/v1/admin/epg/sources", { signal }),
+  epgMatches: (signal) => api("/v1/admin/epg/matches", { signal }),
+  createEPGSource: (body) => api("/v1/admin/epg/sources", { method: "POST", body: JSON.stringify(body) }),
+  updateEPGSource: (id, body, revision) =>
+    api(`/v1/admin/epg/sources/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      headers: { "If-Match": String(revision || 0) },
+      body: JSON.stringify(body),
+    }),
+  deleteEPGSource: (id, revision) =>
+    api(`/v1/admin/epg/sources/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+      headers: { "If-Match": String(revision || 0) },
+    }),
+  refreshEPG: () => api("/v1/admin/epg/refresh", { method: "POST", body: "{}" }),
 
   settings: (signal) => api("/v1/admin/settings", { signal }),
   saveSettings: (body, revision) =>

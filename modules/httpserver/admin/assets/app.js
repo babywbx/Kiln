@@ -8,6 +8,7 @@ import { brandMark, renderLogin } from "/admin/assets/views/login.js";
 import { renderOverview } from "/admin/assets/views/overview.js";
 import { renderChannels } from "/admin/assets/views/channels.js";
 import { renderChannelDetail } from "/admin/assets/views/channel-detail.js";
+import { renderEPG } from "/admin/assets/views/epg.js";
 import { renderAccess } from "/admin/assets/views/access.js";
 import { renderEgress } from "/admin/assets/views/egress.js";
 import { renderSettings } from "/admin/assets/views/settings.js";
@@ -15,6 +16,7 @@ import { renderSettings } from "/admin/assets/views/settings.js";
 const NAV_ICONS = {
   overview: "layout-dashboard",
   channels: "tv",
+  epg: "list",
   access: "key-round",
   egress: "network",
   settings: "settings",
@@ -27,6 +29,7 @@ let shell = null;
 
 registerRoute("overview", renderOverview);
 registerRoute("channels", (ctx) => (ctx.id ? renderChannelDetail(ctx) : renderChannels(ctx)));
+registerRoute("epg", renderEPG);
 registerRoute("access", renderAccess);
 registerRoute("egress", renderEgress);
 registerRoute("settings", renderSettings);

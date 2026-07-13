@@ -2,15 +2,16 @@ import { frag, h, icon } from "/admin/assets/core/dom.js";
 import { endpoints } from "/admin/assets/core/api.js";
 import { invalidateCatalog, loadCatalog, refreshStatus, sessionFor, sourceURL, store } from "/admin/assets/core/store.js";
 import { badge, button, card, channelAvatar, emptyState, field, formSection, iconButton, input, linkButton, pageHead, select, stateBadge } from "/admin/assets/ui/kit.js";
-import { confirmDialog, copyText, toast, toastError } from "/admin/assets/ui/overlay.js";
+import { closeModal, confirmDialog, copyText, openModal, toast, toastError } from "/admin/assets/ui/overlay.js";
 import { matchesQuery } from "/admin/assets/views/channels.js";
+import { matchBadge } from "/admin/assets/views/epg.js";
 import { previewChannel } from "/admin/assets/views/preview.js";
 
 const BLANK = {
   id: "", title: "", group: "", logo_url: "", upstream: "", path: "", ingress: "hls",
   disabled: false, on_demand: true, autostart: false, idle_timeout_sec: 90,
   keys: "", keys_file: "", user_agent: "", headers: {}, restart_on_failure: false, prefer_height: 0,
-  packager: "",
+  packager: "", epg_id: "", epg_name: "", epg_source: "",
 };
 
 export async function renderChannelDetail(ctx) {
@@ -26,10 +27,18 @@ export async function renderChannelDetail(ctx) {
     channel = { ...BLANK, ...detail.channel };
     revision = detail.revision || 0;
   }
+
+  const [matchData, sourceData] = await Promise.all([endpoints.epgMatches(ctx.signal), endpoints.epgSources(ctx.signal)]);
+  if (!ctx.alive()) return frag();
+  const epg = {
+    match: (matchData.matches || []).find((item) => item.channel_id === channel.id) || null,
+    sources: (sourceData.sources || []).map((item) => item.source),
+  };
+
   await refreshStatus();
   if (!ctx.alive()) return frag();
 
-  const editor = buildEditor(ctx, channel, revision, isNew);
+  const editor = buildEditor(ctx, channel, revision, isNew, epg);
   return frag(
     pageHead(isNew ? "添加频道" : channel.title || channel.id, isNew ? "按顺序填写频道信息、节目源与运行方式。" : "检查节目源、调整配置并执行常用运行操作。", [
       linkButton("全部频道", "/admin/channels", { iconName: "chevron-left" }),
@@ -87,13 +96,17 @@ function buildPicker(currentID, isNew) {
   );
 }
 
-function buildEditor(ctx, channel, revision, isNew) {
+function buildEditor(ctx, channel, revision, isNew, epg) {
   const form = h("form", { class: "channel-form", novalidate: true });
 
   const idInput = input("id", channel.id, { required: true, disabled: !isNew, placeholder: "channel-1" });
   const titleInput = input("title", channel.title, { required: true });
   const groupInput = input("group", channel.group);
   const logoInput = input("logo_url", channel.logo_url, { type: "url", placeholder: "https://…" });
+
+  const epgIDInput = input("epg_id", channel.epg_id, { placeholder: "456556" });
+  const epgNameInput = input("epg_name", channel.epg_name, { placeholder: "頻道名稱" });
+  const epgSourceSelect = select("epg_source", epgSourceChoices(epg.sources, channel.epg_source), channel.epg_source || "");
 
   const upstreamSelect = select(
     "upstream",
@@ -187,6 +200,9 @@ function buildEditor(ctx, channel, revision, isNew) {
       title: titleInput.value.trim(),
       group: groupInput.value.trim(),
       logo_url: logoInput.value.trim(),
+      epg_id: epgIDInput.value.trim(),
+      epg_name: epgNameInput.value.trim(),
+      epg_source: epgSourceSelect.value,
       upstream: upstreamSelect.value,
       path: pathInput.value.trim(),
       ingress,
@@ -234,13 +250,28 @@ function buildEditor(ctx, channel, revision, isNew) {
     }
   });
 
+  const dormant = !isNew && channel.disabled && !epg.match;
+
+  const applyCandidate = (candidate) => {
+    epgIDInput.value = candidate.channel_id;
+    epgNameInput.value = candidate.name || "";
+    epgSourceSelect.value = hasSourceOption(epgSourceSelect, candidate.source_id) ? candidate.source_id : "";
+    onEdit();
+    toast("已回填节目单标识", `来自 ${candidate.source_id} 的 ${candidate.channel_id}。`);
+  };
+
+  const applyLogo = (logo) => {
+    logoInput.value = logo.url;
+    onEdit();
+    toast("已回填台标地址", logo.source_id);
+  };
+
   form.append(
     formSection("1", "频道信息", "设置频道在目录和播放器中显示的名称。",
       h("div", { class: "form-grid" },
         field("频道标识符（ID）", idInput, isNew ? "用于播放地址，创建后不可更改。" : "标识符创建后不可更改。"),
         field("频道名称", titleInput),
         field("频道分组", groupInput),
-        field("台标地址", logoInput, "可填写 HTTPS 图片地址。"),
       ),
     ),
     formSection("2", "节目源", "来源服务器与节目源路径组合成下方的完整地址。",
@@ -264,6 +295,30 @@ function buildEditor(ctx, channel, revision, isNew) {
         keysPanel,
       ),
     ),
+    formSection("4", "节目单与台标", "指定这个频道在 XMLTV 里的标识，播放器据此显示节目单。",
+      h("div", { class: "form-grid" },
+        h("div", { class: "span-all" },
+          h("div", { class: "inline-row" },
+            dormant ? badge("频道已停用", "neutral") : matchBadge(epg.match?.status),
+            h("span", { class: "muted", text: dormant ? DORMANT_HINT : matchHint(epg.match) }),
+            button("从节目单里找", {
+              size: "small",
+              iconName: "search",
+              onClick: () => openCandidateModal(epg.match, applyCandidate, dormant),
+            }),
+            button("选择台标", {
+              size: "small",
+              iconName: "eye",
+              onClick: () => openLogoModal(epg.match, applyLogo, dormant),
+            }),
+          ),
+        ),
+        field("节目单频道标识（tvg-id）", epgIDInput, "同名频道可能有多个标识，请从候选里挑选正确的一个。"),
+        field("节目单频道名称", epgNameInput, "留空时使用频道名称参与匹配。"),
+        field("限定节目单源", epgSourceSelect, "只在指定的源里匹配，可避免多个源互相覆盖。"),
+        field("台标地址", logoInput, "留空时自动使用 Kiln 台标代理（/v1/logo/频道标识）。"),
+      ),
+    ),
     h("details", { class: "disclosure" },
       h("summary", {}, icon("sliders-horizontal", 18), h("span", { text: "高级请求设置" }), h("small", { text: "User-Agent、请求头与故障恢复" })),
       h("div", { class: "disclosure-body" },
@@ -285,6 +340,106 @@ function buildEditor(ctx, channel, revision, isNew) {
   );
 
   return h("div", { class: "editor" }, buildCommandBar(ctx, channel, revision, isNew), card({ body: form, flush: true }), buildDangerZone(ctx, channel, revision, isNew));
+}
+
+const DORMANT_HINT = "频道已停用，不参与节目单匹配。启用后才会出现候选。";
+
+function epgSourceChoices(sources, current) {
+  const choices = [["", "不限定（在所有已启用的源里匹配）"], ...sources.map((source) => [source.id, `${source.id} · ${source.name}`])];
+  if (current && !sources.some((source) => source.id === current)) choices.push([current, `${current} · 已失效的源`]);
+  return choices;
+}
+
+function hasSourceOption(element, value) {
+  return [...element.options].some((option) => option.value === value);
+}
+
+function matchHint(match) {
+  if (!match) return "尚无匹配结果，请先在节目单页面启用源并刷新。";
+  const count = (match.candidates || []).length;
+  if (match.status === "matched") return `已锁定 ${match.match?.source_id || "节目单源"} 的 ${match.match?.channel_id || ""}。`;
+  if (match.status === "suggested") return `找到 ${count} 个候选，需要人工确认。`;
+  return "没有找到候选，可手动填写标识。";
+}
+
+function openCandidateModal(match, apply, dormant) {
+  const candidates = match?.candidates || [];
+  const body = candidates.length
+    ? h(
+        "div",
+        { class: "list" },
+        candidates.map((candidate) =>
+          h(
+            "div",
+            { class: "list-item" },
+            h(
+              "span",
+              {},
+              h("strong", { text: candidate.name || candidate.channel_id }),
+              h("small", { class: "mono", text: `${candidate.source_id} · ${candidate.channel_id}` }),
+              candidate.names?.length > 1 ? h("small", { text: candidate.names.join("、") }) : null,
+            ),
+            button("使用", {
+              size: "small",
+              kind: "primary",
+              onClick: () => {
+                closeModal();
+                apply(candidate);
+              },
+            }),
+          ),
+        ),
+      )
+    : emptyState("没有候选", dormant ? DORMANT_HINT : "请先在节目单页面启用节目单源并刷新，或手动填写节目单频道标识。");
+
+  openModal({
+    title: "从节目单里找",
+    description: "同名频道可能对应多个标识，请逐条核对后手动选择，Kiln 不会替你决定。",
+    body,
+    actions: [button("关闭", { onClick: closeModal })],
+  });
+}
+
+function openLogoModal(match, apply, dormant) {
+  const logos = match?.logo_candidates || [];
+  const body = logos.length
+    ? h(
+        "div",
+        { class: "list" },
+        logos.map((logo) =>
+          h(
+            "div",
+            { class: "list-item" },
+            h(
+              "span",
+              { class: "identity" },
+              h("img", { class: "logo-preview", src: logo.url, alt: "", loading: "lazy" }),
+              h(
+                "span",
+                { class: "identity-copy" },
+                h("strong", { text: logo.name || logo.source_id }),
+                h("small", { class: "mono", title: logo.url, text: logo.url }),
+              ),
+            ),
+            button("使用", {
+              size: "small",
+              kind: "primary",
+              onClick: () => {
+                closeModal();
+                apply(logo);
+              },
+            }),
+          ),
+        ),
+      )
+    : emptyState("没有候选台标", dormant ? DORMANT_HINT : "台标候选来自频道名称，填写节目单频道名称后再试一次。");
+
+  openModal({
+    title: "选择台标",
+    description: "候选按优先级排列；加载不出来的图片说明该地址暂时不可用。",
+    body,
+    actions: [button("关闭", { onClick: closeModal })],
+  });
 }
 
 function buildCommandBar(ctx, channel, revision, isNew) {

@@ -99,6 +99,12 @@ export function formatTime(seconds) {
   return dateFormat.format(new Date(Number(seconds) * 1000));
 }
 
+export function formatISOTime(value) {
+  const stamp = Date.parse(value || "");
+  if (!Number.isFinite(stamp) || stamp <= 0) return "从未";
+  return dateFormat.format(new Date(stamp));
+}
+
 export function formatClock(date = new Date()) {
   return date.toLocaleTimeString("zh-Hans", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }

@@ -2,7 +2,8 @@ import { frag, h, icon } from "/admin/assets/core/dom.js";
 import { endpoints } from "/admin/assets/core/api.js";
 import { invalidateCatalog, loadCatalog, refreshStatus, sessionFor, sourceURL, store } from "/admin/assets/core/store.js";
 import { badge, button, card, channelCell, emptyState, field, iconButton, input, linkButton, notice, pageHead, runModeLabel, select, stateBadge } from "/admin/assets/ui/kit.js";
-import { closeModal, openModal, toast, toastError } from "/admin/assets/ui/overlay.js";
+import { closeModal, confirmDialog, openModal, toast, toastError } from "/admin/assets/ui/overlay.js";
+import { matchBadge, matchMap } from "/admin/assets/views/epg.js";
 import { previewChannel } from "/admin/assets/views/preview.js";
 
 export function matchesQuery(channel, query) {
@@ -14,9 +15,13 @@ export function matchesQuery(channel, query) {
 
 export async function renderChannels(ctx) {
   await loadCatalog({ force: true, signal: ctx.signal });
+  const matchData = await endpoints.epgMatches(ctx.signal);
   await refreshStatus();
   if (!ctx.alive()) return frag();
 
+  const matches = matchMap(matchData.matches);
+  const epgCell = (channel) =>
+    channel.disabled ? h("span", { class: "muted", text: "—" }) : matchBadge(matches.get(channel.id)?.status);
   let query = "";
   const filter = input("filter", "", { placeholder: "筛选名称、标识符或分组…", type: "search" });
   filter.setAttribute("aria-label", "筛选频道");
@@ -58,7 +63,7 @@ export async function renderChannels(ctx) {
       const empty = query
         ? emptyState("没有匹配的频道", "换一个名称、标识符或分组试试。", button("清除筛选", { onClick: () => { filter.value = ""; query = ""; draw(); } }))
         : emptyState("还没有频道", "添加第一个频道，或从 M3U 播放列表批量导入。", linkButton("添加频道", "/admin/channels/new", { kind: "primary", iconName: "plus" }));
-      tbody.append(h("tr", {}, h("td", { colspan: 6 }, empty)));
+      tbody.append(h("tr", {}, h("td", { colspan: 7 }, empty)));
       cards.append(empty.cloneNode(true));
       return;
     }
@@ -88,6 +93,7 @@ export async function renderChannels(ctx) {
           ),
           h("td", {}, badge((channel.ingress || "—").toUpperCase(), "neutral")),
           h("td", { class: "muted", text: runModeLabel(channel) }),
+          h("td", {}, epgCell(channel)),
           h("td", {}, slot),
           h(
             "td",
@@ -116,6 +122,7 @@ export async function renderChannels(ctx) {
             { class: "record-meta" },
             h("span", {}, h("small", { text: "格式" }), h("span", { text: (channel.ingress || "—").toUpperCase() })),
             h("span", {}, h("small", { text: "运行方式" }), h("span", { text: runModeLabel(channel) })),
+            h("span", {}, h("small", { text: "节目单" }), epgCell(channel)),
           ),
           h(
             "div",
@@ -148,15 +155,38 @@ export async function renderChannels(ctx) {
 
   return frag(
     pageHead("频道", "管理节目源、运行方式与播放状态。", [
+      button("全部停用", { iconName: "ban", disabled: !store.channels.length, onClick: () => setAll(ctx, true) }),
+      button("全部启用", { iconName: "power", disabled: !store.channels.length, onClick: () => setAll(ctx, false) }),
       button("导入 M3U", { iconName: "upload", onClick: () => openImportModal(ctx) }),
       linkButton("添加频道", "/admin/channels/new", { kind: "primary", iconName: "plus" }),
     ]),
     h("div", { class: "toolbar" }, h("div", { class: "search-field" }, icon("search", 18), filter), count),
     card({
-      body: frag(h("div", { class: "desktop-only" }, h("div", { class: "table-wrap" }, h("table", {}, h("thead", {}, h("tr", {}, ["频道", "节目源", "格式", "运行方式", "状态", ""].map((label) => h("th", { text: label })))), tbody))), h("div", { class: "mobile-only" }, cards)),
+      body: frag(h("div", { class: "desktop-only" }, h("div", { class: "table-wrap" }, h("table", {}, h("thead", {}, h("tr", {}, ["频道", "节目源", "格式", "运行方式", "节目单", "状态", ""].map((label) => h("th", { text: label })))), tbody))), h("div", { class: "mobile-only" }, cards)),
       flush: true,
     }),
   );
+}
+
+async function setAll(ctx, disabled) {
+  const accepted = await confirmDialog({
+    title: disabled ? "停用全部频道？" : "启用全部频道？",
+    description: disabled
+      ? "所有频道都会从目录中隐藏，播放地址随即失效。"
+      : "所有频道都会重新出现在目录中，并接受播放请求。",
+    warning: disabled ? "正在进行的会话会立即中断。" : "",
+    confirmLabel: disabled ? "全部停用" : "全部启用",
+    tone: disabled ? "danger" : "primary",
+  });
+  if (!accepted) return;
+  try {
+    const result = disabled ? await endpoints.disableAllChannels() : await endpoints.enableAllChannels();
+    invalidateCatalog();
+    toast(disabled ? "全部频道已停用" : "全部频道已启用", `${result.changed || 0} 个频道发生变更。`);
+    await ctx.reload();
+  } catch (error) {
+    toastError(error, disabled ? "停用失败" : "启用失败");
+  }
 }
 
 function openImportModal(ctx) {

@@ -577,7 +577,21 @@ input:disabled, select:disabled { color: var(--muted); background: var(--surface
   background: var(--surface);
 }
 .list-item > span:first-child { display: grid; min-width: 0; flex: 1; }
+.list-item > span.identity:first-child { display: flex; }
 .list-item small { overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; }
+
+.logo-preview {
+  width: 44px;
+  height: 44px;
+  flex: 0 0 44px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-soft);
+  object-fit: contain;
+}
+
+.text-danger { color: var(--danger); }
 
 .notice {
   display: flex;

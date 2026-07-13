@@ -3,6 +3,7 @@ import { subscribe } from "/admin/assets/core/store.js";
 export const SECTIONS = {
   overview: "总览",
   channels: "频道",
+  epg: "节目单",
   access: "访问控制",
   egress: "网络出口",
   settings: "系统设置",
