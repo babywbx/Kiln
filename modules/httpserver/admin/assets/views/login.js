@@ -41,7 +41,7 @@ export function renderLogin(onSuccess) {
 
   const view = h(
     "main",
-    { class: "login" },
+    { class: "login", id: "main-content", tabindex: "-1" },
     h("div", { class: "login-backdrop", "aria-hidden": "true" }),
     h(
       "div",
