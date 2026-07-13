@@ -53,6 +53,7 @@ type Representation struct {
 	Roles         []string
 	AudioChannels int
 	Trick         bool
+	Essential     []string
 
 	DefaultKID string
 	Encrypted  bool

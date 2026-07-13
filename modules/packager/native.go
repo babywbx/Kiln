@@ -280,6 +280,10 @@ func StartNative(ctx context.Context, opts Options) (*Native, error) {
 		opts.Log.Warn("audio renditions left out of the publication",
 			"skipped", plan.SkippedAudios, "carried", len(plan.Audios))
 	}
+	if len(plan.UnknownEssential) > 0 {
+		opts.Log.Warn("carrying a representation with an essential property we do not act on",
+			"schemes", plan.UnknownEssential)
+	}
 
 	pub, err := hls.New(hls.Config{
 		Dir:                opts.Dir,

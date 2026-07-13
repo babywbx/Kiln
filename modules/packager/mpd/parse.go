@@ -48,6 +48,7 @@ type xmlAdaptationSet struct {
 	FrameRate         string           `xml:"frameRate,attr"`
 	MaxPlayoutRate    string           `xml:"maxPlayoutRate,attr"`
 	BaseURL           []string         `xml:"BaseURL"`
+	Essential         []xmlDescriptor  `xml:"EssentialProperty"`
 	Roles             []xmlDescriptor  `xml:"Role"`
 	ContentProtection []xmlProtection  `xml:"ContentProtection"`
 	AudioChannelConf  []xmlDescriptor  `xml:"AudioChannelConfiguration"`
@@ -67,6 +68,7 @@ type xmlRepresation struct {
 	AudioSamplingRate string          `xml:"audioSamplingRate,attr"`
 	MaxPlayoutRate    string          `xml:"maxPlayoutRate,attr"`
 	BaseURL           []string        `xml:"BaseURL"`
+	Essential         []xmlDescriptor `xml:"EssentialProperty"`
 	Roles             []xmlDescriptor `xml:"Role"`
 	ContentProtection []xmlProtection `xml:"ContentProtection"`
 	AudioChannelConf  []xmlDescriptor `xml:"AudioChannelConfiguration"`

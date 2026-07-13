@@ -7,7 +7,10 @@ import (
 	"strings"
 )
 
-const cencScheme = "urn:mpeg:dash:mp4protection:2011"
+const (
+	cencScheme      = "urn:mpeg:dash:mp4protection:2011"
+	trickModeScheme = "http://dashif.org/guidelines/trickmode"
+)
 
 func normalizePeriod(xp xmlPeriod, mpdBase *url.URL) (Period, error) {
 	period := Period{ID: xp.ID}
@@ -52,6 +55,17 @@ func normalizeRepresentation(xr xmlRepresation, as xmlAdaptationSet, parentTmpl 
 		FrameRate: firstNonEmpty(xr.FrameRate, as.FrameRate),
 		Lang:      as.Lang,
 		Trick:     firstNonEmpty(xr.MaxPlayoutRate, as.MaxPlayoutRate) != "",
+	}
+	for _, ep := range append(append([]xmlDescriptor{}, as.Essential...), xr.Essential...) {
+		scheme := strings.ToLower(strings.TrimSpace(ep.SchemeIDURI))
+		if scheme == "" {
+			continue
+		}
+		if scheme == trickModeScheme {
+			rep.Trick = true
+			continue
+		}
+		rep.Essential = append(rep.Essential, scheme)
 	}
 	for _, role := range append(append([]xmlDescriptor{}, as.Roles...), xr.Roles...) {
 		if role.Value != "" {

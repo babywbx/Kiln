@@ -35,11 +35,53 @@ type Plan struct {
 
 	SkippedAudios []string
 
+	UnknownEssential []string
+
 	FallbackAllowed bool
 	Reason          string
 }
 
 func (p Plan) Native() bool { return p.Engine == EngineNativeRewrite }
+
+// A rendition we cannot honour, not one we merely do not understand.
+var blockedEssential = map[string]struct{}{
+	"urn:mpeg:dash:srd:2014": {},
+}
+
+var benignEssential = map[string]struct{}{
+	"urn:mpeg:mpegb:cicp:colourprimaries":         {},
+	"urn:mpeg:mpegb:cicp:transfercharacteristics": {},
+	"urn:mpeg:mpegb:cicp:matrixcoefficients":      {},
+	"urn:mpeg:mpegb:cicp:videofullrangeflag":      {},
+	"urn:dvb:dash:lowlatency:critical:2019":       {},
+}
+
+func essentialBlocked(rep mpd.Representation) bool {
+	for _, scheme := range rep.Essential {
+		if _, ok := blockedEssential[scheme]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func unknownEssential(reps ...mpd.Representation) []string {
+	seen := map[string]struct{}{}
+	var out []string
+	for _, rep := range reps {
+		for _, scheme := range rep.Essential {
+			if _, ok := benignEssential[scheme]; ok {
+				continue
+			}
+			if _, ok := seen[scheme]; ok {
+				continue
+			}
+			seen[scheme] = struct{}{}
+			out = append(out, scheme)
+		}
+	}
+	return out
+}
 
 var nativeVideoCodecs = map[string]struct{}{
 	"avc1": {}, "avc3": {}, "hvc1": {}, "hev1": {},
@@ -66,6 +108,7 @@ func PlanFromManifest(p *mpd.Presentation, preferHeight int) (Plan, error) {
 	}
 
 	plan := Plan{Engine: EngineNativeRewrite, Video: video, FallbackAllowed: true}
+	plan.UnknownEssential = unknownEssential(append([]mpd.Representation{video}, audios...)...)
 	for _, a := range audios {
 		if _, ok := nativeAudioCodecs[family(a.Codecs)]; !ok || !nativeAddressing(a) {
 			plan.SkippedAudios = append(plan.SkippedAudios, a.ID)
@@ -134,6 +177,9 @@ func selectTracks(reps []mpd.Representation, preferHeight int) (mpd.Representati
 	best := map[string]mpd.Representation{}
 
 	for _, rep := range reps {
+		if essentialBlocked(rep) {
+			continue
+		}
 		switch {
 		case rep.IsVideo():
 			if rep.Trick {

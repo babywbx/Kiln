@@ -294,3 +294,32 @@ func TestRejectsUnsupportedManifests(t *testing.T) {
 		}
 	}
 }
+
+func TestTrickModeMarkedOnlyByEssentialPropertyIsExcluded(t *testing.T) {
+	raw := []byte(`<?xml version="1.0"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" mediaPresentationDuration="PT10S">
+  <Period id="0">
+    <AdaptationSet id="1" contentType="video" mimeType="video/mp4" codecs="hvc1.1.6.L123.b0">
+      <SegmentTemplate timescale="1000" duration="2000" initialization="v/init.m4s" media="v/$Number$.m4s"/>
+      <Representation id="main" bandwidth="5000000" width="1920" height="1080"/>
+    </AdaptationSet>
+    <AdaptationSet id="2" contentType="video" mimeType="video/mp4" codecs="hvc1.1.6.L123.b0" codingDependency="false">
+      <EssentialProperty schemeIdUri="http://dashif.org/guidelines/trickmode" value="1"/>
+      <SegmentTemplate timescale="1000" duration="2000" initialization="t/init.m4s" media="t/$Number$.m4s"/>
+      <Representation id="trick" bandwidth="9000000" width="1920" height="1080"/>
+    </AdaptationSet>
+  </Period>
+</MPD>`)
+	pres, err := Parse(raw, "https://example.com/stream.mpd")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	for _, rep := range pres.Periods[0].Representations {
+		if rep.ID == "trick" && !rep.Trick {
+			t.Fatal("an i-frame-only track marked by EssentialProperty was not recognized as trick play; it would be selected as the main video and play as a slideshow")
+		}
+		if rep.ID == "main" && rep.Trick {
+			t.Fatal("the main video was mistaken for a trick track")
+		}
+	}
+}
