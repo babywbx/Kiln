@@ -3,7 +3,10 @@ package packager
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,6 +19,7 @@ import (
 
 	"github.com/babywbx/kiln/modules/packager/cmaf"
 	"github.com/babywbx/kiln/modules/packager/hls"
+	"github.com/babywbx/kiln/modules/packager/mpd"
 )
 
 const (
@@ -331,6 +335,265 @@ func frameCRCs(t *testing.T, path, key string) []string {
 		crcs = append(crcs, strings.TrimSpace(fields[len(fields)-1]))
 	}
 	return crcs
+}
+
+type controlledSegmentFetcher struct {
+	data    []byte
+	starts  chan string
+	release map[string]chan struct{}
+	errs    map[string]error
+}
+
+func (f *controlledSegmentFetcher) Fetch(ctx context.Context, url string) ([]byte, string, error) {
+	f.starts <- url
+	if ready := f.release[url]; ready != nil {
+		select {
+		case <-ready:
+		case <-ctx.Done():
+			return nil, url, ctx.Err()
+		}
+	}
+	if err := f.errs[url]; err != nil {
+		return nil, url, err
+	}
+	return f.data, url, nil
+}
+
+func pipelineNative(t *testing.T, prefetch int, fetcher Fetcher) (*Native, *trackState, []mpd.Segment, string) {
+	t.Helper()
+	root := filepath.Join("..", "..", "testdata", "cenc", "hevc")
+	initRaw, err := os.ReadFile(filepath.Join(root, "init-stream0.m4s"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	init, err := cmaf.ParseInit(initRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := t.TempDir()
+	pub, err := hls.New(hls.Config{Dir: out, Static: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pub.AddTrack(hls.Track{Name: trackVideo, Kind: hls.KindVideo, Codec: init.Track.Codec}); err != nil {
+		t.Fatal(err)
+	}
+	if err := pub.PublishInit(trackVideo, init.Clear); err != nil {
+		t.Fatal(err)
+	}
+	rep := mpd.Representation{ID: "video", Addressing: mpd.Addressing{Timescale: 1}}
+	n := &Native{opts: Options{Prefetch: prefetch, Fetcher: fetcher, Keys: keys(t), MaxSegmentBytes: defaultMaxSegmentBytes}, pub: pub, gate: newByteGate(defaultInflightBytes), now: time.Now, log: slog.Default()}
+	ts := newTrackState(trackVideo, rep, init, time.Now())
+	segs := make([]mpd.Segment, 6)
+	for i := range segs {
+		segs[i] = mpd.Segment{Number: uint64(i + 1), Time: uint64(i), Duration: 1, URL: fmt.Sprintf("segment-%d", i+1)}
+	}
+	return n, ts, segs, out
+}
+
+func fixtureSegment(t *testing.T) []byte {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "cenc", "hevc", "chunk-stream0-00001.m4s"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func assertNoStages(t *testing.T, dir string) {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(dir, ".tmp-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("temporary stages remain: %v", matches)
+	}
+}
+
+func TestPublishSegmentsStartsAtMostPrefetchTasks(t *testing.T) {
+	block := make(chan struct{})
+	f := &controlledSegmentFetcher{data: fixtureSegment(t), starts: make(chan string, 10), release: map[string]chan struct{}{}, errs: map[string]error{}}
+	for i := 1; i <= 6; i++ {
+		f.release[fmt.Sprintf("segment-%d", i)] = block
+	}
+	n, ts, segs, out := pipelineNative(t, 3, f)
+	done := make(chan error, 1)
+	go func() { done <- n.publishSegments(context.Background(), ts, segs) }()
+	for range 3 {
+		<-f.starts
+	}
+	select {
+	case got := <-f.starts:
+		t.Fatalf("started beyond window: %s", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(block)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	assertNoStages(t, out)
+}
+
+func TestPublishSegmentsCommitsHeadBeforeTailCompletes(t *testing.T) {
+	tail := make(chan struct{})
+	f := &controlledSegmentFetcher{data: fixtureSegment(t), starts: make(chan string, 10), release: map[string]chan struct{}{"segment-2": tail}, errs: map[string]error{}}
+	n, ts, segs, out := pipelineNative(t, 2, f)
+	done := make(chan error, 1)
+	go func() { done <- n.publishSegments(context.Background(), ts, segs[:2]) }()
+	for range 2 {
+		<-f.starts
+	}
+	deadline := time.After(time.Second)
+	for n.pub.Frontier()[trackVideo] == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("head was not committed")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+	close(tail)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	assertNoStages(t, out)
+}
+
+func TestPublishSegmentsRefillsOneSlotAfterEachCommit(t *testing.T) {
+	blocks := map[string]chan struct{}{}
+	f := &controlledSegmentFetcher{data: fixtureSegment(t), starts: make(chan string, 10), release: blocks, errs: map[string]error{}}
+	for i := 1; i <= 4; i++ {
+		blocks[fmt.Sprintf("segment-%d", i)] = make(chan struct{})
+	}
+	n, ts, segs, out := pipelineNative(t, 2, f)
+	done := make(chan error, 1)
+	go func() { done <- n.publishSegments(context.Background(), ts, segs[:4]) }()
+	for range 2 {
+		<-f.starts
+	}
+	close(blocks["segment-1"])
+	if got := <-f.starts; got != "segment-3" {
+		t.Fatalf("refill = %s", got)
+	}
+	select {
+	case got := <-f.starts:
+		t.Fatalf("extra refill: %s", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(blocks["segment-2"])
+	if got := <-f.starts; got != "segment-4" {
+		t.Fatalf("refill = %s", got)
+	}
+	close(blocks["segment-3"])
+	close(blocks["segment-4"])
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	assertNoStages(t, out)
+}
+
+func TestPublishSegmentsPreservesMediaOrder(t *testing.T) {
+	f := &controlledSegmentFetcher{data: fixtureSegment(t), starts: make(chan string, 10), release: map[string]chan struct{}{}, errs: map[string]error{}}
+	n, ts, segs, out := pipelineNative(t, 3, f)
+	if err := n.publishSegments(context.Background(), ts, segs); err != nil {
+		t.Fatal(err)
+	}
+	if ts.nextSeq != 7 || ts.lastTime != 5 {
+		t.Fatalf("state = seq %d time %d", ts.nextSeq, ts.lastTime)
+	}
+	assertNoStages(t, out)
+}
+
+func TestPublishSegmentsCancelsWindowAfterHeadFailure(t *testing.T) {
+	block := make(chan struct{})
+	boom := errors.New("head")
+	f := &controlledSegmentFetcher{data: fixtureSegment(t), starts: make(chan string, 10), release: map[string]chan struct{}{"segment-2": block, "segment-3": block}, errs: map[string]error{"segment-1": boom}}
+	n, ts, segs, out := pipelineNative(t, 3, f)
+	if err := n.publishSegments(context.Background(), ts, segs); !errors.Is(err, boom) {
+		t.Fatalf("err = %v", err)
+	}
+	if ts.nextSeq != 1 {
+		t.Fatalf("next seq = %d", ts.nextSeq)
+	}
+	assertNoStages(t, out)
+}
+
+func TestPublishSegmentsDiscardsStagesAfterFailure(t *testing.T) {
+	boom := errors.New("second")
+	f := &controlledSegmentFetcher{data: fixtureSegment(t), starts: make(chan string, 10), release: map[string]chan struct{}{}, errs: map[string]error{"segment-2": boom}}
+	n, ts, segs, out := pipelineNative(t, 3, f)
+	if err := n.publishSegments(context.Background(), ts, segs[:3]); !errors.Is(err, boom) {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(out, "video-main-000001.m4s")); err != nil {
+		t.Fatalf("committed file removed: %v", err)
+	}
+	assertNoStages(t, out)
+}
+
+func TestPublishSegmentsDiscardsStagesAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	block := make(chan struct{})
+	f := &controlledSegmentFetcher{data: fixtureSegment(t), starts: make(chan string, 10), release: map[string]chan struct{}{"segment-2": block}, errs: map[string]error{}}
+	n, ts, segs, out := pipelineNative(t, 2, f)
+	done := make(chan error, 1)
+	go func() { done <- n.publishSegments(ctx, ts, segs[:2]) }()
+	for range 2 {
+		<-f.starts
+	}
+	deadline := time.After(time.Second)
+	for n.pub.Frontier()[trackVideo] == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("head was not committed")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(out, "video-main-000001.m4s")); err != nil {
+		t.Fatalf("committed file removed: %v", err)
+	}
+	assertNoStages(t, out)
+}
+
+func TestPublishSegmentsReturnsFirstErrorInMediaOrder(t *testing.T) {
+	first, later := errors.New("first"), errors.New("later")
+	f := &controlledSegmentFetcher{data: fixtureSegment(t), starts: make(chan string, 10), release: map[string]chan struct{}{}, errs: map[string]error{"segment-2": first, "segment-3": later}}
+	n, ts, segs, out := pipelineNative(t, 3, f)
+	if err := n.publishSegments(context.Background(), ts, segs[:3]); !errors.Is(err, first) {
+		t.Fatalf("err = %v", err)
+	}
+	assertNoStages(t, out)
+}
+
+func TestLongStaticPublicationAdvancesBeforeTailIsPrepared(t *testing.T) {
+	tail := make(chan struct{})
+	f := &controlledSegmentFetcher{data: fixtureSegment(t), starts: make(chan string, 10), release: map[string]chan struct{}{"segment-3": tail}, errs: map[string]error{}}
+	n, ts, segs, out := pipelineNative(t, 3, f)
+	done := make(chan error, 1)
+	go func() { done <- n.publishSegments(context.Background(), ts, segs) }()
+	for range 3 {
+		<-f.starts
+	}
+	deadline := time.After(time.Second)
+	for n.pub.Frontier()[trackVideo] < 2 {
+		select {
+		case <-deadline:
+			t.Fatal("publication did not advance")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+	close(tail)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	assertNoStages(t, out)
 }
 
 func asFallback(err error, target **FallbackError) bool {

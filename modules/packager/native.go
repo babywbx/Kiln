@@ -502,6 +502,11 @@ func (n *Native) startWindow(pres *mpd.Presentation, segs []mpd.Segment) []mpd.S
 	return segs
 }
 
+type pipelineSlot struct {
+	seg  mpd.Segment
+	done chan prepared
+}
+
 type prepared struct {
 	staged   string
 	dur      float64
@@ -514,40 +519,45 @@ func (n *Native) publishSegments(ctx context.Context, ts *trackState, segs []mpd
 	if len(segs) == 0 {
 		return nil
 	}
-	results := make([]prepared, len(segs))
-	sem := make(chan struct{}, n.opts.Prefetch)
+	pipelineCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
-	var wg sync.WaitGroup
-	for i, seg := range segs {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-ctx.Done():
-				results[i].err = ctx.Err()
-				return
+	window := n.opts.Prefetch
+	if window > len(segs) {
+		window = len(segs)
+	}
+	slots := make([]pipelineSlot, 0, window)
+	next := 0
+	start := func() {
+		slot := pipelineSlot{seg: segs[next], done: make(chan prepared, 1)}
+		next++
+		slots = append(slots, slot)
+		go func() { slot.done <- n.prepare(pipelineCtx, ts, slot.seg) }()
+	}
+	for len(slots) < window {
+		start()
+	}
+
+	for len(slots) > 0 {
+		slot := slots[0]
+		result := <-slot.done
+		if result.err == nil {
+			result.err = n.commit(ts, slot.seg, result)
+		}
+		if result.err != nil {
+			cancel()
+			n.pub.Discard(result.staged)
+			for _, pending := range slots[1:] {
+				n.pub.Discard((<-pending.done).staged)
 			}
-			results[i] = n.prepare(ctx, ts, seg)
-		}()
-	}
-	wg.Wait()
-
-	var err error
-	for i, seg := range segs {
-		if err != nil {
-
-			n.pub.Discard(results[i].staged)
-			continue
+			return result.err
 		}
-		if results[i].err != nil {
-			err = results[i].err
-			continue
+		slots = slots[1:]
+		if next < len(segs) {
+			start()
 		}
-		err = n.commit(ts, seg, results[i])
 	}
-	return err
+	return nil
 }
 
 func presentationEpoch(pres *mpd.Presentation) time.Time {
