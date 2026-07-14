@@ -1,5 +1,14 @@
 import { h, icon, initials } from "/admin/assets/core/dom.js";
-import { clearSession, endpoints, hasSession, loadSession, setUnauthorizedHandler } from "/admin/assets/core/api.js";
+import {
+  clearSession,
+  endpoints,
+  hasSession,
+  loadSession,
+  requestSharedSession,
+  setExternalLogoutHandler,
+  setSessionAvailableHandler,
+  setUnauthorizedHandler,
+} from "/admin/assets/core/api.js";
 import { i18n } from "/admin/assets/core/i18n.js";
 import { resetStore, startPolling, stopPolling, store, subscribe } from "/admin/assets/core/store.js";
 import { SECTIONS, configureRouter, isDirty, markDirty, navigate, registerRoute, renderRoute, startRouter } from "/admin/assets/core/router.js";
@@ -17,10 +26,11 @@ import { configureSettingsActions, openAccountSettings, openLanguageSettings, re
 const root = document.getElementById("root");
 const skipLink = document.querySelector(".skip-link");
 const compactMedia = matchMedia("(max-width: 1080px)");
+const LOGOUT_EVENT_KEY = "kiln.admin.logout";
 let shell = null;
 
 registerRoute("overview", renderOverview);
-registerRoute("channels", (ctx) => (ctx.id ? renderChannelDetail(ctx) : renderChannels(ctx)));
+registerRoute("channels", (ctx) => (ctx.id || ctx.query.get("new") === "1" ? renderChannelDetail(ctx) : renderChannels(ctx)));
 registerRoute("epg", renderEPG);
 registerRoute("access", renderAccess);
 registerRoute("egress", renderEgress);
@@ -47,13 +57,29 @@ function sectionLabel(section) {
   return translated === key ? SECTIONS[section]?.label || i18n.t("shell.console") : translated;
 }
 
+function readPreference(key) {
+  try {
+    return localStorage.getItem(key) || "";
+  } catch {
+    return "";
+  }
+}
+
+function writePreference(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    /* preferences are optional */
+  }
+}
+
 function setTheme(theme) {
   document.documentElement.dataset.theme = theme;
-  localStorage.setItem("kiln.admin.theme", theme);
+  writePreference("kiln.admin.theme", theme);
 }
 
 function initTheme() {
-  const saved = localStorage.getItem("kiln.admin.theme");
+  const saved = readPreference("kiln.admin.theme");
   setTheme(saved === "light" || saved === "dark" ? saved : matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
 }
 
@@ -143,7 +169,7 @@ function buildShell() {
 
   collapse.addEventListener("click", () => {
     const compact = node.classList.toggle("is-compact");
-    localStorage.setItem("kiln.admin.sidebar", compact ? "compact" : "full");
+    writePreference("kiln.admin.sidebar", compact ? "compact" : "full");
     syncCollapse();
   });
 
@@ -155,7 +181,7 @@ function buildShell() {
     collapse.querySelector(".sidebar-toggle-label").textContent = label;
   };
 
-  if (localStorage.getItem("kiln.admin.sidebar") === "compact") node.classList.add("is-compact");
+  if (readPreference("kiln.admin.sidebar") === "compact") node.classList.add("is-compact");
   syncCollapse();
 
   const paintInstance = () => {
@@ -229,9 +255,15 @@ async function showApp() {
   skipLink.textContent = i18n.t("shared.skipToContent");
   shell = buildShell();
   root.replaceChildren(shell.node);
-  configureRouter({ outlet: shell.main, onBeforeLeave, onAfterRender, onLoading: setLoading });
-
-  if (location.pathname.replace(/\/+$/, "") === "/admin") history.replaceState({}, "", "/admin/overview");
+  configureRouter({
+    outlet: shell.main,
+    onBeforeLeave,
+    onAfterRender,
+    onLoading: setLoading,
+    onError: showRouteError,
+    onUnauthenticated: showLogin,
+    isAuthenticated: hasSession,
+  });
 
   startPolling();
   try {
@@ -269,20 +301,41 @@ function paintLoginChrome() {
   document.title = i18n.t("meta.loginTitle");
 }
 
-function logout(notify) {
-  clearSession();
+function finishLogout(notify, preserveRoute, broadcast) {
+  markDirty(false);
+  clearSession({ broadcast });
   resetStore();
+  if (broadcast) {
+    try {
+      localStorage.setItem(LOGOUT_EVENT_KEY, String(Date.now()));
+      localStorage.removeItem(LOGOUT_EVENT_KEY);
+    } catch {
+      /* storage may be unavailable in privacy-restricted browsers */
+    }
+  }
   if (notify) toast(i18n.t("shell.signedOut"));
-  history.replaceState({}, "", "/admin");
+  if (!preserveRoute) history.replaceState({}, "", "/admin");
   showLogin();
+}
+
+async function logout(notify, { preserveRoute = false, confirm = true, broadcast = true } = {}) {
+  if (confirm && !(await onBeforeLeave())) return;
+  finishLogout(notify, preserveRoute, broadcast);
 }
 
 async function bootstrap() {
   initTheme();
   loadSession();
   startRouter();
-  setUnauthorizedHandler(() => logout(false));
+  setUnauthorizedHandler(() => logout(false, { preserveRoute: true, confirm: false, broadcast: false }));
+  setExternalLogoutHandler(() => finishLogout(false, true, false));
+  setSessionAvailableHandler(() => {
+    if (!shell) location.reload();
+  });
   compactMedia.addEventListener("change", closeNav);
+  window.addEventListener("storage", (event) => {
+    if (event.key === LOGOUT_EVENT_KEY) finishLogout(false, true, false);
+  });
 
   try {
     const root = await fetch("/", { headers: { Accept: "application/json" }, cache: "no-store" }).then((response) => response.json());
@@ -291,18 +344,21 @@ async function bootstrap() {
     /* the version string is decorative */
   }
 
-  if (!hasSession()) return showLogin();
+  if (!hasSession()) {
+    await requestSharedSession();
+    if (!hasSession()) return showLogin();
+  }
 
   try {
     store.me = await endpoints.me();
     if (store.me.role !== "admin") {
-      clearSession();
+      clearSession({ broadcast: false });
       resetStore();
       return showLogin();
     }
     await showApp();
-  } catch {
-    clearSession();
+  } catch (error) {
+    if (error?.status === 401 || error?.status === 403) clearSession({ broadcast: false });
     showLogin();
   }
 }

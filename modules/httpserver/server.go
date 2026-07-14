@@ -451,7 +451,23 @@ func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.deps.Observe.Snapshot())
+	snapshot := s.deps.Observe.Snapshot()
+	claims := claimsFrom(r)
+	if claims.Role != "admin" && len(claims.ChannelIDs) > 0 {
+		allowed := make(map[string]struct{}, len(claims.ChannelIDs))
+		for _, id := range claims.ChannelIDs {
+			allowed[id] = struct{}{}
+		}
+		filtered := make([]observe.SessionStat, 0, len(snapshot.Sessions))
+		for _, session := range snapshot.Sessions {
+			if _, ok := allowed[session.ChannelID]; ok {
+				filtered = append(filtered, session)
+			}
+		}
+		snapshot.Sessions = filtered
+		snapshot.SessionCount = len(filtered)
+	}
+	writeJSON(w, http.StatusOK, snapshot)
 }
 
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
@@ -466,7 +482,7 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePlaylist(w http.ResponseWriter, r *http.Request) {
-	tok := extractToken(r)
+	tok := extractPlayToken(r)
 	chs, err := s.deps.Catalog.List(false)
 	if err != nil {
 		writeAppErr(w, apperr.Internal(err))
@@ -526,7 +542,7 @@ func (s *Server) serveHLSIndex(w http.ResponseWriter, r *http.Request, sess *ses
 		writeAppErr(w, err)
 		return
 	}
-	token := extractToken(r)
+	token := extractPlayToken(r)
 	prefix := "/v1/play/" + sess.Channel.ID + "/u/"
 	if t := r.PathValue("token"); t != "" && accesstoken.Valid(t) {
 		prefix = "/p/" + t + "/play/" + sess.Channel.ID + "/u/"
@@ -576,7 +592,7 @@ func (s *Server) serveDashIndex(w http.ResponseWriter, r *http.Request, sess *se
 // writePlaylist serves a published playlist with every reference rewritten to
 // this server. Playlists are a moving window, so they stay uncacheable.
 func (s *Server) writePlaylist(w http.ResponseWriter, r *http.Request, sess *session.Session, body []byte, generation string) {
-	out := rewriteLocalPlaylist(body, playLivePrefix(r, sess.Channel.ID), extractToken(r), generation)
+	out := rewriteLocalPlaylist(body, playLivePrefix(r, sess.Channel.ID), extractPlayToken(r), generation)
 	s.deps.Observe.AddBytesOut(int64(len(out)))
 	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 	w.Header().Set("Cache-Control", "no-store")
@@ -838,7 +854,7 @@ func (s *Server) handlePlayUpstream(w http.ResponseWriter, r *http.Request) {
 			writeAppErr(w, apperr.New(apperr.CodeUpstream, 502, "playlist too large"))
 			return
 		}
-		token := extractToken(r)
+		token := extractPlayToken(r)
 		prefix := "/v1/play/" + id + "/u/"
 		if t := r.PathValue("token"); t != "" && accesstoken.Valid(t) {
 			prefix = "/p/" + t + "/play/" + id + "/u/"
@@ -913,7 +929,7 @@ func claimsFrom(r *http.Request) auth.Claims {
 
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		tok := extractToken(r)
+		tok := auth.BearerToken(r.Header.Get("Authorization"))
 		c, err := s.deps.Auth.Parse(tok)
 		if err != nil {
 			writeAppErr(w, err)
@@ -933,7 +949,7 @@ func (s *Server) requirePlayAuth(next http.HandlerFunc) http.HandlerFunc {
 			next(w, r)
 			return
 		}
-		c, err := s.deps.Auth.Parse(extractToken(r))
+		c, err := s.deps.Auth.Parse(extractPlayToken(r))
 		if err != nil {
 			writeAppErr(w, err)
 			return
@@ -954,13 +970,6 @@ func (s *Server) authorizeChannel(r *http.Request, channelID string) error {
 		return auth.ErrForbiddenChannel
 	}
 	return nil
-}
-
-func extractToken(r *http.Request) string {
-	if t := r.URL.Query().Get("token"); t != "" {
-		return t
-	}
-	return auth.BearerToken(r.Header.Get("Authorization"))
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

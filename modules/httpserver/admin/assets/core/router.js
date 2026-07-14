@@ -1,4 +1,5 @@
 import { subscribe } from "/admin/assets/core/store.js";
+import { resolveAdminRoute } from "/admin/assets/core/route-model.js";
 
 export const SECTIONS = {
   overview: { label: "总览", icon: "layout-dashboard" },
@@ -9,13 +10,14 @@ export const SECTIONS = {
   settings: { label: "系统设置", icon: "settings" },
 };
 
-const DEFAULT_SECTION = "overview";
-
 const routes = new Map();
 let outlet = null;
 let onBeforeLeave = async () => true;
 let onAfterRender = () => {};
 let onLoading = () => {};
+let onError = () => {};
+let onUnauthenticated = () => {};
+let isAuthenticated = () => true;
 
 // Every navigation gets a fresh epoch. Async work started by a previous view
 // checks ctx.alive() before touching the DOM, so a late poll or fetch can never
@@ -34,16 +36,16 @@ export function configureRouter(options) {
   onBeforeLeave = options.onBeforeLeave || onBeforeLeave;
   onAfterRender = options.onAfterRender || onAfterRender;
   onLoading = options.onLoading || onLoading;
+  onError = options.onError || onError;
+  onUnauthenticated = options.onUnauthenticated || onUnauthenticated;
+  isAuthenticated = options.isAuthenticated || isAuthenticated;
 }
 
 export function currentRoute() {
-  const path = location.pathname.replace(/\/+$/, "");
-  const segments = path.split("/").filter(Boolean);
-  const section = segments[1] && routes.has(segments[1]) ? segments[1] : DEFAULT_SECTION;
+  const resolved = resolveAdminRoute(location.pathname, location.search, new Set(routes.keys()));
   return {
-    section,
-    id: segments[2] ? decodeURIComponent(segments[2]) : "",
-    query: new URLSearchParams(location.search),
+    ...resolved,
+    query: new URLSearchParams(resolved.query),
   };
 }
 
@@ -61,7 +63,11 @@ export async function navigate(path, { replace = false } = {}) {
   dirty = false;
   if (replace) history.replaceState({}, "", path);
   else history.pushState({}, "", path);
-  await renderRoute();
+  try {
+    await renderRoute();
+  } catch (error) {
+    onError(error);
+  }
 }
 
 function teardown() {
@@ -76,6 +82,10 @@ function teardown() {
 }
 
 export async function renderRoute() {
+  if (!isAuthenticated()) {
+    onUnauthenticated();
+    return;
+  }
   epoch += 1;
   const localEpoch = epoch;
   teardown();
@@ -84,11 +94,8 @@ export async function renderRoute() {
   disposers.push(() => controller.abort());
 
   const route = currentRoute();
-  const known = routes.has(route.section);
-  if (!known || (!location.pathname.startsWith("/admin/") && location.pathname !== "/admin")) {
-    history.replaceState({}, "", `/admin/${DEFAULT_SECTION}`);
-  }
-  currentURL = location.pathname + location.search;
+  if (location.pathname + location.search !== route.url) history.replaceState({}, "", route.url);
+  currentURL = route.url;
 
   const ctx = {
     ...route,
@@ -102,7 +109,7 @@ export async function renderRoute() {
   };
 
   onAfterRender(route);
-  const render = routes.get(route.section) || routes.get(DEFAULT_SECTION);
+  const render = routes.get(route.section);
   await mount(render, ctx, localEpoch);
 }
 
@@ -130,7 +137,7 @@ export function startRouter() {
     if (!link || event.defaultPrevented) return;
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
-    navigate(link.getAttribute("href"));
+    navigate(link.getAttribute("href")).catch(onError);
   });
 
   window.addEventListener("popstate", async () => {
@@ -139,7 +146,11 @@ export function startRouter() {
       return;
     }
     dirty = false;
-    await renderRoute();
+    try {
+      await renderRoute();
+    } catch (error) {
+      onError(error);
+    }
   });
 
   window.addEventListener("beforeunload", (event) => {

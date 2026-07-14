@@ -17,7 +17,7 @@ const BLANK = {
 };
 
 export async function renderChannelDetail(ctx) {
-  const isNew = ctx.id === "new";
+  const isNew = !ctx.id && ctx.query.get("new") === "1";
   const [, detail, matchData, sourceData] = await Promise.all([
     loadCatalog({ signal: ctx.signal }),
     isNew ? null : endpoints.channel(ctx.id, ctx.signal),
@@ -72,7 +72,7 @@ function buildPicker(currentID, isNew) {
       items.unshift(
         h(
           "a",
-          { class: "picker-item", href: "/admin/channels/new", "data-route": true, "aria-current": "page" },
+          { class: "picker-item", href: "/admin/channels?new=1", "data-route": true, "aria-current": "page" },
           h("span", { class: "avatar avatar-channel", style: { width: "32px", height: "32px" } }, icon("plus", 16)),
           h("span", { class: "identity-copy" }, h("strong", { text: vt("channels.add") }), h("small", { text: vt("channel.notCreated") })),
         ),
@@ -91,7 +91,7 @@ function buildPicker(currentID, isNew) {
     card({
       title: vt("channels.title"),
       description: vt("common.channels", { count: store.channels.length }),
-      action: h("a", { class: "icon-button is-outline", href: "/admin/channels/new", "data-route": true, title: vt("channels.add"), "aria-label": vt("channels.add") }, icon("plus", 18)),
+      action: h("a", { class: "icon-button is-outline", href: "/admin/channels?new=1", "data-route": true, title: vt("channels.add"), "aria-label": vt("channels.add") }, icon("plus", 18)),
       body: frag(filter, list),
     }),
   );
@@ -100,7 +100,13 @@ function buildPicker(currentID, isNew) {
 function buildEditor(ctx, channel, revision, isNew, epg) {
   const form = h("form", { class: "channel-form", novalidate: true });
 
-  const idInput = input("id", channel.id, { required: true, disabled: !isNew, placeholder: "channel-1" });
+  const idInput = input("id", channel.id, {
+    required: true,
+    disabled: !isNew,
+    placeholder: "channel-1",
+    maxlength: 64,
+    pattern: "[\\p{L}\\p{N}][\\p{L}\\p{N}._-]{0,63}",
+  });
   const titleInput = input("title", channel.title, { required: true });
   const groupInput = input("group", channel.group);
   const logoInput = input("logo_url", channel.logo_url, { type: "url", placeholder: "https://…" });
@@ -226,6 +232,12 @@ function buildEditor(ctx, channel, revision, isNew, epg) {
       for (const [control] of missing) control.setAttribute("aria-invalid", "true");
       missing[0][0].focus();
       toast(vt("channel.required"), vt("channel.requiredHint"), "danger");
+      return;
+    }
+    if (isNew && !/^[\p{L}\p{N}][\p{L}\p{N}._-]{0,63}$/u.test(body.id)) {
+      idInput.setAttribute("aria-invalid", "true");
+      idInput.focus();
+      toast(vt("channel.invalidID"), vt("channel.invalidIDHint"), "danger");
       return;
     }
     if (!isValidSourceURL(body.source_url)) {

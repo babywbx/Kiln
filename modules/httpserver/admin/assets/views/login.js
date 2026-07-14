@@ -1,5 +1,5 @@
 import { h } from "/admin/assets/core/dom.js";
-import { endpoints, remembersSession, saveSession } from "/admin/assets/core/api.js";
+import { clearSession, endpoints, remembersSession, saveSession } from "/admin/assets/core/api.js";
 import { LOCALE_OPTIONS } from "/admin/assets/core/i18n.js";
 import { store } from "/admin/assets/core/store.js";
 import { button } from "/admin/assets/ui/kit.js";
@@ -130,6 +130,7 @@ export function renderLogin(onSuccess, options) {
     try {
       const result = await endpoints.login({ username: username.value.trim(), password: password.value });
       if (result.role !== "admin") {
+        clearSession({ broadcast: false });
         formErrorKey = "login.error.adminRequired";
         password.value = "";
         requestAnimationFrame(() => username.focus());

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -127,6 +128,19 @@ preferred_audio_languages = ["yue", "zh"]
 	}
 	if cfg2.Server.Listen != "0.0.0.0:8081" || cfg2.Channels[0].ID != "c2" {
 		t.Fatalf("%+v", cfg2)
+	}
+}
+
+func TestValidateChannelID(t *testing.T) {
+	for _, id := range []string{"channel-1", "news-hd", "channel_2", "sports.us", "频道", "news hd", "~new", " news", strings.Repeat("a", 300)} {
+		if err := ValidateChannelID(id); err != nil {
+			t.Fatalf("ValidateChannelID(%q) = %v", id, err)
+		}
+	}
+	for _, id := range []string{"", ".", "..", "news/hd", `news\hd`, "news\x00hd"} {
+		if err := ValidateChannelID(id); err == nil {
+			t.Fatalf("ValidateChannelID(%q) succeeded", id)
+		}
 	}
 }
 

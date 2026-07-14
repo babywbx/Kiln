@@ -1531,8 +1531,8 @@ func (db *DB) ListSettings() (map[string]string, error) {
 }
 
 func ValidateChannel(ch config.Channel, upstreams []config.Upstream) error {
-	if ch.ID == "" {
-		return fmt.Errorf("id required")
+	if err := config.ValidateChannelID(ch.ID); err != nil {
+		return fmt.Errorf("id: %w", err)
 	}
 	if ch.SourceURL != "" {
 		if err := config.ValidateSourceURL(ch.SourceURL); err != nil {

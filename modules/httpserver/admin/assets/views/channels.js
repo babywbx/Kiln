@@ -150,7 +150,7 @@ export async function renderChannels(ctx) {
   const makeEmpty = () =>
     query
       ? emptyState(vt("channels.noMatch"), vt("channels.noMatchHint"), button(vt("channels.clearFilter"), { onClick: clearFilter }))
-      : emptyState(vt("channels.empty"), vt("channels.emptyHint"), linkButton(vt("channels.add"), "/admin/channels/new", { kind: "primary", iconName: "plus" }));
+      : emptyState(vt("channels.empty"), vt("channels.emptyHint"), linkButton(vt("channels.add"), "/admin/channels?new=1", { kind: "primary", iconName: "plus" }));
 
   const buildTable = () => {
     for (const entry of entries) {
@@ -227,7 +227,7 @@ export async function renderChannels(ctx) {
       button(vt("channels.disableAll"), { iconName: "ban", disabled: !store.channels.length, onClick: () => setAll(ctx, true) }),
       button(vt("channels.enableAll"), { iconName: "power", disabled: !store.channels.length, onClick: () => setAll(ctx, false) }),
       button(vt("channels.importM3U"), { iconName: "upload", onClick: () => openImportModal(ctx) }),
-      linkButton(vt("channels.add"), "/admin/channels/new", { kind: "primary", iconName: "plus" }),
+      linkButton(vt("channels.add"), "/admin/channels?new=1", { kind: "primary", iconName: "plus" }),
     ]),
     h("div", { class: "toolbar" }, h("div", { class: "search-field" }, icon("search", 18), filter), count),
     card({

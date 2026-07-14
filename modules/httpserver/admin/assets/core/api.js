@@ -1,5 +1,6 @@
 const TOKEN_KEY = "kiln.admin.token";
 const EXPIRES_KEY = "kiln.admin.expires";
+const ISSUED_KEY = "kiln.admin.issued";
 
 export class ApiError extends Error {
   constructor(message, details = {}) {
@@ -15,59 +16,278 @@ export class ApiError extends Error {
   }
 }
 
-const session = { token: "" };
+const session = { token: "", expiresAt: "", issuedAt: 0, authenticated: false, remember: false };
 let onUnauthorized = () => {};
+let onSessionAvailable = () => {};
+let onExternalLogout = () => {};
+let sessionGeneration = 0;
+let lastSignOutAt = 0;
+const sessionWaiters = new Map();
+const sessionChannel = typeof window !== "undefined" && "BroadcastChannel" in window ? new BroadcastChannel("kiln.admin.session") : null;
+
+function browserStorage(name) {
+  try {
+    return window[name];
+  } catch {
+    return null;
+  }
+}
+
+function readStorage(storage, key) {
+  try {
+    return storage?.getItem(key) || "";
+  } catch {
+    return "";
+  }
+}
+
+function writeStorage(storage, key, value) {
+  try {
+    storage?.setItem(key, value);
+  } catch {
+    /* storage may be unavailable in privacy-restricted browsers */
+  }
+}
+
+function removeStorage(storage, key) {
+  try {
+    storage?.removeItem(key);
+  } catch {
+    /* storage may be unavailable in privacy-restricted browsers */
+  }
+}
 
 export function setUnauthorizedHandler(fn) {
   onUnauthorized = fn;
 }
 
+export function setSessionAvailableHandler(fn) {
+  onSessionAvailable = fn;
+}
+
+export function setExternalLogoutHandler(fn) {
+  onExternalLogout = fn;
+}
+
+function resetSession() {
+  session.token = "";
+  session.expiresAt = "";
+  session.issuedAt = 0;
+  session.authenticated = false;
+  session.remember = false;
+  for (const storage of [browserStorage("localStorage"), browserStorage("sessionStorage")]) {
+    removeStorage(storage, TOKEN_KEY);
+    removeStorage(storage, EXPIRES_KEY);
+    removeStorage(storage, ISSUED_KEY);
+  }
+}
+
+function cancelSessionWaiters() {
+  for (const waiter of sessionWaiters.values()) {
+    clearTimeout(waiter.initialTimer);
+    clearTimeout(waiter.lateTimer);
+    clearTimeout(waiter.cleanupTimer);
+    if (!waiter.settled) {
+      waiter.settled = true;
+      waiter.resolve(false);
+    }
+  }
+  sessionWaiters.clear();
+}
+
+function adoptSharedSession(message) {
+  if (!message.token) return false;
+  const issuedAt = Number(message.issuedAt || 0);
+  if (!Number.isFinite(issuedAt) || issuedAt <= Math.max(lastSignOutAt, session.issuedAt)) return false;
+  const expiresAt = Date.parse(message.expiresAt || "");
+  if (Number.isFinite(expiresAt) && expiresAt <= Date.now()) return false;
+  resetSession();
+  const storage = browserStorage(message.remember ? "localStorage" : "sessionStorage");
+  writeStorage(storage, TOKEN_KEY, message.token);
+  writeStorage(storage, EXPIRES_KEY, message.expiresAt || "");
+  writeStorage(storage, ISSUED_KEY, String(issuedAt));
+  session.token = message.token;
+  session.expiresAt = message.expiresAt || "";
+  session.issuedAt = issuedAt;
+  session.authenticated = true;
+  session.remember = Boolean(message.remember);
+  return true;
+}
+
+sessionChannel?.addEventListener("message", (event) => {
+  const message = event.data || {};
+  if (message.type === "request" && session.token) {
+    sessionChannel.postMessage({
+      type: "session",
+      requestId: message.requestId,
+      token: session.token,
+      expiresAt: session.expiresAt,
+      issuedAt: session.issuedAt,
+      remember: session.remember,
+    });
+    return;
+  }
+  if (message.type === "session" && sessionWaiters.has(message.requestId)) {
+    const waiter = sessionWaiters.get(message.requestId);
+    waiter.candidates.push(message);
+    if (waiter.completed && !waiter.lateTimer) {
+      waiter.lateTimer = setTimeout(async () => {
+        clearTimeout(waiter.cleanupTimer);
+        sessionWaiters.delete(message.requestId);
+        if (!session.authenticated && await adoptNewestSession(waiter.candidates, waiter.generation)) onSessionAvailable();
+      }, 75);
+    }
+    return;
+  }
+  if (message.type === "signed-in") {
+    const generation = sessionGeneration;
+    validateAndAdoptSharedSession(message, generation).then((adopted) => {
+      if (adopted) onSessionAvailable();
+    });
+  }
+  if (message.type === "signed-out") {
+    const signedOutAt = Number(message.issuedAt || Date.now());
+    if (Number.isFinite(signedOutAt) && signedOutAt < session.issuedAt) return;
+    lastSignOutAt = Math.max(lastSignOutAt, signedOutAt);
+    sessionGeneration += 1;
+    cancelSessionWaiters();
+    resetSession();
+    onExternalLogout();
+  }
+});
+
 function activeStorage() {
-  return sessionStorage.getItem(TOKEN_KEY) ? sessionStorage : localStorage;
+  const tab = browserStorage("sessionStorage");
+  return readStorage(tab, TOKEN_KEY) ? tab : browserStorage("localStorage");
 }
 
 export function loadSession() {
   const storage = activeStorage();
-  const token = storage.getItem(TOKEN_KEY) || "";
-  const expiresAt = Date.parse(storage.getItem(EXPIRES_KEY) || "");
+  const persistentStorage = browserStorage("localStorage");
+  const token = readStorage(storage, TOKEN_KEY);
+  const expiresAt = Date.parse(readStorage(storage, EXPIRES_KEY));
+  const storedIssuedAt = Number(readStorage(storage, ISSUED_KEY));
   if (token && Number.isFinite(expiresAt) && expiresAt <= Date.now()) {
-    clearSession();
+    clearSession({ broadcast: false });
     return "";
   }
   session.token = token;
+  session.expiresAt = Number.isFinite(expiresAt) ? new Date(expiresAt).toISOString() : "";
+  session.issuedAt = Number.isFinite(storedIssuedAt) && storedIssuedAt > 0 ? storedIssuedAt : tokenIssuedAt(token) * 1000;
+  session.authenticated = Boolean(token);
+  session.remember = Boolean(token && storage === persistentStorage);
   return token;
 }
 
 export function saveSession(token, expiresAt, remember) {
-  clearSession();
-  const storage = remember ? localStorage : sessionStorage;
-  storage.setItem(TOKEN_KEY, token);
-  storage.setItem(EXPIRES_KEY, expiresAt || "");
+  const issuedAt = nextEventTime();
+  sessionGeneration += 1;
+  cancelSessionWaiters();
+  resetSession();
+  const storage = browserStorage(remember ? "localStorage" : "sessionStorage");
+  writeStorage(storage, TOKEN_KEY, token);
+  writeStorage(storage, EXPIRES_KEY, expiresAt || "");
+  writeStorage(storage, ISSUED_KEY, String(issuedAt));
   session.token = token;
+  session.expiresAt = expiresAt || "";
+  session.issuedAt = issuedAt;
+  session.authenticated = true;
+  session.remember = remember;
+  sessionChannel?.postMessage({ type: "signed-in", token, expiresAt: expiresAt || "", issuedAt, remember });
 }
 
-export function clearSession() {
-  session.token = "";
-  for (const storage of [localStorage, sessionStorage]) {
-    storage.removeItem(TOKEN_KEY);
-    storage.removeItem(EXPIRES_KEY);
-  }
+export function clearSession({ broadcast = true } = {}) {
+  const issuedAt = nextEventTime();
+  lastSignOutAt = issuedAt;
+  sessionGeneration += 1;
+  cancelSessionWaiters();
+  resetSession();
+  if (broadcast) sessionChannel?.postMessage({ type: "signed-out", issuedAt });
 }
 
 export function hasSession() {
-  return Boolean(session.token);
+  return session.authenticated;
 }
 
 export function remembersSession() {
-  return Boolean(localStorage.getItem(TOKEN_KEY));
+  return Boolean(readStorage(browserStorage("localStorage"), TOKEN_KEY));
+}
+
+export function requestSharedSession(timeoutMs = 200) {
+  if (session.authenticated || !sessionChannel) return Promise.resolve(session.authenticated);
+  const requestId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+  return new Promise((resolve) => {
+    const waiter = {
+      candidates: [], completed: false, settled: false, resolve,
+      generation: sessionGeneration,
+      initialTimer: null, lateTimer: null, cleanupTimer: null,
+    };
+    waiter.initialTimer = setTimeout(async () => {
+      if (waiter.candidates.length) {
+        sessionWaiters.delete(requestId);
+        waiter.settled = true;
+        resolve(await adoptNewestSession(waiter.candidates, waiter.generation));
+        return;
+      }
+      waiter.completed = true;
+      waiter.cleanupTimer = setTimeout(() => sessionWaiters.delete(requestId), 10_000);
+      waiter.settled = true;
+      resolve(false);
+    }, timeoutMs);
+    sessionWaiters.set(requestId, waiter);
+    sessionChannel.postMessage({ type: "request", requestId });
+  });
+}
+
+async function adoptNewestSession(candidates, expectedGeneration) {
+  candidates.sort((left, right) => Number(right.issuedAt || 0) - Number(left.issuedAt || 0));
+  for (const candidate of candidates) {
+    if (await validateAndAdoptSharedSession(candidate, expectedGeneration)) return true;
+  }
+  return false;
+}
+
+async function validateAndAdoptSharedSession(candidate, expectedGeneration) {
+  if (expectedGeneration !== sessionGeneration) return false;
+  if (!candidate.token) return false;
+  const expiresAt = Date.parse(candidate.expiresAt || "");
+  if (Number.isFinite(expiresAt) && expiresAt <= Date.now()) return false;
+  try {
+    const response = await fetch("/v1/me", {
+      headers: { Authorization: `Bearer ${candidate.token}` },
+      cache: "no-store",
+    });
+    if (!response.ok) return false;
+    const account = await response.json();
+    if (account?.role !== "admin") return false;
+    if (expectedGeneration !== sessionGeneration) return false;
+    return adoptSharedSession(candidate);
+  } catch {
+    return false;
+  }
+}
+
+function tokenIssuedAt(token) {
+  try {
+    const payload = token.split(".")[1].replaceAll("-", "+").replaceAll("_", "/");
+    const padded = payload.padEnd(Math.ceil(payload.length / 4) * 4, "=");
+    return Number(JSON.parse(atob(padded)).iat || 0);
+  } catch {
+    return 0;
+  }
+}
+
+function nextEventTime() {
+  return Math.max(Date.now(), session.issuedAt + 1, lastSignOutAt + 1);
 }
 
 export async function api(path, options = {}) {
-  const headers = new Headers(options.headers || {});
-  if (options.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  const { suppressUnauthorized = false, ...fetchOptions } = options;
+  const headers = new Headers(fetchOptions.headers || {});
+  if (fetchOptions.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   if (session.token) headers.set("Authorization", `Bearer ${session.token}`);
 
-  const response = await fetch(path, { ...options, headers, cache: "no-store" });
+  const response = await fetch(path, { ...fetchOptions, headers, cache: "no-store" });
   const requestId = response.headers.get("X-Request-ID") || "";
   const text = await response.text();
   let data = null;
@@ -78,13 +298,14 @@ export async function api(path, options = {}) {
   }
 
   if (!response.ok) {
-    if (response.status === 401 && session.token) onUnauthorized();
+    if (response.status === 401 && !suppressUnauthorized) onUnauthorized();
     throw new ApiError(data?.error?.message || response.statusText || "请求失败", {
       code: data?.error?.code,
       status: response.status,
       requestId,
     });
   }
+  session.authenticated = true;
   return data;
 }
 
@@ -93,8 +314,8 @@ export function isAbort(error) {
 }
 
 export const endpoints = {
-  login: (body) => api("/v1/auth/login", { method: "POST", body: JSON.stringify(body) }),
-  me: (signal) => api("/v1/me", { signal }),
+  login: (body) => api("/v1/auth/login", { method: "POST", body: JSON.stringify(body), suppressUnauthorized: true }),
+  me: (signal) => api("/v1/me", { signal, suppressUnauthorized: true }),
   updateCredentials: (body) => api("/v1/me/credentials", { method: "PUT", body: JSON.stringify(body) }),
   status: (signal) => api("/v1/status", { signal }),
 

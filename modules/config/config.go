@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/pelletier/go-toml/v2"
 )
@@ -563,8 +564,8 @@ func (c File) validate() error {
 	}
 	seen := map[string]struct{}{}
 	for _, ch := range c.Channels {
-		if ch.ID == "" {
-			return fmt.Errorf("channel id is required")
+		if err := ValidateChannelID(ch.ID); err != nil {
+			return fmt.Errorf("channel id %q invalid: %w", ch.ID, err)
 		}
 		if _, ok := seen[ch.ID]; ok {
 			return fmt.Errorf("duplicate channel id %q", ch.ID)
@@ -670,6 +671,22 @@ func (c File) validate() error {
 			if _, ok := proxyIDs[source.Proxy]; !ok {
 				return fmt.Errorf("epg source %q references unknown proxy %q", source.ID, source.Proxy)
 			}
+		}
+	}
+	return nil
+}
+
+// ValidateChannelID keeps IDs safe for URL segments and on-disk session paths.
+func ValidateChannelID(id string) error {
+	if id == "" {
+		return fmt.Errorf("is required")
+	}
+	if id == "." || id == ".." {
+		return fmt.Errorf("uses a reserved value")
+	}
+	for _, char := range id {
+		if char == '/' || char == '\\' || unicode.IsControl(char) {
+			return fmt.Errorf("must not contain path separators or control characters")
 		}
 	}
 	return nil

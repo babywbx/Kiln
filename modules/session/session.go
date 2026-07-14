@@ -448,6 +448,9 @@ type dashStart struct {
 }
 
 func (m *Manager) launchDash(s *Session) (*dashStart, error) {
+	if err := config.ValidateChannelID(s.Channel.ID); err != nil {
+		return nil, apperr.Wrap(apperr.CodeInvalid, 400, "invalid channel id", err)
+	}
 	keys, err := channelKeys(s.Channel)
 	if err != nil {
 		return nil, apperr.Wrap(apperr.CodeInvalid, 400, "load keys failed", err)
