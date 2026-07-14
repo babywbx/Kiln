@@ -1672,6 +1672,13 @@ func (n *Native) advanceTrack(ctx context.Context, pres *mpd.Presentation, ts *t
 	if len(segs) == 0 {
 		return nil
 	}
+	if pres.Dynamic && ts.init.Track.Kind == cmaf.KindText && !ts.hasLast && !ts.forceDiscontinuity {
+		pending := n.startWindow(pres, segs)
+		if ts != n.video {
+			pending = n.holdBehindVideo(ts, pending)
+		}
+		return n.publishSegments(ctx, ts, pending)
+	}
 
 	if pres.Dynamic {
 		if reason, ok := n.needsReanchor(ts, segs); ok {

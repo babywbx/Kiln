@@ -3,9 +3,11 @@ package packager
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,6 +16,90 @@ import (
 	"github.com/babywbx/kiln/modules/packager/hls"
 	"github.com/babywbx/kiln/modules/packager/mpd"
 )
+
+type subtitleLiveOrigin struct {
+	*liveOrigin
+	init    []byte
+	segment []byte
+	fetches atomic.Int64
+}
+
+func (o *subtitleLiveOrigin) manifest() []byte {
+	base := o.liveOrigin.manifest()
+	base = bytes.Replace(base, []byte(`minimumUpdatePeriod="PT1S"`), []byte(`minimumUpdatePeriod="PT1H"`), 1)
+	text := fmt.Sprintf(`
+    <AdaptationSet contentType="text" mimeType="application/mp4" codecs="stpp" lang="zh">
+      <SegmentTemplate timescale="%d" initialization="s/init.m4s" media="s/seg-$Number$.m4s" startNumber="1">
+        <SegmentTimeline><S t="%d" d="%d" r="%d"/></SegmentTimeline>
+      </SegmentTemplate>
+      <Representation id="s0" bandwidth="10000"/>
+    </AdaptationSet>`, liveTimescale, o.timelineStart, liveSegTicks, o.videoCount-1)
+	return bytes.Replace(base, []byte("\n  </Period>"), append([]byte(text), []byte("\n  </Period>")...), 1)
+}
+
+func (o *subtitleLiveOrigin) Fetch(ctx context.Context, rawURL string) ([]byte, string, error) {
+	switch {
+	case strings.Contains(rawURL, "stream.mpd"):
+		return o.manifest(), rawURL, nil
+	case strings.Contains(rawURL, "/s/init.m4s"):
+		return bytes.Clone(o.init), rawURL, nil
+	case strings.Contains(rawURL, "/s/seg-"):
+		o.fetches.Add(1)
+		return bytes.Clone(o.segment), rawURL, nil
+	default:
+		return o.liveOrigin.Fetch(ctx, rawURL)
+	}
+}
+
+func TestDelayedDynamicSubtitleStartsAtLiveWindow(t *testing.T) {
+	base := newLiveOrigin(t)
+	base.videoCount = 12
+	base.audioCount = 12
+	initBytes, trackID := nativeSTPPInit(t)
+	origin := &subtitleLiveOrigin{
+		liveOrigin: base,
+		init:       initBytes,
+		segment:    nativeSTPPSegment(t, trackID, []byte(`<tt xmlns="http://www.w3.org/ns/ttml"><body><div><p begin="0s" dur="1s">Live</p></div></body></tt>`)),
+	}
+	clock := newClock()
+	clock.advance(18 * time.Second)
+	job, err := StartNative(context.Background(), Options{
+		ManifestURL:   "https://origin.example.com/live/stream.mpd",
+		Dir:           t.TempDir(),
+		Keys:          keys(t),
+		Fetcher:       origin,
+		StartSegments: 3,
+		PlaylistSize:  8,
+		ReanchorAfter: 30 * time.Second,
+		Now:           clock.now,
+	})
+	if err != nil {
+		t.Fatalf("StartNative: %v", err)
+	}
+	t.Cleanup(func() { _ = job.Stop() })
+
+	if _, ok := job.Publication().Playlist(hls.MasterName); !ok {
+		t.Fatal("master playlist waited for the optional subtitle")
+	}
+
+	presentation, err := mpd.Parse(origin.manifest(), "https://origin.example.com/live/stream.mpd")
+	if err != nil {
+		t.Fatalf("parse manifest: %v", err)
+	}
+	if err := job.advance(context.Background(), presentation); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	playlist, ok := job.Publication().Playlist("subtitle-zh-hant.m3u8")
+	if !ok {
+		t.Fatal("subtitle playlist was not published")
+	}
+	if got := strings.Count(string(playlist), ".vtt"); got != 3 {
+		t.Fatalf("first subtitle playlist has %d segments, want the 3-segment live window:\n%s", got, playlist)
+	}
+	if got := origin.fetches.Load(); got != 3 {
+		t.Fatalf("fetched %d historical subtitle segments, want 3", got)
+	}
+}
 
 func TestNativeConvertsSTPPFragmentToPublishedWebVTT(t *testing.T) {
 	t.Parallel()
