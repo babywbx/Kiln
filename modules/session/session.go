@@ -2,11 +2,16 @@ package session
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"fmt"
 	"log/slog"
 	"maps"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/babywbx/kiln/modules/apperr"
@@ -25,7 +30,24 @@ const (
 	restartBaseDelay  = 2 * time.Second
 	restartMaxDelay   = 30 * time.Second
 	restartResetAfter = 90 * time.Second
+	shutdownTimeout   = 15 * time.Second
 )
+
+type RestartPolicy struct {
+	MaxAttempts int
+	BaseDelay   time.Duration
+	MaxDelay    time.Duration
+	ResetAfter  time.Duration
+}
+
+func defaultRestartPolicy() RestartPolicy {
+	return RestartPolicy{
+		MaxAttempts: maxDashRestarts,
+		BaseDelay:   restartBaseDelay,
+		MaxDelay:    restartMaxDelay,
+		ResetAfter:  restartResetAfter,
+	}
+}
 
 // spawnGate bounds concurrent packager launches. It is deliberately scoped to
 // the launch itself: the previous global semaphore was held across the whole
@@ -60,10 +82,16 @@ type Manager struct {
 	spawn   spawnGate
 	pack    packager.Packager
 
-	mu       sync.Mutex
-	sessions map[string]*Session
-	inflight map[string]*startWait
-	closing  bool
+	mu              sync.Mutex
+	sessions        map[string]*Session
+	inflight        map[string]*startWait
+	closing         bool
+	restart         RestartPolicy
+	watchers        sync.WaitGroup
+	lifecycleCtx    context.Context
+	lifecycleCancel context.CancelFunc
+	shutdownOnce    sync.Once
+	shutdownDone    chan struct{}
 }
 
 type startWait struct {
@@ -80,48 +108,67 @@ type Session struct {
 	Upstream  config.Upstream
 	Mode      string
 	StartedAt time.Time
-	LastTouch time.Time
-	WorkDir   string
-	Errors    int
-	LastError string
-	// Engine is the resolved engine; PackMode is that engine's internal mode.
-	// They are separate axes: reusing PackMode for both would silently change
-	// the values existing status API consumers already see.
-	Engine         string
-	PackMode       string
-	FallbackReason string
 
-	job      packager.Job
-	cancel   context.CancelFunc
-	ctx      context.Context
-	restarts int
-	lastOK   time.Time
+	mu             sync.RWMutex
+	lastTouch      time.Time
+	workDir        string
+	errors         int
+	lastError      string
+	engine         string
+	packMode       string
+	fallbackReason string
+	state          string
+	job            packager.Job
+	publication    packager.Publication
+	generation     string
+	restarts       int
+	lastOK         time.Time
+
+	cancel context.CancelFunc
+	ctx    context.Context
 }
 
 // Publication exposes the published media. The HTTP layer goes through this
 // and never guesses the on-disk layout.
 func (s *Session) Publication() packager.Publication {
-	if s.job == nil {
-		return nil
-	}
-	return s.job.Publication()
+	publication, _ := s.PublicationSnapshot()
+	return publication
+}
+
+// PublicationSnapshot returns one atomic view of the active publication and
+// its cache-safe generation.
+func (s *Session) PublicationSnapshot() (packager.Publication, string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.publication, s.generation
+}
+
+func (s *Session) State() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.state
 }
 
 func NewManager(cat *catalog.Service, pullClient *pull.Client, obs *observe.Service, dataDir string, ff config.FFmpeg, log *slog.Logger, egress *proxyegress.Router) *Manager {
 	if log == nil {
 		log = slog.Default()
 	}
+	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
 	m := &Manager{
-		cat:      cat,
-		pull:     pullClient,
-		obs:      obs,
-		egress:   egress,
-		dataDir:  dataDir,
-		ffmpeg:   ff,
-		log:      log,
-		spawn:    newSpawnGate(ff.MaxStarts),
-		sessions: map[string]*Session{},
-		inflight: map[string]*startWait{},
+		cat:             cat,
+		pull:            pullClient,
+		obs:             obs,
+		egress:          egress,
+		dataDir:         dataDir,
+		ffmpeg:          ff,
+		log:             log,
+		spawn:           newSpawnGate(ff.MaxStarts),
+		sessions:        map[string]*Session{},
+		inflight:        map[string]*startWait{},
+		restart:         defaultRestartPolicy(),
+		lifecycleCtx:    lifecycleCtx,
+		lifecycleCancel: lifecycleCancel,
+		shutdownDone:    make(chan struct{}),
 	}
 	m.pack = m.newPackager()
 	return m
@@ -151,12 +198,53 @@ func (m *Manager) newPackager() packager.Packager {
 	return packager.NewAdaptivePackager(native, ffmpeg, m.log)
 }
 
-// SetPackager replaces the engine, for tests that must not launch ffmpeg.
-func (m *Manager) SetPackager(p packager.Packager) { m.pack = p }
+// SetPackager replaces the engine before sessions are started.
+func (m *Manager) SetPackager(p packager.Packager) {
+	m.mu.Lock()
+	m.pack = p
+	m.mu.Unlock()
+}
+
+// SetRestartPolicy configures the restart state machine. Zero values retain
+// production defaults, which keeps partial configuration safe.
+func (m *Manager) SetRestartPolicy(policy RestartPolicy) {
+	defaults := defaultRestartPolicy()
+	if policy.MaxAttempts <= 0 {
+		policy.MaxAttempts = defaults.MaxAttempts
+	}
+	if policy.BaseDelay <= 0 {
+		policy.BaseDelay = defaults.BaseDelay
+	}
+	if policy.MaxDelay <= 0 {
+		policy.MaxDelay = defaults.MaxDelay
+	}
+	if policy.MaxDelay < policy.BaseDelay {
+		policy.MaxDelay = policy.BaseDelay
+	}
+	if policy.ResetAfter <= 0 {
+		policy.ResetAfter = defaults.ResetAfter
+	}
+	m.mu.Lock()
+	m.restart = policy
+	m.mu.Unlock()
+}
 
 func (m *Manager) Start(ctx context.Context) {
-	go m.reaper(ctx)
-	go m.autostart(ctx)
+	m.mu.Lock()
+	if m.closing {
+		m.mu.Unlock()
+		return
+	}
+	m.watchers.Add(2)
+	m.mu.Unlock()
+	go func() {
+		defer m.watchers.Done()
+		m.reaper(ctx)
+	}()
+	go func() {
+		defer m.watchers.Done()
+		m.autostart(ctx)
+	}()
 }
 
 func (m *Manager) Pull() *pull.Client { return m.pull }
@@ -174,8 +262,7 @@ func (m *Manager) Warmup(channelID string) error {
 		return context.Canceled
 	}
 	if s, ok := m.sessions[channelID]; ok {
-		s.LastTouch = time.Now()
-		m.publish(s, "running")
+		m.touchAndPublish(s)
 		m.mu.Unlock()
 		return nil
 	}
@@ -207,8 +294,7 @@ func (m *Manager) Acquire(channelID string) (*Session, error) {
 			return nil, context.Canceled
 		}
 		if s, ok := m.sessions[channelID]; ok {
-			s.LastTouch = time.Now()
-			m.publish(s, "running")
+			m.touchAndPublish(s)
 			m.mu.Unlock()
 			return s, nil
 		}
@@ -221,8 +307,7 @@ func (m *Manager) Acquire(channelID string) (*Session, error) {
 			if w.sess != nil {
 				m.mu.Lock()
 				if cur, ok := m.sessions[channelID]; ok {
-					cur.LastTouch = time.Now()
-					m.publish(cur, "running")
+					m.touchAndPublish(cur)
 					m.mu.Unlock()
 					return cur, nil
 				}
@@ -259,25 +344,28 @@ func (m *Manager) beginStartLocked(ch config.Channel, src string, up config.Upst
 	sctx, cancel := context.WithCancel(context.Background())
 	now := time.Now()
 	s := &Session{
-		Channel:   ch,
-		SourceURL: src,
-		Upstream:  up,
-		Mode:      ch.Ingress,
-		StartedAt: now,
-		LastTouch: now,
-		cancel:    cancel,
-		ctx:       sctx,
+		Channel:    ch,
+		SourceURL:  src,
+		Upstream:   up,
+		Mode:       ch.Ingress,
+		StartedAt:  now,
+		lastTouch:  now,
+		state:      "starting",
+		generation: newGeneration(),
+		cancel:     cancel,
+		ctx:        sctx,
 	}
 	w := &startWait{done: make(chan struct{}), sess: s, cancel: cancel}
 	m.inflight[ch.ID] = w
-	m.publish(s, "starting")
+	m.publish(s)
 	return w, s
 }
 
 func (m *Manager) finishStart(channelID string, w *startWait, s *Session) (*Session, error) {
+	var started *dashStart
 	var startErr error
 	if s.Channel.Ingress == "dash" {
-		startErr = m.startDash(s)
+		started, startErr = m.launchDash(s)
 	}
 
 	m.mu.Lock()
@@ -286,42 +374,57 @@ func (m *Manager) finishStart(channelID string, w *startWait, s *Session) (*Sess
 		delete(m.inflight, channelID)
 	}
 	if w.stopped || !current {
-		if s.job != nil {
-			_ = s.job.Stop()
-		}
 		w.cancel()
 		w.err = context.Canceled
-		close(w.done)
 		m.mu.Unlock()
+		cleanupDashStart(started)
+		close(w.done)
 		return nil, context.Canceled
 	}
 	if startErr != nil {
 		w.cancel()
-		s.LastError = startErr.Error()
-		m.publish(s, "failed")
+		s.mu.Lock()
+		s.lastError = startErr.Error()
+		s.state = "failed"
+		s.mu.Unlock()
+		m.publish(s)
 		w.err = startErr
 		close(w.done)
 		m.mu.Unlock()
 		return nil, startErr
 	}
 	if existing, ok := m.sessions[channelID]; ok {
-		if s.job != nil {
-			_ = s.job.Stop()
-		}
 		w.cancel()
-		existing.LastTouch = time.Now()
+		m.touchAndPublish(existing)
 		w.sess = existing
-		close(w.done)
 		m.mu.Unlock()
+		cleanupDashStart(started)
+		close(w.done)
 		return existing, nil
 	}
-	s.lastOK = time.Now()
+	if started != nil {
+		s.install(started)
+	} else {
+		s.mu.Lock()
+		s.state = "running"
+		s.lastOK = time.Now()
+		s.mu.Unlock()
+	}
 	m.sessions[channelID] = s
-	m.publish(s, "running")
+	m.publish(s)
+	if started != nil && s.Channel.RestartOnFailure {
+		m.startWatcherLocked(channelID, s, started.job)
+	}
+	engine, packMode, fallbackReason := "", "", ""
+	if started != nil {
+		engine = started.engine
+		packMode = started.packMode
+		fallbackReason = started.fallbackReason
+	}
 	close(w.done)
 	m.mu.Unlock()
 	m.log.Info("session started", "channel", channelID, "ingress", s.Channel.Ingress,
-		"engine", s.Engine, "pack_mode", s.PackMode, "fallback_reason", s.FallbackReason)
+		"engine", engine, "pack_mode", packMode, "fallback_reason", fallbackReason)
 	return s, nil
 }
 
@@ -334,17 +437,23 @@ func channelKeys(ch config.Channel) ([]config.KeyPair, error) {
 	return config.LoadKeysFile(ch.KeysFile)
 }
 
-func (m *Manager) startDash(s *Session) error {
+type dashStart struct {
+	job            packager.Job
+	publication    packager.Publication
+	generation     string
+	workDir        string
+	engine         string
+	packMode       string
+	fallbackReason string
+}
+
+func (m *Manager) launchDash(s *Session) (*dashStart, error) {
 	keys, err := channelKeys(s.Channel)
 	if err != nil {
-		return apperr.Wrap(apperr.CodeInvalid, 400, "load keys failed", err)
+		return nil, apperr.Wrap(apperr.CodeInvalid, 400, "load keys failed", err)
 	}
-	work := filepath.Join(m.dataDir, "sessions", s.Channel.ID)
-	if s.job != nil {
-		_ = s.job.Stop()
-		s.job = nil
-	}
-	_ = os.RemoveAll(work)
+	generation := newGeneration()
+	work := filepath.Join(m.dataDir, "sessions", s.Channel.ID, generation)
 	headers := maps.Clone(s.Upstream.Headers)
 	if headers == nil {
 		headers = map[string]string{}
@@ -355,7 +464,10 @@ func (m *Manager) startDash(s *Session) error {
 	if s.Channel.PreferHeight > 0 {
 		prefer = s.Channel.PreferHeight
 	}
-	job, err := m.pack.Start(s.ctx, packager.Request{
+	m.mu.Lock()
+	engine := m.pack
+	m.mu.Unlock()
+	job, err := engine.Start(s.ctx, packager.Request{
 		ChannelID:               s.Channel.ID,
 		SourceURL:               s.SourceURL,
 		Keys:                    keys,
@@ -368,102 +480,163 @@ func (m *Manager) startDash(s *Session) error {
 		Log:                     m.log.With("channel", s.Channel.ID),
 	})
 	if err != nil {
-		s.LastError = err.Error()
-		return apperr.Wrap(apperr.CodeUpstream, 502, "dash packager failed", err)
+		_ = os.RemoveAll(work)
+		return nil, apperr.Wrap(apperr.CodeUpstream, 502, "dash packager failed", err)
 	}
-	s.job = job
-	s.WorkDir = work
-	s.Engine = job.Engine()
-	s.PackMode = job.PackMode()
-	s.FallbackReason = job.FallbackReason()
-	s.LastError = ""
-	s.lastOK = time.Now()
-	if s.Channel.RestartOnFailure {
-		go m.watchJob(s.Channel.ID, job)
+	if job == nil {
+		_ = os.RemoveAll(work)
+		return nil, apperr.New(apperr.CodeUpstream, 502, "dash packager returned no job")
 	}
-	return nil
+	return &dashStart{
+		job:            job,
+		publication:    job.Publication(),
+		generation:     generation,
+		workDir:        work,
+		engine:         job.Engine(),
+		packMode:       job.PackMode(),
+		fallbackReason: job.FallbackReason(),
+	}, nil
 }
 
-// watchJob owns restart policy for both engines. The adapters do not each
-// reimplement the restart budget, idle rules or backoff.
-func (m *Manager) watchJob(channelID string, job packager.Job) {
-	<-job.Done()
-	if job.IntentionalStop() {
+func (s *Session) install(started *dashStart) {
+	s.mu.Lock()
+	s.job = started.job
+	s.publication = started.publication
+	s.generation = started.generation
+	s.workDir = started.workDir
+	s.engine = started.engine
+	s.packMode = started.packMode
+	s.fallbackReason = started.fallbackReason
+	s.lastError = ""
+	s.lastOK = time.Now()
+	s.state = "running"
+	s.mu.Unlock()
+}
+
+func (m *Manager) startWatcherLocked(channelID string, s *Session, job packager.Job) {
+	m.watchers.Add(1)
+	go func() {
+		defer m.watchers.Done()
+		m.watchJob(channelID, s, job)
+	}()
+}
+
+// watchJob owns restart policy for both engines. A watcher is bound to both
+// the Session and Job identities so a stopped generation cannot affect a new
+// session that happens to use the same channel ID.
+func (m *Manager) watchJob(channelID string, s *Session, failedJob packager.Job) {
+	select {
+	case <-failedJob.Done():
+	case <-s.ctx.Done():
+		return
+	}
+	if failedJob.IntentionalStop() {
 		return
 	}
 
 	m.mu.Lock()
-	s, ok := m.sessions[channelID]
-	if !ok || s.job != job {
+	if !m.currentJobLocked(channelID, s, failedJob) {
 		m.mu.Unlock()
 		return
 	}
 	if s.Channel.OnDemand {
 		idle := m.cat.Config().IdleTimeout(s.Channel)
-		if time.Since(s.LastTouch) > idle {
+		s.mu.RLock()
+		lastTouch := s.lastTouch
+		s.mu.RUnlock()
+		if time.Since(lastTouch) > idle {
 			m.log.Info("session idle end", "channel", channelID)
-			m.stopLocked(channelID, s)
+			cleanup := m.detachLocked(channelID, s, true)
 			m.mu.Unlock()
+			cleanup.run()
 			return
 		}
 	}
-	if !s.lastOK.IsZero() && time.Since(s.lastOK) >= restartResetAfter {
+	policy := m.restart
+	failure := errString(failedJob.Err())
+	s.mu.Lock()
+	if !s.lastOK.IsZero() && time.Since(s.lastOK) >= policy.ResetAfter {
 		s.restarts = 0
 	}
-	s.Errors++
-	s.restarts++
-	s.LastError = errString(job.Err())
-	if s.restarts > maxDashRestarts {
-		m.log.Error("session restart budget exceeded", "channel", channelID, "restarts", s.restarts, "err", job.Err())
-		m.publish(s, "failed")
-		m.stopLocked(channelID, s)
-		m.mu.Unlock()
-		return
-	}
-	delay := restartBaseDelay * time.Duration(1<<min(s.restarts-1, 4))
-	if delay > restartMaxDelay {
-		delay = restartMaxDelay
-	}
-	m.publish(s, "restarting")
+	s.errors++
+	s.lastError = failure
+	s.state = "restarting"
+	s.mu.Unlock()
+	m.publish(s)
 	m.mu.Unlock()
 
-	m.log.Warn("session restarting",
-		"channel", channelID,
-		"attempt", s.restarts,
-		"delay", delay.String(),
-		"err", job.Err(),
-	)
-	time.Sleep(delay)
-
-	m.mu.Lock()
-	s, ok = m.sessions[channelID]
-	if !ok {
-		m.mu.Unlock()
-		return
-	}
-	m.mu.Unlock()
-
-	if err := m.startDash(s); err != nil {
-		m.log.Error("session restart failed", "channel", channelID, "err", err)
+	for {
 		m.mu.Lock()
-		if cur, ok := m.sessions[channelID]; ok && cur == s {
-			s.LastError = err.Error()
-			m.publish(s, "failed")
-			m.stopLocked(channelID, cur)
+		if !m.currentJobLocked(channelID, s, failedJob) {
+			m.mu.Unlock()
+			return
 		}
+		s.mu.Lock()
+		if s.restarts >= policy.MaxAttempts {
+			s.state = "failed"
+			if s.lastError == "" {
+				s.lastError = failure
+			}
+			s.mu.Unlock()
+			cleanup := m.detachFailedLocked(channelID, s)
+			m.log.Error("session restart budget exceeded", "channel", channelID,
+				"attempts", policy.MaxAttempts, "err", failure)
+			m.mu.Unlock()
+			cleanup.run()
+			return
+		}
+		s.restarts++
+		attempt := s.restarts
+		s.mu.Unlock()
+		delay := restartDelay(policy, attempt)
+		m.publish(s)
 		m.mu.Unlock()
+
+		m.log.Warn("session restarting", "channel", channelID, "attempt", attempt,
+			"delay", delay.String(), "err", failure)
+		select {
+		case <-time.After(delay):
+		case <-s.ctx.Done():
+			return
+		}
+
+		if !m.isCurrentJob(channelID, s, failedJob) {
+			return
+		}
+		started, err := m.launchDash(s)
+		if err != nil {
+			m.mu.Lock()
+			if !m.currentJobLocked(channelID, s, failedJob) {
+				m.mu.Unlock()
+				return
+			}
+			s.mu.Lock()
+			s.errors++
+			s.lastError = err.Error()
+			s.mu.Unlock()
+			failure = err.Error()
+			m.publish(s)
+			m.mu.Unlock()
+			continue
+		}
+
+		m.mu.Lock()
+		if !m.currentJobLocked(channelID, s, failedJob) {
+			m.mu.Unlock()
+			cleanupDashStart(started)
+			return
+		}
+		s.mu.RLock()
+		oldWorkDir := s.workDir
+		s.mu.RUnlock()
+		s.install(started)
+		m.publish(s)
+		m.startWatcherLocked(channelID, s, started.job)
+		m.mu.Unlock()
+
+		cleanupJob(failedJob, oldWorkDir)
 		return
 	}
-	m.mu.Lock()
-	if cur, ok := m.sessions[channelID]; !ok || cur != s {
-		if s.job != nil {
-			_ = s.job.Stop()
-		}
-		m.mu.Unlock()
-		return
-	}
-	m.publish(s, "running")
-	m.mu.Unlock()
 }
 
 func errString(err error) string {
@@ -473,19 +646,122 @@ func errString(err error) string {
 	return err.Error()
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
+func restartDelay(policy RestartPolicy, attempt int) time.Duration {
+	delay := policy.BaseDelay
+	for i := 1; i < attempt && delay < policy.MaxDelay; i++ {
+		if delay > policy.MaxDelay/2 {
+			return policy.MaxDelay
+		}
+		delay *= 2
 	}
-	return b
+	if delay > policy.MaxDelay {
+		return policy.MaxDelay
+	}
+	return delay
+}
+
+func (m *Manager) currentJobLocked(channelID string, s *Session, job packager.Job) bool {
+	if m.closing || m.sessions[channelID] != s {
+		return false
+	}
+	s.mu.RLock()
+	current := s.job == job
+	s.mu.RUnlock()
+	return current
+}
+
+func (m *Manager) isCurrentJob(channelID string, s *Session, job packager.Job) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.currentJobLocked(channelID, s, job)
+}
+
+func (m *Manager) touchAndPublish(s *Session) {
+	s.mu.Lock()
+	s.lastTouch = time.Now()
+	s.mu.Unlock()
+	m.publish(s)
+}
+
+type sessionCleanup struct {
+	job     packager.Job
+	workDir string
+}
+
+func (c sessionCleanup) run() {
+	cleanupJob(c.job, c.workDir)
+}
+
+func (m *Manager) detachLocked(channelID string, s *Session, removeObservation bool) sessionCleanup {
+	if m.sessions[channelID] == s {
+		delete(m.sessions, channelID)
+	}
+	s.cancel()
+	s.mu.Lock()
+	cleanup := sessionCleanup{job: s.job, workDir: s.workDir}
+	s.job = nil
+	s.publication = nil
+	s.workDir = ""
+	s.state = "stopped"
+	s.mu.Unlock()
+	if removeObservation {
+		m.removePublished(channelID)
+	}
+	return cleanup
+}
+
+func (m *Manager) detachFailedLocked(channelID string, s *Session) sessionCleanup {
+	if m.sessions[channelID] == s {
+		delete(m.sessions, channelID)
+	}
+	s.cancel()
+	s.mu.Lock()
+	cleanup := sessionCleanup{job: s.job, workDir: s.workDir}
+	s.job = nil
+	s.publication = nil
+	s.workDir = ""
+	s.mu.Unlock()
+	m.publish(s)
+	return cleanup
+}
+
+func (m *Manager) removePublished(channelID string) {
+	if m.obs != nil {
+		m.obs.RemoveSession(channelID)
+	}
+}
+
+func cleanupDashStart(started *dashStart) {
+	if started != nil {
+		cleanupJob(started.job, started.workDir)
+	}
+}
+
+func cleanupJob(job packager.Job, workDir string) {
+	if job != nil {
+		_ = job.Stop()
+	}
+	if workDir != "" {
+		_ = os.RemoveAll(workDir)
+		_ = os.Remove(filepath.Dir(workDir))
+	}
+}
+
+var generationFallback atomic.Uint64
+
+func newGeneration() string {
+	var value [12]byte
+	if _, err := rand.Read(value[:]); err == nil {
+		return hex.EncodeToString(value[:])
+	}
+	return fmt.Sprintf("%x-%x", time.Now().UnixNano(), generationFallback.Add(1))
 }
 
 func (m *Manager) Touch(channelID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if s, ok := m.sessions[channelID]; ok {
-		s.LastTouch = time.Now()
-		m.publish(s, "running")
+		m.touchAndPublish(s)
 	}
 }
 
@@ -497,20 +773,57 @@ func (m *Manager) Get(channelID string) (*Session, bool) {
 }
 
 func (m *Manager) autostart(ctx context.Context) {
+	var channels sync.WaitGroup
 	for _, ch := range m.cat.Config().ActiveChannels() {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
 		if !ch.Autostart {
 			continue
 		}
-		if _, err := m.Acquire(ch.ID); err != nil {
-			m.log.Error("autostart failed", "channel", ch.ID, "err", err)
+		channels.Add(1)
+		go func(channelID string) {
+			defer channels.Done()
+			m.autostartChannel(ctx, channelID)
+		}(ch.ID)
+	}
+	select {
+	case <-ctx.Done():
+	case <-m.lifecycleCtx.Done():
+	}
+	channels.Wait()
+}
+
+func (m *Manager) autostartChannel(ctx context.Context, channelID string) {
+	attempt := 0
+	for {
+		if _, err := m.Acquire(channelID); err == nil {
+			return
+		} else if errors.Is(err, context.Canceled) {
+			return
+		} else {
+			attempt++
+			m.mu.Lock()
+			policy := m.restart
+			m.mu.Unlock()
+			delay := restartDelay(policy, attempt)
+			m.log.Error("autostart failed", "channel", channelID, "attempt", attempt,
+				"retry_in", delay.String(), "err", err)
+			if !m.waitForRetry(ctx, delay) {
+				return
+			}
 		}
 	}
-	<-ctx.Done()
+}
+
+func (m *Manager) waitForRetry(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-ctx.Done():
+		return false
+	case <-m.lifecycleCtx.Done():
+		return false
+	}
 }
 
 func (m *Manager) reaper(ctx context.Context) {
@@ -521,6 +834,8 @@ func (m *Manager) reaper(ctx context.Context) {
 		case <-ctx.Done():
 			m.stopAll()
 			return
+		case <-m.lifecycleCtx.Done():
+			return
 		case <-t.C:
 			m.reapOnce()
 		}
@@ -529,29 +844,61 @@ func (m *Manager) reaper(ctx context.Context) {
 
 func (m *Manager) reapOnce() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	now := time.Now()
+	cleanups := make([]sessionCleanup, 0)
 	for id, s := range m.sessions {
 		if !s.Channel.OnDemand {
 			continue
 		}
 		idle := m.cat.Config().IdleTimeout(s.Channel)
-		if now.Sub(s.LastTouch) > idle {
+		s.mu.RLock()
+		lastTouch := s.lastTouch
+		s.mu.RUnlock()
+		if now.Sub(lastTouch) > idle {
 			m.log.Info("session stopped", "channel", id, "reason", "idle")
-			m.stopLocked(id, s)
+			cleanups = append(cleanups, m.detachLocked(id, s, true))
 		}
+	}
+	m.mu.Unlock()
+	for _, cleanup := range cleanups {
+		cleanup.run()
 	}
 }
 
 func (m *Manager) stopAll() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	cleanups := make([]sessionCleanup, 0, len(m.sessions))
 	for id, s := range m.sessions {
-		m.stopLocked(id, s)
+		cleanups = append(cleanups, m.detachLocked(id, s, true))
+	}
+	m.mu.Unlock()
+	for _, cleanup := range cleanups {
+		cleanup.run()
 	}
 }
 
 func (m *Manager) Shutdown() {
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+	if err := m.ShutdownContext(ctx); err != nil {
+		m.log.Error("session shutdown did not complete", "err", err)
+	}
+}
+
+// ShutdownContext cancels all session work and waits for packagers and manager
+// goroutines up to the caller's deadline.
+func (m *Manager) ShutdownContext(ctx context.Context) error {
+	m.shutdownOnce.Do(m.beginShutdown)
+	select {
+	case <-m.shutdownDone:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (m *Manager) beginShutdown() {
+	m.lifecycleCancel()
 	m.mu.Lock()
 	m.closing = true
 	waits := make([]*startWait, 0, len(m.inflight))
@@ -559,64 +906,83 @@ func (m *Manager) Shutdown() {
 		wait.stopped = true
 		wait.cancel()
 		delete(m.inflight, id)
-		m.obs.RemoveSession(id)
+		m.removePublished(id)
 		waits = append(waits, wait)
 	}
+	cleanups := make([]sessionCleanup, 0, len(m.sessions))
+	for id, s := range m.sessions {
+		cleanups = append(cleanups, m.detachLocked(id, s, true))
+	}
 	m.mu.Unlock()
-	for _, wait := range waits {
-		<-wait.done
-	}
-	m.stopAll()
-}
 
-func (m *Manager) stopLocked(id string, s *Session) {
-	if s.job != nil {
-		_ = s.job.Stop()
-		s.job = nil
+	var shutdownGroup sync.WaitGroup
+	shutdownGroup.Add(len(waits) + len(cleanups) + 1)
+	for _, wait := range waits {
+		go func(wait *startWait) {
+			defer shutdownGroup.Done()
+			<-wait.done
+		}(wait)
 	}
-	if s.cancel != nil {
-		s.cancel()
+	for _, cleanup := range cleanups {
+		go func(cleanup sessionCleanup) {
+			defer shutdownGroup.Done()
+			cleanup.run()
+		}(cleanup)
 	}
-	if s.WorkDir != "" {
-		_ = os.RemoveAll(s.WorkDir)
-	}
-	delete(m.sessions, id)
-	m.obs.RemoveSession(id)
+	go func() {
+		defer shutdownGroup.Done()
+		m.watchers.Wait()
+	}()
+	go func() {
+		shutdownGroup.Wait()
+		close(m.shutdownDone)
+	}()
 }
 
 func (m *Manager) StopChannel(channelID string) bool {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	s, ok := m.sessions[channelID]
 	if ok {
-		m.stopLocked(channelID, s)
+		cleanup := m.detachLocked(channelID, s, true)
+		m.mu.Unlock()
+		cleanup.run()
 		return true
 	}
 	w, ok := m.inflight[channelID]
 	if !ok {
+		m.mu.Unlock()
 		return false
 	}
 	w.stopped = true
 	w.cancel()
 	delete(m.inflight, channelID)
-	m.obs.RemoveSession(channelID)
+	m.removePublished(channelID)
+	m.mu.Unlock()
+	<-w.done
 	return true
 }
 
-func (m *Manager) publish(s *Session, state string) {
-	m.obs.UpsertSession(observe.SessionStat{
+func (m *Manager) publish(s *Session) {
+	if m.obs == nil {
+		return
+	}
+	s.mu.RLock()
+	stat := observe.SessionStat{
 		ChannelID:      s.Channel.ID,
 		Mode:           s.Mode,
-		Engine:         s.Engine,
-		PackMode:       s.PackMode,
-		FallbackReason: s.FallbackReason,
+		Engine:         s.engine,
+		PackMode:       s.packMode,
+		FallbackReason: s.fallbackReason,
 		StartedAt:      s.StartedAt,
-		LastTouch:      s.LastTouch,
-		State:          state,
-		Errors:         s.Errors,
-		LastError:      s.LastError,
-		Packager:       packagerStat(s.job),
-	})
+		LastTouch:      s.lastTouch,
+		State:          s.state,
+		Errors:         s.errors,
+		LastError:      s.lastError,
+	}
+	job := s.job
+	s.mu.RUnlock()
+	stat.Packager = packagerStat(job)
+	m.obs.UpsertSession(stat)
 }
 
 // packagerStat copies the engine's counters into the status snapshot. An engine
