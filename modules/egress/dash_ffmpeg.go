@@ -221,41 +221,7 @@ func startPackager(parent context.Context, opt DashOptions, log *slog.Logger, ab
 	stderrPath := filepath.Join(absWork, "ffmpeg.stderr.log")
 
 	ctx, cancel := context.WithCancel(parent)
-	args := []string{
-		"-hide_banner",
-		"-loglevel", opt.LogLevel,
-		"-y",
-		"-protocol_whitelist", "file,http,https,tcp,tls,crypto,httpproxy",
-		"-fflags", "+genpts+discardcorrupt",
-	}
-	if att.remote {
-		args = append(args,
-			"-reconnect", "1",
-			"-reconnect_streamed", "1",
-			"-reconnect_delay_max", "5",
-		)
-		if opt.UserAgent != "" {
-			args = append(args, "-user_agent", opt.UserAgent)
-		}
-		if hdr := formatFFmpegHeaders(opt.Headers); hdr != "" {
-			args = append(args, "-headers", hdr)
-		}
-	}
-	args = append(args,
-		"-cenc_decryption_key", normalizeKey(key),
-		"-i", att.input,
-		"-map", att.vMap,
-		"-map", att.aMap,
-		"-c", "copy",
-		"-tag:v", "hvc1",
-		"-avoid_negative_ts", "make_zero",
-		"-f", "hls",
-		"-hls_time", strconv.Itoa(opt.HLSTime),
-		"-hls_list_size", strconv.Itoa(opt.HLSListSize),
-		"-hls_flags", "delete_segments+append_list+omit_endlist",
-		"-hls_segment_filename", segPattern,
-		indexPath,
-	)
+	args := buildPackagerArgs(opt, att, key, indexPath, segPattern)
 
 	stderrFile, err := os.OpenFile(stderrPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
@@ -316,15 +282,18 @@ func startPackager(parent context.Context, opt DashOptions, log *slog.Logger, ab
 		job.pid = cmd.Process.Pid
 	}
 	go func() {
-		err := cmd.Wait()
+		processErr := cmd.Wait()
 		_ = stderrFile.Close()
 		job.mu.Lock()
-		job.err = err
+		if job.err == nil {
+			job.err = processErr
+		}
+		jobErr := job.err
 		intentional := job.intentional
 		job.mu.Unlock()
-		if err != nil && !intentional {
+		if jobErr != nil && !intentional {
 			msg := tailLog(&stderrBuf, stderrPath)
-			log.Error("ffmpeg exited", "err", err, "mode", att.mode, "stderr", msg)
+			log.Error("ffmpeg exited", "err", jobErr, "mode", att.mode, "stderr", msg)
 		}
 		reapDockerContainer(plan.containerName)
 		close(job.done)
@@ -344,7 +313,48 @@ func startPackager(parent context.Context, opt DashOptions, log *slog.Logger, ab
 		_ = job.Stop()
 		return nil, err
 	}
+	startPlaylistWatchdog(ctx, job, indexPath, playlistWatchInterval(opt.HLSTime), playlistStallTimeout(opt.HLSTime, opt.HLSListSize))
 	return job, nil
+}
+
+func buildPackagerArgs(opt DashOptions, att packAttempt, key, indexPath, segPattern string) []string {
+	args := []string{
+		"-hide_banner",
+		"-loglevel", opt.LogLevel,
+		"-y",
+		"-protocol_whitelist", "file,http,https,tcp,tls,crypto,httpproxy",
+		"-fflags", "+genpts+discardcorrupt",
+	}
+	if att.remote {
+		args = append(args,
+			"-reconnect", "1",
+			"-reconnect_streamed", "1",
+			"-reconnect_delay_max", "5",
+		)
+		if opt.UserAgent != "" {
+			args = append(args, "-user_agent", opt.UserAgent)
+		}
+		if hdr := formatFFmpegHeaders(opt.Headers); hdr != "" {
+			args = append(args, "-headers", hdr)
+		}
+	}
+	args = append(args,
+		"-cenc_decryption_key", normalizeKey(key),
+		"-i", att.input,
+		"-map", att.vMap,
+		"-map", att.aMap,
+		"-c", "copy",
+		"-tag:v", "hvc1",
+		"-avoid_negative_ts", "make_zero",
+		"-f", "hls",
+		"-hls_time", strconv.Itoa(opt.HLSTime),
+		"-hls_list_size", strconv.Itoa(opt.HLSListSize),
+		"-hls_flags", "delete_segments+append_list+omit_endlist",
+		"-hls_start_number_source", "epoch_us",
+		"-hls_segment_filename", segPattern,
+		indexPath,
+	)
+	return args
 }
 
 // spawn holds the gate for the launch only, never for the readiness wait.
@@ -476,6 +486,109 @@ func readyPlaylist(index, workDir string) bool {
 		}
 	}
 	return best >= minReadySegBytes
+}
+
+type playlistProgress struct {
+	mediaSequence uint64
+	hasSequence   bool
+	latestSegment string
+}
+
+func startPlaylistWatchdog(ctx context.Context, job *DashJob, indexPath string, pollInterval, stallTimeout time.Duration) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		err := watchPlaylistProgressUntil(ctx, job.done, indexPath, pollInterval, stallTimeout)
+		if err != nil {
+			job.fail(err)
+		}
+	}()
+	return done
+}
+
+func watchPlaylistProgress(ctx context.Context, indexPath string, pollInterval, stallTimeout time.Duration) error {
+	return watchPlaylistProgressUntil(ctx, nil, indexPath, pollInterval, stallTimeout)
+}
+
+func watchPlaylistProgressUntil(ctx context.Context, jobDone <-chan struct{}, indexPath string, pollInterval, stallTimeout time.Duration) error {
+	lastProgress := time.Now()
+	progress, haveProgress := readPlaylistProgress(indexPath)
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-jobDone:
+			return nil
+		case now := <-ticker.C:
+			current, ok := readPlaylistProgress(indexPath)
+			if ok && (!haveProgress || current != progress) {
+				progress = current
+				haveProgress = true
+				lastProgress = now
+			}
+			if now.Sub(lastProgress) >= stallTimeout {
+				return fmt.Errorf("ffmpeg hls playlist stalled for %s without a new segment (media_sequence=%d latest_segment=%q)",
+					stallTimeout, progress.mediaSequence, progress.latestSegment)
+			}
+		}
+	}
+}
+
+func readPlaylistProgress(indexPath string) (playlistProgress, bool) {
+	body, err := os.ReadFile(indexPath)
+	if err != nil {
+		return playlistProgress{}, false
+	}
+	var progress playlistProgress
+	for _, rawLine := range strings.Split(string(body), "\n") {
+		line := strings.TrimSpace(rawLine)
+		if value, ok := strings.CutPrefix(line, "#EXT-X-MEDIA-SEQUENCE:"); ok {
+			sequence, err := strconv.ParseUint(strings.TrimSpace(value), 10, 64)
+			if err == nil {
+				progress.mediaSequence = sequence
+				progress.hasSequence = true
+			}
+			continue
+		}
+		if line != "" && !strings.HasPrefix(line, "#") {
+			progress.latestSegment = line
+		}
+	}
+	return progress, progress.latestSegment != ""
+}
+
+func playlistWatchInterval(hlsTime int) time.Duration {
+	seconds := min(max(hlsTime, 1), 4)
+	interval := time.Duration(seconds) * time.Second / 2
+	return min(max(interval, 500*time.Millisecond), 2*time.Second)
+}
+
+func playlistStallTimeout(hlsTime, hlsListSize int) time.Duration {
+	segmentSeconds := min(max(hlsTime, 1), 120)
+	windowSegments := min(max(hlsListSize, 1), 120)
+	segmentDuration := time.Duration(segmentSeconds) * time.Second
+	timeout := segmentDuration * time.Duration(windowSegments+4)
+	return min(max(timeout, 15*time.Second), 2*time.Minute)
+}
+
+func (j *DashJob) fail(err error) {
+	if err == nil {
+		return
+	}
+	j.mu.Lock()
+	if j.intentional || j.err != nil {
+		j.mu.Unlock()
+		return
+	}
+	j.err = err
+	cancel := j.cancel
+	j.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 }
 
 func resolveMPD(ctx context.Context, opt DashOptions) (string, string, error) {

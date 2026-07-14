@@ -1490,9 +1490,12 @@ func (n *Native) run(ctx context.Context, pres *mpd.Presentation) {
 			n.pub.Complete()
 			<-ctx.Done()
 			return
-		} else if err := n.checkStalled(); err != nil {
-			n.fail(err)
-			return
+		}
+		if next.Dynamic {
+			if err := n.checkStalled(); err != nil {
+				n.fail(err)
+				return
+			}
 		}
 		if p := next.MinimumUpdatePeriod; p > 0 {
 			interval = p

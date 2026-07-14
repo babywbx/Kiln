@@ -20,6 +20,29 @@ type expiringOrigin struct {
 	entryHits int
 }
 
+type failingMediaOrigin struct {
+	*liveOrigin
+
+	mu     sync.Mutex
+	failed bool
+}
+
+func (o *failingMediaOrigin) failMedia() {
+	o.mu.Lock()
+	o.failed = true
+	o.mu.Unlock()
+}
+
+func (o *failingMediaOrigin) Fetch(ctx context.Context, url string) ([]byte, string, error) {
+	o.mu.Lock()
+	failed := o.failed
+	o.mu.Unlock()
+	if failed && strings.Contains(url, "/seg-") {
+		return nil, "", errors.New("media unavailable")
+	}
+	return o.liveOrigin.Fetch(ctx, url)
+}
+
 func newExpiringOrigin(t *testing.T) *expiringOrigin {
 	o := &expiringOrigin{liveOrigin: newLiveOrigin(t), session: 1, live: 1}
 	o.prefix = "s1/"
@@ -191,6 +214,38 @@ func TestAStalledPublicationFailsOnlyWhenTheManifestIsHealthy(t *testing.T) {
 	var fatal *fatalError
 	if !errors.As(err, &fatal) {
 		t.Errorf("stall must end the publication so the session restarts, got %T", err)
+	}
+}
+
+func TestHealthyManifestWithBrokenMediaEndsThePublication(t *testing.T) {
+	origin := &failingMediaOrigin{liveOrigin: newLiveOrigin(t)}
+	clock := newClock()
+	n, err := StartNative(context.Background(), Options{
+		ManifestURL:   entryURL,
+		Dir:           t.TempDir(),
+		Keys:          keys(t),
+		Fetcher:       origin,
+		StartSegments: 3,
+		PlaylistSize:  10,
+		ReanchorAfter: time.Hour,
+		StallTimeout:  100 * time.Millisecond,
+		Now:           clock.now,
+	})
+	if err != nil {
+		t.Fatalf("StartNative: %v", err)
+	}
+	t.Cleanup(func() { _ = n.Stop() })
+
+	origin.failMedia()
+	origin.grow(1)
+	clock.advance(3 * time.Second)
+	select {
+	case <-n.Done():
+		if n.Err() == nil {
+			t.Fatal("publication ended without reporting the media stall")
+		}
+	case <-time.After(2500 * time.Millisecond):
+		t.Fatal("healthy manifest with broken media did not end the publication")
 	}
 }
 

@@ -9,6 +9,24 @@ import (
 	"github.com/babywbx/kiln/modules/config"
 )
 
+func TestBuildPackagerArgsUsesEpochMicrosecondStartNumber(t *testing.T) {
+	work := t.TempDir()
+	args := buildPackagerArgs(DashOptions{
+		HLSTime:     2,
+		HLSListSize: 6,
+	}, packAttempt{
+		input: "input.mpd",
+		vMap:  "0:v:0",
+		aMap:  "0:a:0?",
+	}, "00112233445566778899aabbccddeeff",
+		filepath.Join(work, "index.m3u8"), filepath.Join(work, "seg_%05d.ts"))
+
+	joined := strings.Join(args, "\x00")
+	if !strings.Contains(joined, "-hls_start_number_source\x00epoch_us") {
+		t.Fatalf("ffmpeg args do not use a cross-restart start number: %q", args)
+	}
+}
+
 func TestPlanFFmpegCommandNative(t *testing.T) {
 	args := []string{"-i", "https://example.test/live.mpd", "out.m3u8"}
 	proxyEnv := []string{"HTTPS_PROXY=http://127.0.0.1:7890"}
