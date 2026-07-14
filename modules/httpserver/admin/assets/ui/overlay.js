@@ -1,4 +1,5 @@
 import { h, icon } from "/admin/assets/core/dom.js";
+import { vt } from "/admin/assets/core/view-i18n.js";
 import { button } from "/admin/assets/ui/kit.js";
 
 const TOAST_MS = 4200;
@@ -22,9 +23,9 @@ export function toast(title, message = "", tone = "success") {
   item.addEventListener("click", remove);
 }
 
-export function toastError(error, fallback = "操作失败") {
+export function toastError(error, fallback = "") {
   const detail = [error?.message, error?.detail].filter(Boolean).join(" · ");
-  toast(fallback, detail, "danger");
+  toast(fallback || vt("common.actionFailed"), detail, "danger");
 }
 
 const dialog = () => document.getElementById("modal");
@@ -42,7 +43,7 @@ export function openModal({ title, description, body, actions = [], onClose }) {
         h("h2", { id: "modal-title", text: title }),
         description ? h("p", { id: "modal-desc", text: description }) : null,
       ),
-      h("button", { class: "icon-button", type: "button", "aria-label": "关闭", onClick: closeModal }, icon("x", 18)),
+      h("button", { class: "icon-button", type: "button", "aria-label": vt("common.close"), onClick: closeModal }, icon("x", 18)),
     ),
     h("div", { class: "modal-body" }, body),
     actions.length ? h("div", { class: "modal-actions" }, actions) : null,
@@ -89,7 +90,7 @@ export function confirmDialog({ title, description, confirmLabel, tone = "danger
         autocomplete: "off",
         autofocus: true,
         placeholder: expect,
-        "aria-label": "输入确认内容",
+        "aria-label": vt("overlay.confirmInput"),
         onInput: (event) => {
           confirmButton.disabled = event.target.value.trim() !== expect;
         },
@@ -97,7 +98,7 @@ export function confirmDialog({ title, description, confirmLabel, tone = "danger
       field = h(
         "label",
         { class: "field" },
-        h("span", { class: "field-label", text: `输入 ${expect} 以确认` }),
+        h("span", { class: "field-label", text: vt("overlay.confirmLabel", { value: expect }) }),
         input,
       );
     }
@@ -111,7 +112,7 @@ export function confirmDialog({ title, description, confirmLabel, tone = "danger
         warning ? h("div", { class: `notice notice-${tone}` }, icon("triangle-alert", 18), h("span", { text: warning })) : null,
         field,
       ),
-      actions: [button("取消", { onClick: closeModal }), confirmButton],
+      actions: [button(vt("common.cancel"), { onClick: closeModal }), confirmButton],
       onClose: () => settle(false),
     });
   });
@@ -202,11 +203,11 @@ export function attachMenu(anchor, items) {
   return { close: () => menu.hidePopover(), dispose: () => menu.remove() };
 }
 
-export async function copyText(value, message = "已复制") {
+export async function copyText(value, message = "") {
   try {
     await navigator.clipboard.writeText(value);
-    toast(message);
+    toast(message || vt("common.copied"));
   } catch {
-    toast("复制失败", "浏览器拒绝了剪贴板访问，请手动复制。", "danger");
+    toast(vt("common.copyFailed"), vt("common.copyDenied"), "danger");
   }
 }

@@ -1,24 +1,43 @@
 import { formatBytes, formatISOTime, formatNumber, frag, h } from "/admin/assets/core/dom.js";
 import { endpoints } from "/admin/assets/core/api.js";
+import { i18n } from "/admin/assets/core/i18n.js";
 import { badge, button, card, emptyState, field, iconButton, input, notice, pageHead, select, table } from "/admin/assets/ui/kit.js";
 import { closeModal, confirmDialog, openModal, toast, toastError } from "/admin/assets/ui/overlay.js";
 
 const ID_KINDS = {
-  numeric: "数字 ID",
-  name: "频道名 ID",
-  mixed: "混合 ID",
+  numeric: "epg.idKind.numeric",
+  name: "epg.idKind.name",
+  mixed: "epg.idKind.mixed",
 };
 
 const MATCH_TONES = {
-  matched: ["已匹配", "success"],
-  suggested: ["待确认", "warning"],
-  unmatched: ["未匹配", "danger"],
+  matched: ["epg.match.matched", "success"],
+  suggested: ["epg.match.suggested", "warning"],
+  unmatched: ["epg.match.unmatched", "danger"],
 };
 
+const PRESET_COPY = {
+  "hk-1": ["epg.preset.hongKong", "epg.preset.hongKongDescription"],
+  "tw-1": ["epg.preset.taiwan", "epg.preset.taiwanDescription"],
+  "cn-1": ["epg.preset.china", "epg.preset.chinaDescription"],
+  "global-1": ["epg.preset.global", "epg.preset.globalDescription"],
+  "cn-2": ["epg.preset.chinaAlt1", "epg.preset.chinaAlt1Description"],
+  "cn-3": ["epg.preset.chinaAlt2", "epg.preset.chinaAlt2Description"],
+  fanmingming: ["epg.preset.chinaAlt3", "epg.preset.chinaAlt3Description"],
+};
+
+function sourceCopy(source) {
+  const [nameKey, descriptionKey] = PRESET_COPY[source.id] || [];
+  return {
+    name: nameKey ? i18n.t(nameKey) : source.name || source.id,
+    description: descriptionKey ? i18n.t(descriptionKey) : source.description,
+  };
+}
+
 export function matchBadge(status) {
-  if (!status) return badge("节目单未启用", "neutral");
-  const [label, tone] = MATCH_TONES[status] || ["未知", "neutral"];
-  return badge(label, tone);
+  if (!status) return badge(i18n.t("epg.match.disabled"), "neutral");
+  const [key, tone] = MATCH_TONES[status] || ["epg.unknown", "neutral"];
+  return badge(i18n.t(key), tone);
 }
 
 export function matchMap(matches) {
@@ -39,24 +58,29 @@ export async function renderEPG(ctx) {
   const statuses = new Map((sourceData.statuses || []).map((status) => [status.source_id, status]));
   const proxies = egress.proxies || [];
   const matches = matchData.matches || [];
+  const loadedProgrammeCount = [...statuses.values()].reduce((total, status) => total + Number(status.programme_count || 0), 0);
 
   const enabledCount = sources.filter((item) => item.enabled).length;
-  const dormant = enabledCount > 0 && statuses.size === 0;
+  const waitingForFirstRefresh =
+    enabledCount > 0 && sources.filter((item) => item.enabled).every((item) => !statuses.get(item.source.id)?.last_attempt);
 
-  const refreshButton = button("立即刷新", {
+  const refreshButton = button(i18n.t("epg.refresh"), {
     kind: "primary",
     iconName: "refresh-cw",
+    disabled: enabledCount === 0,
     onClick: async () => {
       refreshButton.disabled = true;
-      toast("正在刷新", "正在向已启用的节目单源拉取数据…", "info");
+      toast(i18n.t("epg.refreshing"), i18n.t("epg.refreshingDescription"), "info");
       try {
         const result = await endpoints.refreshEPG();
         const failed = (result.statuses || []).filter((status) => status.error);
-        if (result.ok && !failed.length) toast("节目单已刷新", `${(result.statuses || []).length} 个源全部成功。`);
-        else toast("刷新完成，但有源失败", `${failed.length} 个源返回错误，详情见下方状态。`, "warning");
+        const programmeCount = (result.statuses || []).reduce((total, status) => total + Number(status.programme_count || 0), 0);
+        const summary = i18n.t("epg.refreshSummary", { programmes: formatNumber(programmeCount) });
+        if (result.ok && !failed.length) toast(i18n.t("epg.refreshed"), summary);
+        else toast(i18n.t("epg.refreshPartial"), i18n.t("epg.refreshPartialDescription", { failed: failed.length, summary }), "warning");
         await ctx.reload();
       } catch (error) {
-        toastError(error, "刷新失败");
+        toastError(error, i18n.t("epg.refreshFailed"));
         refreshButton.disabled = false;
       }
     },
@@ -68,34 +92,36 @@ export async function renderEPG(ctx) {
 
   const sourceBody = sources.length
     ? table(
-        ["启用", "节目单源", "地址", "标识与时区", "运行状态", ""],
+        [i18n.t("epg.table.enabled"), i18n.t("epg.table.source"), i18n.t("epg.table.address"), i18n.t("epg.table.identity"), i18n.t("epg.table.status"), ""],
         sources.map((configured) => sourceRow(configured, presets, statuses, proxies, reload)),
       )
-    : emptyState("没有可用的节目单源", "内置预设未能加载，请检查服务端版本。");
+    : emptyState(i18n.t("epg.emptySources"), i18n.t("epg.emptySourcesDescription"));
 
   return frag(
-    pageHead("节目单", "启用节目单源并刷新数据，Kiln 会把它们合并为一份 XMLTV 提供给播放器。", [refreshButton]),
+    pageHead(i18n.t("epg.title"), i18n.t("epg.description"), [refreshButton]),
     h(
       "div",
       { class: "stack" },
-      dormant
-        ? notice("已勾选节目单源，但服务端尚无任何抓取记录。请确认配置文件中 epg.enabled 为 true，然后点击「立即刷新」。", "warning", "triangle-alert")
+      enabledCount === 0
+        ? notice(i18n.t("epg.enableSourceNotice"), "info", "info")
+        : waitingForFirstRefresh
+          ? notice(i18n.t("epg.firstRefreshNotice"), "info", "download")
         : null,
       card({
-        title: "节目单源",
-        description: "勾选即启用。预设源可直接使用，也可以覆盖其地址、时区与出口。",
+        title: i18n.t("epg.sourcesTitle"),
+        description: i18n.t("epg.sourcesDescription"),
         body: sourceBody,
         flush: true,
-        action: button("添加自定义源", {
+        action: button(i18n.t("epg.addSource"), {
           size: "small",
           iconName: "plus",
           onClick: () => openSourceModal({ presets, proxies, existing: sources.map((item) => item.source.id), after: reload }),
         }),
       }),
       card({
-        title: "频道匹配概览",
-        description: "在频道页面为「待确认」与「未匹配」的频道手动指定节目单。",
-        body: matchSummary(matches),
+        title: i18n.t("epg.matchTitle"),
+        description: i18n.t("epg.matchDescription"),
+        body: matchSummary(matches, loadedProgrammeCount > 0),
       }),
     ),
   );
@@ -103,42 +129,43 @@ export async function renderEPG(ctx) {
 
 function sourceRow(configured, presets, statuses, proxies, after) {
   const source = configured.source;
+  const copy = sourceCopy(source);
   const preset = presets.get(source.id) || null;
   const status = statuses.get(source.id) || null;
 
   const toggle = h("input", {
     type: "checkbox",
     checked: configured.enabled,
-    "aria-label": `启用节目单源 ${source.name || source.id}`,
+    "aria-label": i18n.t("epg.enableSourceAria", { source: copy.name }),
   });
   toggle.addEventListener("change", async () => {
     toggle.disabled = true;
     try {
       await persistSource({ ...draftOf(configured, preset), enabled: toggle.checked }, configured.revision);
-      toast(toggle.checked ? "节目单源已启用" : "节目单源已停用", toggle.checked ? "点击「立即刷新」拉取最新数据。" : "");
+      toast(i18n.t(toggle.checked ? "epg.sourceEnabled" : "epg.sourceDisabled"), toggle.checked ? i18n.t("epg.refreshHint") : "");
       await after();
     } catch (error) {
       toggle.checked = !toggle.checked;
       toggle.disabled = false;
-      toastError(error, "更新失败");
+      toastError(error, i18n.t("epg.updateFailed"));
     }
   });
 
   const remove = async () => {
     const accepted = await confirmDialog({
-      title: preset ? "恢复预设默认值？" : "删除自定义源？",
+      title: i18n.t(preset ? "epg.restoreTitle" : "epg.deleteTitle"),
       description: preset
-        ? `将清除对 ${source.name} 的所有覆盖，并停用该源。`
-        : `节目单源 ${source.name || source.id} 会被永久移除。`,
-      confirmLabel: preset ? "恢复默认" : "删除",
+        ? i18n.t("epg.restoreDescription", { source: copy.name })
+        : i18n.t("epg.deleteDescription", { source: copy.name }),
+      confirmLabel: i18n.t(preset ? "epg.restoreConfirm" : "epg.deleteConfirm"),
     });
     if (!accepted) return;
     try {
       await endpoints.deleteEPGSource(source.id, configured.revision);
-      toast(preset ? "已恢复预设默认值" : "自定义源已删除");
+      toast(i18n.t(preset ? "epg.restored" : "epg.deleted"));
       await after();
     } catch (error) {
-      toastError(error, "删除失败");
+      toastError(error, i18n.t("epg.deleteFailed"));
     }
   };
 
@@ -152,9 +179,9 @@ function sourceRow(configured, presets, statuses, proxies, after) {
       h(
         "div",
         { class: "source-cell" },
-        h("strong", { text: source.name || source.id }),
+        h("strong", { text: copy.name }),
         h("small", { class: "mono", text: source.id }),
-        source.description ? h("small", { text: source.description }) : null,
+        copy.description ? h("small", { text: copy.description }) : null,
       ),
     ),
     h(
@@ -163,8 +190,8 @@ function sourceRow(configured, presets, statuses, proxies, after) {
       h(
         "div",
         { class: "source-cell" },
-        h("span", { class: "mono truncate", text: source.url || "未填写地址" }),
-        h("small", { text: source.approx_bytes ? `实测约 ${formatBytes(source.approx_bytes)}` : "体积未知" }),
+        h("span", { class: "mono truncate", text: source.url || i18n.t("epg.addressMissing") }),
+        h("small", { text: source.approx_bytes ? i18n.t("epg.approxSize", { size: formatBytes(source.approx_bytes) }) : i18n.t("epg.sizeUnknown") }),
       ),
     ),
     h(
@@ -174,9 +201,9 @@ function sourceRow(configured, presets, statuses, proxies, after) {
         "div",
         { class: "badge-row" },
         badge(source.region || "custom", "neutral"),
-        badge(ID_KINDS[source.id_kind] || source.id_kind || "未知", "neutral"),
-        badge(source.timezone || "默认时区", "neutral"),
-        badge(`出口 ${source.proxy || "auto"}`, "neutral"),
+        badge(ID_KINDS[source.id_kind] ? i18n.t(ID_KINDS[source.id_kind]) : source.id_kind || i18n.t("epg.unknown"), "neutral"),
+        badge(source.timezone || i18n.t("epg.defaultTimezone"), "neutral"),
+        badge(i18n.t("epg.egressBadge", { proxy: source.proxy || "auto" }), "neutral"),
       ),
     ),
     h("td", {}, statusCell(configured.enabled, status)),
@@ -186,11 +213,11 @@ function sourceRow(configured, presets, statuses, proxies, after) {
       h(
         "div",
         { class: "row-actions" },
-        iconButton("pencil", `编辑 ${source.name || source.id}`, {
+        iconButton("pencil", i18n.t("epg.editSourceAria", { source: copy.name }), {
           variant: "outline",
           onClick: () => openSourceModal({ presets, proxies, configured, after }),
         }),
-        iconButton("trash-2", preset ? `恢复 ${source.name} 的默认值` : `删除 ${source.name || source.id}`, {
+        iconButton("trash-2", i18n.t(preset ? "epg.restoreSourceAria" : "epg.deleteSourceAria", { source: copy.name }), {
           kind: "danger",
           variant: "outline",
           disabled: !configured.revision,
@@ -202,28 +229,30 @@ function sourceRow(configured, presets, statuses, proxies, after) {
 }
 
 function statusCell(enabled, status) {
-  if (!enabled) return h("span", { class: "muted", text: "未启用" });
-  if (!status) return badge("等待刷新", "warning");
+  if (!enabled) return h("span", { class: "muted", text: i18n.t("shared.disabled") });
+  if (!status || !status.last_attempt) {
+    return h("div", { class: "source-cell" }, badge(i18n.t("epg.status.waiting"), "warning"), h("small", { text: i18n.t("epg.status.notDownloaded") }));
+  }
 
   const badges = h("div", { class: "badge-row" });
-  if (status.error) badges.append(badge("抓取失败", "danger", "circle-alert"));
-  else if (status.stale) badges.append(badge("数据过期", "warning"));
-  else if (status.available) badges.append(badge("正常", "success", "circle-check"));
-  else badges.append(badge("暂无数据", "neutral"));
+  if (status.error) badges.append(badge(i18n.t("epg.status.fetchFailed"), "danger", "circle-alert"));
+  else if (status.stale) badges.append(badge(i18n.t("epg.status.stale"), "warning"));
+  else if (status.available) badges.append(badge(i18n.t("epg.status.normal"), "success", "circle-check"));
+  else badges.append(badge(i18n.t("epg.status.noData"), "neutral"));
 
   return h(
     "div",
     { class: "source-cell" },
     badges,
-    h("small", { text: `频道 ${formatNumber(status.channel_count)} · 节目 ${formatNumber(status.programme_count)}` }),
-    h("small", { text: `上次成功 ${formatISOTime(status.last_success)}` }),
+    h("small", { text: i18n.t("epg.status.counts", { channels: formatNumber(status.channel_count), programmes: formatNumber(status.programme_count) }) }),
+    h("small", { text: status.last_success ? i18n.t("epg.status.lastSuccess", { time: formatISOTime(status.last_success) }) : i18n.t("epg.status.neverSucceeded") }),
     status.error ? h("small", { class: "text-danger truncate", title: status.error, text: status.error }) : null,
   );
 }
 
-function matchSummary(matches) {
+function matchSummary(matches, hasLoadedProgrammes) {
   if (!matches.length) {
-    return emptyState("暂无匹配结果", "启用至少一个节目单源并完成一次刷新后，这里会显示频道的匹配情况。");
+    return emptyState(i18n.t("epg.match.empty"), i18n.t("epg.match.emptyDescription"));
   }
   const counts = { matched: 0, suggested: 0, unmatched: 0 };
   for (const item of matches) {
@@ -231,10 +260,23 @@ function matchSummary(matches) {
   }
   return h(
     "div",
-    { class: "badge-row" },
-    badge(`已匹配 ${counts.matched}`, counts.matched ? "success" : "neutral"),
-    badge(`待确认 ${counts.suggested}`, counts.suggested ? "warning" : "neutral"),
-    badge(`未匹配 ${counts.unmatched}`, counts.unmatched ? "danger" : "neutral"),
+    { class: "stack" },
+    h(
+      "div",
+      { class: "badge-row" },
+      badge(i18n.t("epg.match.matchedCount", { count: counts.matched }), counts.matched ? "success" : "neutral"),
+      badge(i18n.t("epg.match.suggestedCount", { count: counts.suggested }), counts.suggested ? "warning" : "neutral"),
+      badge(i18n.t("epg.match.unmatchedCount", { count: counts.unmatched }), counts.unmatched ? "danger" : "neutral"),
+    ),
+    hasLoadedProgrammes && counts.matched === 0
+      ? notice(
+          counts.suggested > 0
+            ? i18n.t("epg.match.confirmNotice")
+            : i18n.t("epg.match.assignNotice"),
+          "warning",
+          "triangle-alert",
+        )
+      : null,
   );
 }
 
@@ -257,25 +299,26 @@ function persistSource(body, revision) {
 
 function proxyChoices(proxies) {
   return [
-    ["auto", "auto · 跟随全局出口设置"],
-    ["direct", "direct · 直接连接"],
-    ...proxies.filter((proxy) => !proxy.disabled).map((proxy) => [proxy.id, `${proxy.id} · ${proxy.name || "代理"}`]),
+    ["auto", i18n.t("epg.proxy.auto")],
+    ["direct", i18n.t("epg.proxy.direct")],
+    ...proxies.filter((proxy) => !proxy.disabled).map((proxy) => [proxy.id, `${proxy.id} · ${proxy.name || i18n.t("epg.proxy.generic")}`]),
   ];
 }
 
 function openSourceModal({ presets, proxies, configured = null, existing = [], after }) {
   const isNew = !configured;
   const source = configured?.source || {};
+  const copy = sourceCopy(source);
   const preset = presets.get(source.id) || null;
 
   const idInput = input("id", source.id || "", { required: true, disabled: !isNew, placeholder: "my-epg" });
-  const nameInput = input("name", source.name || "", { placeholder: "自定义节目单源" });
+  const nameInput = input("name", source.name || "", { placeholder: i18n.t("epg.form.namePlaceholder") });
   const urlInput = input("url", source.url || "", { type: "url", required: true, placeholder: "https://example.com/epg.xml.gz" });
   const timezoneInput = input("timezone", source.timezone || "", { placeholder: "Asia/Shanghai" });
   const proxySelect = select("proxy", proxyChoices(proxies), source.proxy || "auto");
   const enabledToggle = h("input", { type: "checkbox", id: "epg-source-enabled", checked: isNew ? true : Boolean(configured.enabled) });
 
-  const submit = button(isNew ? "添加" : "保存", {
+  const submit = button(i18n.t(isNew ? "epg.form.add" : "epg.form.save"), {
     kind: "primary",
     onClick: async () => {
       const id = idInput.value.trim() || source.id;
@@ -284,19 +327,19 @@ function openSourceModal({ presets, proxies, configured = null, existing = [], a
       if (!id) {
         idInput.setAttribute("aria-invalid", "true");
         idInput.focus();
-        toast("请填写源标识符", "", "danger");
+        toast(i18n.t("epg.form.idRequired"), "", "danger");
         return;
       }
       if (isNew && existing.includes(id)) {
         idInput.setAttribute("aria-invalid", "true");
         idInput.focus();
-        toast("源标识符已存在", "请换一个标识符，或直接编辑同名的源。", "danger");
+        toast(i18n.t("epg.form.idExists"), i18n.t("epg.form.idExistsDescription"), "danger");
         return;
       }
       if (!url && !preset) {
         urlInput.setAttribute("aria-invalid", "true");
         urlInput.focus();
-        toast("请填写节目单地址", "自定义源必须提供 XMLTV 地址。", "danger");
+        toast(i18n.t("epg.form.urlRequired"), i18n.t("epg.form.urlRequiredDescription"), "danger");
         return;
       }
 
@@ -314,32 +357,32 @@ function openSourceModal({ presets, proxies, configured = null, existing = [], a
           configured?.revision || 0,
         );
         closeModal();
-        toast(isNew ? "节目单源已添加" : "节目单源已保存", "点击「立即刷新」拉取最新数据。");
+        toast(i18n.t(isNew ? "epg.form.added" : "epg.form.saved"), i18n.t("epg.refreshHint"));
         await after();
       } catch (error) {
-        toastError(error, "保存失败");
+        toastError(error, i18n.t("epg.form.saveFailed"));
         submit.disabled = false;
       }
     },
   });
 
   openModal({
-    title: isNew ? "添加自定义节目单源" : `编辑 ${source.name || source.id}`,
-    description: preset ? "这是内置预设源，留空的项目会沿用预设默认值。" : "提供一个可访问的 XMLTV 地址，支持 .xml 与 .xml.gz。",
+    title: isNew ? i18n.t("epg.form.addTitle") : i18n.t("epg.form.editTitle", { source: copy.name }),
+    description: i18n.t(preset ? "epg.form.presetDescription" : "epg.form.customDescription"),
     body: h(
       "div",
       { class: "form-grid" },
-      field("源标识符", idInput, isNew ? "用于区分不同来源，添加后不可更改。" : "标识符不可更改。"),
-      field("显示名称", nameInput),
-      h("div", { class: "span-all" }, field("节目单地址", urlInput, preset ? `预设默认值：${preset.url}` : "")),
-      field("时区", timezoneInput, "IANA 时区名称，留空使用系统默认。"),
-      field("网络出口", proxySelect, "节目单源常有地区限制，可指定代理绕开。"),
+      field(i18n.t("epg.form.id"), idInput, i18n.t(isNew ? "epg.form.idHintNew" : "epg.form.idHintEdit")),
+      field(i18n.t("epg.form.name"), nameInput),
+      h("div", { class: "span-all" }, field(i18n.t("epg.form.url"), urlInput, preset ? i18n.t("epg.form.presetDefault", { url: preset.url }) : "")),
+      field(i18n.t("epg.form.timezone"), timezoneInput, i18n.t("epg.form.timezoneHint")),
+      field(i18n.t("epg.form.egress"), proxySelect, i18n.t("epg.form.egressHint")),
       h(
         "div",
         { class: "span-all" },
-        h("label", { class: "check-row", htmlFor: "epg-source-enabled" }, enabledToggle, h("span", { text: "启用这个节目单源" })),
+        h("label", { class: "check-row", htmlFor: "epg-source-enabled" }, enabledToggle, h("span", { text: i18n.t("epg.form.enable") })),
       ),
     ),
-    actions: [button("取消", { onClick: closeModal }), submit],
+    actions: [button(i18n.t("shared.cancel"), { onClick: closeModal }), submit],
   });
 }

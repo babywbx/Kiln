@@ -1,4 +1,5 @@
 import { endpoints, hasSession, isAbort } from "/admin/assets/core/api.js";
+import { vt } from "/admin/assets/core/view-i18n.js";
 
 const POLL_INTERVAL_MS = 1000;
 
@@ -16,6 +17,7 @@ const listeners = new Set();
 let timer = null;
 let inFlight = null;
 let catalogPromise = null;
+let catalogLoaded = false;
 
 export function subscribe(listener) {
   listeners.add(listener);
@@ -34,9 +36,10 @@ export function upstreamBase(id) {
   return store.upstreams.find((item) => item.id === id)?.base_url || "";
 }
 
-export function sourceURL(upstreamID, path) {
+export function sourceURL(upstreamID, path, directURL = "") {
+  if (directURL?.trim()) return directURL.trim();
   const base = upstreamBase(upstreamID);
-  if (!base) return path || "尚未选择来源服务器";
+  if (!base) return path || vt("channels.noSource");
   return `${base.replace(/\/+$/, "")}/${String(path || "").replace(/^\/+/, "")}`;
 }
 
@@ -82,13 +85,14 @@ document.addEventListener("visibilitychange", () => {
 });
 
 export async function loadCatalog({ force = false, signal } = {}) {
-  if (!force && store.channels.length && store.upstreams.length) return store;
+  if (!force && catalogLoaded) return store;
   if (!force && catalogPromise) return catalogPromise;
 
   catalogPromise = (async () => {
     const [channels, upstreams] = await Promise.all([endpoints.channels(signal), endpoints.upstreams(signal)]);
     store.channels = [...(channels.channels || [])].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
     store.upstreams = upstreams.upstreams || [];
+    catalogLoaded = true;
     emit();
     return store;
   })();
@@ -101,6 +105,7 @@ export async function loadCatalog({ force = false, signal } = {}) {
 }
 
 export function invalidateCatalog() {
+  catalogLoaded = false;
   store.channels = [];
   store.upstreams = [];
 }
@@ -112,5 +117,6 @@ export function resetStore() {
   store.online = false;
   store.channels = [];
   store.upstreams = [];
+  catalogLoaded = false;
   emit();
 }

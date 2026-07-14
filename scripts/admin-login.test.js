@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { LOCALE_OPTIONS, createI18n, resolveLocale } from "../modules/httpserver/admin/assets/core/i18n.js";
+import { LOCALE_OPTIONS, createI18n, localeLabel, messageKeys, resolveLocale } from "../modules/httpserver/admin/assets/core/i18n.js";
 import { classifyLoginError, validateCredentials } from "../modules/httpserver/admin/assets/views/login-model.js";
 
 const TRANSLATION_KEYS = [
@@ -58,6 +58,23 @@ test("all supported locales provide every login translation", () => {
     i18n.setLocale(value);
     for (const key of TRANSLATION_KEYS) assert.notEqual(i18n.t(key), key, `${value} is missing ${key}`);
   }
+});
+
+test("all supported locales provide the same console translation keys", () => {
+  const expected = messageKeys("zh-Hans");
+  assert.ok(expected.includes("shell.accountSettings"));
+  assert.ok(expected.includes("account.error.passwordMismatch"));
+  assert.ok(expected.includes("settings.runtimeTitle"));
+  for (const { value } of LOCALE_OPTIONS) assert.deepEqual(messageKeys(value), expected, `${value} translation keys differ`);
+});
+
+test("console translations interpolate values and expose locale autonyms", () => {
+  const i18n = createI18n({ storage: memoryStorage(), languages: [] });
+  i18n.setLocale("en");
+  assert.equal(i18n.t("shell.activeSessions", { count: 3 }), "3 active sessions");
+  assert.equal(i18n.t("meta.consoleTitle", { page: "Overview" }), "Overview · Kiln");
+  assert.equal(localeLabel("zh-TW"), "繁體中文");
+  assert.equal(localeLabel("en-US"), "English");
 });
 
 test("createI18n remembers an explicit locale selection", () => {

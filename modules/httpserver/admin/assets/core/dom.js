@@ -1,4 +1,5 @@
 import { lucideIcons } from "/admin/assets/third_party/lucide-icons.mjs";
+import { viewLocale, vt } from "/admin/assets/core/view-i18n.js";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -63,10 +64,18 @@ export function icon(name, size = 20) {
   return svg;
 }
 
-const numberFormat = new Intl.NumberFormat("zh-Hans");
+const numberFormats = new Map();
+const dateFormats = new Map();
+const clockFormats = new Map();
+
+function localeFormatter(cache, create) {
+  const locale = viewLocale();
+  if (!cache.has(locale)) cache.set(locale, create(locale));
+  return cache.get(locale);
+}
 
 export function formatNumber(value) {
-  return numberFormat.format(Number(value || 0));
+  return localeFormatter(numberFormats, (locale) => new Intl.NumberFormat(locale)).format(Number(value || 0));
 }
 
 export function formatBytes(value) {
@@ -87,29 +96,25 @@ export function formatDuration(seconds) {
   const days = Math.floor(total / 86400);
   const hours = Math.floor((total % 86400) / 3600);
   const minutes = Math.floor((total % 3600) / 60);
-  if (days) return `${days} 天 ${hours} 小时`;
-  if (hours) return `${hours} 小时 ${minutes} 分`;
-  if (minutes) return `${minutes} 分 ${total % 60} 秒`;
-  return `${total} 秒`;
+  if (days) return vt("common.duration.days", { days, hours });
+  if (hours) return vt("common.duration.hours", { hours, minutes });
+  if (minutes) return vt("common.duration.minutes", { minutes, seconds: total % 60 });
+  return vt("common.duration.seconds", { seconds: total });
 }
 
-const dateFormat = new Intl.DateTimeFormat("zh-Hans", { dateStyle: "medium", timeStyle: "short" });
-
 export function formatTime(seconds) {
-  if (!seconds) return "从未";
-  return dateFormat.format(new Date(Number(seconds) * 1000));
+  if (!seconds) return vt("common.never");
+  return localeFormatter(dateFormats, (locale) => new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" })).format(new Date(Number(seconds) * 1000));
 }
 
 export function formatISOTime(value) {
   const stamp = Date.parse(value || "");
-  if (!Number.isFinite(stamp) || stamp <= 0) return "从未";
-  return dateFormat.format(new Date(stamp));
+  if (!Number.isFinite(stamp) || stamp <= 0) return vt("common.never");
+  return localeFormatter(dateFormats, (locale) => new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" })).format(new Date(stamp));
 }
 
-const clockFormat = new Intl.DateTimeFormat("zh-Hans", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-
 export function formatClock(date = new Date()) {
-  return clockFormat.format(date);
+  return localeFormatter(clockFormats, (locale) => new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit", second: "2-digit" })).format(date);
 }
 
 export function initials(text) {

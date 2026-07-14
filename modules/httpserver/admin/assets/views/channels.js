@@ -1,6 +1,7 @@
 import { frag, h, icon } from "/admin/assets/core/dom.js";
 import { endpoints } from "/admin/assets/core/api.js";
 import { invalidateCatalog, loadCatalog, refreshStatus, sessionFor, sourceURL, store } from "/admin/assets/core/store.js";
+import { vt } from "/admin/assets/core/view-i18n.js";
 import { badge, button, card, channelCell, emptyState, field, iconButton, input, linkButton, notice, pageHead, runModeLabel, select, stateBadge } from "/admin/assets/ui/kit.js";
 import { closeModal, confirmDialog, openModal, toast, toastError } from "/admin/assets/ui/overlay.js";
 import { matchBadge, matchMap } from "/admin/assets/views/epg.js";
@@ -25,8 +26,8 @@ export async function renderChannels(ctx) {
   const epgCell = (channel) =>
     channel.disabled ? h("span", { class: "muted", text: "—" }) : matchBadge(matches.get(channel.id)?.status);
   let query = "";
-  const filter = input("filter", "", { placeholder: "筛选名称、标识符或分组…", type: "search" });
-  filter.setAttribute("aria-label", "筛选频道");
+  const filter = input("filter", "", { placeholder: vt("channels.filter"), type: "search" });
+  filter.setAttribute("aria-label", vt("channels.filterAria"));
 
   const count = h("span", { class: "muted", text: "" });
   const tbody = h("tbody");
@@ -43,10 +44,10 @@ export async function renderChannels(ctx) {
       const revisions = Object.fromEntries(store.channels.map((channel) => [channel.id, channel.revision]));
       await endpoints.reorderChannels(ids, revisions);
       invalidateCatalog();
-      toast("频道顺序已更新");
+      toast(vt("channels.reordered"));
       await ctx.reload();
     } catch (error) {
-      toastError(error, "排序失败");
+      toastError(error, vt("channels.reorderFailed"));
     }
   };
 
@@ -74,8 +75,8 @@ export async function renderChannels(ctx) {
     const route = `/admin/channels/${encodeURIComponent(channel.id)}`;
     entry.state = stateOf(channel);
     entry.slot = h("span", { class: "state-slot" }, stateBadge(channel, sessionFor(channel.id)));
-    entry.up = iconButton("arrow-up", `上移 ${channel.title}`, { variant: "outline", onClick: () => move(channel.id, -1) });
-    entry.down = iconButton("arrow-down", `下移 ${channel.title}`, { variant: "outline", onClick: () => move(channel.id, 1) });
+    entry.up = iconButton("arrow-up", vt("channels.moveUp", { name: channel.title }), { variant: "outline", onClick: () => move(channel.id, -1) });
+    entry.down = iconButton("arrow-down", vt("channels.moveDown", { name: channel.title }), { variant: "outline", onClick: () => move(channel.id, 1) });
     entry.tr = h(
       "tr",
       {},
@@ -86,8 +87,8 @@ export async function renderChannels(ctx) {
         h(
           "div",
           { class: "source-cell" },
-          h("span", { class: "mono truncate", text: sourceURL(channel.upstream, channel.path) }),
-          h("small", { text: channel.upstream ? `来源服务器：${channel.upstream}` : "未设置来源服务器" }),
+          h("span", { class: "mono truncate", text: sourceURL(channel.upstream, channel.path, channel.source_url) }),
+          h("small", { text: channel.source_url ? vt("channels.fullSource") : channel.upstream ? vt("channels.upstream", { id: channel.upstream }) : vt("channels.noSource") }),
         ),
       ),
       h("td", {}, badge((channel.ingress || "—").toUpperCase(), "neutral")),
@@ -100,10 +101,10 @@ export async function renderChannels(ctx) {
         h(
           "div",
           { class: "row-actions" },
-          iconButton("play", `预览 ${channel.title}`, { variant: "outline", disabled: channel.disabled, onClick: () => previewChannel(channel) }),
+          iconButton("play", vt("channels.previewNamed", { name: channel.title }), { variant: "outline", disabled: channel.disabled, onClick: () => previewChannel(channel) }),
           entry.up,
           entry.down,
-          linkButton("配置", route, { iconName: "sliders-horizontal" }),
+          linkButton(vt("channels.configure"), route, { iconName: "sliders-horizontal" }),
         ),
       ),
     );
@@ -118,19 +119,19 @@ export async function renderChannels(ctx) {
       "article",
       { class: "record" },
       h("div", { class: "record-head" }, channelCell(channel), entry.cardSlot),
-      h("div", { class: "record-source mono truncate", text: sourceURL(channel.upstream, channel.path) }),
+      h("div", { class: "record-source mono truncate", text: sourceURL(channel.upstream, channel.path, channel.source_url) }),
       h(
         "div",
         { class: "record-meta" },
-        h("span", {}, h("small", { text: "格式" }), h("span", { text: (channel.ingress || "—").toUpperCase() })),
-        h("span", {}, h("small", { text: "运行方式" }), h("span", { text: runModeLabel(channel) })),
-        h("span", {}, h("small", { text: "节目单" }), epgCell(channel)),
+        h("span", {}, h("small", { text: vt("channels.format") }), h("span", { text: (channel.ingress || "—").toUpperCase() })),
+        h("span", {}, h("small", { text: vt("channels.runMode") }), h("span", { text: runModeLabel(channel) })),
+        h("span", {}, h("small", { text: vt("channels.epg") }), epgCell(channel)),
       ),
       h(
         "div",
         { class: "record-actions" },
-        linkButton("配置频道", route, { kind: "primary", iconName: "sliders-horizontal" }),
-        button("预览", { iconName: "play", disabled: channel.disabled, onClick: () => previewChannel(channel) }),
+        linkButton(vt("channels.configureChannel"), route, { kind: "primary", iconName: "sliders-horizontal" }),
+        button(vt("channels.preview"), { iconName: "play", disabled: channel.disabled, onClick: () => previewChannel(channel) }),
       ),
     );
   };
@@ -148,8 +149,8 @@ export async function renderChannels(ctx) {
 
   const makeEmpty = () =>
     query
-      ? emptyState("没有匹配的频道", "换一个名称、标识符或分组试试。", button("清除筛选", { onClick: clearFilter }))
-      : emptyState("还没有频道", "添加第一个频道，或从 M3U 播放列表批量导入。", linkButton("添加频道", "/admin/channels/new", { kind: "primary", iconName: "plus" }));
+      ? emptyState(vt("channels.noMatch"), vt("channels.noMatchHint"), button(vt("channels.clearFilter"), { onClick: clearFilter }))
+      : emptyState(vt("channels.empty"), vt("channels.emptyHint"), linkButton(vt("channels.add"), "/admin/channels/new", { kind: "primary", iconName: "plus" }));
 
   const buildTable = () => {
     for (const entry of entries) {
@@ -185,7 +186,7 @@ export async function renderChannels(ctx) {
       if (entry.down) entry.down.disabled = locked || entry.index === entries.length - 1;
     }
 
-    count.textContent = query ? `${shown} / ${entries.length} 个频道` : `${entries.length} 个频道`;
+    count.textContent = query ? vt("channels.countFiltered", { shown, total: entries.length }) : vt("common.channels", { count: entries.length });
 
     const kind = query ? "filtered" : "blank";
     if (!shown && emptyKind !== kind) {
@@ -222,15 +223,15 @@ export async function renderChannels(ctx) {
   ctx.watchStatus(repaintStates);
 
   return frag(
-    pageHead("频道", "管理节目源、运行方式与播放状态。", [
-      button("全部停用", { iconName: "ban", disabled: !store.channels.length, onClick: () => setAll(ctx, true) }),
-      button("全部启用", { iconName: "power", disabled: !store.channels.length, onClick: () => setAll(ctx, false) }),
-      button("导入 M3U", { iconName: "upload", onClick: () => openImportModal(ctx) }),
-      linkButton("添加频道", "/admin/channels/new", { kind: "primary", iconName: "plus" }),
+    pageHead(vt("channels.title"), vt("channels.description"), [
+      button(vt("channels.disableAll"), { iconName: "ban", disabled: !store.channels.length, onClick: () => setAll(ctx, true) }),
+      button(vt("channels.enableAll"), { iconName: "power", disabled: !store.channels.length, onClick: () => setAll(ctx, false) }),
+      button(vt("channels.importM3U"), { iconName: "upload", onClick: () => openImportModal(ctx) }),
+      linkButton(vt("channels.add"), "/admin/channels/new", { kind: "primary", iconName: "plus" }),
     ]),
     h("div", { class: "toolbar" }, h("div", { class: "search-field" }, icon("search", 18), filter), count),
     card({
-      body: frag(h("div", { class: "desktop-only" }, h("div", { class: "table-wrap" }, h("table", {}, h("thead", {}, h("tr", {}, ["频道", "节目源", "格式", "运行方式", "节目单", "状态", ""].map((label) => h("th", { text: label })))), tbody))), h("div", { class: "mobile-only" }, cards)),
+      body: frag(h("div", { class: "desktop-only" }, h("div", { class: "table-wrap" }, h("table", {}, h("thead", {}, h("tr", {}, ["channel", "source", "format", "runMode", "epg", "status", ""].map((key) => h("th", { text: key ? vt(`channels.header.${key}`) : "" })))), tbody))), h("div", { class: "mobile-only" }, cards)),
       flush: true,
     }),
   );
@@ -238,32 +239,32 @@ export async function renderChannels(ctx) {
 
 async function setAll(ctx, disabled) {
   const accepted = await confirmDialog({
-    title: disabled ? "停用全部频道？" : "启用全部频道？",
+    title: vt(disabled ? "channels.disableAllTitle" : "channels.enableAllTitle"),
     description: disabled
-      ? "所有频道都会从目录中隐藏，播放地址随即失效。"
-      : "所有频道都会重新出现在目录中，并接受播放请求。",
-    warning: disabled ? "正在进行的会话会立即中断。" : "",
-    confirmLabel: disabled ? "全部停用" : "全部启用",
+      ? vt("channels.disableAllDesc")
+      : vt("channels.enableAllDesc"),
+    warning: disabled ? vt("channels.disableAllWarning") : "",
+    confirmLabel: vt(disabled ? "channels.disableAll" : "channels.enableAll"),
     tone: disabled ? "danger" : "primary",
   });
   if (!accepted) return;
   try {
     const result = disabled ? await endpoints.disableAllChannels() : await endpoints.enableAllChannels();
     invalidateCatalog();
-    toast(disabled ? "全部频道已停用" : "全部频道已启用", `${result.changed || 0} 个频道发生变更。`);
+    toast(vt(disabled ? "channels.disabledAll" : "channels.enabledAll"), vt("channels.changed", { count: result.changed || 0 }));
     await ctx.reload();
   } catch (error) {
-    toastError(error, disabled ? "停用失败" : "启用失败");
+    toastError(error, vt(disabled ? "channels.disableFailed" : "channels.enableFailed"));
   }
 }
 
 function openImportModal(ctx) {
-  const upstream = select("default_upstream", [["", "选择默认来源服务器"], ...store.upstreams.map((item) => [item.id, `${item.id} · ${item.base_url}`])], "");
-  const content = h("textarea", { name: "content", placeholder: "#EXTM3U\n#EXTINF:-1,频道名称\nhttps://…", rows: 8 });
+  const upstream = select("default_upstream", [["", vt("import.chooseUpstream")], ...store.upstreams.map((item) => [item.id, `${item.id} · ${item.base_url}`])], "");
+  const content = h("textarea", { name: "content", placeholder: vt("import.contentPlaceholder"), rows: 8 });
   const result = h("div", {});
   let parsed = [];
 
-  const applyButton = button("确认导入", {
+  const applyButton = button(vt("import.apply"), {
     kind: "primary",
     disabled: true,
     onClick: async () => {
@@ -277,15 +278,15 @@ function openImportModal(ctx) {
         });
         closeModal();
         invalidateCatalog();
-        toast("导入完成", `写入 ${data.created} 项，跳过 ${data.skipped} 项`);
+        toast(vt("import.done"), vt("import.doneDetail", { created: data.created, skipped: data.skipped }));
         await ctx.reload();
       } catch (error) {
-        toastError(error, "导入失败");
+        toastError(error, vt("import.failed"));
       }
     },
   });
 
-  const previewButton = button("解析预览", {
+  const previewButton = button(vt("import.preview"), {
     onClick: async () => {
       try {
         const data = await endpoints.importM3U({ content: content.value, default_upstream: upstream.value, apply: false });
@@ -301,13 +302,13 @@ function openImportModal(ctx) {
           h(
             "div",
             { class: "stack" },
-            notice(`已解析 ${data.count} 项。导入不会删除列表中缺失的频道。`),
+            notice(vt("import.parsed", { count: data.count })),
             h(
               "div",
               { class: "badge-row" },
-              badge(`新增 ${groups.create.length}`, "success"),
-              badge(`更新 ${groups.update.length}`, "warning"),
-              badge(`跳过 ${groups.skip.length}`, groups.skip.length ? "danger" : "neutral"),
+              badge(vt("import.created", { count: groups.create.length }), "success"),
+              badge(vt("import.updated", { count: groups.update.length }), "warning"),
+              badge(vt("import.skipped", { count: groups.skip.length }), groups.skip.length ? "danger" : "neutral"),
             ),
             h(
               "div",
@@ -316,12 +317,12 @@ function openImportModal(ctx) {
                 h(
                   "div",
                   { class: "list-item" },
-                  h("span", {}, h("strong", { text: entry.title || entry.suggested_id || "无法识别" }), h("small", { class: "mono", text: entry.suggested_path || entry.note || "—" })),
+                  h("span", {}, h("strong", { text: entry.title || entry.suggested_id || vt("import.unrecognized") }), h("small", { class: "mono", text: entry.suggested_path || entry.note || "—" })),
                   entry.skip
-                    ? badge("跳过", "danger")
+                    ? badge(vt("import.skip"), "danger")
                     : existing.has(entry.suggested_id)
-                      ? badge("更新", "warning")
-                      : badge("新增", "success"),
+                      ? badge(vt("import.update"), "warning")
+                      : badge(vt("import.create"), "success"),
                 ),
               ),
             ),
@@ -329,15 +330,15 @@ function openImportModal(ctx) {
         );
         applyButton.disabled = !parsed.length;
       } catch (error) {
-        toastError(error, "解析失败");
+        toastError(error, vt("import.parseFailed"));
       }
     },
   });
 
   openModal({
-    title: "批量导入 M3U",
-    description: "先解析预览，确认映射结果后再写入。",
-    body: h("div", { class: "stack" }, field("默认来源服务器", upstream), field("M3U 内容", content), result),
-    actions: [button("取消", { onClick: closeModal }), previewButton, applyButton],
+    title: vt("import.title"),
+    description: vt("import.description"),
+    body: h("div", { class: "stack" }, field(vt("import.defaultUpstream"), upstream), field(vt("import.content"), content), result),
+    actions: [button(vt("common.cancel"), { onClick: closeModal }), previewButton, applyButton],
   });
 }

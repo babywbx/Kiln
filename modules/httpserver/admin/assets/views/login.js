@@ -33,7 +33,6 @@ export function renderLogin(onSuccess, options) {
   submit.classList.add("button-wide");
   const submitLabel = submit.querySelector("span");
 
-  const languageLabel = h("span", { class: "login-language-label" });
   const language = h(
     "select",
     { class: "login-language-select", id: "login-language" },
@@ -60,7 +59,6 @@ export function renderLogin(onSuccess, options) {
   );
 
   function paint() {
-    languageLabel.textContent = i18n.t("login.language");
     language.setAttribute("aria-label", i18n.t("login.language"));
     eyebrow.textContent = i18n.t("login.eyebrow");
     title.textContent = i18n.t("login.title");
@@ -163,7 +161,7 @@ export function renderLogin(onSuccess, options) {
         "div",
         { class: "login-head" },
         h("div", { class: "brand" }, brandMark(), h("span", { class: "brand-name", text: "Kiln" })),
-        h("label", { class: "login-language", htmlFor: "login-language" }, languageLabel, language),
+        language,
       ),
       h(
         "div",

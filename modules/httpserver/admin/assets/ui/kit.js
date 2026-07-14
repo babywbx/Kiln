@@ -1,4 +1,5 @@
 import { h, icon, initials } from "/admin/assets/core/dom.js";
+import { vt } from "/admin/assets/core/view-i18n.js";
 
 export function button(label, options = {}) {
   const { kind = "secondary", size = "", type = "button", onClick, disabled = false, iconName = "", trailingIcon = "" } = options;
@@ -47,27 +48,27 @@ export function badge(label, tone = "neutral", iconName = "") {
 }
 
 const STATE_BADGES = {
-  running: ["运行中", "success"],
-  starting: ["正在启动", "warning"],
-  restarting: ["正在重启", "warning"],
-  failed: ["失败", "danger"],
+  running: ["state.running", "success"],
+  starting: ["state.starting", "warning"],
+  restarting: ["state.restarting", "warning"],
+  failed: ["state.failed", "danger"],
 };
 
 export function sessionStateBadge(state) {
-  const [label, tone] = STATE_BADGES[state] || [state || "未知", "neutral"];
-  return badge(label, tone);
+  const [label, tone] = STATE_BADGES[state] || [state || vt("common.unknown"), "neutral"];
+  return badge(STATE_BADGES[state] ? vt(label) : label, tone);
 }
 
 export function stateBadge(channel, session) {
-  if (channel?.disabled) return badge("已停用", "danger");
-  if (!session) return badge("待机", "neutral");
+  if (channel?.disabled) return badge(vt("state.disabled"), "danger");
+  if (!session) return badge(vt("state.idle"), "neutral");
   return sessionStateBadge(session.state);
 }
 
 export function runModeLabel(channel) {
-  if (channel.autostart && channel.on_demand) return "启动时预热";
-  if (channel.autostart) return "始终运行";
-  return "有观众时启动";
+  if (channel.autostart && channel.on_demand) return vt("run.prewarm");
+  if (channel.autostart) return vt("run.persistent");
+  return vt("run.ondemand");
 }
 
 export function pageHead(title, description, actions = []) {

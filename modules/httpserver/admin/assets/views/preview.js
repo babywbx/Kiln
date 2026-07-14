@@ -1,5 +1,6 @@
 import { h } from "/admin/assets/core/dom.js";
 import { endpoints } from "/admin/assets/core/api.js";
+import { viewLocale, vt } from "/admin/assets/core/view-i18n.js";
 import { button } from "/admin/assets/ui/kit.js";
 import { closeModal, openModal, toastError } from "/admin/assets/ui/overlay.js";
 
@@ -12,7 +13,7 @@ function loadHls() {
       const script = h("script", {
         src: "/admin/assets/third_party/hls.min.js",
         onLoad: () => resolve(window.Hls),
-        onError: () => reject(new Error("无法加载播放器")),
+        onError: () => reject(new Error(vt("preview.loadFailed"))),
       });
       document.head.append(script);
     });
@@ -34,15 +35,15 @@ export async function previewChannel(channel) {
     const preview = await endpoints.previewChannel(channel.id);
     const source = sameOrigin(preview.play_url);
     const video = h("video", { class: "player", controls: true, autoplay: true, playsinline: true });
-    const status = h("p", { class: "muted", text: "正在连接…" });
-    const expiry = new Date(preview.expires_at).toLocaleTimeString("zh-Hans");
+    const status = h("p", { class: "muted", text: vt("preview.connecting") });
+    const expiry = new Date(preview.expires_at).toLocaleTimeString(viewLocale(), { hour: "2-digit", minute: "2-digit" });
 
     let player = null;
     openModal({
       title: channel.title || channel.id,
-      description: `播放预览 · 临时凭证将在 ${expiry} 过期`,
+      description: vt("preview.description", { time: expiry }),
       body: h("div", {}, video, status),
-      actions: [button("关闭", { onClick: closeModal })],
+      actions: [button(vt("common.close"), { onClick: closeModal })],
       onClose: () => {
         player?.destroy();
         video.removeAttribute("src");
@@ -61,7 +62,7 @@ export async function previewChannel(channel) {
 
     if (video.canPlayType("application/vnd.apple.mpegurl")) {
       video.addEventListener("error", () => {
-        fail(`播放失败：${video.error?.message || "浏览器拒绝了这个流"}`);
+        fail(vt("preview.failed", { detail: video.error?.message || vt("preview.browserRejected") }));
       });
       video.src = source;
       return;
@@ -69,28 +70,28 @@ export async function previewChannel(channel) {
 
     const Hls = await loadHls();
     if (!Hls?.isSupported()) {
-      fail("当前浏览器不支持 Media Source，无法预览。请改用 Safari。");
+      fail(vt("preview.unsupported"));
       return;
     }
     player = new Hls({ enableWorker: true, lowLatencyMode: true });
     player.on(Hls.Events.ERROR, (_event, data) => {
       if (!data.fatal) return;
       if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-        fail(`无法拉取播放列表：${data.details}`);
+        fail(vt("preview.network", { detail: data.details }));
         player.startLoad();
         return;
       }
       if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
-        fail(`解码失败：${data.details}。该编码可能不被此浏览器支持，可改用 Safari。`);
+        fail(vt("preview.decode", { detail: data.details }));
         player.recoverMediaError();
         return;
       }
-      fail(`播放失败：${data.details}`);
+      fail(vt("preview.failed", { detail: data.details }));
       player.destroy();
     });
     player.loadSource(source);
     player.attachMedia(video);
   } catch (error) {
-    toastError(error, "无法打开预览");
+    toastError(error, vt("preview.openFailed"));
   }
 }

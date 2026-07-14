@@ -1,22 +1,33 @@
 import { frag, h } from "/admin/assets/core/dom.js";
 import { endpoints } from "/admin/assets/core/api.js";
-import { loadCatalog, store } from "/admin/assets/core/store.js";
+import { i18n } from "/admin/assets/core/i18n.js";
+import { loadCatalog, sourceURL, store } from "/admin/assets/core/store.js";
 import { badge, button, card, emptyState, field, input, notice, pageHead, select, table } from "/admin/assets/ui/kit.js";
 import { closeModal, openModal, toast, toastError } from "/admin/assets/ui/overlay.js";
 
 const POLICY_LABELS = {
-  rewrite: "改写为 Kiln 播放地址",
-  passthrough: "保留原始地址",
-  auto: "自动选择",
+  rewrite: "egress.policy.rewrite",
+  passthrough: "egress.policy.passthrough",
+  auto: "egress.policy.auto",
+};
+
+const POLICY_HINTS = {
+  rewrite: "egress.policy.rewriteHint",
+  passthrough: "egress.policy.passthroughHint",
+  auto: "egress.policy.autoHint",
 };
 
 const RULE_KINDS = {
-  host_suffix: "主机名后缀",
-  host_exact: "完整主机名",
-  host_regex: "主机名正则表达式",
-  channel_id: "频道标识符",
-  url_regex: "完整地址正则表达式",
+  host_suffix: "egress.ruleKind.hostSuffix",
+  host_exact: "egress.ruleKind.hostExact",
+  host_regex: "egress.ruleKind.hostRegex",
+  channel_id: "egress.ruleKind.channelId",
+  url_regex: "egress.ruleKind.urlRegex",
 };
+
+function translatedChoices(labels) {
+  return Object.entries(labels).map(([value, key]) => [value, i18n.t(key)]);
+}
 
 export async function renderEgress(ctx) {
   await loadCatalog({ signal: ctx.signal });
@@ -36,12 +47,13 @@ export async function renderEgress(ctx) {
   const proxyBody = h("div", {});
   const ruleBody = h("div", {});
   const testResult = h("div", {});
-  const dirtyLabel = h("span", { class: "muted", text: "与已应用的配置一致" });
+  const dirtyLabel = h("span", { class: "muted", text: i18n.t("egress.appliedState") });
 
-  const applyButton = button("应用更改", { kind: "primary", iconName: "check", disabled: true });
+  const applyButton = button(i18n.t("egress.apply"), { kind: "primary", iconName: "check", disabled: true });
   const defaultSelect = h("select", { name: "default" });
-  const policySelect = select("playlist_policy", Object.entries(POLICY_LABELS), draft.playlist_policy);
+  const policySelect = select("playlist_policy", translatedChoices(POLICY_LABELS), draft.playlist_policy);
   const dockerInput = input("docker_proxy_host", draft.docker_proxy_host);
+  const policyHint = h("p", { class: "field-hint", text: i18n.t(POLICY_HINTS[draft.playlist_policy]) });
 
   // Any edit invalidates the last successful route test: applying an untested
   // draft is how you lock yourself out of every upstream at once.
@@ -50,12 +62,12 @@ export async function renderEgress(ctx) {
     ctx.markDirty(true);
     applyButton.disabled = true;
     testResult.replaceChildren();
-    dirtyLabel.textContent = "草稿未测试 · 请先执行一次成功的路由测试";
+    dirtyLabel.textContent = i18n.t("egress.untestedDraft");
     dirtyLabel.classList.add("is-dirty");
   };
 
   const drawDefaults = () => {
-    const options = [["direct", "direct · 直接连接"], ...draft.proxies.map((proxy) => [proxy.id, `${proxy.id} · ${proxy.name || "代理"}`])];
+    const options = [["direct", i18n.t("egress.directNoProxy")], ...draft.proxies.filter((proxy) => !proxy.disabled).map((proxy) => [proxy.id, `${proxy.id} · ${proxy.name || i18n.t("egress.proxy.generic")}`])];
     defaultSelect.replaceChildren(
       ...options.map(([value, label]) => h("option", { value, selected: value === draft.default, text: label })),
     );
@@ -67,6 +79,7 @@ export async function renderEgress(ctx) {
   });
   policySelect.addEventListener("change", () => {
     draft.playlist_policy = policySelect.value;
+    policyHint.textContent = i18n.t(POLICY_HINTS[draft.playlist_policy]);
     touch();
   });
   dockerInput.addEventListener("input", () => {
@@ -76,35 +89,48 @@ export async function renderEgress(ctx) {
 
   const drawProxies = () => {
     if (!draft.proxies.length) {
-      proxyBody.replaceChildren(emptyState("暂无代理", "所有流量将直接连接节目源。"));
+      proxyBody.replaceChildren(emptyState(i18n.t("egress.proxy.empty"), i18n.t("egress.proxy.emptyDescription")));
       return;
     }
     proxyBody.replaceChildren(
       table(
-        ["代理", "地址", "认证", "状态", ""],
+        [i18n.t("egress.proxy.table.proxy"), i18n.t("egress.proxy.table.address"), i18n.t("egress.proxy.table.auth"), i18n.t("egress.proxy.table.status"), ""],
         draft.proxies.map((proxy) =>
           h(
             "tr",
             {},
             h("td", {}, h("strong", { text: proxy.name || proxy.id }), h("div", { class: "mono muted", text: proxy.id })),
             h("td", { class: "mono truncate", text: safeHost(proxy.url) }),
-            h("td", {}, hasCredentials(proxy) ? badge("已配置", "success") : badge("无凭据", "neutral")),
-            h("td", {}, proxy.disabled ? badge("停用", "danger") : badge("启用", "success")),
+            h("td", {}, hasCredentials(proxy) ? badge(i18n.t("egress.proxy.credentialsConfigured"), "success") : badge(i18n.t("egress.proxy.noCredentials"), "neutral")),
+            h("td", {}, proxy.disabled ? badge(i18n.t("shared.disabled"), "danger") : badge(i18n.t("shared.enabled"), "success")),
             h(
               "td",
               {},
               h(
                 "div",
                 { class: "row-actions" },
-                button(proxy.disabled ? "启用" : "停用", {
+                button(i18n.t(proxy.disabled ? "egress.enable" : "egress.disable"), {
                   size: "small",
                   onClick: () => {
                     proxy.disabled = !proxy.disabled;
+                    if (proxy.disabled && draft.default === proxy.id) draft.default = "direct";
+                    if (proxy.disabled) {
+                      for (const rule of draft.rules) {
+                        if ((rule.proxy || rule.proxy_id) === proxy.id) rule.disabled = true;
+                      }
+                    }
                     touch();
+                    drawDefaults();
                     drawProxies();
+                    drawRules();
                   },
                 }),
-                button("移除", {
+                button(i18n.t("egress.edit"), {
+                  size: "small",
+                  onClick: () => openProxyModal(draft, () => { touch(); drawDefaults(); drawProxies(); }, proxy),
+                }),
+                button(i18n.t("egress.test"), { size: "small", onClick: () => testProxy(proxy) }),
+                button(i18n.t("egress.remove"), {
                   kind: "danger",
                   size: "small",
                   onClick: () => {
@@ -127,37 +153,44 @@ export async function renderEgress(ctx) {
 
   const drawRules = () => {
     if (!draft.rules.length) {
-      ruleBody.replaceChildren(emptyState("暂无路由规则", "默认出口会应用于所有未匹配的请求。"));
+      ruleBody.replaceChildren(emptyState(i18n.t("egress.rule.empty"), i18n.t("egress.rule.emptyDescription")));
       return;
     }
     const sorted = [...draft.rules].sort((a, b) => (a.priority || 0) - (b.priority || 0));
     ruleBody.replaceChildren(
       table(
-        ["规则", "优先级", "匹配", "出口", "状态", ""],
+        [i18n.t("egress.rule.table.rule"), i18n.t("egress.rule.table.priority"), i18n.t("egress.rule.table.match"), i18n.t("egress.rule.table.egress"), i18n.t("egress.rule.table.status"), ""],
         sorted.map((rule) =>
           h(
             "tr",
             {},
             h("td", { class: "mono", text: rule.id }),
             h("td", { class: "mono", text: String(rule.priority ?? 0) }),
-            h("td", {}, h("div", { class: "source-cell" }, h("span", { class: "truncate", text: RULE_KINDS[rule.kind] || rule.kind }), h("small", { class: "mono truncate", text: rule.pattern || "—" }))),
+            h("td", {}, h("div", { class: "source-cell" }, h("span", { class: "truncate", text: RULE_KINDS[rule.kind] ? i18n.t(RULE_KINDS[rule.kind]) : rule.kind }), h("small", { class: "mono truncate", text: rule.pattern || "—" }))),
             h("td", { class: "mono", text: rule.proxy || rule.proxy_id || "direct" }),
-            h("td", {}, rule.disabled ? badge("停用", "neutral") : badge("启用", "success")),
+            h("td", {}, rule.disabled ? badge(i18n.t("shared.disabled"), "neutral") : badge(i18n.t("shared.enabled"), "success")),
             h(
               "td",
               {},
               h(
                 "div",
                 { class: "row-actions" },
-                button(rule.disabled ? "启用" : "停用", {
+                button(i18n.t(rule.disabled ? "egress.enable" : "egress.disable"), {
                   size: "small",
                   onClick: () => {
+                    const proxyID = rule.proxy || rule.proxy_id;
+                    const proxy = draft.proxies.find((item) => item.id === proxyID);
+                    if (rule.disabled && proxy?.disabled) {
+                      toast(i18n.t("egress.rule.cannotEnable"), i18n.t("egress.rule.proxyDisabled", { proxy: proxy.name || proxy.id }), "danger");
+                      return;
+                    }
                     rule.disabled = !rule.disabled;
                     touch();
                     drawRules();
                   },
                 }),
-                button("移除", {
+                button(i18n.t("egress.edit"), { size: "small", onClick: () => openRuleModal(draft, () => { touch(); drawRules(); }, rule) }),
+                button(i18n.t("egress.remove"), {
                   kind: "danger",
                   size: "small",
                   onClick: () => {
@@ -175,14 +208,35 @@ export async function renderEgress(ctx) {
   };
 
   const testURL = input("test_url", "", { type: "url", placeholder: "https://example.com/live/index.m3u8" });
-  const testChannel = select("test_channel", [["", "不指定频道"], ...store.channels.map((channel) => [channel.id, channel.title || channel.id])], "");
+  const testChannel = select("test_channel", [["", i18n.t("egress.test.noChannel")], ...store.channels.map((channel) => [channel.id, channel.title || channel.id])], "");
+  testChannel.addEventListener("change", () => {
+    const channel = store.channels.find((item) => item.id === testChannel.value);
+    if (!channel) return;
+    testURL.value = channel.source_url || sourceURL(channel.upstream, channel.path);
+  });
 
-  const testButton = button("测试路由", {
+  const testProxy = async (proxy) => {
+    if (!testURL.value.trim()) {
+      testURL.setAttribute("aria-invalid", "true");
+      testURL.focus();
+      toast(i18n.t("egress.test.urlRequired"), i18n.t("egress.test.proxyURLRequiredDescription"), "danger");
+      return;
+    }
+    const proxyDraft = { ...draft, default: proxy.id, rules: [], proxies: draft.proxies.map((item) => ({ ...item, disabled: item.id === proxy.id ? false : item.disabled })) };
+    try {
+      const result = await endpoints.testEgress({ url: testURL.value.trim(), channel_id: "", draft: proxyDraft });
+      testResult.replaceChildren(resultNotice(result, proxy.id));
+    } catch (error) {
+      toastError(error, i18n.t("egress.test.proxyFailed"));
+    }
+  };
+
+  const testButton = button(i18n.t("egress.test.route"), {
     iconName: "route",
     onClick: async () => {
       if (!testURL.value.trim()) {
         testURL.setAttribute("aria-invalid", "true");
-        toast("请填写测试地址", "路由测试需要一个真实的上游地址。", "danger");
+        toast(i18n.t("egress.test.urlRequired"), i18n.t("egress.test.routeURLRequiredDescription"), "danger");
         return;
       }
       testURL.removeAttribute("aria-invalid");
@@ -195,14 +249,10 @@ export async function renderEgress(ctx) {
         });
         tested = Boolean(result.ok);
         applyButton.disabled = !tested;
-        testResult.replaceChildren(
-          result.ok
-            ? notice(`连接成功 · 出口 ${result.via_proxy || "direct"} · HTTP ${result.status} · ${result.dur_ms} ms`, "success", "circle-check")
-            : notice(`连接失败 · ${result.error || "未知错误"}`, "danger", "circle-alert"),
-        );
-        if (tested) dirtyLabel.textContent = "测试通过 · 可以应用";
+        testResult.replaceChildren(resultNotice(result));
+        if (tested) dirtyLabel.textContent = i18n.t("egress.test.passed");
       } catch (error) {
-        toastError(error, "路由测试失败");
+        toastError(error, i18n.t("egress.test.routeFailed"));
       } finally {
         testButton.disabled = false;
       }
@@ -215,10 +265,10 @@ export async function renderEgress(ctx) {
     try {
       await endpoints.saveEgress(draft, revision);
       ctx.markDirty(false);
-      toast("网络出口设置已应用");
+      toast(i18n.t("egress.applied"));
       await ctx.reload();
     } catch (error) {
-      toastError(error, "应用失败");
+      toastError(error, i18n.t("egress.applyFailed"));
       applyButton.disabled = false;
     }
   });
@@ -228,44 +278,44 @@ export async function renderEgress(ctx) {
   drawRules();
 
   return frag(
-    pageHead("网络出口", "设置节目源请求使用的默认连接、代理与匹配规则。", [applyButton]),
+    pageHead(i18n.t("egress.title"), i18n.t("egress.description"), [applyButton]),
     h(
       "div",
       { class: "stack" },
       card({
-        title: "默认连接",
-        description: "未命中匹配规则的节目源请求使用这里的设置。",
+        title: i18n.t("egress.defaultTitle"),
+        description: i18n.t("egress.defaultDescription"),
         body: h(
           "div",
           { class: "form-grid" },
-          field("默认出口", defaultSelect),
-          field("播放列表策略", policySelect),
-          field("容器代理主机", dockerInput, "仅用于容器内 FFmpeg 访问宿主机代理。"),
+          field(i18n.t("egress.defaultConnection"), defaultSelect, i18n.t("egress.defaultConnectionHint")),
+          h("div", {}, field(i18n.t("egress.playlistPolicy"), policySelect), policyHint),
+          field(i18n.t("egress.containerProxyHost"), dockerInput, i18n.t("egress.containerProxyHostHint")),
         ),
       }),
       h(
         "div",
         { class: "split-even" },
         card({
-          title: "代理服务器",
+          title: i18n.t("egress.proxy.title"),
           body: proxyBody,
           flush: true,
-          action: button("添加代理", { size: "small", iconName: "plus", onClick: () => openProxyModal(draft, () => { touch(); drawDefaults(); drawProxies(); }) }),
+          action: button(i18n.t("egress.proxy.add"), { size: "small", iconName: "plus", onClick: () => openProxyModal(draft, () => { touch(); drawDefaults(); drawProxies(); }) }),
         }),
         card({
-          title: "路由规则",
+          title: i18n.t("egress.rule.title"),
           body: ruleBody,
           flush: true,
-          action: button("添加规则", { size: "small", iconName: "plus", onClick: () => openRuleModal(draft, () => { touch(); drawRules(); }) }),
+          action: button(i18n.t("egress.rule.add"), { size: "small", iconName: "plus", onClick: () => openRuleModal(draft, () => { touch(); drawRules(); }) }),
         }),
       ),
       card({
-        title: "测试并应用",
-        description: "先用当前草稿完成一次成功的连接测试，之后才能应用更改。",
+        title: i18n.t("egress.test.title"),
+        description: i18n.t("egress.test.description"),
         body: h(
           "div",
           { class: "stack" },
-          h("div", { class: "form-grid" }, field("测试地址", testURL), field("频道（可选）", testChannel)),
+          h("div", { class: "form-grid" }, field(i18n.t("egress.test.url"), testURL), field(i18n.t("egress.test.channel"), testChannel)),
           h("div", { class: "inline-row" }, testButton, dirtyLabel),
           testResult,
         ),
@@ -279,7 +329,7 @@ function safeHost(raw) {
     const url = new URL(raw);
     return `${url.protocol}//${url.host}`;
   } catch {
-    return "地址无效";
+    return i18n.t("egress.invalidAddress");
   }
 }
 
@@ -292,37 +342,40 @@ function hasCredentials(proxy) {
   }
 }
 
-function openProxyModal(draft, after) {
-  const idInput = input("id", "", { required: true, placeholder: "home-proxy" });
-  const nameInput = input("name", "", { placeholder: "家庭出口" });
-  const urlInput = input("url", "", { type: "url", required: true, placeholder: "socks5h://127.0.0.1:1080" });
+function openProxyModal(draft, after, existing = null) {
+  const isEdit = Boolean(existing);
+  const idInput = input("id", existing?.id || "", { required: true, disabled: isEdit, placeholder: "home-proxy" });
+  const nameInput = input("name", existing?.name || "", { placeholder: i18n.t("egress.proxy.namePlaceholder") });
+  const urlInput = input("url", isEdit && existing?.credential_configured ? "" : existing?.url || "", { type: "url", required: !isEdit, placeholder: isEdit ? i18n.t("egress.proxy.urlEditPlaceholder") : "socks5h://127.0.0.1:1080" });
 
   openModal({
-    title: "添加代理",
-    description: "凭据只写入服务端，应用后不会回显。",
+    title: isEdit ? i18n.t("egress.proxy.editTitle", { proxy: existing.name || existing.id }) : i18n.t("egress.proxy.addTitle"),
+    description: i18n.t(isEdit ? "egress.proxy.editDescription" : "egress.proxy.addDescription"),
     body: h(
       "div",
       { class: "stack" },
-      field("代理标识符", idInput),
-      field("显示名称", nameInput),
-      field("代理地址", urlInput, "支持 http、https、socks5 与 socks5h。"),
+      field(i18n.t("egress.proxy.id"), idInput),
+      field(i18n.t("egress.proxy.name"), nameInput),
+      field(i18n.t("egress.proxy.url"), urlInput, i18n.t("egress.proxy.urlHint")),
     ),
     actions: [
-      button("取消", { onClick: closeModal }),
-      button("加入草稿", {
+      button(i18n.t("shared.cancel"), { onClick: closeModal }),
+      button(i18n.t(isEdit ? "egress.saveToDraft" : "egress.addToDraft"), {
         kind: "primary",
         onClick: () => {
           const id = idInput.value.trim();
-          const url = urlInput.value.trim();
+          const url = urlInput.value.trim() || existing?.url || "";
           if (!id || !url) {
-            toast("请填写代理标识符和地址", "", "danger");
+            toast(i18n.t("egress.proxy.required"), "", "danger");
             return;
           }
-          if (draft.proxies.some((proxy) => proxy.id === id)) {
-            toast("代理标识符已存在", "请换一个标识符，或先移除同名草稿项。", "danger");
+          if (!isEdit && draft.proxies.some((proxy) => proxy.id === id)) {
+            toast(i18n.t("egress.proxy.idExists"), i18n.t("egress.proxy.idExistsDescription"), "danger");
             return;
           }
-          draft.proxies.push({ id, name: nameInput.value.trim(), url, disabled: false });
+          const replacement = { ...existing, id, name: nameInput.value.trim(), url, disabled: Boolean(existing?.disabled) };
+          if (isEdit) draft.proxies[draft.proxies.findIndex((proxy) => proxy.id === id)] = replacement;
+          else draft.proxies.push(replacement);
           closeModal();
           after();
         },
@@ -331,51 +384,67 @@ function openProxyModal(draft, after) {
   });
 }
 
-function openRuleModal(draft, after) {
-  const idInput = input("id", "", { required: true, placeholder: "cn-upstream" });
-  const priorityInput = input("priority", "100", { type: "number", min: 0 });
-  const patternInput = input("pattern", "", { placeholder: "example.com" });
-  const kindSelect = select("kind", Object.entries(RULE_KINDS), "host_suffix");
-  const proxySelect = select("proxy", [["direct", "直接连接"], ...draft.proxies.map((proxy) => [proxy.id, proxy.name || proxy.id])], "direct");
+function openRuleModal(draft, after, existing = null) {
+  const isEdit = Boolean(existing);
+  const idInput = input("id", existing?.id || "", { required: true, disabled: isEdit, placeholder: "cn-upstream" });
+  const priorityInput = input("priority", existing?.priority ?? "100", { type: "number", min: 0 });
+  const patternInput = input("pattern", existing?.pattern || "", { placeholder: "example.com" });
+  const kindSelect = select("kind", translatedChoices(RULE_KINDS), existing?.kind || "host_suffix");
+  const proxySelect = select("proxy", [["direct", i18n.t("egress.direct")], ...draft.proxies.map((proxy) => [proxy.id, proxy.name || proxy.id])], existing?.proxy || existing?.proxy_id || "direct");
 
   openModal({
-    title: "添加路由规则",
-    description: "规则只会加入草稿；请先测试再应用。",
+    title: isEdit ? i18n.t("egress.rule.editTitle", { rule: existing.id }) : i18n.t("egress.rule.addTitle"),
+    description: i18n.t("egress.rule.modalDescription"),
     body: h(
       "div",
       { class: "form-grid" },
-      field("规则标识符", idInput),
-      field("优先级", priorityInput, "数字越小越优先。"),
-      field("匹配类型", kindSelect),
-      field("出口", proxySelect),
-      h("div", { class: "span-all" }, field("匹配模式", patternInput)),
+      field(i18n.t("egress.rule.id"), idInput),
+      field(i18n.t("egress.rule.priority"), priorityInput, i18n.t("egress.rule.priorityHint")),
+      field(i18n.t("egress.rule.kind"), kindSelect),
+      field(i18n.t("egress.rule.egress"), proxySelect),
+      h("div", { class: "span-all" }, field(i18n.t("egress.rule.pattern"), patternInput)),
     ),
     actions: [
-      button("取消", { onClick: closeModal }),
-      button("加入草稿", {
+      button(i18n.t("shared.cancel"), { onClick: closeModal }),
+      button(i18n.t(isEdit ? "egress.saveToDraft" : "egress.addToDraft"), {
         kind: "primary",
         onClick: () => {
           const id = idInput.value.trim();
           if (!id) {
-            toast("请填写规则标识符", "", "danger");
+            toast(i18n.t("egress.rule.idRequired"), "", "danger");
             return;
           }
-          if (draft.rules.some((rule) => rule.id === id)) {
-            toast("规则标识符已存在", "请换一个标识符，或先移除同名草稿项。", "danger");
+          if (!isEdit && draft.rules.some((rule) => rule.id === id)) {
+            toast(i18n.t("egress.rule.idExists"), i18n.t("egress.rule.idExistsDescription"), "danger");
             return;
           }
-          draft.rules.push({
+          const replacement = {
+            ...existing,
             id,
             priority: Number(priorityInput.value || 100),
             kind: kindSelect.value,
             pattern: patternInput.value.trim(),
             proxy: proxySelect.value,
-            disabled: false,
-          });
+            disabled: Boolean(existing?.disabled),
+          };
+          if (isEdit) draft.rules[draft.rules.findIndex((rule) => rule.id === id)] = replacement;
+          else draft.rules.push(replacement);
           closeModal();
           after();
         },
       }),
     ],
   });
+}
+
+function resultNotice(result, expectedProxy = "") {
+  if (!result.ok) return notice(i18n.t("egress.result.failed", { error: result.error || i18n.t("shared.unknown") }), "danger", "circle-alert");
+  const via = result.via_proxy || result.proxy_id || "direct";
+  if (expectedProxy && via !== expectedProxy) {
+    return notice(i18n.t("egress.result.wrongProxy", { expected: expectedProxy, actual: via }), "danger", "circle-alert");
+  }
+  const route = result.reason === "default" ? i18n.t("egress.result.defaultRoute") : i18n.t("egress.result.matchedRoute", { reason: result.reason || i18n.t("egress.result.defaultRoute") });
+  const playlist = i18n.t(result.rewrite ? "egress.policy.rewrite" : "egress.policy.passthrough");
+  const finalURL = result.final_url ? i18n.t("egress.result.finalURL", { url: result.final_url }) : "";
+  return notice(i18n.t("egress.result.success", { route, via, playlist, status: result.status, duration: result.dur_ms, finalURL }), "success", "circle-check");
 }

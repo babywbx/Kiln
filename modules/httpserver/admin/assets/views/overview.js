@@ -1,40 +1,68 @@
-import { formatBytes, formatClock, formatDuration, formatNumber, frag, h } from "/admin/assets/core/dom.js";
+import { formatClock, formatNumber, frag, h } from "/admin/assets/core/dom.js";
 import { endpoints } from "/admin/assets/core/api.js";
+import { i18n } from "/admin/assets/core/i18n.js";
 import { loadCatalog, refreshStatus, store } from "/admin/assets/core/store.js";
-import { badge, button, card, emptyState, linkButton, numberRoll, pageHead, sessionStateBadge, table } from "/admin/assets/ui/kit.js";
+import { badge, button, card, emptyState, linkButton, numberRoll, pageHead, table } from "/admin/assets/ui/kit.js";
 import { confirmDialog, toast, toastError } from "/admin/assets/ui/overlay.js";
 
 const ENGINE_LABELS = {
-  native_rewrite: "原生",
-  native_remux: "原生重封装",
-  ffmpeg_copy: "ffmpeg 转封装",
-  ffmpeg_transcode: "ffmpeg 转码",
+  native_rewrite: "overview.engine.nativeRewrite",
+  native_remux: "overview.engine.nativeRemux",
+  ffmpeg_copy: "overview.engine.ffmpegCopy",
+  ffmpeg_transcode: "overview.engine.ffmpegTranscode",
+};
+
+const SESSION_STATES = {
+  running: ["overview.session.running", "success"],
+  starting: ["overview.session.starting", "warning"],
+  restarting: ["overview.session.restarting", "warning"],
+  failed: ["overview.session.failed", "danger"],
 };
 
 // A channel that fell back to ffmpeg should say so, and say why: an engine
 // label alone hides the fact that the native path declined the source.
 function engineLabel(session) {
-  const name = ENGINE_LABELS[session.engine] || session.engine || "—";
+  const name = ENGINE_LABELS[session.engine] ? i18n.t(ENGINE_LABELS[session.engine]) : session.engine || "—";
   if (!session.fallback_reason) return name;
-  return `${name}（回退：${session.fallback_reason}）`;
+  return i18n.t("overview.engine.fallback", { engine: name, reason: session.fallback_reason });
 }
 
-const METRICS = [
-  { key: "uptime_sec", label: "运行时间", meta: "当前进程", format: formatDuration },
-  { key: "requests", label: "累计请求", meta: "HTTP 请求总数", format: formatNumber },
-  { key: "errors", label: "累计错误", meta: "自启动以来", format: formatNumber },
-  { key: "bytes_in", label: "接收流量", meta: "来自节目源", format: formatBytes },
-  { key: "bytes_out", label: "发送流量", meta: "发送至播放器", format: formatBytes },
-];
+function sessionStateBadge(state) {
+  const [key, tone] = SESSION_STATES[state] || ["overview.session.unknown", "neutral"];
+  return badge(i18n.t(key, { state: state || "—" }), tone);
+}
 
 export async function renderOverview(ctx) {
-  await Promise.all([loadCatalog({ signal: ctx.signal }), refreshStatus()]);
+  const [, , epgSourceData, epgMatchData] = await Promise.all([
+    loadCatalog({ signal: ctx.signal }),
+    refreshStatus(),
+    endpoints.epgSources(ctx.signal),
+    endpoints.epgMatches(ctx.signal),
+  ]);
   if (!ctx.alive()) return frag();
 
+  const enabledChannels = store.channels.filter((channel) => !channel.disabled).length;
+  const enabledSourceIDs = new Set((epgSourceData.sources || []).filter((item) => item.enabled).map((item) => item.source.id));
+  const programmeCount = (epgSourceData.statuses || [])
+    .filter((status) => enabledSourceIDs.has(status.source_id))
+    .reduce((total, status) => total + Number(status.programme_count || 0), 0);
+  const matchedChannels = (epgMatchData.matches || []).filter((item) => item.status === "matched").length;
+  const metrics = [
+    { key: "channels", label: i18n.t("overview.metric.channels"), meta: i18n.t("overview.metric.channelsMeta"), read: () => formatNumber(store.channels.length) },
+    { key: "enabled", label: i18n.t("overview.metric.enabled"), meta: i18n.t("overview.metric.enabledMeta"), read: () => formatNumber(enabledChannels) },
+    { key: "active", label: i18n.t("overview.metric.active"), meta: i18n.t("overview.metric.activeMeta"), read: (status) => formatNumber(status?.session_count) },
+    {
+      key: "coverage",
+      label: i18n.t("overview.metric.coverage"),
+      meta: i18n.t("overview.metric.coverageMeta"),
+      read: () => `${formatNumber(matchedChannels)} / ${formatNumber(enabledChannels)}`,
+    },
+    { key: "programmes", label: i18n.t("overview.metric.programmes"), meta: i18n.t("overview.metric.programmesMeta"), read: () => formatNumber(programmeCount) },
+  ];
   const metricValues = new Map();
-  const metricCards = METRICS.map(({ key, label, meta, format }) => {
+  const metricCards = metrics.map(({ key, label, meta, read }) => {
     const value = numberRoll();
-    metricValues.set(key, { roll: value, format });
+    metricValues.set(key, { roll: value, read });
     return h(
       "article",
       { class: "metric" },
@@ -50,53 +78,53 @@ export async function renderOverview(ctx) {
   const syncedRoll = numberRoll();
   const goroutines = h("strong", { class: "mono" }, goroutinesRoll.node);
   const syncedAt = h("strong", { class: "mono" }, syncedRoll.node);
-  const httpDetail = h("small", { text: "健康检查通过" });
+  const httpDetail = h("small", { text: i18n.t("overview.health.ok") });
   const httpBadge = h("span", { class: "state-slot" });
   const healthTone = h(
     "div",
     { class: "health-row" },
-    h("div", { class: "health-item" }, h("span", {}, h("strong", { text: "HTTP 服务" }), httpDetail), httpBadge),
-    h("div", { class: "health-item" }, h("span", {}, h("strong", { text: "并发协程" }), h("small", { text: "Go runtime" })), goroutines),
-    h("div", { class: "health-item" }, h("span", {}, h("strong", { text: "最近同步" }), h("small", { text: "每秒自动刷新" })), syncedAt),
+    h("div", { class: "health-item" }, h("span", {}, h("strong", { text: i18n.t("overview.health.http") }), httpDetail), httpBadge),
+    h("div", { class: "health-item" }, h("span", {}, h("strong", { text: i18n.t("overview.health.goroutines") }), h("small", { text: "Go runtime" })), goroutines),
+    h("div", { class: "health-item" }, h("span", {}, h("strong", { text: i18n.t("overview.health.lastSync") }), h("small", { text: i18n.t("overview.health.autoRefresh") })), syncedAt),
   );
   let lastOnline = null;
 
   const stop = async (channelID) => {
     const accepted = await confirmDialog({
-      title: "停止会话？",
-      description: `频道 ${channelID} 的打包进程会立即停止，下次播放需要重新冷启动。`,
-      warning: "正在观看的播放器会立即中断。",
-      confirmLabel: "停止会话",
+      title: i18n.t("overview.stop.title"),
+      description: i18n.t("overview.stop.description", { channel: channelID }),
+      warning: i18n.t("overview.stop.warning"),
+      confirmLabel: i18n.t("overview.stop.confirm"),
     });
     if (!accepted) return;
     try {
       await endpoints.stopSession(channelID);
-      toast("会话已停止");
+      toast(i18n.t("overview.stop.done"));
       await refreshStatus();
     } catch (error) {
-      toastError(error, "停止失败");
+      toastError(error, i18n.t("overview.stop.failed"));
     }
   };
 
   const paint = () => {
     if (!ctx.alive()) return;
     const status = store.status;
-    for (const [key, { roll, format }] of metricValues) roll.set(format(status?.[key]));
+    for (const { roll, read } of metricValues.values()) roll.set(read(status));
     goroutinesRoll.set(formatNumber(status?.goroutines));
     syncedRoll.set(store.lastSyncAt ? formatClock(new Date(store.lastSyncAt)) : "—");
 
     if (store.online !== lastOnline) {
       lastOnline = store.online;
-      httpDetail.textContent = store.online ? "健康检查通过" : "无法连接到服务";
-      httpBadge.replaceChildren(store.online ? badge("正常", "success", "circle-check") : badge("异常", "danger", "circle-alert"));
+      httpDetail.textContent = i18n.t(store.online ? "overview.health.ok" : "overview.health.unreachable");
+      httpBadge.replaceChildren(store.online ? badge(i18n.t("overview.health.normal"), "success", "circle-check") : badge(i18n.t("overview.health.abnormal"), "danger", "circle-alert"));
     }
 
     const sessions = status?.sessions || [];
-    sessionCount.textContent = sessions.length ? `${sessions.length} 个会话正在运行` : "没有正在运行的会话";
+    sessionCount.textContent = i18n.t(sessions.length ? "overview.session.count" : "overview.session.none", { count: sessions.length });
 
     if (!sessions.length) {
       sessionBody.replaceChildren(
-        emptyState("当前没有播放会话", "频道开始播放后，运行状态会实时显示在这里。", linkButton("查看所有频道", "/admin/channels", { iconName: "tv" })),
+        emptyState(i18n.t("overview.session.emptyTitle"), i18n.t("overview.session.emptyDescription"), linkButton(i18n.t("overview.session.viewChannels"), "/admin/channels", { iconName: "tv" })),
       );
       return;
     }
@@ -111,18 +139,26 @@ export async function renderOverview(ctx) {
         h("td", { class: "mono muted", text: engineLabel(session) }),
         h("td", { class: "mono muted", text: session.pack_mode || "—" }),
         h("td", { class: "muted truncate", text: session.last_error || "—" }),
-        h("td", {}, h("div", { class: "row-actions" }, button("停止", { kind: "danger", size: "small", onClick: () => stop(session.channel_id) }))),
+        h("td", {}, h("div", { class: "row-actions" }, button(i18n.t("overview.stop.action"), { kind: "danger", size: "small", onClick: () => stop(session.channel_id) }))),
       ),
     );
-    sessionBody.replaceChildren(table(["频道", "状态", "类型", "引擎", "打包模式", "最近错误", ""], rows));
+    sessionBody.replaceChildren(table([
+      i18n.t("overview.table.channel"),
+      i18n.t("overview.table.status"),
+      i18n.t("overview.table.type"),
+      i18n.t("overview.table.engine"),
+      i18n.t("overview.table.packMode"),
+      i18n.t("overview.table.lastError"),
+      "",
+    ], rows));
   };
 
   paint();
   ctx.watchStatus(paint);
 
   return frag(
-    pageHead("总览", "实时查看服务运行情况、累计流量与当前播放会话。", [
-      button("立即刷新", { iconName: "refresh-cw", onClick: () => refreshStatus() }),
+    pageHead(i18n.t("overview.title"), i18n.t("overview.description"), [
+      button(i18n.t("overview.refresh"), { iconName: "refresh-cw", onClick: () => ctx.reload() }),
     ]),
     h(
       "div",
@@ -131,8 +167,8 @@ export async function renderOverview(ctx) {
       h(
         "div",
         { class: "split" },
-        card({ title: "活动会话", description: "", body: sessionBody, flush: true, action: sessionCount }),
-        card({ title: "实例健康", body: healthTone }),
+        card({ title: i18n.t("overview.sessionsTitle"), description: "", body: sessionBody, flush: true, action: sessionCount }),
+        card({ title: i18n.t("overview.healthTitle"), body: healthTone }),
       ),
     ),
   );

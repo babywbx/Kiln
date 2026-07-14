@@ -3,6 +3,6 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test:admin-ui": "node --test scripts/admin-login.test.js"
+    "test:admin-ui": "node --test scripts/*.test.js"
   }
 }

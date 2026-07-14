@@ -23,7 +23,7 @@ test:
 	go test -race ./...
 
 test-admin-ui:
-	node --test scripts/admin-login.test.js
+	node --test scripts/*.test.js
 
 media-oracle:
 	KILN_REQUIRE_MEDIA_ORACLE=1 go test ./modules/packager/... -run 'FFmpeg|NativeOutput'

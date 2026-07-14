@@ -11,7 +11,7 @@ export class ApiError extends Error {
   }
 
   get detail() {
-    return [this.code, this.requestId && `请求 ${this.requestId}`].filter(Boolean).join(" · ");
+    return this.requestId ? `Request ID ${this.requestId}` : "";
   }
 }
 
@@ -95,6 +95,7 @@ export function isAbort(error) {
 export const endpoints = {
   login: (body) => api("/v1/auth/login", { method: "POST", body: JSON.stringify(body) }),
   me: (signal) => api("/v1/me", { signal }),
+  updateCredentials: (body) => api("/v1/me/credentials", { method: "PUT", body: JSON.stringify(body) }),
   status: (signal) => api("/v1/status", { signal }),
 
   channels: (signal) => api("/v1/admin/channels", { signal }),

@@ -1,14 +1,16 @@
 import { frag, h, icon } from "/admin/assets/core/dom.js";
 import { endpoints } from "/admin/assets/core/api.js";
+import { isValidSourceURL, resolveSourceFields } from "/admin/assets/core/source-url.js";
 import { invalidateCatalog, loadCatalog, refreshStatus, sessionFor, sourceURL, store } from "/admin/assets/core/store.js";
+import { vt } from "/admin/assets/core/view-i18n.js";
 import { badge, button, card, channelAvatar, emptyState, field, formSection, iconButton, input, linkButton, pageHead, select, stateBadge } from "/admin/assets/ui/kit.js";
-import { closeModal, confirmDialog, copyText, openModal, toast, toastError } from "/admin/assets/ui/overlay.js";
+import { closeModal, confirmDialog, openModal, toast, toastError } from "/admin/assets/ui/overlay.js";
 import { matchesQuery } from "/admin/assets/views/channels.js";
 import { matchBadge } from "/admin/assets/views/epg.js";
 import { previewChannel } from "/admin/assets/views/preview.js";
 
 const BLANK = {
-  id: "", title: "", group: "", logo_url: "", upstream: "", path: "", ingress: "hls",
+  id: "", title: "", group: "", logo_url: "", source_url: "", upstream: "", path: "", ingress: "hls",
   disabled: false, on_demand: true, autostart: false, idle_timeout_sec: 90,
   keys: "", keys_file: "", user_agent: "", headers: {}, restart_on_failure: false, prefer_height: 0,
   packager: "", epg_id: "", epg_name: "", epg_source: "",
@@ -25,7 +27,7 @@ export async function renderChannelDetail(ctx) {
   ]);
   if (!ctx.alive()) return frag();
 
-  let channel = { ...BLANK, upstream: store.upstreams.length === 1 ? store.upstreams[0].id : "" };
+  let channel = { ...BLANK };
   let revision = 0;
   if (detail) {
     channel = { ...BLANK, ...detail.channel };
@@ -39,17 +41,17 @@ export async function renderChannelDetail(ctx) {
 
   const editor = buildEditor(ctx, channel, revision, isNew, epg);
   return frag(
-    pageHead(isNew ? "添加频道" : channel.title || channel.id, isNew ? "按顺序填写频道信息、节目源与运行方式。" : "检查节目源、调整配置并执行常用运行操作。", [
-      linkButton("全部频道", "/admin/channels", { iconName: "chevron-left" }),
+    pageHead(isNew ? vt("channels.add") : channel.title || channel.id, vt(isNew ? "channel.newDescription" : "channel.editDescription"), [
+      linkButton(vt("channel.all"), "/admin/channels", { iconName: "chevron-left" }),
     ]),
     h("div", { class: "workspace" }, buildPicker(channel.id, isNew), editor),
   );
 }
 
 function buildPicker(currentID, isNew) {
-  const filter = input("picker_filter", "", { placeholder: "筛选频道…", type: "search" });
-  filter.setAttribute("aria-label", "筛选频道");
-  const list = h("nav", { class: "picker-list", "aria-label": "频道列表" });
+  const filter = input("picker_filter", "", { placeholder: vt("channels.filter"), type: "search" });
+  filter.setAttribute("aria-label", vt("channels.filterAria"));
+  const list = h("nav", { class: "picker-list", "aria-label": vt("channel.list") });
 
   const draw = () => {
     const visible = store.channels.filter((channel) => matchesQuery(channel, filter.value));
@@ -72,11 +74,11 @@ function buildPicker(currentID, isNew) {
           "a",
           { class: "picker-item", href: "/admin/channels/new", "data-route": true, "aria-current": "page" },
           h("span", { class: "avatar avatar-channel", style: { width: "32px", height: "32px" } }, icon("plus", 16)),
-          h("span", { class: "identity-copy" }, h("strong", { text: "添加频道" }), h("small", { text: "尚未创建" })),
+          h("span", { class: "identity-copy" }, h("strong", { text: vt("channels.add") }), h("small", { text: vt("channel.notCreated") })),
         ),
       );
     }
-    if (!items.length) items.push(emptyState("没有匹配的频道", ""));
+    if (!items.length) items.push(emptyState(vt("channels.noMatch"), ""));
     list.replaceChildren(...items);
   };
 
@@ -87,9 +89,9 @@ function buildPicker(currentID, isNew) {
     "aside",
     { class: "picker" },
     card({
-      title: "频道",
-      description: `${store.channels.length} 个频道`,
-      action: h("a", { class: "icon-button is-outline", href: "/admin/channels/new", "data-route": true, title: "添加频道", "aria-label": "添加频道" }, icon("plus", 18)),
+      title: vt("channels.title"),
+      description: vt("common.channels", { count: store.channels.length }),
+      action: h("a", { class: "icon-button is-outline", href: "/admin/channels/new", "data-route": true, title: vt("channels.add"), "aria-label": vt("channels.add") }, icon("plus", 18)),
       body: frag(filter, list),
     }),
   );
@@ -104,31 +106,30 @@ function buildEditor(ctx, channel, revision, isNew, epg) {
   const logoInput = input("logo_url", channel.logo_url, { type: "url", placeholder: "https://…" });
 
   const epgIDInput = input("epg_id", channel.epg_id, { placeholder: "456556" });
-  const epgNameInput = input("epg_name", channel.epg_name, { placeholder: "頻道名稱" });
+  const epgNameInput = input("epg_name", channel.epg_name, { placeholder: vt("channel.epgNamePlaceholder") });
   const epgSourceSelect = select("epg_source", epgSourceChoices(epg.sources, channel.epg_source), channel.epg_source || "");
 
-  const upstreamSelect = select(
-    "upstream",
-    [["", "选择来源服务器"], ...store.upstreams.map((item) => [item.id, `${item.id} · ${item.base_url}`])],
-    channel.upstream,
-  );
-  upstreamSelect.required = true;
-  const pathInput = input("path", channel.path, { required: true, placeholder: "/live/channel/index.m3u8" });
+  const existingSourceURL = channel.source_url || (channel.upstream ? sourceURL(channel.upstream, channel.path) : channel.path);
+  const sourceInput = input("source_url", existingSourceURL, {
+    type: "url",
+    required: true,
+    placeholder: "https://example.com/live/channel/index.m3u8",
+  });
 
   const ingressSelect = select("ingress", [["hls", "HLS（.m3u8）"], ["dash", "DASH（.mpd）"]], channel.ingress);
   const strategy = channel.autostart ? (channel.on_demand ? "prewarm" : "persistent") : "ondemand";
   const strategySelect = select("strategy", [
-    ["ondemand", "有观众时启动"],
-    ["persistent", "始终运行"],
-    ["prewarm", "启动时预热，无观众后停止"],
+    ["ondemand", vt("run.ondemand")],
+    ["persistent", vt("run.persistent")],
+    ["prewarm", vt("run.prewarm")],
   ], strategy);
   const idleInput = input("idle_timeout_sec", channel.idle_timeout_sec || 90, { type: "number", min: 10 });
   const heightInput = input("prefer_height", channel.prefer_height || 0, { type: "number", min: 0 });
   const packagerSelect = select("packager", [
-    ["", "跟随全局设置"],
-    ["auto", "自动选择（优先原生）"],
-    ["native", "仅原生（不支持则失败）"],
-    ["ffmpeg", "仅 ffmpeg"],
+    ["", vt("channel.packagerGlobal")],
+    ["auto", vt("channel.packagerAuto")],
+    ["native", vt("channel.packagerNative")],
+    ["ffmpeg", vt("channel.packagerFFmpeg")],
   ], channel.packager || "");
   const keysInput = h("textarea", {
     name: "keys",
@@ -139,8 +140,8 @@ function buildEditor(ctx, channel, revision, isNew, epg) {
     value: channel.keys || "",
   });
   keysInput.classList.add("mono");
-  const userAgentInput = input("user_agent", channel.user_agent, { placeholder: `自动使用 Kiln/${store.version || "当前版本"}` });
-  const restartSelect = select("restart_on_failure", [["false", "不自动重启"], ["true", "失败后自动重启"]], String(Boolean(channel.restart_on_failure)));
+  const userAgentInput = input("user_agent", channel.user_agent, { placeholder: vt("channel.uaAuto", { version: store.version || "—" }) });
+  const restartSelect = select("restart_on_failure", [["false", vt("channel.restartNo")], ["true", vt("channel.restartYes")]], String(Boolean(channel.restart_on_failure)));
   const headersInput = h("textarea", {
     name: "headers",
     rows: 4,
@@ -148,36 +149,29 @@ function buildEditor(ctx, channel, revision, isNew, epg) {
     value: Object.entries(channel.headers || {}).map(([key, value]) => `${key}: ${value}`).join("\n"),
   });
 
-  const sourceValue = h("span", { class: "mono truncate", text: sourceURL(channel.upstream, channel.path) });
-  const syncSource = () => {
-    sourceValue.textContent = sourceURL(upstreamSelect.value, pathInput.value);
-  };
-  upstreamSelect.addEventListener("change", syncSource);
-  pathInput.addEventListener("input", syncSource);
-
   const keysPanel = h("div", { class: "panel span-all" }, field(
-    "DRM 密钥",
+    vt("channel.drmKeys"),
     keysInput,
-    "DASH 频道必填。每行一组 KID:KEY，均为 32 位十六进制。密钥保存后不再回传，页面只显示 KID；不改动此处即保留原有密钥。",
+    vt("channel.drmHint"),
   ));
-  const packagerField = field("封装引擎", packagerSelect, "仅对 DASH 频道生效。原生引擎不启动外部进程，直接输出 HLS fMP4。");
+  const packagerField = field(vt("channel.packager"), packagerSelect, vt("channel.packagerHint"));
   const syncIngress = () => {
     const isDash = ingressSelect.value === "dash";
     keysPanel.hidden = !isDash;
     packagerField.hidden = !isDash;
     restartSelect.disabled = isDash;
     if (isDash) restartSelect.value = "true";
-    pathInput.placeholder = isDash ? "/live/channel/manifest.mpd" : "/live/channel/index.m3u8";
+    sourceInput.placeholder = isDash ? "https://example.com/live/channel/manifest.mpd" : "https://example.com/live/channel/index.m3u8";
   };
   ingressSelect.addEventListener("change", syncIngress);
   syncIngress();
 
-  const dirtyLabel = h("span", { class: "muted", text: "没有未保存更改" });
-  const saveButton = button(isNew ? "创建频道" : "保存更改", { kind: "primary", type: "submit", iconName: "check" });
+  const dirtyLabel = h("span", { class: "muted", text: vt("channel.noChanges") });
+  const saveButton = button(vt(isNew ? "channel.create" : "channel.save"), { kind: "primary", type: "submit", iconName: "check" });
 
   const onEdit = () => {
     ctx.markDirty(true);
-    dirtyLabel.textContent = "有未保存更改";
+    dirtyLabel.textContent = vt("channel.unsaved");
     dirtyLabel.classList.add("is-dirty");
   };
   form.addEventListener("input", onEdit);
@@ -194,6 +188,7 @@ function buildEditor(ctx, channel, revision, isNew, epg) {
       if (split > 0) headers[line.slice(0, split).trim()] = line.slice(split + 1).trim();
     }
 
+    const source = resolveSourceFields(sourceInput.value, store.upstreams);
     const body = {
       id: idInput.value.trim() || channel.id,
       title: titleInput.value.trim(),
@@ -202,8 +197,9 @@ function buildEditor(ctx, channel, revision, isNew, epg) {
       epg_id: epgIDInput.value.trim(),
       epg_name: epgNameInput.value.trim(),
       epg_source: epgSourceSelect.value,
-      upstream: upstreamSelect.value,
-      path: pathInput.value.trim(),
+      source_url: source.sourceURL,
+      upstream: source.upstream,
+      path: source.path,
       ingress,
       disabled: Boolean(channel.disabled),
       on_demand: strategyValue !== "persistent",
@@ -221,8 +217,7 @@ function buildEditor(ctx, channel, revision, isNew, epg) {
     const required = [
       [idInput, body.id],
       [titleInput, body.title],
-      [upstreamSelect, body.upstream],
-      [pathInput, body.path],
+      [sourceInput, body.source_url],
       [keysInput, ingress !== "dash" || body.keys || body.keys_file],
     ];
     for (const [control] of required) control.removeAttribute("aria-invalid");
@@ -230,7 +225,13 @@ function buildEditor(ctx, channel, revision, isNew, epg) {
     if (missing.length) {
       for (const [control] of missing) control.setAttribute("aria-invalid", "true");
       missing[0][0].focus();
-      toast("请完成必填项目", "已标出需要填写的频道配置。", "danger");
+      toast(vt("channel.required"), vt("channel.requiredHint"), "danger");
+      return;
+    }
+    if (!isValidSourceURL(body.source_url)) {
+      sourceInput.setAttribute("aria-invalid", "true");
+      sourceInput.focus();
+      toast(vt("channel.invalidSource"), vt("channel.invalidSourceHint"), "danger");
       return;
     }
 
@@ -240,11 +241,11 @@ function buildEditor(ctx, channel, revision, isNew, epg) {
       else await endpoints.updateChannel(channel.id, body, revision);
       ctx.markDirty(false);
       invalidateCatalog();
-      toast(isNew ? "频道已创建" : "频道已保存");
+      toast(vt(isNew ? "channel.created" : "channel.saved"));
       await ctx.navigate(`/admin/channels/${encodeURIComponent(body.id)}`);
       if (!isNew) await ctx.reload();
     } catch (error) {
-      toastError(error, "保存失败");
+      toastError(error, vt("channel.saveFailed"));
       saveButton.disabled = false;
     }
   });
@@ -256,96 +257,88 @@ function buildEditor(ctx, channel, revision, isNew, epg) {
     epgNameInput.value = candidate.name || "";
     epgSourceSelect.value = hasSourceOption(epgSourceSelect, candidate.source_id) ? candidate.source_id : "";
     onEdit();
-    toast("已回填节目单标识", `来自 ${candidate.source_id} 的 ${candidate.channel_id}。`);
+    toast(vt("channel.epgFilled"), vt("channel.epgFilledDetail", { source: candidate.source_id, channel: candidate.channel_id }));
   };
 
   const applyLogo = (logo) => {
     logoInput.value = logo.url;
     onEdit();
-    toast("已回填台标地址", logo.source_id);
+    toast(vt("channel.logoFilled"), logo.source_id);
   };
 
   form.append(
-    formSection("1", "频道信息", "设置频道在目录和播放器中显示的名称。",
+    formSection("1", vt("channel.info"), vt("channel.infoDesc"),
       h("div", { class: "form-grid" },
-        field("频道标识符（ID）", idInput, isNew ? "用于播放地址，创建后不可更改。" : "标识符创建后不可更改。"),
-        field("频道名称", titleInput),
-        field("频道分组", groupInput),
+        field(vt("channel.id"), idInput, vt(isNew ? "channel.idNewHint" : "channel.idHint")),
+        field(vt("channel.name"), titleInput),
+        field(vt("channel.group"), groupInput),
       ),
     ),
-    formSection("2", "节目源", "来源服务器与节目源路径组合成下方的完整地址。",
+    formSection("2", vt("channel.source"), vt("channel.sourceDesc"),
       h("div", { class: "form-grid" },
-        field("来源服务器", upstreamSelect),
-        field("节目源路径", pathInput),
-        h("div", { class: "source-preview span-all" },
-          h("span", { class: "source-preview-label", text: "完整节目源地址" }),
-          sourceValue,
-          iconButton("copy", "复制完整节目源地址", { onClick: () => copyText(sourceValue.textContent, "节目源地址已复制") }),
-        ),
+        h("div", { class: "span-all" }, field(vt("channel.sourceURL"), sourceInput, vt("channel.sourceHint"))),
       ),
     ),
-    formSection("3", "运行方式", "选择流媒体格式、启动时机与播放偏好。",
+    formSection("3", vt("channel.runtime"), vt("channel.runtimeDesc"),
       h("div", { class: "form-grid" },
-        field("流媒体格式", ingressSelect),
-        field("运行方式", strategySelect),
-        field("无观众后停止（秒）", idleInput, "仅在允许自动停止时生效。"),
-        field("首选视频高度", heightInput, "0 表示使用系统默认值。"),
+        field(vt("channel.mediaFormat"), ingressSelect),
+        field(vt("channel.runtime"), strategySelect),
+        field(vt("channel.idle"), idleInput, vt("channel.idleHint")),
+        field(vt("channel.height"), heightInput, vt("channel.heightHint")),
         packagerField,
         keysPanel,
       ),
     ),
-    formSection("4", "节目单与台标", "指定这个频道在 XMLTV 里的标识，播放器据此显示节目单。",
+    formSection("4", vt("channel.epgSection"), vt("channel.epgDesc"),
       h("div", { class: "form-grid" },
         h("div", { class: "span-all" },
           h("div", { class: "inline-row" },
-            dormant ? badge("频道已停用", "neutral") : matchBadge(epg.match?.status),
-            h("span", { class: "muted", text: dormant ? DORMANT_HINT : matchHint(epg.match) }),
-            button("从节目单里找", {
+            dormant ? badge(vt("state.disabled"), "neutral") : matchBadge(epg.match?.status),
+            h("span", { class: "muted", text: dormant ? vt("channel.dormantHint") : matchHint(epg.match) }),
+            button(vt("channel.findEPG"), {
               size: "small",
               iconName: "search",
               onClick: () => openCandidateModal(epg.match, applyCandidate, dormant),
             }),
-            button("选择台标", {
+            button(vt("channel.chooseLogo"), {
               size: "small",
               iconName: "eye",
               onClick: () => openLogoModal(epg.match, applyLogo, dormant),
             }),
           ),
         ),
-        field("节目单频道标识（tvg-id）", epgIDInput, "同名频道可能有多个标识，请从候选里挑选正确的一个。"),
-        field("节目单频道名称", epgNameInput, "留空时使用频道名称参与匹配。"),
-        field("限定节目单源", epgSourceSelect, "只在指定的源里匹配，可避免多个源互相覆盖。"),
-        field("台标地址", logoInput, "留空时自动使用 Kiln 台标代理（/v1/logo/频道标识）。"),
+        field(vt("channel.epgID"), epgIDInput, vt("channel.epgIDHint")),
+        field(vt("channel.epgName"), epgNameInput, vt("channel.epgNameHint")),
+        field(vt("channel.epgSource"), epgSourceSelect, vt("channel.epgSourceHint")),
+        field(vt("channel.logo"), logoInput, vt("channel.logoHint")),
       ),
     ),
     h("details", { class: "disclosure" },
-      h("summary", {}, icon("sliders-horizontal", 18), h("span", { text: "高级请求设置" }), h("small", { text: "User-Agent、请求头与故障恢复" })),
+      h("summary", {}, icon("sliders-horizontal", 18), h("span", { text: vt("channel.advanced") }), h("small", { text: vt("channel.advancedSummary") })),
       h("div", { class: "disclosure-body" },
         h("div", { class: "form-grid" },
-          field("User-Agent", userAgentInput, "留空时自动随 Kiln 版本号更新。"),
-          field("故障恢复", restartSelect, "DASH 频道始终自动重启。"),
+          field("User-Agent", userAgentInput, vt("channel.userAgentHint")),
+          field(vt("channel.recovery"), restartSelect, vt("channel.recoveryHint")),
           h("div", { class: "field span-all" },
-            h("label", { class: "field-label", htmlFor: "channel-headers", text: "附加请求头" }),
+            h("label", { class: "field-label", htmlFor: "channel-headers", text: vt("channel.headers") }),
             Object.assign(headersInput, { id: "channel-headers" }),
-            h("p", { class: "field-hint", text: "每行一个请求头。敏感请求头保存后不会再次显示。" }),
+            h("p", { class: "field-hint", text: vt("channel.headersHint") }),
           ),
         ),
       ),
     ),
     h("div", { class: "form-footer" },
       dirtyLabel,
-      h("div", { class: "form-footer-actions" }, linkButton("取消", "/admin/channels"), saveButton),
+      h("div", { class: "form-footer-actions" }, linkButton(vt("common.cancel"), "/admin/channels"), saveButton),
     ),
   );
 
   return h("div", { class: "editor" }, buildCommandBar(ctx, channel, revision, isNew), card({ body: form, flush: true }), buildDangerZone(ctx, channel, revision, isNew));
 }
 
-const DORMANT_HINT = "频道已停用，不参与节目单匹配。启用后才会出现候选。";
-
 function epgSourceChoices(sources, current) {
-  const choices = [["", "不限定（在所有已启用的源里匹配）"], ...sources.map((source) => [source.id, `${source.id} · ${source.name}`])];
-  if (current && !sources.some((source) => source.id === current)) choices.push([current, `${current} · 已失效的源`]);
+  const choices = [["", vt("channel.epgAny")], ...sources.map((source) => [source.id, `${source.id} · ${source.name}`])];
+  if (current && !sources.some((source) => source.id === current)) choices.push([current, vt("channel.epgInvalid", { id: current })]);
   return choices;
 }
 
@@ -354,11 +347,11 @@ function hasSourceOption(element, value) {
 }
 
 function matchHint(match) {
-  if (!match) return "尚无匹配结果，请先在节目单页面启用源并刷新。";
+  if (!match) return vt("channel.noMatchYet");
   const count = (match.candidates || []).length;
-  if (match.status === "matched") return `已锁定 ${match.match?.source_id || "节目单源"} 的 ${match.match?.channel_id || ""}。`;
-  if (match.status === "suggested") return `找到 ${count} 个候选，需要人工确认。`;
-  return "没有找到候选，可手动填写标识。";
+  if (match.status === "matched") return vt("channel.matched", { source: match.match?.source_id || vt("channel.epgSourceGeneric"), channel: match.match?.channel_id || "" });
+  if (match.status === "suggested") return vt("channel.suggested", { count });
+  return vt("channel.noCandidateHint");
 }
 
 function openCandidateModal(match, apply, dormant) {
@@ -376,9 +369,9 @@ function openCandidateModal(match, apply, dormant) {
               {},
               h("strong", { text: candidate.name || candidate.channel_id }),
               h("small", { class: "mono", text: `${candidate.source_id} · ${candidate.channel_id}` }),
-              candidate.names?.length > 1 ? h("small", { text: candidate.names.join("、") }) : null,
+              candidate.names?.length > 1 ? h("small", { text: candidate.names.join(vt("common.listSeparator")) }) : null,
             ),
-            button("使用", {
+            button(vt("common.use"), {
               size: "small",
               kind: "primary",
               onClick: () => {
@@ -389,13 +382,13 @@ function openCandidateModal(match, apply, dormant) {
           ),
         ),
       )
-    : emptyState("没有候选", dormant ? DORMANT_HINT : "请先在节目单页面启用节目单源并刷新，或手动填写节目单频道标识。");
+    : emptyState(vt("channel.noCandidates"), dormant ? vt("channel.dormantHint") : vt("channel.noCandidatesHint"));
 
   openModal({
-    title: "从节目单里找",
-    description: "同名频道可能对应多个标识，请逐条核对后手动选择，Kiln 不会替你决定。",
+    title: vt("channel.findTitle"),
+    description: vt("channel.findDesc"),
     body,
-    actions: [button("关闭", { onClick: closeModal })],
+    actions: [button(vt("common.close"), { onClick: closeModal })],
   });
 }
 
@@ -420,7 +413,7 @@ function openLogoModal(match, apply, dormant) {
                 h("small", { class: "mono", title: logo.url, text: logo.url }),
               ),
             ),
-            button("使用", {
+            button(vt("common.use"), {
               size: "small",
               kind: "primary",
               onClick: () => {
@@ -431,18 +424,18 @@ function openLogoModal(match, apply, dormant) {
           ),
         ),
       )
-    : emptyState("没有候选台标", dormant ? DORMANT_HINT : "台标候选来自频道名称，填写节目单频道名称后再试一次。");
+    : emptyState(vt("channel.noLogos"), dormant ? vt("channel.dormantHint") : vt("channel.noLogosHint"));
 
   openModal({
-    title: "选择台标",
-    description: "候选按优先级排列；加载不出来的图片说明该地址暂时不可用。",
+    title: vt("channel.logoTitle"),
+    description: vt("channel.logoDesc"),
     body,
-    actions: [button("关闭", { onClick: closeModal })],
+    actions: [button(vt("common.close"), { onClick: closeModal })],
   });
 }
 
 function buildCommandBar(ctx, channel, revision, isNew) {
-  const statusSlot = h("span", { class: "state-slot" }, isNew ? badge("尚未创建", "neutral") : stateBadge(channel, sessionFor(channel.id)));
+  const statusSlot = h("span", { class: "state-slot" }, isNew ? badge(vt("channel.notCreated"), "neutral") : stateBadge(channel, sessionFor(channel.id)));
   const actionSlot = h("div", { class: "command-actions" });
 
   const paint = () => {
@@ -453,10 +446,10 @@ function buildCommandBar(ctx, channel, revision, isNew) {
       ...(isNew
         ? []
         : [
-            button("检查节目源", { iconName: "activity", onClick: () => probe(channel.id) }),
-            button("立即启动", { iconName: "power", disabled: channel.disabled, onClick: () => warmup(channel.id) }),
-            button("打开预览", { kind: "primary", iconName: "play", disabled: channel.disabled, onClick: () => previewChannel(channel) }),
-            session ? iconButton("square", "停止当前会话", { kind: "danger", variant: "outline", onClick: () => stop(ctx, channel.id) }) : null,
+            button(vt("channel.probe"), { iconName: "activity", onClick: () => probe(channel.id) }),
+            button(vt("channel.start"), { iconName: "power", disabled: channel.disabled, onClick: () => warmup(channel.id) }),
+            button(vt("channel.openPreview"), { kind: "primary", iconName: "play", disabled: channel.disabled, onClick: () => previewChannel(channel) }),
+            session ? iconButton("square", vt("channel.stopCurrent"), { kind: "danger", variant: "outline", onClick: () => stop(ctx, channel.id) }) : null,
           ].filter(Boolean)),
     );
   };
@@ -474,8 +467,8 @@ function buildCommandBar(ctx, channel, revision, isNew) {
       h(
         "div",
         { class: "identity-copy" },
-        h("strong", { text: isNew ? "添加频道" : channel.title || channel.id }),
-        h("small", { class: "mono", text: isNew ? "填写下方配置后创建" : channel.id }),
+        h("strong", { text: isNew ? vt("channels.add") : channel.title || channel.id }),
+        h("small", { class: "mono", text: isNew ? vt("channel.createBelow") : channel.id }),
       ),
       statusSlot,
     ),
@@ -493,19 +486,19 @@ function buildDangerZone(ctx, channel, revision, isNew) {
       await endpoints.updateChannel(channel.id, next, detail.revision);
       ctx.markDirty(false);
       invalidateCatalog();
-      toast(next.disabled ? "频道已停用" : "频道已启用");
+      toast(vt(next.disabled ? "state.disabled" : "common.enable"));
       await ctx.reload();
     } catch (error) {
-      toastError(error, "状态更新失败");
+      toastError(error, vt("channel.statusUpdatedFailed"));
     }
   };
 
   const remove = async () => {
     const accepted = await confirmDialog({
-      title: "永久删除频道？",
-      description: "删除后频道配置无法恢复。",
-      warning: "正在进行的会话会立即中断，播放地址随即失效。",
-      confirmLabel: "永久删除",
+      title: vt("channel.deleteTitle"),
+      description: vt("channel.deleteDesc"),
+      warning: vt("channel.deleteWarning"),
+      confirmLabel: vt("channel.deleteForever"),
       expect: channel.id,
     });
     if (!accepted) return;
@@ -514,15 +507,15 @@ function buildDangerZone(ctx, channel, revision, isNew) {
       await endpoints.deleteChannel(channel.id, detail.revision);
       ctx.markDirty(false);
       invalidateCatalog();
-      toast("频道已删除");
+      toast(vt("channel.deleted"));
       await ctx.navigate("/admin/channels");
     } catch (error) {
-      toastError(error, "删除失败");
+      toastError(error, vt("channel.deleteFailed"));
     }
   };
 
   return card({
-    title: "频道管理",
+    title: vt("channel.management"),
     tone: "danger",
     body: h(
       "div",
@@ -530,27 +523,27 @@ function buildDangerZone(ctx, channel, revision, isNew) {
       h(
         "div",
         { class: "list-item" },
-        h("span", {}, h("strong", { text: channel.disabled ? "启用频道" : "停用频道" }), h("small", { text: channel.disabled ? "恢复目录展示与播放访问。" : "从目录隐藏并停止现有会话。" })),
-        button(channel.disabled ? "启用" : "停用", { kind: channel.disabled ? "secondary" : "danger", size: "small", onClick: toggle }),
+        h("span", {}, h("strong", { text: vt(channel.disabled ? "channel.enableTitle" : "channel.disableTitle") }), h("small", { text: vt(channel.disabled ? "channel.enableHint" : "channel.disableHint") })),
+        button(vt(channel.disabled ? "common.enable" : "common.disable"), { kind: channel.disabled ? "secondary" : "danger", size: "small", onClick: toggle }),
       ),
       h(
         "div",
         { class: "list-item" },
-        h("span", {}, h("strong", { text: "删除频道" }), h("small", { text: "永久移除频道配置，此操作无法撤销。" })),
-        button("删除", { kind: "danger", size: "small", onClick: remove }),
+        h("span", {}, h("strong", { text: vt("channel.deleteRow") }), h("small", { text: vt("channel.deleteRowHint") })),
+        button(vt("common.delete"), { kind: "danger", size: "small", onClick: remove }),
       ),
     ),
   });
 }
 
 async function probe(id) {
-  toast("正在检查", "正在连接节目源…", "info");
+  toast(vt("channel.checking"), vt("channel.connecting"), "info");
   try {
     const result = await endpoints.probeChannel(id);
-    if (result.ok) toast("节目源正常", `HTTP ${result.status} · ${result.dur_ms} ms`);
-    else toast("节目源无响应", result.error || "上游没有返回有效响应", "danger");
+    if (result.ok) toast(vt("channel.sourceOK"), `HTTP ${result.status} · ${result.dur_ms} ms`);
+    else toast(vt("channel.sourceNoResponse"), result.error || vt("channel.noValidResponse"), "danger");
   } catch (error) {
-    toastError(error, "检查失败");
+    toastError(error, vt("channel.checkFailed"));
   }
 }
 
@@ -558,25 +551,25 @@ async function warmup(id) {
   try {
     await endpoints.warmupChannel(id);
     await refreshStatus();
-    toast("已开始启动", "可在总览页查看运行状态。");
+    toast(vt("channel.starting"), vt("channel.startingHint"));
   } catch (error) {
-    toastError(error, "无法启动频道");
+    toastError(error, vt("channel.startFailed"));
   }
 }
 
 async function stop(ctx, id) {
   const accepted = await confirmDialog({
-    title: "停止会话？",
-    description: `频道 ${id} 的打包进程会立即停止，下次播放需要重新冷启动。`,
-    warning: "正在观看的播放器会立即中断。",
-    confirmLabel: "停止会话",
+    title: vt("channel.stopTitle"),
+    description: vt("channel.stopDesc", { id }),
+    warning: vt("channel.stopWarning"),
+    confirmLabel: vt("channel.stopAction"),
   });
   if (!accepted) return;
   try {
     await endpoints.stopSession(id);
     await refreshStatus();
-    toast("会话已停止");
+    toast(vt("channel.stopped"));
   } catch (error) {
-    toastError(error, "停止失败");
+    toastError(error, vt("channel.stopFailed"));
   }
 }
