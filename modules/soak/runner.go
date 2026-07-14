@@ -32,8 +32,9 @@ const (
 )
 
 var (
-	ErrStalled       = errors.New("media playlist stalled")
-	ErrTooManyErrors = errors.New("consecutive HTTP error threshold reached")
+	ErrStalled           = errors.New("media playlist stalled")
+	ErrSequenceRegressed = errors.New("media sequence regressed")
+	ErrTooManyErrors     = errors.New("consecutive HTTP error threshold reached")
 )
 
 type Config struct {
@@ -79,18 +80,19 @@ type Runner struct {
 }
 
 type ChannelReport struct {
-	ID                string    `json:"id"`
-	PlaylistRequests  uint64    `json:"playlist_requests"`
-	SegmentRequests   uint64    `json:"segment_requests"`
-	Bytes             uint64    `json:"bytes"`
-	HTTPErrors        uint64    `json:"http_errors"`
-	ProgressEvents    uint64    `json:"progress_events"`
-	Discontinuities   uint64    `json:"discontinuities"`
-	Stalls            uint64    `json:"stalls"`
-	LastMediaSequence uint64    `json:"last_media_sequence"`
-	LastProgressAt    time.Time `json:"last_progress_at,omitempty"`
-	LastError         string    `json:"last_error,omitempty"`
-	ConsecutiveErrors int       `json:"consecutive_errors"`
+	ID                  string    `json:"id"`
+	PlaylistRequests    uint64    `json:"playlist_requests"`
+	SegmentRequests     uint64    `json:"segment_requests"`
+	Bytes               uint64    `json:"bytes"`
+	HTTPErrors          uint64    `json:"http_errors"`
+	ProgressEvents      uint64    `json:"progress_events"`
+	Discontinuities     uint64    `json:"discontinuities"`
+	Stalls              uint64    `json:"stalls"`
+	SequenceRegressions uint64    `json:"sequence_regressions"`
+	LastMediaSequence   uint64    `json:"last_media_sequence"`
+	LastProgressAt      time.Time `json:"last_progress_at,omitempty"`
+	LastError           string    `json:"last_error,omitempty"`
+	ConsecutiveErrors   int       `json:"consecutive_errors"`
 }
 
 type ProcessSnapshot struct {
@@ -347,6 +349,12 @@ func (r *Runner) checkChannel(ctx context.Context, state *channelState) error {
 		if rendition == nil {
 			rendition = &renditionState{seenDiscontinuity: make(map[uint64]struct{})}
 			state.renditions[playlistURL] = rendition
+		}
+		if rendition.initialized && media.EndSequence < rendition.lastEndSequence {
+			state.report.SequenceRegressions++
+			state.report.LastError = fmt.Sprintf("rendition %s moved backward from %d to %d",
+				redactURL(playlistURL), rendition.lastEndSequence, media.EndSequence)
+			return fmt.Errorf("%w: channel %s", ErrSequenceRegressed, state.report.ID)
 		}
 		progressed := !rendition.initialized || media.EndSequence > rendition.lastEndSequence || media.LatestAsset != rendition.lastAsset
 		if progressed {
@@ -759,12 +767,17 @@ func parsePrometheusMetrics(body []byte) map[string]float64 {
 		if len(fields) != 2 {
 			continue
 		}
-		if _, ok := allowed[fields[0]]; !ok {
+		series := fields[0]
+		name := series
+		if index := strings.IndexByte(name, '{'); index >= 0 {
+			name = name[:index]
+		}
+		if _, ok := allowed[name]; !ok && !strings.HasPrefix(name, "kiln_packager_") {
 			continue
 		}
 		value, err := strconv.ParseFloat(fields[1], 64)
 		if err == nil {
-			result[fields[0]] = value
+			result[series] = value
 		}
 	}
 	return result

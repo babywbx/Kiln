@@ -98,6 +98,53 @@ func TestRunnerFailsWhenMediaSequenceStalls(t *testing.T) {
 	assertFinalJSONL(t, output.String(), true, false)
 }
 
+func TestRunnerFailsWhenMediaSequenceRegresses(t *testing.T) {
+	t.Parallel()
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/play/news/index.m3u8":
+			sequence := int64(10)
+			if requests.Add(1) > 1 {
+				sequence = 1
+			}
+			_, _ = fmt.Fprintf(w, "#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:%d\n#EXTINF:1,\nseg-%d.m4s\n", sequence, sequence)
+		case "/v1/play/news/seg-10.m4s", "/v1/play/news/seg-1.m4s":
+			_, _ = w.Write([]byte("media"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	runner, err := New(Config{
+		BaseURL:        server.URL,
+		Channels:       []string{"news"},
+		Duration:       time.Second,
+		Interval:       5 * time.Millisecond,
+		StallTimeout:   time.Second,
+		RequestTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := runner.Run(context.Background())
+	if !errors.Is(err, ErrSequenceRegressed) {
+		t.Fatalf("want ErrSequenceRegressed, got %v", err)
+	}
+	if report.Channels[0].SequenceRegressions != 1 {
+		t.Fatalf("sequence regression missing from report: %+v", report.Channels[0])
+	}
+}
+
+func TestParsePrometheusMetricsKeepsPackagerSeries(t *testing.T) {
+	t.Parallel()
+	metrics := parsePrometheusMetrics([]byte("kiln_goroutines 9\nkiln_packager_reanchors_total{channel=\"news\"} 3\n"))
+	if metrics["kiln_goroutines"] != 9 || metrics[`kiln_packager_reanchors_total{channel="news"}`] != 3 {
+		t.Fatalf("packager metrics missing: %#v", metrics)
+	}
+}
+
 func TestRunnerCancellationStillWritesFinalReport(t *testing.T) {
 	t.Parallel()
 	server := staticHLSServer()
