@@ -9,6 +9,18 @@ permissions:
   contents: read
 
 jobs:
+  admin-ui:
+    name: Quality / Admin UI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - run: make test-admin-ui
+
   go:
     name: Quality / Go
     runs-on: ubuntu-latest

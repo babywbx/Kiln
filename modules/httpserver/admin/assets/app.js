@@ -1,5 +1,6 @@
 import { h, icon, initials } from "/admin/assets/core/dom.js";
 import { clearSession, endpoints, hasSession, loadSession, setUnauthorizedHandler } from "/admin/assets/core/api.js";
+import { createI18n } from "/admin/assets/core/i18n.js";
 import { resetStore, startPolling, stopPolling, store, subscribe } from "/admin/assets/core/store.js";
 import { SECTIONS, configureRouter, isDirty, navigate, registerRoute, renderRoute, startRouter } from "/admin/assets/core/router.js";
 import { button, emptyState, pageHead } from "/admin/assets/ui/kit.js";
@@ -14,7 +15,9 @@ import { renderEgress } from "/admin/assets/views/egress.js";
 import { renderSettings } from "/admin/assets/views/settings.js";
 
 const root = document.getElementById("root");
+const skipLink = document.querySelector(".skip-link");
 const compactMedia = matchMedia("(max-width: 1080px)");
+const i18n = createI18n();
 
 let shell = null;
 
@@ -181,6 +184,8 @@ async function onBeforeLeave() {
 
 async function showApp() {
   closeModal();
+  document.documentElement.lang = "zh-Hans";
+  skipLink.textContent = "跳到主要内容";
   shell = buildShell();
   root.replaceChildren(shell.node);
   configureRouter({ outlet: shell.main, onBeforeLeave, onAfterRender, onLoading: setLoading });
@@ -208,8 +213,14 @@ function showLogin() {
   shell?.dispose();
   shell = null;
   closeModal();
-  root.replaceChildren(renderLogin(showApp));
-  document.title = "登录 · Kiln";
+  paintLoginChrome();
+  root.replaceChildren(renderLogin(showApp, { i18n, onLocaleChange: paintLoginChrome }));
+}
+
+function paintLoginChrome() {
+  document.documentElement.lang = i18n.locale;
+  skipLink.textContent = i18n.t("shared.skipToContent");
+  document.title = i18n.t("meta.loginTitle");
 }
 
 function logout(notify) {
@@ -238,6 +249,11 @@ async function bootstrap() {
 
   try {
     store.me = await endpoints.me();
+    if (store.me.role !== "admin") {
+      clearSession();
+      resetStore();
+      return showLogin();
+    }
     await showApp();
   } catch {
     clearSession();

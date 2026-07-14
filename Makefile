@@ -1,4 +1,4 @@
-.PHONY: build test coverage run tidy hash keys fmt vet lint vuln ci clean audit-admin-ui \
+.PHONY: build test test-admin-ui coverage run tidy hash keys fmt vet lint vuln ci clean audit-admin-ui \
         docker docker-multiarch docker-verify docker-smoke docker-reap fixtures \
         media-oracle test-safety benchmark-performance soak
 
@@ -21,6 +21,9 @@ build:
 
 test:
 	go test -race ./...
+
+test-admin-ui:
+	node --test scripts/admin-login.test.js
 
 media-oracle:
 	KILN_REQUIRE_MEDIA_ORACLE=1 go test ./modules/packager/... -run 'FFmpeg|NativeOutput'
@@ -68,7 +71,7 @@ vuln:
 	@command -v govulncheck >/dev/null 2>&1 || { echo "govulncheck not found: go install golang.org/x/vuln/cmd/govulncheck@latest"; exit 1; }
 	govulncheck ./...
 
-ci: fmt vet lint build test media-oracle test-safety vuln
+ci: fmt vet lint build test test-admin-ui media-oracle test-safety vuln
 
 clean:
 	rm -rf dist coverage.out

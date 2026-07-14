@@ -1,0 +1,8 @@
+{
+  "name": "kiln-admin-ui",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:admin-ui": "node --test scripts/admin-login.test.js"
+  }
+}

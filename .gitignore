@@ -13,6 +13,7 @@ coverage/
 .gocache/
 .gomodcache/
 vendor/
+node_modules/
 
 # Environment and secrets
 .env
