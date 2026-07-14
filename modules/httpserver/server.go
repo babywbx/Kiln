@@ -59,6 +59,8 @@ type Server struct {
 	loginL *security.Limiter
 }
 
+const llhlsWaitTimeout = 15 * time.Second
+
 func New(deps Deps) *Server {
 	if deps.Log == nil {
 		deps.Log = slog.Default()
@@ -183,14 +185,19 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 		s.applyCORS(ww, r)
 
 		defer func() {
+			abortResponse := false
 			if rec := recover(); rec != nil {
-				s.deps.Observe.IncError()
-				s.deps.Log.Error("panic",
-					"request_id", reqID,
-					"path", redactRequestPath(r.URL.Path),
-					"panic", rec,
-				)
-				writeAppErr(ww, apperr.Internal(nil))
+				if rec == http.ErrAbortHandler {
+					abortResponse = true
+				} else {
+					s.deps.Observe.IncError()
+					s.deps.Log.Error("panic",
+						"request_id", reqID,
+						"path", redactRequestPath(r.URL.Path),
+						"panic", rec,
+					)
+					writeAppErr(ww, apperr.Internal(nil))
+				}
 			}
 			level := logging.AccessLevel(r.URL.Path, ww.code)
 			span.SetAttributes(attribute.Int("http.response.status_code", ww.code))
@@ -209,6 +216,9 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 				"dur_ms", time.Since(start).Milliseconds(),
 				"request_id", reqID,
 			)
+			if abortResponse {
+				panic(http.ErrAbortHandler)
+			}
 		}()
 
 		if r.Method == http.MethodOptions {
@@ -462,7 +472,7 @@ func (s *Server) handlePlayIndex(w http.ResponseWriter, r *http.Request) {
 func (s *Server) serveHLSIndex(w http.ResponseWriter, r *http.Request, sess *session.Session) {
 	headers := s.deps.Sessions.HeadersFor(sess.Channel)
 	body, finalURL, err := s.deps.Sessions.Pull().GetBytes(r.Context(), pull.Request{
-		URL:       sess.SourceURL,
+		URL:       mergeHLSDeliveryDirectives(sess.SourceURL, r.URL.Query()),
 		UserAgent: version.UserAgent(sess.Channel.UserAgent),
 		Headers:   headers,
 		ChannelID: sess.Channel.ID,
@@ -504,7 +514,7 @@ func (s *Server) shouldRewrite(channelID string) egress.RewriteDecision {
 }
 
 func (s *Server) serveDashIndex(w http.ResponseWriter, r *http.Request, sess *session.Session) {
-	pub := sess.Publication()
+	pub, generation := sess.PublicationSnapshot()
 	if pub == nil {
 		s.deps.Observe.IncError()
 		writeAppErr(w, apperr.New(apperr.CodeNotReady, 502, "playlist not ready"))
@@ -516,13 +526,13 @@ func (s *Server) serveDashIndex(w http.ResponseWriter, r *http.Request, sess *se
 		writeAppErr(w, apperr.New(apperr.CodeNotReady, 502, "playlist not ready"))
 		return
 	}
-	s.writePlaylist(w, r, sess, body)
+	s.writePlaylist(w, r, sess, body, generation)
 }
 
 // writePlaylist serves a published playlist with every reference rewritten to
 // this server. Playlists are a moving window, so they stay uncacheable.
-func (s *Server) writePlaylist(w http.ResponseWriter, r *http.Request, sess *session.Session, body []byte) {
-	out := rewriteLocalPlaylist(body, playLivePrefix(r, sess.Channel.ID), extractToken(r))
+func (s *Server) writePlaylist(w http.ResponseWriter, r *http.Request, sess *session.Session, body []byte, generation string) {
+	out := rewriteLocalPlaylist(body, playLivePrefix(r, sess.Channel.ID), extractToken(r), generation)
 	s.deps.Observe.AddBytesOut(int64(len(out)))
 	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 	w.Header().Set("Cache-Control", "no-store")
@@ -560,9 +570,18 @@ func (s *Server) handlePlayLiveFile(w http.ResponseWriter, r *http.Request) {
 		writeAppErr(w, apperr.New(apperr.CodeNotFound, 410, "session is not running"))
 		return
 	}
+	pub, generation := sess.PublicationSnapshot()
+	requested := r.URL.Query().Get("g")
+	if generation != "" && (requested == "" || requested != generation && strings.HasSuffix(file, ".m3u8")) {
+		redirectToPublicationGeneration(w, r, generation)
+		return
+	}
+	if requested != "" && requested != generation {
+		w.Header().Set("Retry-After", "1")
+		writeAppErr(w, apperr.New(apperr.CodeNotFound, http.StatusGone, "publication generation is gone"))
+		return
+	}
 	s.deps.Sessions.Touch(id)
-
-	pub := sess.Publication()
 	if pub == nil {
 		writeAppErr(w, apperr.ErrNotFound)
 		return
@@ -578,7 +597,7 @@ func (s *Server) handlePlayLiveFile(w http.ResponseWriter, r *http.Request) {
 			writeAppErr(w, apperr.ErrNotFound)
 			return
 		}
-		s.writePlaylist(w, r, sess, body)
+		s.writePlaylist(w, r, sess, body, generation)
 		return
 	}
 
@@ -586,9 +605,17 @@ func (s *Server) handlePlayLiveFile(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		if contextual, supportsContext := pub.(packager.ContextPublication); supportsContext {
 			var err error
-			asset, ok, err = contextual.AssetContext(r.Context(), file)
+			waitCtx, cancel := context.WithTimeout(r.Context(), llhlsWaitTimeout)
+			asset, ok, err = contextual.AssetContext(waitCtx, file)
+			cancel()
 			if err != nil {
-				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				if r.Context().Err() != nil || errors.Is(err, context.Canceled) {
+					return
+				}
+				if errors.Is(err, context.DeadlineExceeded) {
+					s.deps.Observe.IncError()
+					w.Header().Set("Retry-After", "1")
+					writeAppErr(w, apperr.New(apperr.CodeUnavailable, http.StatusServiceUnavailable, "media part not ready"))
 					return
 				}
 				writeAppErr(w, apperr.New(apperr.CodeInvalid, http.StatusBadRequest, err.Error()))
@@ -617,6 +644,15 @@ func (s *Server) handlePlayLiveFile(w http.ResponseWriter, r *http.Request) {
 	s.deps.Observe.AddBytesOut(st.Size())
 }
 
+func redirectToPublicationGeneration(w http.ResponseWriter, r *http.Request, generation string) {
+	target := *r.URL
+	query := target.Query()
+	query.Set("g", generation)
+	target.RawQuery = query.Encode()
+	w.Header().Set("Cache-Control", "no-store")
+	http.Redirect(w, r, target.String(), http.StatusTemporaryRedirect)
+}
+
 func playlistForRequest(r *http.Request, publication packager.Publication, name string) ([]byte, bool, error) {
 	request, lowLatency, err := parseHLSPlaylistRequest(r)
 	if err != nil {
@@ -627,7 +663,13 @@ func playlistForRequest(r *http.Request, publication packager.Publication, name 
 		body, ok := publication.Playlist(name)
 		return body, ok, nil
 	}
-	view, ok, err := contextual.PlaylistContext(r.Context(), name, request)
+	waitCtx, cancel := context.WithTimeout(r.Context(), llhlsWaitTimeout)
+	view, ok, err := contextual.PlaylistContext(waitCtx, name, request)
+	cancel()
+	if errors.Is(err, context.DeadlineExceeded) && r.Context().Err() == nil {
+		body, found := publication.Playlist(name)
+		return body, found, nil
+	}
 	if err != nil {
 		return nil, ok, err
 	}
@@ -707,6 +749,7 @@ func (s *Server) handlePlayUpstream(w http.ResponseWriter, r *http.Request) {
 		writeAppErr(w, apperr.New(apperr.CodeForbidden, 403, "upstream host not allowed"))
 		return
 	}
+	abs = mergeHLSDeliveryDirectives(abs, r.URL.Query())
 	if r.PathValue("token") == "" {
 		if err := s.authorizeChannel(r, id); err != nil {
 			writeAppErr(w, err)
@@ -773,8 +816,46 @@ func (s *Server) handlePlayUpstream(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", ct)
 	w.Header().Set("Cache-Control", "no-cache")
-	n, _ := io.Copy(w, res.Body)
+	stream := &commitTrackingWriter{ResponseWriter: w}
+	n, copyErr := io.Copy(stream, res.Body)
 	s.deps.Observe.AddBytesOut(n)
+	if copyErr != nil {
+		s.deps.Observe.IncError()
+		s.deps.Log.Warn("stream upstream body failed", "channel", id, "err", copyErr)
+		if !stream.committed {
+			writeAppErr(w, apperr.Wrap(apperr.CodeUpstream, http.StatusBadGateway, "read upstream body failed", copyErr))
+			return
+		}
+		panic(http.ErrAbortHandler)
+	}
+}
+
+type commitTrackingWriter struct {
+	http.ResponseWriter
+	committed bool
+}
+
+func (w *commitTrackingWriter) Write(p []byte) (int, error) {
+	n, err := w.ResponseWriter.Write(p)
+	if n > 0 {
+		w.committed = true
+	}
+	return n, err
+}
+
+func mergeHLSDeliveryDirectives(raw string, requestQuery url.Values) string {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	query := parsed.Query()
+	for _, key := range []string{"_HLS_msn", "_HLS_part", "_HLS_skip"} {
+		if value := requestQuery.Get(key); value != "" {
+			query.Set(key, value)
+		}
+	}
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
 }
 
 type ctxKey int

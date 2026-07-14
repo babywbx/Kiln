@@ -201,14 +201,36 @@ func TestEPGUnavailableReturnsLegalEmptyDocument(t *testing.T) {
 }
 
 func TestHLSPlayEndToEnd(t *testing.T) {
+	var upstreamIndexQuery, upstreamMediaQuery url.Values
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/live/index.m3u8":
+			upstreamIndexQuery = r.URL.Query()
 			w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
-			_, _ = io.WriteString(w, "#EXTM3U\n#EXTINF:1.0,\nseg0.ts\n")
+			_, _ = io.WriteString(w, "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000\nmedia.m3u8\n")
+		case "/live/media.m3u8":
+			upstreamMediaQuery = r.URL.Query()
+			w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+			_, _ = io.WriteString(w, "#EXTM3U\n#EXTINF:1.0,\nseg0.ts\n#EXTINF:1.0,\nbroken.ts\n#EXTINF:1.0,\nempty-broken.ts\n")
 		case "/live/seg0.ts":
 			w.Header().Set("Content-Type", "video/mp2t")
 			_, _ = w.Write([]byte("FAKE-TS"))
+		case "/live/broken.ts":
+			conn, rw, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				return
+			}
+			_, _ = rw.WriteString("HTTP/1.1 200 OK\r\nContent-Type: video/mp2t\r\nContent-Length: 12\r\n\r\nFAIL")
+			_ = rw.Flush()
+			_ = conn.Close()
+		case "/live/empty-broken.ts":
+			conn, rw, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				return
+			}
+			_, _ = rw.WriteString("HTTP/1.1 200 OK\r\nContent-Type: video/mp2t\r\nContent-Length: 12\r\n\r\n")
+			_ = rw.Flush()
+			_ = conn.Close()
 		default:
 			http.NotFound(w, r)
 		}
@@ -349,7 +371,7 @@ func TestHLSPlayEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/v1/play/demo/index.m3u8?token="+login.Token, nil)
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/v1/play/demo/index.m3u8?token="+login.Token+"&_HLS_msn=7&_HLS_part=2&_HLS_skip=YES&ignored=value", nil)
 	presp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -362,19 +384,55 @@ func TestHLSPlayEndToEnd(t *testing.T) {
 	if !strings.Contains(string(pb), "/v1/play/demo/u/") {
 		t.Fatalf("rewrite missing: %s", pb)
 	}
+	if got := upstreamIndexQuery.Encode(); got != "_HLS_msn=7&_HLS_part=2&_HLS_skip=YES" {
+		t.Fatalf("upstream playlist query = %q", got)
+	}
 
-	var segURL string
+	var mediaURL string
 	for _, line := range strings.Split(string(pb), "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "/v1/play/") {
-			segURL = ts.URL + line
+			mediaURL = ts.URL + line
 			break
 		}
 	}
-	if segURL == "" {
-		t.Fatalf("no segment url in %s", pb)
+	if mediaURL == "" {
+		t.Fatalf("no media playlist url in %s", pb)
 	}
-	sresp, err := http.Get(segURL)
+	parsedMediaURL, err := url.Parse(mediaURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mediaQuery := parsedMediaURL.Query()
+	mediaQuery.Set("_HLS_msn", "8")
+	mediaQuery.Set("_HLS_part", "0")
+	mediaQuery.Set("_HLS_skip", "v2")
+	mediaQuery.Set("ignored", "value")
+	parsedMediaURL.RawQuery = mediaQuery.Encode()
+	mediaResp, err := http.Get(parsedMediaURL.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mediaBody, _ := io.ReadAll(mediaResp.Body)
+	_ = mediaResp.Body.Close()
+	if mediaResp.StatusCode != http.StatusOK {
+		t.Fatalf("media playlist %d %s", mediaResp.StatusCode, mediaBody)
+	}
+	if got := upstreamMediaQuery.Encode(); got != "_HLS_msn=8&_HLS_part=0&_HLS_skip=v2" {
+		t.Fatalf("upstream media query = %q", got)
+	}
+
+	var segmentURLs []string
+	for _, line := range strings.Split(string(mediaBody), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "/v1/play/") {
+			segmentURLs = append(segmentURLs, ts.URL+line)
+		}
+	}
+	if len(segmentURLs) != 3 {
+		t.Fatalf("no segment url in %s", mediaBody)
+	}
+	sresp, err := http.Get(segmentURLs[0])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -382,6 +440,29 @@ func TestHLSPlayEndToEnd(t *testing.T) {
 	sb, _ := io.ReadAll(sresp.Body)
 	if sresp.StatusCode != 200 || string(sb) != "FAKE-TS" {
 		t.Fatalf("segment %d %q", sresp.StatusCode, sb)
+	}
+
+	errorsBefore := obs.Snapshot().Errors
+	brokenResp, err := http.Get(segmentURLs[1])
+	if err == nil {
+		_, readErr := io.ReadAll(brokenResp.Body)
+		_ = brokenResp.Body.Close()
+		if readErr == nil {
+			t.Fatal("truncated upstream segment was reported as complete")
+		}
+	}
+	if got := obs.Snapshot().Errors; got <= errorsBefore {
+		t.Fatalf("errors after truncated segment = %d, want more than %d", got, errorsBefore)
+	}
+
+	emptyResp, err := http.Get(segmentURLs[2])
+	if err != nil {
+		t.Fatal(err)
+	}
+	emptyBody, _ := io.ReadAll(emptyResp.Body)
+	_ = emptyResp.Body.Close()
+	if emptyResp.StatusCode != http.StatusBadGateway || !strings.Contains(string(emptyBody), "read upstream body failed") {
+		t.Fatalf("empty truncated segment = %d %s", emptyResp.StatusCode, emptyBody)
 	}
 
 	preq, _ := http.NewRequest(http.MethodGet, ts.URL+"/v1/playlist.m3u", nil)

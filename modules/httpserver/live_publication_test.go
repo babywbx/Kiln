@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,8 +44,20 @@ video-main-000001.m4s
 // fakePublication stands in for a real engine so the HTTP layer can be tested
 // without launching ffmpeg or reaching upstream.
 type fakePublication struct {
-	dir    string
-	assets map[string]string
+	dir                   string
+	assets                map[string]string
+	playlistContextResult func(context.Context) error
+	assetContextResult    func(context.Context) error
+}
+
+func (p *fakePublication) PlaylistContext(ctx context.Context, name string, _ packager.PlaylistRequest) (packager.PlaylistView, bool, error) {
+	if p.playlistContextResult != nil {
+		if err := p.playlistContextResult(ctx); err != nil {
+			return packager.PlaylistView{}, true, err
+		}
+	}
+	body, ok := p.Playlist(name)
+	return packager.PlaylistView{Body: body}, ok, nil
 }
 
 func (p *fakePublication) Master() string { return "master.m3u8" }
@@ -73,6 +86,16 @@ func (p *fakePublication) Asset(name string) (packager.Asset, bool) {
 	return packager.Asset{Path: path, Immutable: true, ModTime: st.ModTime()}, true
 }
 
+func (p *fakePublication) AssetContext(ctx context.Context, name string) (packager.Asset, bool, error) {
+	if p.assetContextResult != nil {
+		if err := p.assetContextResult(ctx); err != nil {
+			return packager.Asset{}, true, err
+		}
+	}
+	asset, ok := p.Asset(name)
+	return asset, ok, nil
+}
+
 type fakeJob struct {
 	pub  *fakePublication
 	done chan struct{}
@@ -88,9 +111,11 @@ func (j *fakeJob) IntentionalStop() bool             { return true }
 func (j *fakeJob) Stats() packager.Stats             { return packager.Stats{} }
 func (j *fakeJob) Stop() error                       { close(j.done); return nil }
 
-type fakePackager struct{}
+type fakePackager struct {
+	configure func(*fakePublication)
+}
 
-func (fakePackager) Start(_ context.Context, req packager.Request) (packager.Job, error) {
+func (p fakePackager) Start(_ context.Context, req packager.Request) (packager.Job, error) {
 	if err := os.MkdirAll(req.WorkDir, 0o750); err != nil {
 		return nil, err
 	}
@@ -102,8 +127,12 @@ func (fakePackager) Start(_ context.Context, req packager.Request) (packager.Job
 		}
 		assets[name] = path
 	}
+	publication := &fakePublication{dir: req.WorkDir, assets: assets}
+	if p.configure != nil {
+		p.configure(publication)
+	}
 	return &fakeJob{
-		pub:  &fakePublication{dir: req.WorkDir, assets: assets},
+		pub:  publication,
 		done: make(chan struct{}),
 	}, nil
 }
@@ -205,8 +234,8 @@ func TestLivePublicationServesFullChain(t *testing.T) {
 
 	master := body(t, get(t, ts.URL+"/v1/play/dash1/index.m3u8"))
 	for _, want := range []string{
-		`URI="/v1/play/dash1/live/audio-main.m3u8"`,
-		"/v1/play/dash1/live/video-main.m3u8",
+		`URI="/v1/play/dash1/live/audio-main.m3u8?g=`,
+		"/v1/play/dash1/live/video-main.m3u8?g=",
 	} {
 		if !strings.Contains(master, want) {
 			t.Fatalf("master playlist is missing %q:\n%s", want, master)
@@ -215,8 +244,8 @@ func TestLivePublicationServesFullChain(t *testing.T) {
 
 	video := body(t, get(t, ts.URL+"/v1/play/dash1/live/video-main.m3u8"))
 	for _, want := range []string{
-		`#EXT-X-MAP:URI="/v1/play/dash1/live/video-main-init.mp4"`,
-		"/v1/play/dash1/live/video-main-000001.m4s",
+		`#EXT-X-MAP:URI="/v1/play/dash1/live/video-main-init.mp4?g=`,
+		"/v1/play/dash1/live/video-main-000001.m4s?g=",
 	} {
 		if !strings.Contains(video, want) {
 			t.Fatalf("video playlist is missing %q:\n%s", want, video)
@@ -246,6 +275,9 @@ func TestImmutableAssetsAreCacheable(t *testing.T) {
 
 	seg := get(t, ts.URL+"/v1/play/dash1/live/video-main-000001.m4s")
 	defer seg.Body.Close()
+	if got := seg.Request.URL.Query().Get("g"); got == "" {
+		t.Fatal("immutable segment was not redirected onto a publication generation")
+	}
 	cc := seg.Header.Get("Cache-Control")
 	if !strings.Contains(cc, "immutable") || !strings.Contains(cc, "max-age=") {
 		t.Errorf("segment Cache-Control = %q, want an immutable max-age", cc)
@@ -303,6 +335,75 @@ func TestSegmentRequestDoesNotStartSession(t *testing.T) {
 	}
 }
 
+func TestOldPublicationGenerationReanchorsPlaylistsAndRejectsSegments(t *testing.T) {
+	ts, sessions := newLiveServer(t)
+	masterBody := body(t, get(t, ts.URL+"/v1/play/dash1/index.m3u8"))
+	var oldPlaylistURL string
+	for _, line := range strings.Split(masterBody, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "/v1/play/dash1/live/video-main.m3u8?") {
+			oldPlaylistURL = ts.URL + line
+			break
+		}
+	}
+	if oldPlaylistURL == "" {
+		t.Fatalf("master has no generated media URL:\n%s", masterBody)
+	}
+	parsed, err := url.Parse(oldPlaylistURL)
+	if err != nil || parsed.Query().Get("g") == "" {
+		t.Fatalf("media URL has no generation: %q", oldPlaylistURL)
+	}
+	oldGeneration := parsed.Query().Get("g")
+	oldPlaylistBody := body(t, get(t, oldPlaylistURL))
+	var oldSegmentURL string
+	for _, line := range strings.Split(oldPlaylistBody, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.Contains(line, ".m4s?") && !strings.HasPrefix(line, "#") {
+			oldSegmentURL = ts.URL + line
+			break
+		}
+	}
+	if oldSegmentURL == "" {
+		t.Fatalf("media playlist has no generated segment URL:\n%s", oldPlaylistBody)
+	}
+
+	if !sessions.StopChannel("dash1") {
+		t.Fatal("session was not stopped")
+	}
+	restarted := get(t, ts.URL+"/v1/play/dash1/index.m3u8")
+	_ = restarted.Body.Close()
+
+	noRedirect := &http.Client{CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	oldPlaylist, err := noRedirect.Get(oldPlaylistURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer oldPlaylist.Body.Close()
+	if oldPlaylist.StatusCode != http.StatusTemporaryRedirect {
+		t.Fatalf("old playlist generation status = %d", oldPlaylist.StatusCode)
+	}
+	redirected, err := url.Parse(oldPlaylist.Header.Get("Location"))
+	if err != nil || redirected.Query().Get("g") == "" || redirected.Query().Get("g") == oldGeneration {
+		t.Fatalf("old playlist redirect = %q", oldPlaylist.Header.Get("Location"))
+	}
+	currentPlaylist := get(t, ts.URL+redirected.String())
+	if currentPlaylist.StatusCode != http.StatusOK {
+		t.Fatalf("redirected playlist status = %d", currentPlaylist.StatusCode)
+	}
+	_ = currentPlaylist.Body.Close()
+
+	oldSegment := get(t, oldSegmentURL)
+	defer oldSegment.Body.Close()
+	if oldSegment.StatusCode != http.StatusGone {
+		t.Fatalf("old segment generation status = %d", oldSegment.StatusCode)
+	}
+	if got := oldSegment.Header.Get("Retry-After"); got != "1" {
+		t.Fatalf("Retry-After = %q", got)
+	}
+}
+
 // Only registered assets are reachable. The work directory is not a document
 // root, whatever path a request asks for.
 func TestUnpublishedAssetIsNotServed(t *testing.T) {
@@ -317,5 +418,39 @@ func TestUnpublishedAssetIsNotServed(t *testing.T) {
 		if resp.StatusCode == http.StatusOK {
 			t.Errorf("%s should not be served", name)
 		}
+	}
+}
+
+func TestLLHLSWaitsHaveHTTPDeadlines(t *testing.T) {
+	ts, sessions := newLiveServer(t)
+	deadlineSeen := func(ctx context.Context) error {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Error("LL-HLS wait has no deadline")
+		} else if remaining := time.Until(deadline); remaining <= 0 || remaining > 16*time.Second {
+			t.Errorf("LL-HLS deadline is %s away", remaining)
+		}
+		return context.DeadlineExceeded
+	}
+	sessions.SetPackager(fakePackager{configure: func(publication *fakePublication) {
+		publication.playlistContextResult = deadlineSeen
+		publication.assetContextResult = deadlineSeen
+	}})
+
+	master := get(t, ts.URL+"/v1/play/dash1/index.m3u8")
+	_ = master.Body.Close()
+	playlist := get(t, ts.URL+"/v1/play/dash1/live/video-main.m3u8?_HLS_msn=2")
+	playlistBody := body(t, playlist)
+	if playlist.StatusCode != http.StatusOK || !strings.Contains(playlistBody, "video-main-000001.m4s") {
+		t.Fatalf("timed out playlist = %d %s", playlist.StatusCode, playlistBody)
+	}
+
+	part := get(t, ts.URL+"/v1/play/dash1/live/video-part-000002-000.m4s")
+	defer part.Body.Close()
+	if part.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("timed out part status = %d", part.StatusCode)
+	}
+	if got := part.Header.Get("Retry-After"); got != "1" {
+		t.Fatalf("Retry-After = %q", got)
 	}
 }
