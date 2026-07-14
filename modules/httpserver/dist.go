@@ -79,7 +79,7 @@ func (s *Server) handleDistPlaylist(w http.ResponseWriter, r *http.Request) {
 	base := s.deps.Catalog.PublicBase()
 	prefix := "/p/" + raw + "/play/"
 	epgURL := ""
-	if s.deps.Cfg.EPG.Enabled {
+	if s.epgActive() {
 		epgURL = epgPublicURL(base)
 	}
 	body := s.deps.Catalog.M3U(chs, base, prefix, "", epgURL)

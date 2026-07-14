@@ -28,7 +28,8 @@ type ChannelView struct {
 	Ingress   string `json:"ingress"`
 	OnDemand  bool   `json:"on_demand"`
 	Autostart bool   `json:"autostart"`
-	Upstream  string `json:"upstream"`
+	SourceURL string `json:"source_url,omitempty"`
+	Upstream  string `json:"upstream,omitempty"`
 	Path      string `json:"path,omitempty"`
 	Disabled  bool   `json:"disabled,omitempty"`
 	KeysFile  string `json:"keys_file,omitempty"`
@@ -68,7 +69,7 @@ func (s *Service) List(includeDisabled bool) ([]config.Channel, error) {
 	return s.db.ListChannels(includeDisabled)
 }
 
-func (s *Service) ListViews(publicBase string, includeDisabled bool) ([]ChannelView, error) {
+func (s *Service) ListViews(publicBase string, includeDisabled, includeSource bool) ([]ChannelView, error) {
 	if s.db != nil {
 		rows, err := s.db.ListChannelRows(includeDisabled)
 		if err != nil {
@@ -84,11 +85,18 @@ func (s *Service) ListViews(publicBase string, includeDisabled bool) ([]ChannelV
 			view := ChannelView{
 				ID: ch.ID, Title: title, Group: ch.Group, LogoURL: ch.LogoURL,
 				EPGID: ch.EPGID, EPGName: ch.EPGName, EPGSource: ch.EPGSource,
-				Ingress: ch.Ingress, OnDemand: ch.OnDemand, Autostart: ch.Autostart, Upstream: ch.Upstream,
-				Path: ch.Path, Disabled: ch.Disabled, KeysFile: ch.KeysFile,
-				Keys: config.MaskKeys(ch.Keys), PreferH: ch.PreferHeight,
-				PreferredAudioLanguages: append([]string(nil), ch.PreferredAudioLanguages...),
-				SortOrder:               row.SortOrder, Revision: row.Revision,
+				Ingress: ch.Ingress, OnDemand: ch.OnDemand, Autostart: ch.Autostart,
+				Disabled:  ch.Disabled,
+				SortOrder: row.SortOrder, Revision: row.Revision,
+			}
+			if includeSource {
+				view.SourceURL = ch.SourceURL
+				view.Upstream = ch.Upstream
+				view.Path = ch.Path
+				view.KeysFile = ch.KeysFile
+				view.Keys = config.MaskKeys(ch.Keys)
+				view.PreferH = ch.PreferHeight
+				view.PreferredAudioLanguages = append([]string(nil), ch.PreferredAudioLanguages...)
 			}
 			if publicBase != "" && !ch.Disabled {
 				view.PlayURL = publicBase + "/v1/play/" + ch.ID + "/index.m3u8"
@@ -110,11 +118,18 @@ func (s *Service) ListViews(publicBase string, includeDisabled bool) ([]ChannelV
 		view := ChannelView{
 			ID: ch.ID, Title: title, Group: ch.Group, LogoURL: ch.LogoURL,
 			EPGID: ch.EPGID, EPGName: ch.EPGName, EPGSource: ch.EPGSource,
-			Ingress: ch.Ingress, OnDemand: ch.OnDemand, Autostart: ch.Autostart, Upstream: ch.Upstream,
-			Path: ch.Path, Disabled: ch.Disabled, KeysFile: ch.KeysFile,
-			Keys: config.MaskKeys(ch.Keys), PreferH: ch.PreferHeight,
-			PreferredAudioLanguages: append([]string(nil), ch.PreferredAudioLanguages...),
-			SortOrder:               i,
+			Ingress: ch.Ingress, OnDemand: ch.OnDemand, Autostart: ch.Autostart,
+			Disabled:  ch.Disabled,
+			SortOrder: i,
+		}
+		if includeSource {
+			view.SourceURL = ch.SourceURL
+			view.Upstream = ch.Upstream
+			view.Path = ch.Path
+			view.KeysFile = ch.KeysFile
+			view.Keys = config.MaskKeys(ch.Keys)
+			view.PreferH = ch.PreferHeight
+			view.PreferredAudioLanguages = append([]string(nil), ch.PreferredAudioLanguages...)
 		}
 		if publicBase != "" && !ch.Disabled {
 			view.PlayURL = publicBase + "/v1/play/" + ch.ID + "/index.m3u8"
@@ -202,6 +217,7 @@ func (s *Service) UpsertBatchIfRevisions(channels []config.Channel, revisions ma
 }
 
 func normalizeChannel(ch config.Channel) config.Channel {
+	ch.SourceURL = strings.TrimSpace(ch.SourceURL)
 	if ch.Ingress == "" {
 		ch.Ingress = "hls"
 	}
@@ -249,6 +265,12 @@ func (s *Service) SetAllDisabled(disabled bool) ([]string, error) {
 }
 
 func (s *Service) SourceURL(ch config.Channel) (string, error) {
+	if raw := strings.TrimSpace(ch.SourceURL); raw != "" {
+		if err := config.ValidateSourceURL(raw); err != nil {
+			return "", apperr.Wrap(apperr.CodeInternal, 500, "invalid source url", err)
+		}
+		return raw, nil
+	}
 	up, ok := s.cfg.UpstreamByID(ch.Upstream)
 	if !ok {
 		return "", apperr.New(apperr.CodeInternal, 500, "unknown upstream")
@@ -257,6 +279,9 @@ func (s *Service) SourceURL(ch config.Channel) (string, error) {
 }
 
 func (s *Service) Upstream(ch config.Channel) (config.Upstream, error) {
+	if strings.TrimSpace(ch.SourceURL) != "" {
+		return config.Upstream{}, nil
+	}
 	up, ok := s.cfg.UpstreamByID(ch.Upstream)
 	if !ok {
 		return config.Upstream{}, apperr.New(apperr.CodeInternal, 500, "unknown upstream")

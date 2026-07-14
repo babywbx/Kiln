@@ -97,6 +97,17 @@ preferred_audio_languages = ["yue", "zh"]
 	if err := invalidCfg.validate(); err == nil {
 		t.Fatal("invalid ffmpeg mode accepted")
 	}
+	directSourceCfg := cfg
+	directSourceCfg.Channels = []Channel{{
+		ID: "direct", SourceURL: "https://media.example/live/index.m3u8?token=abc", Ingress: "hls",
+	}}
+	if err := directSourceCfg.validate(); err != nil {
+		t.Fatalf("direct source URL rejected: %v", err)
+	}
+	directSourceCfg.Channels[0].SourceURL = "ftp://media.example/live/index.m3u8"
+	if err := directSourceCfg.validate(); err == nil {
+		t.Fatal("non-HTTP source URL accepted")
+	}
 
 	jsoncPath := filepath.Join(dir, "kiln.jsonc")
 	jc := `{

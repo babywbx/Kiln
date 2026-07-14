@@ -106,6 +106,7 @@ func (s *Server) routes() {
 
 	s.mux.HandleFunc("POST /v1/auth/login", s.handleLogin)
 	s.mux.HandleFunc("GET /v1/me", s.requireAuth(s.handleMe))
+	s.mux.HandleFunc("PUT /v1/me/credentials", s.requireAuth(s.handleUpdateCredentials))
 	s.mux.HandleFunc("GET /v1/channels", s.requireAuth(s.handleChannels))
 	s.mux.HandleFunc("GET /v1/status", s.requireAuth(s.handleStatus))
 	s.mux.HandleFunc("GET /v1/playlist.m3u", s.requireAuth(s.handlePlaylist))
@@ -381,10 +382,53 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleUpdateCredentials(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	claims := claimsFrom(r)
+	if !s.loginL.Allow("credentials:" + claims.Username() + ":" + clientIP(r)) {
+		writeAppErr(w, apperr.ErrTooMany)
+		return
+	}
+	if s.deps.Store == nil {
+		writeAppErr(w, apperr.New(apperr.CodeInternal, 500, "store unavailable"))
+		return
+	}
+	var request struct {
+		CurrentPassword string `json:"current_password"`
+		Username        string `json:"username"`
+		NewPassword     string `json:"new_password"`
+	}
+	decoder := json.NewDecoder(io.LimitReader(r.Body, s.deps.Cfg.Security.MaxBodyBytes))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil || request.CurrentPassword == "" {
+		writeAppErr(w, apperr.New(apperr.CodeInvalid, 400, "current password required"))
+		return
+	}
+	result, err := s.deps.Auth.ChangeCredentials(
+		claims.Username(), request.CurrentPassword, request.Username, request.NewPassword,
+		s.deps.Store.ReplaceAuthUser,
+	)
+	if errors.Is(err, store.ErrRevisionConflict) {
+		writeAppErr(w, apperr.New(apperr.CodeConflict, 409, "account was updated elsewhere"))
+		return
+	}
+	if errors.Is(err, store.ErrUsernameConflict) {
+		writeAppErr(w, auth.ErrUsernameTaken)
+		return
+	}
+	if err != nil {
+		writeAppErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
 	c := claimsFrom(r)
 	base := s.deps.Catalog.PublicBase()
-	all, err := s.deps.Catalog.ListViews(base, false)
+	all, err := s.deps.Catalog.ListViews(base, false, false)
 	if err != nil {
 		writeAppErr(w, apperr.Internal(err))
 		return
@@ -434,7 +478,7 @@ func (s *Server) handlePlaylist(w http.ResponseWriter, r *http.Request) {
 	}
 	base := s.deps.Catalog.PublicBase()
 	epgURL := ""
-	if s.deps.Cfg.EPG.Enabled {
+	if s.epgActive() {
 		epgURL = epgPublicURL(base)
 	}
 	body := s.deps.Catalog.M3U(chs, base, "/v1/play/", tok, epgURL)

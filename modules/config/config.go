@@ -106,6 +106,8 @@ type User struct {
 	PasswordHash string   `json:"password_hash" toml:"password_hash"`
 	Role         string   `json:"role" toml:"role"`
 	ChannelIDs   []string `json:"channel_ids" toml:"channel_ids"`
+	Revision     int64    `json:"-" toml:"-"`
+	ConfigName   string   `json:"-" toml:"-"`
 }
 
 type Security struct {
@@ -132,6 +134,7 @@ type Channel struct {
 	EPGID          string `json:"epg_id" toml:"epg_id"`
 	EPGName        string `json:"epg_name" toml:"epg_name"`
 	EPGSource      string `json:"epg_source" toml:"epg_source"`
+	SourceURL      string `json:"source_url,omitempty" toml:"source_url,omitempty"`
 	Upstream       string `json:"upstream" toml:"upstream"`
 	Path           string `json:"path" toml:"path"`
 	Ingress        string `json:"ingress" toml:"ingress"`
@@ -567,16 +570,22 @@ func (c File) validate() error {
 			return fmt.Errorf("duplicate channel id %q", ch.ID)
 		}
 		seen[ch.ID] = struct{}{}
-		if _, ok := up[ch.Upstream]; !ok {
-			return fmt.Errorf("channel %q references unknown upstream %q", ch.ID, ch.Upstream)
+		if ch.SourceURL != "" {
+			if err := ValidateSourceURL(ch.SourceURL); err != nil {
+				return fmt.Errorf("channel %q source_url: %w", ch.ID, err)
+			}
+		} else {
+			if _, ok := up[ch.Upstream]; !ok {
+				return fmt.Errorf("channel %q references unknown upstream %q", ch.ID, ch.Upstream)
+			}
+			if ch.Path == "" {
+				return fmt.Errorf("channel %q path is required", ch.ID)
+			}
 		}
 		switch ch.Ingress {
 		case "hls", "dash":
 		default:
 			return fmt.Errorf("channel %q ingress must be hls or dash", ch.ID)
-		}
-		if ch.Path == "" {
-			return fmt.Errorf("channel %q path is required", ch.ID)
 		}
 		if ch.Ingress == "dash" && !ch.Disabled && ch.KeysFile == "" && ch.Keys == "" {
 			return fmt.Errorf("channel %q dash ingress requires keys or keys_file", ch.ID)
@@ -662,6 +671,20 @@ func (c File) validate() error {
 				return fmt.Errorf("epg source %q references unknown proxy %q", source.ID, source.Proxy)
 			}
 		}
+	}
+	return nil
+}
+
+func ValidateSourceURL(raw string) error {
+	u, err := url.ParseRequestURI(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
+		return fmt.Errorf("must be an absolute URL")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("scheme must be http or https")
+	}
+	if u.Fragment != "" {
+		return fmt.Errorf("fragment is not allowed")
 	}
 	return nil
 }

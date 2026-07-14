@@ -35,7 +35,7 @@ func (s *Server) handleAdminListChannels(w http.ResponseWriter, r *http.Request)
 	if !s.requireAdmin(w, r) {
 		return
 	}
-	views, err := s.deps.Catalog.ListViews(s.deps.Catalog.PublicBase(), true)
+	views, err := s.deps.Catalog.ListViews(s.deps.Catalog.PublicBase(), true, true)
 	if err != nil {
 		writeAppErr(w, apperr.Internal(err))
 		return
@@ -795,6 +795,7 @@ func normalizeEgressDraft(draft egressDraft, existing []store.ProxyProfileRow) (
 		existingByID[profile.ID] = profile
 	}
 	profileIDs := map[string]struct{}{proxyegress.Direct: {}}
+	disabledProfiles := make(map[string]bool, len(draft.Proxies))
 	cfg := proxyegress.Config{
 		Default: draft.Default, PlaylistPolicy: proxyegress.PlaylistPolicy(draft.PlaylistPolicy),
 		DockerProxyHost: draft.DockerProxyHost,
@@ -821,7 +822,11 @@ func normalizeEgressDraft(draft egressDraft, existing []store.ProxyProfileRow) (
 			}
 		}
 		profileIDs[profile.ID] = struct{}{}
+		disabledProfiles[profile.ID] = profile.Disabled
 		cfg.Profiles = append(cfg.Profiles, proxyegress.Profile{ID: profile.ID, Name: profile.Name, URL: profile.URL, Disabled: profile.Disabled})
+	}
+	if draft.Default != proxyegress.Direct && disabledProfiles[draft.Default] {
+		return egressDraft{}, proxyegress.Config{}, fmt.Errorf("default proxy %q is disabled", draft.Default)
 	}
 	ruleIDs := map[string]struct{}{}
 	for i := range draft.Rules {
@@ -842,6 +847,9 @@ func normalizeEgressDraft(draft egressDraft, existing []store.ProxyProfileRow) (
 		}
 		if _, ok := profileIDs[rule.ProxyID]; !ok {
 			return egressDraft{}, proxyegress.Config{}, fmt.Errorf("rule %q references unknown proxy %q", rule.ID, rule.ProxyID)
+		}
+		if !rule.Disabled && rule.ProxyID != proxyegress.Direct && disabledProfiles[rule.ProxyID] {
+			return egressDraft{}, proxyegress.Config{}, fmt.Errorf("rule %q references disabled proxy %q", rule.ID, rule.ProxyID)
 		}
 		switch proxyegress.RuleKind(rule.Kind) {
 		case proxyegress.KindHostSuffix, proxyegress.KindHostExact, proxyegress.KindChannel:

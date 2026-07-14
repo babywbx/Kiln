@@ -51,7 +51,7 @@ func TestEPGEndToEnd(t *testing.T) {
 			Username: "admin", PasswordHash: hash, Role: "admin",
 		}}},
 		Security: config.Security{MaxBodyBytes: 1 << 20},
-		EPG: config.EPG{Enabled: true, Cache: &cache, Sources: []config.EPGSource{{
+		EPG: config.EPG{Enabled: false, Cache: &cache, Sources: []config.EPGSource{{
 			ID: "fixture", Name: "Fixture", URL: origin.URL, Timezone: "Asia/Hong_Kong", Proxy: "direct", Enabled: true,
 		}}},
 		Channels: []config.Channel{{
@@ -122,6 +122,23 @@ func TestEPGEndToEnd(t *testing.T) {
 		!strings.Contains(string(playlist.Body), `tvg-logo="http://kiln.test/v1/logo/demo"`) {
 		t.Fatalf("EPG playlist %d %s", playlist.StatusCode, playlist.Body)
 	}
+	distributionToken, distributionRow, err := accesstoken.NewRow("EPG", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.InsertAccessToken(distributionRow); err != nil {
+		t.Fatal(err)
+	}
+	distributionPlaylist, err := http.Get(ts.URL + "/p/" + distributionToken + "/playlist.m3u")
+	if err != nil {
+		t.Fatal(err)
+	}
+	distributionBody, _ := io.ReadAll(distributionPlaylist.Body)
+	_ = distributionPlaylist.Body.Close()
+	if distributionPlaylist.StatusCode != http.StatusOK ||
+		!strings.Contains(string(distributionBody), `x-tvg-url="http://kiln.test/v1/epg.xml.gz"`) {
+		t.Fatalf("distribution EPG playlist %d %s", distributionPlaylist.StatusCode, distributionBody)
+	}
 
 	presets := adminJSON(t, http.MethodGet, ts.URL+"/v1/admin/epg/presets", login.Token, nil)
 	if presets.StatusCode != http.StatusOK || !strings.Contains(string(presets.Body), `"hk-1"`) {
@@ -179,6 +196,40 @@ func TestEPGEndToEnd(t *testing.T) {
 	refreshed := adminJSON(t, http.MethodPost, ts.URL+"/v1/admin/epg/refresh", login.Token, nil)
 	if refreshed.StatusCode != http.StatusOK || !strings.Contains(string(refreshed.Body), `"statuses"`) {
 		t.Fatalf("refresh EPG %d %s", refreshed.StatusCode, refreshed.Body)
+	}
+}
+
+func TestEPGRefreshRejectsNoActiveSources(t *testing.T) {
+	hash, err := auth.HashPassword("secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := t.TempDir()
+	authService, err := auth.New(config.Auth{
+		TokenIssuer: "kiln", TokenAudience: "kiln",
+		Users: []config.User{{Username: "admin", PasswordHash: hash, Role: "admin"}},
+	}, time.Hour, auth.Options{DataDir: directory})
+	if err != nil {
+		t.Fatal(err)
+	}
+	login, err := authService.Login("admin", "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httpserver.New(httpserver.Deps{
+		Cfg: config.File{
+			Server:   config.Server{ReadTimeout: 5, IdleTimeout: 30},
+			Security: config.Security{MaxBodyBytes: 1 << 20},
+		},
+		Auth: authService, Observe: observe.New(), EPG: epg.NewService(epg.ServiceConfig{}, nil, nil),
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	testServer := httptest.NewServer(server.Handler())
+	t.Cleanup(testServer.Close)
+
+	response := adminJSON(t, http.MethodPost, testServer.URL+"/v1/admin/epg/refresh", login.Token, nil)
+	if response.StatusCode != http.StatusConflict || !strings.Contains(string(response.Body), "enable at least one EPG source") {
+		t.Fatalf("refresh without sources = %d %s", response.StatusCode, response.Body)
 	}
 }
 
@@ -369,6 +420,26 @@ func TestHLSPlayEndToEnd(t *testing.T) {
 	var login auth.LoginResult
 	if err := json.NewDecoder(resp.Body).Decode(&login); err != nil {
 		t.Fatal(err)
+	}
+	wrongCredentialChange := adminJSON(t, http.MethodPut, ts.URL+"/v1/me/credentials", login.Token, map[string]string{
+		"current_password": "wrong", "username": "admin", "new_password": "new-password",
+	})
+	if wrongCredentialChange.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(string(wrongCredentialChange.Body), "current_password_invalid") {
+		t.Fatalf("wrong current password %d %s", wrongCredentialChange.StatusCode, wrongCredentialChange.Body)
+	}
+	oldToken := login.Token
+	credentialChange := adminJSON(t, http.MethodPut, ts.URL+"/v1/me/credentials", login.Token, map[string]string{
+		"current_password": "secret", "username": "admin", "new_password": "new-password",
+	})
+	if credentialChange.StatusCode != http.StatusOK {
+		t.Fatalf("credential change %d %s", credentialChange.StatusCode, credentialChange.Body)
+	}
+	if err := json.Unmarshal(credentialChange.Body, &login); err != nil {
+		t.Fatal(err)
+	}
+	oldSession := adminJSON(t, http.MethodGet, ts.URL+"/v1/me", oldToken, nil)
+	if oldSession.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("old credential token status = %d", oldSession.StatusCode)
 	}
 
 	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/v1/play/demo/index.m3u8?token="+login.Token+"&_HLS_msn=7&_HLS_part=2&_HLS_skip=YES&ignored=value", nil)

@@ -32,6 +32,9 @@ func TestOpenMigratesV1WithoutLosingData(t *testing.T) {
 	if channels[1].ID != "custom-agent" || channels[1].UserAgent != "Custom/7" {
 		t.Fatalf("custom user agent channel = %#v", channels[1])
 	}
+	if channels[0].SourceURL != "" || channels[1].SourceURL != "" {
+		t.Fatalf("legacy channels gained source URLs: %#v", channels)
+	}
 
 	tokens, err := db.ListAccessTokens()
 	if err != nil {
@@ -103,6 +106,47 @@ func TestAccessTokenExpiryRoundTrip(t *testing.T) {
 	}
 	if got.ExpiresAt != want.ExpiresAt {
 		t.Fatalf("expires_at = %d, want %d", got.ExpiresAt, want.ExpiresAt)
+	}
+}
+
+func TestAuthOverridesPreserveConfigAuthorization(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	configured := []config.User{{Username: "admin", PasswordHash: "old-hash", Role: "admin", ChannelIDs: []string{"one"}}}
+	users, err := db.ApplyAuthOverrides(configured)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(users) != 1 || users[0].Revision != 1 || users[0].ConfigName != "admin" {
+		t.Fatalf("initial users = %+v", users)
+	}
+	updated := users[0]
+	updated.Username = "kiln-admin"
+	updated.PasswordHash = "new-hash"
+	if err := db.ReplaceAuthUser("admin", updated, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	reconfigured := []config.User{
+		{Username: "admin", PasswordHash: "config-hash", Role: "viewer", ChannelIDs: []string{"two"}},
+		{Username: "operator", PasswordHash: "operator-hash", Role: "viewer"},
+	}
+	users, err = db.ApplyAuthOverrides(reconfigured)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(users) != 2 {
+		t.Fatalf("users = %+v", users)
+	}
+	if users[0].Username != "kiln-admin" || users[0].PasswordHash != "new-hash" || users[0].Role != "viewer" ||
+		len(users[0].ChannelIDs) != 1 || users[0].ChannelIDs[0] != "two" || users[0].Revision != 2 {
+		t.Fatalf("overridden user = %+v", users[0])
+	}
+	if users[1].Username != "operator" || users[1].Revision != 1 {
+		t.Fatalf("new config user = %+v", users[1])
 	}
 }
 
@@ -239,6 +283,41 @@ func TestChannelEPGFieldsRoundTrip(t *testing.T) {
 	}
 	if len(got.PreferredAudioLanguages) != 2 || got.PreferredAudioLanguages[0] != "yue" || got.PreferredAudioLanguages[1] != "zh" {
 		t.Fatalf("preferred audio languages = %v", got.PreferredAudioLanguages)
+	}
+}
+
+func TestChannelSourceURLRoundTrip(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer db.Close()
+
+	want := config.Channel{
+		ID: "direct", Title: "Direct", SourceURL: "https://media.example/live/index.m3u8?token=abc", Ingress: "hls",
+	}
+	if err := db.UpsertChannel(want); err != nil {
+		t.Fatalf("upsert direct channel: %v", err)
+	}
+	got, ok, err := db.GetChannel(want.ID)
+	if err != nil || !ok {
+		t.Fatalf("get direct channel: found=%v err=%v", ok, err)
+	}
+	if got.SourceURL != want.SourceURL {
+		t.Fatalf("source URL = %q, want %q", got.SourceURL, want.SourceURL)
+	}
+
+	want.SourceURL = "https://other.example/channel.m3u8"
+	row, _, err := db.GetChannelRow(want.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpsertChannelIfRevision(want, row.Revision); err != nil {
+		t.Fatalf("update source URL: %v", err)
+	}
+	got, _, err = db.GetChannel(want.ID)
+	if err != nil || got.SourceURL != want.SourceURL {
+		t.Fatalf("updated source URL = %q, %v", got.SourceURL, err)
 	}
 }
 

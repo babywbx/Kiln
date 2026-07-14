@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -8,6 +9,94 @@ import (
 	"github.com/babywbx/kiln/modules/config"
 	"github.com/golang-jwt/jwt/v5"
 )
+
+func TestChangeCredentialsInvalidatesOldTokenAndPersistsReplacement(t *testing.T) {
+	hash, err := HashPassword("old-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewForTest([]config.User{{
+		Username: "admin", PasswordHash: hash, Role: "admin", Revision: 1, ConfigName: "admin",
+	}}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldSession, err := svc.Login("admin", "old-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted config.User
+	newSession, err := svc.ChangeCredentials("admin", "old-password", "kiln-admin", "new-password", func(old string, user config.User, revision int64) error {
+		if old != "admin" || revision != 1 {
+			t.Fatalf("persist identity = %q revision %d", old, revision)
+		}
+		persisted = user
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Username != "kiln-admin" || persisted.ConfigName != "admin" {
+		t.Fatalf("persisted user = %+v", persisted)
+	}
+	if _, err := svc.Parse(oldSession.Token); !errors.Is(err, ErrInvalidToken) {
+		t.Fatalf("old token error = %v, want invalid token", err)
+	}
+	claims, err := svc.Parse(newSession.Token)
+	if err != nil || claims.Username() != "kiln-admin" || claims.AuthRevision != 2 {
+		t.Fatalf("new claims = %+v, err = %v", claims, err)
+	}
+	if _, err := svc.Login("admin", "old-password"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("old login error = %v", err)
+	}
+}
+
+func TestChangeCredentialsValidatesNoOpAndPasswordByteLimit(t *testing.T) {
+	hash, err := HashPassword("old-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	newService := func() *Service {
+		svc, serviceErr := NewForTest([]config.User{{Username: "admin", PasswordHash: hash, Role: "admin"}}, time.Hour)
+		if serviceErr != nil {
+			t.Fatal(serviceErr)
+		}
+		return svc
+	}
+	if _, err := newService().ChangeCredentials("admin", "old-password", "admin", "", nil); err == nil {
+		t.Fatal("no-op credential change succeeded")
+	}
+	password72 := strings.Repeat("a", 72)
+	if _, err := newService().ChangeCredentials("admin", "old-password", "admin", password72, nil); err != nil {
+		t.Fatalf("72-byte password rejected: %v", err)
+	}
+	password73 := strings.Repeat("界", 24) + "a"
+	if len(password73) != 73 {
+		t.Fatalf("test password bytes = %d", len(password73))
+	}
+	if _, err := newService().ChangeCredentials("admin", "old-password", "admin", password73, nil); err == nil {
+		t.Fatal("73-byte password accepted")
+	}
+}
+
+func TestChangeCredentialsKeepsMemoryUnchangedWhenPersistenceFails(t *testing.T) {
+	hash, err := HashPassword("old-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewForTest([]config.User{{Username: "admin", PasswordHash: hash, Role: "admin"}}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := errors.New("disk unavailable")
+	_, err = svc.ChangeCredentials("admin", "old-password", "renamed", "", func(string, config.User, int64) error { return want })
+	if !errors.Is(err, want) {
+		t.Fatalf("error = %v, want persistence failure", err)
+	}
+	if _, err := svc.Login("admin", "old-password"); err != nil {
+		t.Fatalf("original login changed after persistence failure: %v", err)
+	}
+}
 
 func TestLoginAndParseEdDSA(t *testing.T) {
 	hash, err := HashPassword("secret")

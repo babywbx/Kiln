@@ -64,7 +64,7 @@ func (s *Server) handleChannelLogo(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) serveEPG(w http.ResponseWriter, r *http.Request, compressed bool) {
 	channels := s.epgChannels()
-	if s.deps.EPG != nil && s.deps.Cfg.EPG.Enabled && !s.deps.Cfg.EPG.CacheEnabled() {
+	if s.epgActive() && !s.deps.Cfg.EPG.CacheEnabled() {
 		if err := s.deps.EPG.Refresh(r.Context()); err != nil {
 			s.deps.Log.Warn("EPG on-demand refresh failed", "err", err)
 		}
@@ -85,13 +85,17 @@ func (s *Server) serveEPG(w http.ResponseWriter, r *http.Request, compressed boo
 }
 
 func (s *Server) epgPayload(channels []epg.ChannelRef, compressed bool) ([]byte, error) {
-	if s.deps.EPG == nil || !s.deps.Cfg.EPG.Enabled {
+	if !s.epgActive() {
 		return emptyEPGPayload(compressed), nil
 	}
 	if compressed {
 		return s.deps.EPG.GzipXML(channels)
 	}
 	return s.deps.EPG.XML(channels)
+}
+
+func (s *Server) epgActive() bool {
+	return s.deps.EPG != nil && len(s.deps.EPG.Sources()) > 0
 }
 
 func emptyEPGPayload(compressed bool) []byte {
@@ -161,8 +165,8 @@ func (s *Server) handleAdminEPGRefresh(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r) {
 		return
 	}
-	if s.deps.EPG == nil || !s.deps.Cfg.EPG.Enabled {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "statuses": []epg.SourceStatus{}})
+	if !s.epgActive() {
+		writeAppErr(w, apperr.New(apperr.CodeConflict, http.StatusConflict, "enable at least one EPG source before refreshing"))
 		return
 	}
 	err := s.deps.EPG.Refresh(r.Context())

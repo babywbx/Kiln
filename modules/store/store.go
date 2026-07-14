@@ -20,9 +20,12 @@ type DB struct {
 	mu  sync.Mutex
 }
 
-var ErrRevisionConflict = errors.New("store revision conflict")
+var (
+	ErrRevisionConflict = errors.New("store revision conflict")
+	ErrUsernameConflict = errors.New("store username conflict")
+)
 
-const currentSchemaVersion = 8
+const currentSchemaVersion = 9
 
 func Open(dataDir string) (*DB, error) {
 	if err := os.MkdirAll(dataDir, 0o750); err != nil {
@@ -107,6 +110,9 @@ func applyMigration(tx *sql.Tx, version int) error {
 		return err
 	case 8:
 		_, err := tx.Exec(schemaV8)
+		return err
+	case 9:
+		_, err := tx.Exec(schemaV9)
 		return err
 	default:
 		return fmt.Errorf("unknown schema version %d", version)
@@ -242,6 +248,17 @@ const schemaV8 = `
 ALTER TABLE channels ADD COLUMN preferred_audio_languages_json TEXT NOT NULL DEFAULT '[]';
 `
 
+const schemaV9 = `
+CREATE TABLE auth_overrides (
+  config_username TEXT PRIMARY KEY,
+  username TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  revision INTEGER NOT NULL DEFAULT 2,
+  updated_at INTEGER NOT NULL DEFAULT 0
+);
+ALTER TABLE channels ADD COLUMN source_url TEXT NOT NULL DEFAULT '';
+`
+
 func (db *DB) SeedFromConfig(cfg config.File) error {
 	if err := db.seedChannels(cfg); err != nil {
 		return err
@@ -250,6 +267,85 @@ func (db *DB) SeedFromConfig(cfg config.File) error {
 		return err
 	}
 	return db.seedEPGSources(cfg)
+}
+
+func (db *DB) ApplyAuthOverrides(configured []config.User) ([]config.User, error) {
+	rows, err := db.sql.Query(`SELECT config_username, username, password_hash, revision FROM auth_overrides`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	overrides := make(map[string]config.User)
+	for rows.Next() {
+		var user config.User
+		if err := rows.Scan(&user.ConfigName, &user.Username, &user.PasswordHash, &user.Revision); err != nil {
+			return nil, err
+		}
+		overrides[user.ConfigName] = user
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	users := make([]config.User, 0, len(configured))
+	seenUsernames := make(map[string]struct{}, len(configured))
+	for _, user := range configured {
+		user.ConfigName = user.Username
+		user.Revision = 1
+		if override, ok := overrides[user.ConfigName]; ok {
+			user.Username = override.Username
+			user.PasswordHash = override.PasswordHash
+			user.Revision = override.Revision
+		}
+		if _, duplicate := seenUsernames[user.Username]; duplicate {
+			return nil, fmt.Errorf("duplicate effective auth username %q", user.Username)
+		}
+		seenUsernames[user.Username] = struct{}{}
+		users = append(users, user)
+	}
+	return users, nil
+}
+
+func (db *DB) ReplaceAuthUser(oldUsername string, user config.User, expectedRevision int64) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	tx, err := db.sql.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	configName := user.ConfigName
+	if configName == "" {
+		configName = oldUsername
+	}
+	var existingRevision int64
+	err = tx.QueryRow(`SELECT revision FROM auth_overrides WHERE config_username=?`, configName).Scan(&existingRevision)
+	switch {
+	case errors.Is(err, sql.ErrNoRows) && expectedRevision == 1:
+		_, err = tx.Exec(`INSERT INTO auth_overrides(config_username, username, password_hash, revision, updated_at)
+			VALUES (?,?,?,?,?)`, configName, user.Username, user.PasswordHash, 2, time.Now().Unix())
+	case err != nil:
+		return err
+	case existingRevision != expectedRevision:
+		return ErrRevisionConflict
+	default:
+		result, updateErr := tx.Exec(`UPDATE auth_overrides SET username=?, password_hash=?, revision=revision+1,
+			updated_at=? WHERE config_username=? AND revision=?`, user.Username, user.PasswordHash,
+			time.Now().Unix(), configName, expectedRevision)
+		if updateErr != nil {
+			return updateErr
+		}
+		changed, _ := result.RowsAffected()
+		if changed == 0 {
+			return ErrRevisionConflict
+		}
+	}
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			return ErrUsernameConflict
+		}
+		return err
+	}
+	return tx.Commit()
 }
 
 func (db *DB) seedEPGSources(cfg config.File) error {
@@ -681,11 +777,11 @@ func insertChannelTx(tx *sql.Tx, ch config.Channel, sort int, now int64) error {
 		hj = []byte("{}")
 	}
 	_, err := tx.Exec(`INSERT INTO channels(
-		id, title, group_name, logo_url, epg_id, epg_name, epg_source, upstream, path, ingress, disabled, on_demand, autostart,
+		id, title, group_name, logo_url, epg_id, epg_name, epg_source, upstream, path, source_url, ingress, disabled, on_demand, autostart,
 		idle_timeout_sec, max_viewers, keys_file, keys, user_agent, headers_json, restart_on_failure, prefer_height, packager,
 		preferred_audio_languages_json, sort_order, updated_at
-	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		ch.ID, ch.Title, ch.Group, ch.LogoURL, ch.EPGID, ch.EPGName, ch.EPGSource, ch.Upstream, ch.Path, ch.Ingress,
+	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		ch.ID, ch.Title, ch.Group, ch.LogoURL, ch.EPGID, ch.EPGName, ch.EPGSource, ch.Upstream, ch.Path, ch.SourceURL, ch.Ingress,
 		boolInt(ch.Disabled), boolInt(ch.OnDemand), boolInt(ch.Autostart),
 		ch.IdleTimeoutSec, ch.MaxViewers, ch.KeysFile, ch.Keys, ch.UserAgent, string(hj),
 		boolInt(ch.RestartOnFailure), ch.PreferHeight, ch.Packager, encodeStrings(ch.PreferredAudioLanguages), sort, now,
@@ -766,7 +862,7 @@ func scanChannelRow(row interface {
 	var headers, preferredAudioLanguages string
 	var sort, revision, updated int64
 	err := row.Scan(
-		&ch.ID, &ch.Title, &ch.Group, &ch.LogoURL, &ch.EPGID, &ch.EPGName, &ch.EPGSource, &ch.Upstream, &ch.Path, &ch.Ingress,
+		&ch.ID, &ch.Title, &ch.Group, &ch.LogoURL, &ch.EPGID, &ch.EPGName, &ch.EPGSource, &ch.Upstream, &ch.Path, &ch.SourceURL, &ch.Ingress,
 		&disabled, &onDemand, &autostart, &ch.IdleTimeoutSec, &ch.MaxViewers, &ch.KeysFile, &ch.Keys, &ch.UserAgent,
 		&headers, &restart, &ch.PreferHeight, &ch.Packager, &preferredAudioLanguages, &sort, &revision, &updated,
 	)
@@ -785,7 +881,7 @@ func scanChannelRow(row interface {
 func (db *DB) ListChannelRows(includeDisabled bool) ([]ChannelRow, error) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	q := `SELECT id, title, group_name, logo_url, epg_id, epg_name, epg_source, upstream, path, ingress, disabled, on_demand, autostart,
+	q := `SELECT id, title, group_name, logo_url, epg_id, epg_name, epg_source, upstream, path, source_url, ingress, disabled, on_demand, autostart,
 		idle_timeout_sec, max_viewers, keys_file, keys, user_agent, headers_json, restart_on_failure, prefer_height, packager,
 		preferred_audio_languages_json, sort_order, revision, updated_at
 		FROM channels`
@@ -829,7 +925,7 @@ func (db *DB) GetChannel(id string) (config.Channel, bool, error) {
 func (db *DB) GetChannelRow(id string) (ChannelRow, bool, error) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	row := db.sql.QueryRow(`SELECT id, title, group_name, logo_url, epg_id, epg_name, epg_source, upstream, path, ingress, disabled, on_demand, autostart,
+	row := db.sql.QueryRow(`SELECT id, title, group_name, logo_url, epg_id, epg_name, epg_source, upstream, path, source_url, ingress, disabled, on_demand, autostart,
 		idle_timeout_sec, max_viewers, keys_file, keys, user_agent, headers_json, restart_on_failure, prefer_height, packager,
 		preferred_audio_languages_json, sort_order, revision, updated_at
 		FROM channels WHERE id = ?`, id)
@@ -878,10 +974,10 @@ func (db *DB) UpsertChannelsIfRevisions(channels []config.Channel, revisions map
 			continue
 		}
 		result, err := tx.Exec(`UPDATE channels SET
-			title=?, group_name=?, logo_url=?, epg_id=?, epg_name=?, epg_source=?, upstream=?, path=?, ingress=?, disabled=?, on_demand=?, autostart=?,
+			title=?, group_name=?, logo_url=?, epg_id=?, epg_name=?, epg_source=?, upstream=?, path=?, source_url=?, ingress=?, disabled=?, on_demand=?, autostart=?,
 			idle_timeout_sec=?, max_viewers=?, keys_file=?, keys=?, user_agent=?, headers_json=?, restart_on_failure=?,
 			prefer_height=?, packager=?, preferred_audio_languages_json=?, revision=revision+1, updated_at=? WHERE id=? AND revision=?`,
-			ch.Title, ch.Group, ch.LogoURL, ch.EPGID, ch.EPGName, ch.EPGSource, ch.Upstream, ch.Path, ch.Ingress, boolInt(ch.Disabled),
+			ch.Title, ch.Group, ch.LogoURL, ch.EPGID, ch.EPGName, ch.EPGSource, ch.Upstream, ch.Path, ch.SourceURL, ch.Ingress, boolInt(ch.Disabled),
 			boolInt(ch.OnDemand), boolInt(ch.Autostart), ch.IdleTimeoutSec, ch.MaxViewers, ch.KeysFile, ch.Keys,
 			ch.UserAgent, encodeHeaders(ch.Headers), boolInt(ch.RestartOnFailure), ch.PreferHeight,
 			ch.Packager, encodeStrings(ch.PreferredAudioLanguages), now, ch.ID, expected)
@@ -899,11 +995,11 @@ func (db *DB) upsertChannel(ch config.Channel, expectedRevision int64) error {
 	now := time.Now().Unix()
 	if expectedRevision > 0 {
 		result, err := db.sql.Exec(`UPDATE channels SET
-			title=?, group_name=?, logo_url=?, epg_id=?, epg_name=?, epg_source=?, upstream=?, path=?, ingress=?, disabled=?, on_demand=?, autostart=?,
+			title=?, group_name=?, logo_url=?, epg_id=?, epg_name=?, epg_source=?, upstream=?, path=?, source_url=?, ingress=?, disabled=?, on_demand=?, autostart=?,
 			idle_timeout_sec=?, max_viewers=?, keys_file=?, keys=?, user_agent=?, headers_json=?, restart_on_failure=?,
 			prefer_height=?, packager=?, preferred_audio_languages_json=?, revision=revision+1, updated_at=?
 			WHERE id=? AND revision=?`,
-			ch.Title, ch.Group, ch.LogoURL, ch.EPGID, ch.EPGName, ch.EPGSource, ch.Upstream, ch.Path, ch.Ingress,
+			ch.Title, ch.Group, ch.LogoURL, ch.EPGID, ch.EPGName, ch.EPGSource, ch.Upstream, ch.Path, ch.SourceURL, ch.Ingress,
 			boolInt(ch.Disabled), boolInt(ch.OnDemand), boolInt(ch.Autostart),
 			ch.IdleTimeoutSec, ch.MaxViewers, ch.KeysFile, ch.Keys, ch.UserAgent, encodeHeaders(ch.Headers),
 			boolInt(ch.RestartOnFailure), ch.PreferHeight, ch.Packager, encodeStrings(ch.PreferredAudioLanguages), now, ch.ID, expectedRevision,
@@ -916,21 +1012,21 @@ func (db *DB) upsertChannel(ch config.Channel, expectedRevision int64) error {
 	var maxSort int
 	_ = db.sql.QueryRow(`SELECT COALESCE(MAX(sort_order), -1) FROM channels`).Scan(&maxSort)
 	_, err := db.sql.Exec(`INSERT INTO channels(
-		id, title, group_name, logo_url, epg_id, epg_name, epg_source, upstream, path, ingress, disabled, on_demand, autostart,
+		id, title, group_name, logo_url, epg_id, epg_name, epg_source, upstream, path, source_url, ingress, disabled, on_demand, autostart,
 		idle_timeout_sec, max_viewers, keys_file, keys, user_agent, headers_json, restart_on_failure, prefer_height, packager,
 		preferred_audio_languages_json, sort_order, updated_at
-	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 	ON CONFLICT(id) DO UPDATE SET
 		title=excluded.title, group_name=excluded.group_name, logo_url=excluded.logo_url,
 		epg_id=excluded.epg_id, epg_name=excluded.epg_name, epg_source=excluded.epg_source,
-		upstream=excluded.upstream, path=excluded.path, ingress=excluded.ingress,
+		upstream=excluded.upstream, path=excluded.path, source_url=excluded.source_url, ingress=excluded.ingress,
 		disabled=excluded.disabled, on_demand=excluded.on_demand, autostart=excluded.autostart,
 		idle_timeout_sec=excluded.idle_timeout_sec, max_viewers=excluded.max_viewers,
 		keys_file=excluded.keys_file, keys=excluded.keys, user_agent=excluded.user_agent, headers_json=excluded.headers_json,
 		restart_on_failure=excluded.restart_on_failure, prefer_height=excluded.prefer_height,
 		packager=excluded.packager, preferred_audio_languages_json=excluded.preferred_audio_languages_json,
 		revision=channels.revision+1, updated_at=excluded.updated_at`,
-		ch.ID, ch.Title, ch.Group, ch.LogoURL, ch.EPGID, ch.EPGName, ch.EPGSource, ch.Upstream, ch.Path, ch.Ingress,
+		ch.ID, ch.Title, ch.Group, ch.LogoURL, ch.EPGID, ch.EPGName, ch.EPGSource, ch.Upstream, ch.Path, ch.SourceURL, ch.Ingress,
 		boolInt(ch.Disabled), boolInt(ch.OnDemand), boolInt(ch.Autostart),
 		ch.IdleTimeoutSec, ch.MaxViewers, ch.KeysFile, ch.Keys, ch.UserAgent, encodeHeaders(ch.Headers),
 		boolInt(ch.RestartOnFailure), ch.PreferHeight, ch.Packager, encodeStrings(ch.PreferredAudioLanguages), maxSort+1, now,
@@ -1438,25 +1534,31 @@ func ValidateChannel(ch config.Channel, upstreams []config.Upstream) error {
 	if ch.ID == "" {
 		return fmt.Errorf("id required")
 	}
-	if ch.Upstream == "" {
-		return fmt.Errorf("upstream required")
-	}
-	found := false
-	for _, u := range upstreams {
-		if u.ID == ch.Upstream {
-			found = true
-			break
+	if ch.SourceURL != "" {
+		if err := config.ValidateSourceURL(ch.SourceURL); err != nil {
+			return fmt.Errorf("source_url: %w", err)
 		}
-	}
-	if !found {
-		return fmt.Errorf("unknown upstream %q", ch.Upstream)
+	} else {
+		if ch.Upstream == "" {
+			return fmt.Errorf("upstream required")
+		}
+		found := false
+		for _, u := range upstreams {
+			if u.ID == ch.Upstream {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("unknown upstream %q", ch.Upstream)
+		}
+		if ch.Path == "" {
+			return fmt.Errorf("path required")
+		}
 	}
 	ch.Ingress = strings.ToLower(ch.Ingress)
 	if ch.Ingress != "hls" && ch.Ingress != "dash" {
 		return fmt.Errorf("ingress must be hls or dash")
-	}
-	if ch.Path == "" {
-		return fmt.Errorf("path required")
 	}
 	if ch.Ingress == "dash" && !ch.Disabled && ch.KeysFile == "" && ch.Keys == "" {
 		return fmt.Errorf("dash requires keys")

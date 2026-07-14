@@ -74,6 +74,12 @@ func main() {
 		log.Error("sqlite seed failed", "err", err)
 		os.Exit(1)
 	}
+	users, err := db.ApplyAuthOverrides(cfg.Auth.Users)
+	if err != nil {
+		log.Error("auth users load failed", "err", err)
+		os.Exit(1)
+	}
+	cfg.Auth.Users = users
 
 	egCfg, err := proxyegress.ConfigFromStore(db, cfg)
 	if err != nil {
@@ -168,9 +174,6 @@ func main() {
 }
 
 func buildEPGService(cfg config.File, db *store.DB, router *proxyegress.Router, log *slog.Logger) (*epg.Service, error) {
-	if !cfg.EPG.Enabled {
-		return nil, nil
-	}
 	rows, err := db.ListEPGSources()
 	if err != nil {
 		return nil, err
@@ -192,11 +195,15 @@ func buildEPGService(cfg config.File, db *store.DB, router *proxyegress.Router, 
 
 	var cache epg.CacheStore
 	if cfg.EPG.CacheEnabled() {
-		switch strings.ToLower(strings.TrimSpace(cfg.EPG.CacheDir)) {
-		case "", "memory", ":memory:":
+		cacheDirectory := strings.TrimSpace(cfg.EPG.CacheDir)
+		switch strings.ToLower(cacheDirectory) {
+		case "memory", ":memory:":
 			cache = epg.NewMemoryStore()
 		default:
-			cache, err = epg.NewDiskStore(cfg.EPG.CacheDir)
+			if cacheDirectory == "" {
+				cacheDirectory = filepath.Join(cfg.Server.DataDir, "epg")
+			}
+			cache, err = epg.NewDiskStore(cacheDirectory)
 			if err != nil {
 				return nil, err
 			}

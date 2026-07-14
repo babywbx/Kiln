@@ -17,8 +17,9 @@ const (
 )
 
 type Claims struct {
-	Role       string   `json:"role"`
-	ChannelIDs []string `json:"channels,omitempty"`
+	Role         string   `json:"role"`
+	ChannelIDs   []string `json:"channels,omitempty"`
+	AuthRevision int64    `json:"auth_revision,omitempty"`
 	jwt.RegisteredClaims
 }
 

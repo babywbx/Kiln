@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/babywbx/kiln/modules/apperr"
 	"github.com/babywbx/kiln/modules/config"
@@ -20,6 +22,8 @@ var (
 	ErrInvalidToken       = apperr.New(apperr.CodeUnauthorized, 401, "invalid token")
 	ErrExpiredToken       = apperr.New(apperr.CodeUnauthorized, 401, "token expired")
 	ErrForbiddenChannel   = apperr.New(apperr.CodeForbidden, 403, "channel not allowed")
+	ErrCurrentPassword    = apperr.New(apperr.Code("current_password_invalid"), 422, "current password is incorrect")
+	ErrUsernameTaken      = apperr.New(apperr.Code("username_taken"), 409, "username is already in use")
 )
 
 type Service struct {
@@ -77,6 +81,12 @@ func New(cfg config.Auth, ttl time.Duration, opts Options) (*Service, error) {
 	}
 	m := make(map[string]config.User, len(cfg.Users))
 	for _, u := range cfg.Users {
+		if u.ConfigName == "" {
+			u.ConfigName = u.Username
+		}
+		if u.Revision <= 0 {
+			u.Revision = 1
+		}
 		m[u.Username] = u
 	}
 	return &Service{
@@ -118,8 +128,9 @@ func (s *Service) Login(username, password string) (LoginResult, error) {
 		return LoginResult{}, apperr.Internal(err)
 	}
 	claims := Claims{
-		Role:       u.Role,
-		ChannelIDs: append([]string(nil), u.ChannelIDs...),
+		Role:         u.Role,
+		ChannelIDs:   append([]string(nil), u.ChannelIDs...),
+		AuthRevision: u.Revision,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    s.issuer,
 			Subject:   u.Username,
@@ -178,7 +189,81 @@ func (s *Service) IssuePreview(channelID string, ttl time.Duration) (string, tim
 }
 
 func (s *Service) Parse(token string) (Claims, error) {
-	return parseJWT(s.pub, strings.TrimSpace(token), s.issuer, s.audience)
+	claims, err := parseJWT(s.pub, strings.TrimSpace(token), s.issuer, s.audience)
+	if err != nil || claims.Role == "preview" {
+		return claims, err
+	}
+	s.mu.RLock()
+	user, ok := s.users[claims.Username()]
+	s.mu.RUnlock()
+	if !ok || (claims.AuthRevision == 0 && user.Revision > 1) || (claims.AuthRevision > 0 && claims.AuthRevision != user.Revision) {
+		return Claims{}, ErrInvalidToken
+	}
+	return claims, nil
+}
+
+// ChangeCredentials verifies the current password, persists the replacement,
+// invalidates older tokens, and returns a fresh session for the renamed user.
+func (s *Service) ChangeCredentials(
+	username, currentPassword, newUsername, newPassword string,
+	persist func(string, config.User, int64) error,
+) (LoginResult, error) {
+	newUsername = strings.TrimSpace(newUsername)
+	if newUsername == "" {
+		newUsername = username
+	}
+	if !utf8.ValidString(newUsername) || utf8.RuneCountInString(newUsername) > 64 || strings.IndexFunc(newUsername, unicode.IsControl) >= 0 {
+		return LoginResult{}, apperr.New(apperr.CodeInvalid, 400, "username invalid")
+	}
+	if len(newPassword) > 72 || (newPassword != "" && len(newPassword) < 8) {
+		return LoginResult{}, apperr.New(apperr.CodeInvalid, 400, "new password must be between 8 and 72 bytes")
+	}
+	if newUsername == username && newPassword == "" {
+		return LoginResult{}, apperr.New(apperr.CodeInvalid, 400, "no account changes requested")
+	}
+
+	s.mu.RLock()
+	user, ok := s.users[username]
+	s.mu.RUnlock()
+	if !ok || VerifyPassword(user.PasswordHash, currentPassword) != nil {
+		return LoginResult{}, ErrCurrentPassword
+	}
+	updated := user
+	updated.Username = newUsername
+	if newPassword != "" {
+		hash, err := HashPassword(newPassword)
+		if err != nil {
+			return LoginResult{}, apperr.Internal(err)
+		}
+		updated.PasswordHash = hash
+	}
+
+	s.mu.Lock()
+	current, stillExists := s.users[username]
+	if !stillExists || current.Revision != user.Revision || current.PasswordHash != user.PasswordHash {
+		s.mu.Unlock()
+		return LoginResult{}, apperr.New(apperr.CodeConflict, 409, "account was updated elsewhere")
+	}
+	if existing, exists := s.users[newUsername]; exists && existing.Username != username {
+		s.mu.Unlock()
+		return LoginResult{}, ErrUsernameTaken
+	}
+	if persist != nil {
+		if err := persist(username, updated, user.Revision); err != nil {
+			s.mu.Unlock()
+			return LoginResult{}, err
+		}
+	}
+	updated.Revision = user.Revision + 1
+	delete(s.users, username)
+	s.users[newUsername] = updated
+	s.mu.Unlock()
+
+	password := currentPassword
+	if newPassword != "" {
+		password = newPassword
+	}
+	return s.Login(newUsername, password)
 }
 
 func (s *Service) CanAccessChannel(c Claims, channelID string) bool {
