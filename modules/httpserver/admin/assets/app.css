@@ -528,6 +528,7 @@ input:not([type="checkbox"]):disabled, select:disabled { color: var(--muted); ba
   text-align: left;
 }
 .sidebar-toggle:hover { color: var(--fg); background: var(--surface-hover); }
+.sidebar-toggle > .icon:nth-child(2) { display: none; }
 .sidebar-toggle-label { white-space: nowrap; }
 
 @media (min-width: 1081px) {
@@ -535,7 +536,15 @@ input:not([type="checkbox"]):disabled, select:disabled { color: var(--muted); ba
   .is-compact .nav-label,
   .is-compact .sidebar-toggle-label { display: none; }
   .is-compact .instance { display: none; }
-  .is-compact .sidebar-toggle .icon { transform: rotate(180deg); }
+  .is-compact .sidebar-toggle {
+    width: 36px;
+    min-height: 36px;
+    margin-inline-start: 2px;
+    padding: 0;
+    justify-content: center;
+  }
+  .is-compact .sidebar-toggle > .icon:first-child { display: none; }
+  .is-compact .sidebar-toggle > .icon:nth-child(2) { display: block; }
 }
 
 .column { display: flex; flex-direction: column; min-width: 0; }

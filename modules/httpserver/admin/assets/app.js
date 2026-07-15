@@ -105,6 +105,7 @@ function buildShell() {
     "button",
     { class: "sidebar-toggle", type: "button" },
     icon("panel-left-close", 18),
+    icon("panel-left-open", 18),
     h("span", { class: "sidebar-toggle-label", text: i18n.t("shell.collapseNavigation") }),
   );
 
