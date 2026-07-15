@@ -186,12 +186,13 @@ h1, h2, h3, p { margin: 0; }
   min-height: 36px;
   padding: 7px 12px;
   border: 1px solid transparent;
-  border-radius: var(--r-lg);
+  border-radius: 999px;
   font-weight: 500;
   white-space: nowrap;
   cursor: pointer;
   transition: background 130ms var(--ease), border-color 130ms var(--ease), color 130ms var(--ease);
 }
+.button > span { overflow: hidden; text-overflow: ellipsis; }
 .button:active { transform: translateY(1px); }
 .button:disabled { cursor: not-allowed; opacity: .45; transform: none; }
 
@@ -215,6 +216,9 @@ h1, h2, h3, p { margin: 0; }
   place-items: center;
   width: 36px;
   height: 36px;
+  min-width: 36px;
+  min-height: 36px;
+  aspect-ratio: 1;
   flex: 0 0 auto;
   padding: 0;
   border: 1px solid transparent;
@@ -638,13 +642,16 @@ input:not([type="checkbox"]):disabled, select:disabled { color: var(--muted); ba
 .card-danger { border-color: color-mix(in srgb, var(--danger) 26%, var(--border)); }
 .card-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
   min-height: 0;
   padding: 24px 24px 10px;
 }
-.card-title { min-width: 0; }
+.card-title { min-width: 0; flex: 1 1 240px; overflow-wrap: anywhere; }
+.card-action { max-width: 100%; flex: 0 0 auto; margin-inline-start: auto; }
+.card-action > * { max-width: 100%; }
 .card-head h2 { font-size: 16px; font-weight: 500; }
 .card-head p { margin-top: 4px; color: var(--muted); font-size: 14px; }
 .card-body { padding: 14px 24px 24px; }
@@ -733,6 +740,7 @@ input:not([type="checkbox"]):disabled, select:disabled { color: var(--muted); ba
   color: var(--info);
   background: var(--info-bg);
   font-size: 13px;
+  overflow-wrap: anywhere;
 }
 .notice-danger { color: var(--danger); background: var(--danger-bg); }
 .notice-warning { color: var(--warning); background: var(--warning-bg); }
@@ -998,7 +1006,7 @@ dialog::backdrop { background: rgb(0 0 0 / 30%); backdrop-filter: blur(3px); }
 }
 .modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 24px 24px 12px; }
 .modal-head > .icon-button { background: var(--surface-soft); }
-.modal-title { min-width: 0; }
+.modal-title { min-width: 0; flex: 1 1 auto; overflow-wrap: anywhere; }
 .modal-head h2 { font-size: 18px; letter-spacing: -.02em; }
 .modal-head p { margin-top: 4px; color: var(--muted); font-size: 13px; }
 .modal-body { padding: 8px 24px 24px; }
@@ -1007,6 +1015,7 @@ dialog::backdrop { background: rgb(0 0 0 / 30%); backdrop-filter: blur(3px); }
   bottom: 0;
   display: flex;
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 8px;
   padding: 0 24px 24px;
   border-top: 0;
@@ -1075,7 +1084,8 @@ dialog::backdrop { background: rgb(0 0 0 / 30%); backdrop-filter: blur(3px); }
   .sidebar-toggle { display: none; }
   .nav-open { display: inline-grid; }
   .topbar { padding-inline: max(14px, env(safe-area-inset-left)) max(14px, env(safe-area-inset-right)); }
-  .icon-button, .account { min-height: 42px; }
+  .icon-button { width: 42px; height: 42px; min-width: 42px; min-height: 42px; }
+  .account { min-height: 42px; }
   .nav-open { width: 42px; height: 42px; }
   .column > #main-content { padding: 26px 20px 72px; }
   .workspace { grid-template-columns: 1fr; }
@@ -1125,7 +1135,12 @@ dialog::backdrop { background: rgb(0 0 0 / 30%); backdrop-filter: blur(3px); }
   .form-footer { flex-direction: column; align-items: stretch; gap: 10px; padding: 16px; }
   .form-footer-actions .button { flex: 1; min-height: 42px; }
   .card-head, .card-body { padding-inline: 14px; }
+  .card-head { align-items: flex-start; gap: 12px; }
+  .empty-state { min-height: 180px; padding: 32px 20px; overflow-wrap: anywhere; }
   .modal { width: 100vw; max-width: none; max-height: 92vh; margin: auto 0 0; border-radius: var(--r-xl) var(--r-xl) 0 0; }
+  .modal-head { padding: 20px 16px 10px; }
+  .modal-body { padding: 8px 16px 20px; }
+  .modal-actions { padding: 0 16px max(16px, env(safe-area-inset-bottom)); }
   .toast-region { right: 12px; left: 12px; bottom: 12px; width: auto; }
 }
 

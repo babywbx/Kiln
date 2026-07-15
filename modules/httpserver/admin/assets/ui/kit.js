@@ -90,7 +90,7 @@ export function card(options = {}) {
           "div",
           { class: "card-head" },
           h("div", { class: "card-title" }, h("h2", { text: title }), description ? h("p", { text: description }) : null),
-          action || null,
+          action ? h("div", { class: "card-action" }, action) : null,
         )
       : null,
     h("div", { class: `card-body${flush ? " is-flush" : ""}` }, body),
