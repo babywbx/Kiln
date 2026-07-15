@@ -3,24 +3,45 @@ package catalog
 import (
 	"fmt"
 	"net/url"
+	"path"
 	"regexp"
 	"strings"
 	"unicode"
+
+	"github.com/babywbx/kiln/modules/config"
+	"github.com/babywbx/kiln/modules/store"
+)
+
+type ImportAction string
+
+const (
+	ImportCreate ImportAction = "create"
+	ImportUpdate ImportAction = "update"
+	ImportSkip   ImportAction = "skip"
 )
 
 type ParsedM3UEntry struct {
-	Title             string `json:"title"`
-	Group             string `json:"group,omitempty"`
-	LogoURL           string `json:"logo_url,omitempty"`
-	TvgID             string `json:"tvg_id,omitempty"`
-	TvgName           string `json:"tvg_name,omitempty"`
-	URL               string `json:"url"`
-	SuggestedID       string `json:"suggested_id,omitempty"`
-	SuggestedUpstream string `json:"suggested_upstream,omitempty"`
-	SuggestedPath     string `json:"suggested_path,omitempty"`
-	SuggestedIngress  string `json:"suggested_ingress,omitempty"`
-	Skip              bool   `json:"skip,omitempty"`
-	Note              string `json:"note,omitempty"`
+	Title            string       `json:"title"`
+	Group            string       `json:"group,omitempty"`
+	LogoURL          string       `json:"logo_url,omitempty"`
+	TvgID            string       `json:"tvg_id,omitempty"`
+	TvgName          string       `json:"tvg_name,omitempty"`
+	URL              string       `json:"url"`
+	SuggestedID      string       `json:"suggested_id,omitempty"`
+	SuggestedIngress string       `json:"suggested_ingress,omitempty"`
+	Action           ImportAction `json:"action"`
+	Skip             bool         `json:"skip,omitempty"`
+	Note             string       `json:"note,omitempty"`
+}
+
+type ImportResult struct {
+	Preview bool             `json:"preview,omitempty"`
+	Applied bool             `json:"applied,omitempty"`
+	Count   int              `json:"count"`
+	Created int              `json:"created"`
+	Updated int              `json:"updated"`
+	Skipped int              `json:"skipped"`
+	Entries []ParsedM3UEntry `json:"entries,omitempty"`
 }
 
 var (
@@ -43,17 +64,17 @@ func ParseM3U(raw string) []ParsedM3UEntry {
 				attrs := m[2]
 				e.Title = strings.TrimSpace(m[3])
 				for _, am := range attrRe.FindAllStringSubmatch(attrs, -1) {
-					k := strings.ToLower(am[1])
-					v := am[2]
-					switch k {
+					key := strings.ToLower(am[1])
+					value := am[2]
+					switch key {
 					case "group-title":
-						e.Group = v
+						e.Group = value
 					case "tvg-logo":
-						e.LogoURL = v
+						e.LogoURL = value
 					case "tvg-id":
-						e.TvgID = v
+						e.TvgID = value
 					case "tvg-name":
-						e.TvgName = v
+						e.TvgName = value
 					}
 				}
 			} else if i := strings.LastIndex(line, ","); i >= 0 {
@@ -75,58 +96,126 @@ func ParseM3U(raw string) []ParsedM3UEntry {
 	return out
 }
 
-type ImportOptions struct {
-	DefaultUpstream string
-	DefaultIngress  string
-	DefaultKeysFile string
-	PreferHeight    int
+func (s *Service) PreviewM3U(raw string) (ImportResult, error) {
+	result, _, err := s.planM3U(raw)
+	if err != nil {
+		return ImportResult{}, err
+	}
+	result.Preview = true
+	return result, nil
 }
 
-func SuggestImport(entries []ParsedM3UEntry, opt ImportOptions) []ParsedM3UEntry {
-	if opt.DefaultUpstream == "" {
-		opt.DefaultUpstream = "origin"
+func (s *Service) ApplyM3U(raw string, revisions map[string]int64) (ImportResult, error) {
+	result, pending, err := s.planM3U(raw)
+	if err != nil {
+		return ImportResult{}, err
 	}
-	if opt.DefaultIngress == "" {
-		opt.DefaultIngress = "hls"
+	if len(pending) > 0 {
+		if err := s.UpsertBatchIfRevisions(pending, revisions); err != nil {
+			return ImportResult{}, err
+		}
 	}
-	out := make([]ParsedM3UEntry, 0, len(entries))
-	used := map[string]int{}
-	for _, e := range entries {
-		e.SuggestedUpstream = opt.DefaultUpstream
-		e.SuggestedIngress = opt.DefaultIngress
-		path, ingress, note := mapStreamURL(e.URL)
-		if path != "" {
-			e.SuggestedPath = path
+	result.Applied = true
+	return result, nil
+}
+
+func (s *Service) planM3U(raw string) (ImportResult, []config.Channel, error) {
+	if strings.TrimSpace(raw) == "" {
+		return ImportResult{}, nil, fmt.Errorf("m3u content required")
+	}
+	existingChannels, err := s.List(true)
+	if err != nil {
+		return ImportResult{}, nil, err
+	}
+	existing := make(map[string]config.Channel, len(existingChannels))
+	for _, channel := range existingChannels {
+		existing[channel.ID] = channel
+	}
+
+	parsed := ParseM3U(raw)
+	result := ImportResult{Count: len(parsed), Entries: make([]ParsedM3UEntry, 0, len(parsed))}
+	pending := make([]config.Channel, 0, len(parsed))
+	used := make(map[string]int, len(parsed))
+	for _, entry := range parsed {
+		entry.URL = strings.TrimSpace(entry.URL)
+		parsedURL, _ := url.Parse(entry.URL)
+		pathHint := ""
+		if parsedURL != nil {
+			pathHint = parsedURL.Path
 		}
-		if ingress != "" {
-			e.SuggestedIngress = ingress
+		entry.SuggestedID = uniqueImportID(slugID(entry.Title, entry.TvgID, pathHint), used)
+		entry.SuggestedIngress = inferImportIngress(parsedURL)
+
+		if err := config.ValidateSourceURL(entry.URL); err != nil {
+			entry.Skip = true
+			entry.Action = ImportSkip
+			entry.Note = joinNote(entry.Note, "invalid source URL: "+err.Error())
+			result.Skipped++
+			result.Entries = append(result.Entries, entry)
+			continue
 		}
-		if note != "" {
-			e.Note = note
-		}
-		if e.SuggestedPath == "" {
-			if u, err := url.Parse(e.URL); err == nil && u.Path != "" && u.Path != "/" {
-				e.SuggestedPath = u.Path
-				e.Note = joinNote(e.Note, "used URL path; verify upstream")
-			} else {
-				e.Skip = true
-				e.Note = joinNote(e.Note, "could not map path")
-			}
-		}
-		if e.SuggestedIngress == "dash" && opt.DefaultKeysFile != "" {
-			e.Note = joinNote(e.Note, "dash needs keys_file")
-		}
-		id := slugID(e.Title, e.TvgID, e.SuggestedPath)
-		if n, ok := used[id]; ok {
-			used[id] = n + 1
-			id = fmt.Sprintf("%s-%d", id, n+1)
+
+		channel, exists := existing[entry.SuggestedID]
+		if !exists {
+			channel = config.Channel{ID: entry.SuggestedID, OnDemand: true, IdleTimeoutSec: 90}
+			entry.Action = ImportCreate
 		} else {
-			used[id] = 1
+			entry.Action = ImportUpdate
 		}
-		e.SuggestedID = id
-		out = append(out, e)
+		if entry.Title != "" {
+			channel.Title = entry.Title
+		}
+		if entry.Group != "" {
+			channel.Group = entry.Group
+		}
+		if entry.LogoURL != "" {
+			channel.LogoURL = entry.LogoURL
+		}
+		if entry.TvgID != "" {
+			channel.EPGID = entry.TvgID
+		}
+		if entry.TvgName != "" {
+			channel.EPGName = entry.TvgName
+		}
+		channel.SourceURL = entry.URL
+		channel.Upstream = ""
+		channel.Path = ""
+		channel.Ingress = entry.SuggestedIngress
+		channel = normalizeChannel(channel)
+		if err := store.ValidateChannel(channel, s.cfg.Upstreams); err != nil {
+			entry.Skip = true
+			entry.Action = ImportSkip
+			entry.Note = joinNote(entry.Note, err.Error())
+			result.Skipped++
+			result.Entries = append(result.Entries, entry)
+			continue
+		}
+
+		if entry.Action == ImportCreate {
+			result.Created++
+		} else {
+			result.Updated++
+		}
+		pending = append(pending, channel)
+		result.Entries = append(result.Entries, entry)
 	}
-	return out
+	return result, pending, nil
+}
+
+func inferImportIngress(parsedURL *url.URL) string {
+	if parsedURL != nil && strings.EqualFold(path.Ext(parsedURL.Path), ".mpd") {
+		return "dash"
+	}
+	return "hls"
+}
+
+func uniqueImportID(base string, used map[string]int) string {
+	count := used[base] + 1
+	used[base] = count
+	if count == 1 {
+		return base
+	}
+	return fmt.Sprintf("%s-%d", base, count)
 }
 
 func joinNote(a, b string) string {
@@ -141,49 +230,6 @@ func joinNote(a, b string) string {
 	return a + "; " + b
 }
 
-func mapStreamURL(raw string) (path, ingress, note string) {
-	u, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil {
-		return "", "", ""
-	}
-	p := u.Path
-	p = strings.TrimSuffix(p, "/master.m3u8")
-	p = strings.TrimSuffix(p, "/index.m3u8")
-	p = strings.TrimSuffix(p, ".m3u8")
-
-	if strings.HasPrefix(p, "/stream/") {
-		rest := strings.TrimPrefix(p, "/stream/")
-		parts := strings.Split(rest, "/")
-		if len(parts) >= 2 {
-			provider := parts[0]
-			name := parts[1]
-			path = "/" + provider + "/" + name
-			switch strings.ToLower(provider) {
-			case "live", "tv":
-				ingress = "dash"
-				note = "mapped /stream path"
-			case "vod", "vd":
-				ingress = "hls"
-				note = "mapped /stream path"
-			default:
-				ingress = "hls"
-				note = "mapped /stream path"
-			}
-			return path, ingress, note
-		}
-	}
-	if strings.HasPrefix(p, "/live/") || strings.HasPrefix(p, "/tv/") {
-		return p, "dash", "dash path"
-	}
-	if strings.HasPrefix(p, "/vod/") {
-		return p, "hls", "hls path"
-	}
-	if p != "" && p != "/" {
-		return p, "", ""
-	}
-	return "", "", ""
-}
-
 func slugID(title, tvgID, pathHint string) string {
 	base := tvgID
 	if base == "" {
@@ -193,25 +239,26 @@ func slugID(title, tvgID, pathHint string) string {
 		base = pathHint
 	}
 	base = strings.ToLower(strings.TrimSpace(base))
-	var b strings.Builder
+	var builder strings.Builder
 	lastDash := false
-	for _, r := range base {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			b.WriteRune(r)
+	for _, char := range base {
+		if unicode.IsLetter(char) || unicode.IsDigit(char) {
+			builder.WriteRune(char)
 			lastDash = false
 			continue
 		}
-		if !lastDash && b.Len() > 0 {
-			b.WriteByte('-')
+		if !lastDash && builder.Len() > 0 {
+			builder.WriteByte('-')
 			lastDash = true
 		}
 	}
-	s := strings.Trim(b.String(), "-")
-	if s == "" {
-		s = "ch"
+	slug := strings.Trim(builder.String(), "-")
+	if slug == "" {
+		slug = "ch"
 	}
-	if len(s) > 48 {
-		s = s[:48]
+	runes := []rune(slug)
+	if len(runes) > 48 {
+		slug = string(runes[:48])
 	}
-	return s
+	return slug
 }

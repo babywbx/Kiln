@@ -2,7 +2,7 @@ import { frag, h, icon } from "/admin/assets/core/dom.js";
 import { endpoints } from "/admin/assets/core/api.js";
 import { invalidateCatalog, loadCatalog, refreshStatus, sessionFor, sourceURL, store } from "/admin/assets/core/store.js";
 import { vt } from "/admin/assets/core/view-i18n.js";
-import { badge, button, card, channelCell, emptyState, field, iconButton, input, linkButton, notice, pageHead, runModeLabel, select, stateBadge } from "/admin/assets/ui/kit.js";
+import { badge, button, card, channelCell, emptyState, field, iconButton, input, linkButton, notice, pageHead, runModeLabel, stateBadge } from "/admin/assets/ui/kit.js";
 import { closeModal, confirmDialog, openModal, toast, toastError } from "/admin/assets/ui/overlay.js";
 import { matchBadge, matchMap } from "/admin/assets/views/epg.js";
 import { previewChannel } from "/admin/assets/views/preview.js";
@@ -224,8 +224,8 @@ export async function renderChannels(ctx) {
 
   return frag(
     pageHead(vt("channels.title"), vt("channels.description"), [
-      button(vt("channels.disableAll"), { iconName: "ban", disabled: !store.channels.length, onClick: () => setAll(ctx, true) }),
       button(vt("channels.enableAll"), { iconName: "power", disabled: !store.channels.length, onClick: () => setAll(ctx, false) }),
+      button(vt("channels.disableAll"), { iconName: "ban", disabled: !store.channels.length, onClick: () => setAll(ctx, true) }),
       button(vt("channels.importM3U"), { iconName: "upload", onClick: () => openImportModal(ctx) }),
       linkButton(vt("channels.add"), "/admin/channels?new=1", { kind: "primary", iconName: "plus" }),
     ]),
@@ -259,29 +259,31 @@ async function setAll(ctx, disabled) {
 }
 
 function openImportModal(ctx) {
-  const upstream = select("default_upstream", [["", vt("import.chooseUpstream")], ...store.upstreams.map((item) => [item.id, `${item.id} · ${item.base_url}`])], "");
   const content = h("textarea", { name: "content", placeholder: vt("import.contentPlaceholder"), rows: 8 });
   const result = h("div", {});
-  let parsed = [];
+  let previewedContent = "";
+  let previewEntries = [];
 
   const applyButton = button(vt("import.apply"), {
     kind: "primary",
     disabled: true,
     onClick: async () => {
+      if (!previewedContent) return;
+      applyButton.disabled = true;
       try {
         const revisions = Object.fromEntries(store.channels.map((channel) => [channel.id, channel.revision]));
         const data = await endpoints.importM3U({
-          entries: parsed,
-          default_upstream: upstream.value,
+          content: previewedContent,
           revisions,
           apply: true,
         });
         closeModal();
         invalidateCatalog();
-        toast(vt("import.done"), vt("import.doneDetail", { created: data.created, skipped: data.skipped }));
+        toast(vt("import.done"), vt("import.doneDetail", { created: data.created, updated: data.updated, skipped: data.skipped }));
         await ctx.reload();
       } catch (error) {
         toastError(error, vt("import.failed"));
+        applyButton.disabled = !previewEntries.some((entry) => entry.action === "create" || entry.action === "update");
       }
     },
   });
@@ -289,14 +291,15 @@ function openImportModal(ctx) {
   const previewButton = button(vt("import.preview"), {
     onClick: async () => {
       try {
-        const data = await endpoints.importM3U({ content: content.value, default_upstream: upstream.value, apply: false });
-        parsed = data.entries || [];
-        const existing = new Set(store.channels.map((channel) => channel.id));
+        const requestedContent = content.value;
+        const data = await endpoints.importM3U({ content: requestedContent, apply: false });
+        if (content.value !== requestedContent) return;
+        previewedContent = requestedContent;
+        previewEntries = data.entries || [];
         const groups = { create: [], update: [], skip: [] };
-        for (const entry of parsed) {
-          if (entry.skip || !entry.suggested_id) groups.skip.push(entry);
-          else if (existing.has(entry.suggested_id)) groups.update.push(entry);
-          else groups.create.push(entry);
+        for (const entry of previewEntries) {
+          const action = entry.action === "create" || entry.action === "update" ? entry.action : "skip";
+          groups[action].push(entry);
         }
         result.replaceChildren(
           h(
@@ -306,9 +309,9 @@ function openImportModal(ctx) {
             h(
               "div",
               { class: "badge-row" },
-              badge(vt("import.created", { count: groups.create.length }), "success"),
-              badge(vt("import.updated", { count: groups.update.length }), "warning"),
-              badge(vt("import.skipped", { count: groups.skip.length }), groups.skip.length ? "danger" : "neutral"),
+              badge(vt("import.created", { count: data.created || 0 }), "success"),
+              badge(vt("import.updated", { count: data.updated || 0 }), "warning"),
+              badge(vt("import.skipped", { count: data.skipped || 0 }), data.skipped ? "danger" : "neutral"),
             ),
             h(
               "div",
@@ -317,28 +320,44 @@ function openImportModal(ctx) {
                 h(
                   "div",
                   { class: "list-item" },
-                  h("span", {}, h("strong", { text: entry.title || entry.suggested_id || vt("import.unrecognized") }), h("small", { class: "mono", text: entry.suggested_path || entry.note || "—" })),
-                  entry.skip
-                    ? badge(vt("import.skip"), "danger")
-                    : existing.has(entry.suggested_id)
+                  h(
+                    "span",
+                    {},
+                    h("strong", { text: entry.title || entry.suggested_id || vt("import.unrecognized") }),
+                    h("small", { class: "mono", text: entry.url || "—", title: entry.url || "" }),
+                    entry.note ? h("small", { text: entry.note }) : null,
+                  ),
+                  entry.action === "create"
+                    ? badge(vt("import.create"), "success")
+                    : entry.action === "update"
                       ? badge(vt("import.update"), "warning")
-                      : badge(vt("import.create"), "success"),
+                      : badge(vt("import.skip"), "danger"),
                 ),
               ),
             ),
           ),
         );
-        applyButton.disabled = !parsed.length;
+        applyButton.disabled = !previewEntries.some((entry) => entry.action === "create" || entry.action === "update");
       } catch (error) {
+        previewedContent = "";
+        previewEntries = [];
+        applyButton.disabled = true;
         toastError(error, vt("import.parseFailed"));
       }
     },
   });
 
+  content.addEventListener("input", () => {
+    previewedContent = "";
+    previewEntries = [];
+    result.replaceChildren();
+    applyButton.disabled = true;
+  });
+
   openModal({
     title: vt("import.title"),
     description: vt("import.description"),
-    body: h("div", { class: "stack" }, field(vt("import.defaultUpstream"), upstream), field(vt("import.content"), content), result),
+    body: h("div", { class: "stack" }, field(vt("import.content"), content, vt("import.contentHint")), result),
     actions: [button(vt("common.cancel"), { onClick: closeModal }), previewButton, applyButton],
   });
 }

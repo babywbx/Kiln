@@ -559,15 +559,9 @@ func (s *Server) handleAdminReorderChannels(w http.ResponseWriter, r *http.Reque
 }
 
 type importM3UReq struct {
-	Content         string                   `json:"content"`
-	DefaultUpstream string                   `json:"default_upstream"`
-	DefaultIngress  string                   `json:"default_ingress"`
-	DefaultKeysFile string                   `json:"default_keys_file"`
-	DefaultKeys     string                   `json:"default_keys"`
-	PreferHeight    int                      `json:"prefer_height"`
-	Apply           bool                     `json:"apply"`
-	Entries         []catalog.ParsedM3UEntry `json:"entries"`
-	Revisions       map[string]int64         `json:"revisions"`
+	Content   string           `json:"content"`
+	Apply     bool             `json:"apply"`
+	Revisions map[string]int64 `json:"revisions"`
 }
 
 func (s *Server) handleAdminImportM3U(w http.ResponseWriter, r *http.Request) {
@@ -580,106 +574,23 @@ func (s *Server) handleAdminImportM3U(w http.ResponseWriter, r *http.Request) {
 		writeAppErr(w, apperr.New(apperr.CodeInvalid, 400, "invalid json"))
 		return
 	}
-	entries := req.Entries
-	if len(entries) == 0 {
-		if strings.TrimSpace(req.Content) == "" {
-			writeAppErr(w, apperr.New(apperr.CodeInvalid, 400, "content or entries required"))
-			return
-		}
-		parsed := catalog.ParseM3U(req.Content)
-		entries = catalog.SuggestImport(parsed, catalog.ImportOptions{
-			DefaultUpstream: req.DefaultUpstream,
-			DefaultIngress:  req.DefaultIngress,
-			DefaultKeysFile: req.DefaultKeysFile,
-			PreferHeight:    req.PreferHeight,
-		})
+	var (
+		result catalog.ImportResult
+		err    error
+	)
+	if req.Apply {
+		result, err = s.deps.Catalog.ApplyM3U(req.Content, req.Revisions)
+	} else {
+		result, err = s.deps.Catalog.PreviewM3U(req.Content)
 	}
-	if !req.Apply {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"preview": true,
-			"count":   len(entries),
-			"entries": entries,
-		})
-		return
-	}
-	ups := s.deps.Catalog.Upstreams()
-	if len(ups) == 0 {
-		writeAppErr(w, apperr.New(apperr.CodeInvalid, 400, "no upstreams configured"))
-		return
-	}
-	defUp := req.DefaultUpstream
-	if defUp == "" {
-		defUp = ups[0].ID
-	}
-	created := 0
-	skipped := 0
-	pending := make([]config.Channel, 0, len(entries))
-	for _, e := range entries {
-		if e.Skip {
-			skipped++
-			continue
-		}
-		id := e.SuggestedID
-		if id == "" {
-			skipped++
-			continue
-		}
-		up := e.SuggestedUpstream
-		if up == "" {
-			up = defUp
-		}
-		ing := e.SuggestedIngress
-		if ing == "" {
-			ing = req.DefaultIngress
-		}
-		if ing == "" {
-			ing = "hls"
-		}
-		ch, exists := s.deps.Catalog.GetAny(id)
-		if !exists {
-			ch = config.Channel{
-				ID: id, OnDemand: true, IdleTimeoutSec: 90,
-				KeysFile: req.DefaultKeysFile, Keys: req.DefaultKeys, PreferHeight: req.PreferHeight,
-			}
-		}
-		if e.Title != "" {
-			ch.Title = e.Title
-		}
-		if e.Group != "" {
-			ch.Group = e.Group
-		}
-		if e.LogoURL != "" {
-			ch.LogoURL = e.LogoURL
-		}
-		if e.TvgID != "" {
-			ch.EPGID = e.TvgID
-		}
-		if e.TvgName != "" {
-			ch.EPGName = e.TvgName
-		}
-		ch.Upstream = up
-		ch.Path = e.SuggestedPath
-		ch.Ingress = ing
-		if ch.Ingress == "dash" && ch.KeysFile == "" && ch.Keys == "" {
-			skipped++
-			continue
-		}
-		pending = append(pending, ch)
-		created++
-	}
-	if err := s.deps.Catalog.UpsertBatchIfRevisions(pending, req.Revisions); errors.Is(err, store.ErrRevisionConflict) {
+	if errors.Is(err, store.ErrRevisionConflict) {
 		writeAppErr(w, apperr.New(apperr.CodeConflict, http.StatusConflict, "one or more channels were updated since the import preview"))
 		return
 	} else if err != nil {
 		writeAppErr(w, apperr.New(apperr.CodeInvalid, 400, err.Error()))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"applied": true,
-		"created": created,
-		"skipped": skipped,
-		"total":   len(entries),
-	})
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) handleAdminEgress(w http.ResponseWriter, r *http.Request) {

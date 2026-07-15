@@ -590,12 +590,19 @@ func TestHLSPlayEndToEnd(t *testing.T) {
 	if stale.StatusCode != http.StatusConflict {
 		t.Fatalf("stale revision status %d %s", stale.StatusCode, stale.Body)
 	}
+	importContent := "#EXTM3U\n#EXTINF:-1 tvg-id=\"demo\",Imported Demo\n" + origin.URL + "/live/index.m3u8?token=imported\n"
+	importPreview := adminJSON(t, http.MethodPost, ts.URL+"/v1/admin/import/m3u", login.Token, map[string]any{
+		"content": importContent, "apply": false,
+	})
+	if importPreview.StatusCode != http.StatusOK {
+		t.Fatalf("m3u preview %d %s", importPreview.StatusCode, importPreview.Body)
+	}
+	var importPreviewBody catalog.ImportResult
+	if err := json.Unmarshal(importPreview.Body, &importPreviewBody); err != nil || importPreviewBody.Updated != 1 || len(importPreviewBody.Entries) != 1 || importPreviewBody.Entries[0].Action != catalog.ImportUpdate {
+		t.Fatalf("m3u preview = %#v, err=%v", importPreviewBody, err)
+	}
 	imported := adminJSON(t, http.MethodPost, ts.URL+"/v1/admin/import/m3u", login.Token, map[string]any{
-		"apply": true, "revisions": map[string]int64{"demo": detailBody.Revision + 1},
-		"entries": []map[string]any{{
-			"title": "Imported Demo", "suggested_id": "demo", "suggested_upstream": "origin",
-			"suggested_path": "/live/index.m3u8", "suggested_ingress": "hls",
-		}},
+		"content": importContent, "apply": true, "revisions": map[string]int64{"demo": detailBody.Revision + 1},
 	})
 	if imported.StatusCode != http.StatusOK {
 		t.Fatalf("m3u import %d %s", imported.StatusCode, imported.Body)
@@ -607,12 +614,11 @@ func TestHLSPlayEndToEnd(t *testing.T) {
 	if importedRow.Channel.MaxViewers != 12 || importedRow.Channel.IdleTimeoutSec != 123 || importedRow.Channel.Headers["Authorization"] != "Bearer retained-secret" {
 		t.Fatalf("m3u import erased advanced settings: %#v", importedRow.Channel)
 	}
+	if importedRow.Channel.SourceURL != origin.URL+"/live/index.m3u8?token=imported" || importedRow.Channel.Upstream != "" || importedRow.Channel.Path != "" {
+		t.Fatalf("m3u import did not preserve the direct source URL: %#v", importedRow.Channel)
+	}
 	staleImport := adminJSON(t, http.MethodPost, ts.URL+"/v1/admin/import/m3u", login.Token, map[string]any{
-		"apply": true, "revisions": map[string]int64{"demo": detailBody.Revision + 1},
-		"entries": []map[string]any{{
-			"title": "Stale Import", "suggested_id": "demo", "suggested_upstream": "origin",
-			"suggested_path": "/live/index.m3u8", "suggested_ingress": "hls",
-		}},
+		"content": importContent, "apply": true, "revisions": map[string]int64{"demo": detailBody.Revision + 1},
 	})
 	if staleImport.StatusCode != http.StatusConflict {
 		t.Fatalf("stale import %d %s", staleImport.StatusCode, staleImport.Body)
