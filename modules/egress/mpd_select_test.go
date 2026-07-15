@@ -115,6 +115,45 @@ func TestPickStreamsDynamicAndIndex(t *testing.T) {
 	}
 }
 
+func TestExplicitStreamSelectionIsUsedByFilterAndRemoteMapping(t *testing.T) {
+	mpd := `<MPD type="dynamic"><Period><AdaptationSet contentType="video">
+<Representation id="v25" bandwidth="4000" width="1920" height="1080" frameRate="25" codecs="hev1"/>
+<Representation id="v50" bandwidth="7000" width="1920" height="1080" frameRate="50" codecs="hev1"/>
+</AdaptationSet><AdaptationSet contentType="audio">
+<Representation id="a-en" bandwidth="128000" codecs="mp4a.40.2" audioSamplingRate="48000"/>
+<Representation id="a-yue" bandwidth="192000" codecs="mp4a.40.2" audioSamplingRate="48000"/>
+</AdaptationSet></Period></MPD>`
+	out, _, err := FilterMPDForPackWithSelection(mpd, "https://example.com/live.mpd", 0, "v50", "a-yue")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(out, `id="v50"`) || !contains(out, `id="a-yue"`) || contains(out, `id="v25"`) || contains(out, `id="a-en"`) {
+		t.Fatalf("unexpected filtered MPD: %s", out)
+	}
+	pick, err := PickStreamsWithSelection(mpd, 0, "v50", "a-yue")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pick.VideoIndex != 1 || pick.AudioIndex != 1 {
+		t.Fatalf("pick = %+v", pick)
+	}
+	if _, err := PickStreamsWithSelection(mpd, 0, "missing", "a-yue"); err == nil {
+		t.Fatal("expected missing explicit representation to fail")
+	}
+}
+
+func TestExplicitStreamSelectionRejectsDuplicateRepresentationIDs(t *testing.T) {
+	mpd := `<MPD><Period><AdaptationSet contentType="video"><Representation id="duplicate" width="1280" height="720" codecs="avc1"/></AdaptationSet>
+<AdaptationSet contentType="video"><Representation id="duplicate" width="1920" height="1080" codecs="avc1"/></AdaptationSet>
+<AdaptationSet contentType="audio"><Representation id="audio" codecs="mp4a" audioSamplingRate="48000"/></AdaptationSet></Period></MPD>`
+	if _, err := PickStreamsWithSelection(mpd, 0, "duplicate", "audio"); err == nil {
+		t.Fatal("expected duplicate representation IDs to be rejected")
+	}
+	if _, _, err := FilterMPDForPackWithSelection(mpd, "https://example.com/live.mpd", 0, "duplicate", "audio"); err == nil {
+		t.Fatal("expected the local filtered MPD to reject the same ambiguity")
+	}
+}
+
 func TestReadyPlaylistRequiresPlayableSegment(t *testing.T) {
 	dir := t.TempDir()
 	index := filepath.Join(dir, "index.m3u8")

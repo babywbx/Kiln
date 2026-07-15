@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -16,8 +17,10 @@ import (
 	"github.com/babywbx/kiln/modules/apperr"
 	"github.com/babywbx/kiln/modules/catalog"
 	"github.com/babywbx/kiln/modules/config"
+	"github.com/babywbx/kiln/modules/packager"
 	"github.com/babywbx/kiln/modules/proxyegress"
 	"github.com/babywbx/kiln/modules/pull"
+	"github.com/babywbx/kiln/modules/security"
 	"github.com/babywbx/kiln/modules/store"
 	"github.com/babywbx/kiln/modules/version"
 )
@@ -84,10 +87,50 @@ func (s *Server) handleAdminGetChannel(w http.ResponseWriter, r *http.Request) {
 	ch.Keys = config.MaskKeys(ch.Keys)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"channel":              ch,
+		"egress_binding":       s.channelEgressBinding(ch.ID),
 		"effective_user_agent": version.UserAgent(ch.UserAgent),
 		"revision":             revision,
 		"updated_at":           updatedAt,
 	})
+}
+
+type channelEgressRequest struct {
+	Mode      string `json:"mode"`
+	ProfileID string `json:"profile_id,omitempty"`
+	NewProxy  *struct {
+		Name string `json:"name"`
+		URL  string `json:"url"`
+	} `json:"new_proxy,omitempty"`
+}
+
+type channelUpsertRequest struct {
+	config.Channel
+	Egress *channelEgressRequest `json:"egress,omitempty"`
+}
+
+func (s *Server) channelEgressBinding(channelID string) map[string]string {
+	result := map[string]string{"mode": "auto"}
+	if s.deps.Store == nil {
+		return result
+	}
+	rules, err := s.deps.Store.ListProxyRules()
+	if err != nil {
+		return result
+	}
+	managedID := store.ManagedChannelRuleID(channelID)
+	for _, rule := range rules {
+		if rule.ID != managedID || rule.Disabled {
+			continue
+		}
+		if rule.ProxyID == proxyegress.Direct {
+			result["mode"] = "direct"
+		} else {
+			result["mode"] = "profile"
+			result["profile_id"] = rule.ProxyID
+		}
+		break
+	}
+	return result
 }
 
 func sensitiveHeader(name string) bool {
@@ -115,12 +158,13 @@ func (s *Server) handleAdminUpsertChannel(w http.ResponseWriter, r *http.Request
 	if !s.requireAdmin(w, r) {
 		return
 	}
-	var ch config.Channel
+	var request channelUpsertRequest
 	dec := json.NewDecoder(io.LimitReader(r.Body, s.deps.Cfg.Security.MaxBodyBytes))
-	if err := dec.Decode(&ch); err != nil {
+	if err := dec.Decode(&request); err != nil {
 		writeAppErr(w, apperr.New(apperr.CodeInvalid, 400, "invalid json"))
 		return
 	}
+	ch := request.Channel
 	if id := r.PathValue("id"); id != "" {
 		ch.ID = id
 		if existing, ok := s.deps.Catalog.GetAny(id); ok {
@@ -145,9 +189,38 @@ func (s *Server) handleAdminUpsertChannel(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
+	if err := config.ValidateEngineSelection(s.deps.Cfg.EngineFor(ch), ch.Selection); err != nil {
+		writeAppErr(w, apperr.New(apperr.CodeInvalid, http.StatusBadRequest, err.Error()))
+		return
+	}
 	expected := expectedRevision(r)
 	var err error
-	if expected > 0 {
+	effectiveProfileID := ""
+	if request.Egress != nil {
+		if s.deps.Store == nil {
+			writeAppErr(w, apperr.New(apperr.CodeInternal, http.StatusInternalServerError, "store unavailable"))
+			return
+		}
+		prepared, prepareErr := s.deps.Catalog.PrepareChannel(ch)
+		if prepareErr != nil {
+			writeAppErr(w, apperr.New(apperr.CodeInvalid, http.StatusBadRequest, prepareErr.Error()))
+			return
+		}
+		binding, bindingErr := s.prepareChannelEgress(prepared, *request.Egress)
+		if bindingErr != nil {
+			writeAppErr(w, apperr.New(apperr.CodeInvalid, http.StatusBadRequest, bindingErr.Error()))
+			return
+		}
+		effectiveProfileID = binding.ProfileID
+		if binding.NewProfile != nil {
+			effectiveProfileID = binding.NewProfile.ID
+		}
+		err = s.deps.Store.UpsertChannelWithEgress(prepared, expected, binding)
+		if err == nil {
+			err = s.reloadEgressFromStore()
+		}
+		ch = prepared
+	} else if expected > 0 {
 		err = s.deps.Catalog.UpsertIfRevision(ch, expected)
 	} else {
 		err = s.deps.Catalog.Upsert(ch)
@@ -162,8 +235,79 @@ func (s *Server) handleAdminUpsertChannel(w http.ResponseWriter, r *http.Request
 	}
 	if ch.Disabled {
 		_ = s.deps.Sessions.StopChannel(ch.ID)
+	} else {
+		s.deps.Sessions.ReloadChannel(ch.ID)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": ch.ID})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": ch.ID, "egress_profile_id": effectiveProfileID})
+}
+
+func (s *Server) prepareChannelEgress(ch config.Channel, request channelEgressRequest) (store.ChannelEgressBinding, error) {
+	mode := strings.ToLower(strings.TrimSpace(request.Mode))
+	if mode == "" {
+		mode = "auto"
+	}
+	binding := store.ChannelEgressBinding{Mode: mode, ProfileID: strings.TrimSpace(request.ProfileID)}
+	if mode != "auto" && mode != "direct" && mode != "profile" {
+		return store.ChannelEgressBinding{}, errors.New("network egress must be automatic, direct, or a proxy profile")
+	}
+	var profileURL string
+	if request.NewProxy != nil {
+		if mode != "profile" || binding.ProfileID != "" {
+			return store.ChannelEgressBinding{}, errors.New("quick proxy cannot be combined with an existing profile")
+		}
+		profile := store.ProxyProfileRow{
+			ID: "quick-" + randomID(), Name: strings.TrimSpace(request.NewProxy.Name),
+			URL: strings.TrimSpace(request.NewProxy.URL),
+		}
+		if profile.Name == "" {
+			if parsed, err := url.Parse(profile.URL); err == nil {
+				profile.Name = parsed.Hostname()
+			}
+		}
+		if err := validateProxyProfile(profile); err != nil {
+			return store.ChannelEgressBinding{}, err
+		}
+		profileURL = profile.URL
+		binding.NewProfile = &profile
+		binding.ProfileID = profile.ID
+	} else if mode == "profile" {
+		if binding.ProfileID == "" {
+			return store.ChannelEgressBinding{}, errors.New("select a proxy profile")
+		}
+		profiles, err := s.deps.Store.ListProxyProfiles()
+		if err != nil {
+			return store.ChannelEgressBinding{}, err
+		}
+		for _, profile := range profiles {
+			if profile.ID == binding.ProfileID && !profile.Disabled {
+				profileURL = profile.URL
+				break
+			}
+		}
+		if profileURL == "" {
+			return store.ChannelEgressBinding{}, fmt.Errorf("proxy profile %q is unavailable", binding.ProfileID)
+		}
+	}
+	if ch.Ingress == "dash" && s.deps.Cfg.EngineFor(ch) == config.EngineFFmpeg && strings.HasPrefix(strings.ToLower(profileURL), "socks") {
+		return store.ChannelEgressBinding{}, errors.New("FFmpeg cannot use a SOCKS proxy; choose HTTP, direct, or the native DASH engine")
+	}
+	return binding, nil
+}
+
+func validateProxyProfile(profile store.ProxyProfileRow) error {
+	if profile.ID == "" || profile.URL == "" {
+		return errors.New("proxy address required")
+	}
+	parsed, err := url.Parse(profile.URL)
+	if err != nil || parsed.Host == "" {
+		return errors.New("proxy address is invalid")
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https", "socks5", "socks5h":
+		return nil
+	default:
+		return errors.New("proxy address must use http, https, socks5, or socks5h")
+	}
 }
 
 func expectedRevision(r *http.Request) int64 {
@@ -230,7 +374,12 @@ func (s *Server) handleAdminDeleteChannel(w http.ResponseWriter, r *http.Request
 	}
 	expected := expectedRevision(r)
 	var err error
-	if expected > 0 {
+	if s.deps.Store != nil {
+		err = s.deps.Store.DeleteChannelWithEgress(id, expected)
+		if err == nil {
+			err = s.reloadEgressFromStore()
+		}
+	} else if expected > 0 {
 		err = s.deps.Catalog.DeleteIfRevision(id, expected)
 	} else {
 		err = s.deps.Catalog.Delete(id)
@@ -498,36 +647,174 @@ func (s *Server) handleAdminProbeChannel(w http.ResponseWriter, r *http.Request)
 		writeAppErr(w, apperr.ErrNotFound)
 		return
 	}
+	if ch.Ingress != "dash" {
+		src, err := s.deps.Catalog.SourceURL(ch)
+		if err != nil {
+			writeAppErr(w, err)
+			return
+		}
+		start := time.Now()
+		res, err := s.deps.Sessions.Pull().Get(r.Context(), pull.Request{
+			URL: src, ChannelID: ch.ID, UserAgent: version.UserAgent(ch.UserAgent), Headers: s.deps.Sessions.HeadersFor(ch),
+		})
+		if err != nil {
+			writeAppErr(w, apperr.Wrap(apperr.CodeUpstream, http.StatusBadGateway, "source check failed", err))
+			return
+		}
+		defer res.Body.Close()
+		if res.StatusCode < http.StatusOK || res.StatusCode >= http.StatusBadRequest {
+			writeAppErr(w, apperr.New(apperr.CodeUpstream, http.StatusBadGateway, fmt.Sprintf("upstream returned HTTP %d", res.StatusCode)))
+			return
+		}
+		_, _ = io.CopyN(io.Discard, res.Body, 1024)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok": true, "status": res.StatusCode, "content_type": res.ContentType,
+			"final_url": publicURL(res.FinalURL, false), "dur_ms": time.Since(start).Milliseconds(),
+		})
+		return
+	}
+	s.probeSource(w, r, ch, s.deps.Sessions.Pull())
+}
+
+func (s *Server) handleAdminProbeSource(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	var request channelUpsertRequest
+	dec := json.NewDecoder(io.LimitReader(r.Body, s.deps.Cfg.Security.MaxBodyBytes))
+	if err := dec.Decode(&request); err != nil {
+		writeAppErr(w, apperr.New(apperr.CodeInvalid, http.StatusBadRequest, "invalid source probe request"))
+		return
+	}
+	ch := request.Channel
+	if ch.ID != "" {
+		if existing, ok := s.deps.Catalog.GetAny(ch.ID); ok {
+			if ch.Headers == nil {
+				ch.Headers = map[string]string{}
+			}
+			for key, value := range existing.Headers {
+				if sensitiveHeader(key) && strings.TrimSpace(ch.Headers[key]) == "" {
+					ch.Headers[key] = value
+				}
+			}
+			if config.KeysUnchanged(ch.Keys) {
+				ch.Keys = existing.Keys
+			}
+		}
+	}
+	testPull, err := s.pullForChannelEgressProbe(request.Egress)
+	if err != nil {
+		writeAppErr(w, apperr.New(apperr.CodeInvalid, http.StatusBadRequest, err.Error()))
+		return
+	}
+	s.probeSource(w, r, ch, testPull)
+}
+
+func (s *Server) pullForChannelEgressProbe(request *channelEgressRequest) (*pull.Client, error) {
+	if request == nil {
+		return s.deps.Sessions.Pull(), nil
+	}
+	mode := strings.ToLower(strings.TrimSpace(request.Mode))
+	if mode == "" || mode == "auto" {
+		return s.deps.Sessions.Pull(), nil
+	}
+	cfg := proxyegress.Config{Default: proxyegress.Direct, PlaylistPolicy: proxyegress.PolicyRewrite}
+	switch mode {
+	case "direct":
+	case "profile":
+		if request.NewProxy != nil {
+			profile := store.ProxyProfileRow{ID: "inline-probe", URL: strings.TrimSpace(request.NewProxy.URL)}
+			if err := validateProxyProfile(profile); err != nil {
+				return nil, err
+			}
+			cfg.Default = profile.ID
+			cfg.Profiles = []proxyegress.Profile{{ID: profile.ID, URL: profile.URL}}
+		} else {
+			profileID := strings.TrimSpace(request.ProfileID)
+			if profileID == "" || s.deps.Egress == nil {
+				return nil, errors.New("proxy profile is unavailable")
+			}
+			current := s.deps.Egress.Config()
+			current.Default = profileID
+			current.Rules = nil
+			cfg = current
+		}
+	default:
+		return nil, errors.New("network egress mode invalid")
+	}
+	router, err := proxyegress.NewRouter(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return pull.New(pull.Options{
+		Observe: s.deps.Observe, Allowed: s.deps.Allowed, MaxPlaylist: s.deps.Cfg.Security.MaxPlaylistBytes,
+		Router: router, Timeout: 15 * time.Second,
+	}), nil
+}
+
+func (s *Server) probeSource(w http.ResponseWriter, r *http.Request, ch config.Channel, testPull *pull.Client) {
+	if err := config.ValidateEngineSelection(s.deps.Cfg.EngineFor(ch), ch.Selection); err != nil {
+		writeAppErr(w, apperr.New(apperr.CodeInvalid, http.StatusBadRequest, err.Error()))
+		return
+	}
 	src, err := s.deps.Catalog.SourceURL(ch)
 	if err != nil {
 		writeAppErr(w, err)
 		return
 	}
-	headers := s.deps.Sessions.HeadersFor(ch)
-	start := time.Now()
-	res, err := s.deps.Sessions.Pull().Get(r.Context(), pull.Request{
-		URL:       src,
-		UserAgent: version.UserAgent(ch.UserAgent),
-		Headers:   headers,
-	})
-	if err != nil {
+	if ch.Ingress != "dash" {
+		start := time.Now()
+		res, err := testPull.Get(r.Context(), pull.Request{
+			URL: src, ChannelID: ch.ID, UserAgent: version.UserAgent(ch.UserAgent), Headers: s.deps.Sessions.HeadersFor(ch),
+		})
+		if err != nil {
+			writeAppErr(w, apperr.Wrap(apperr.CodeUpstream, http.StatusBadGateway, "source check failed", err))
+			return
+		}
+		defer res.Body.Close()
+		if res.StatusCode < http.StatusOK || res.StatusCode >= http.StatusBadRequest {
+			writeAppErr(w, apperr.New(apperr.CodeUpstream, http.StatusBadGateway, fmt.Sprintf("upstream returned HTTP %d", res.StatusCode)))
+			return
+		}
+		_, _ = io.CopyN(io.Discard, res.Body, 1024)
 		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":     false,
-			"url":    src,
-			"error":  err.Error(),
+			"ok": true, "status": res.StatusCode, "content_type": res.ContentType,
+			"final_url": publicURL(res.FinalURL, false), "proxy_id": res.ProxyID,
 			"dur_ms": time.Since(start).Milliseconds(),
 		})
 		return
 	}
-	defer res.Body.Close()
-	_, _ = io.CopyN(io.Discard, res.Body, 1024)
+	start := time.Now()
+	var keys []config.KeyPair
+	if strings.TrimSpace(ch.Keys) != "" {
+		keys, err = config.ParseKeys(ch.Keys)
+		if err != nil {
+			writeAppErr(w, apperr.Wrap(apperr.CodeInvalid, http.StatusBadRequest, "invalid keys", err))
+			return
+		}
+	}
+	fetcher := &packager.PullFetcher{
+		Client:    testPull,
+		ChannelID: ch.ID,
+		UserAgent: ch.UserAgent,
+		Headers:   s.deps.Sessions.HeadersFor(ch),
+		MaxBytes:  s.deps.Cfg.Packager.MaxSegmentBytes,
+	}
+	inspection, err := packager.InspectManifest(r.Context(), fetcher, src, ch.PreferHeight, ch.Selection, keys)
+	if err != nil {
+		writeAppErr(w, apperr.Wrap(apperr.CodeUpstream, http.StatusBadGateway, "source inspection failed", err))
+		return
+	}
+	if s.deps.Cfg.EngineFor(ch) == config.EngineFFmpeg {
+		inspection.NativeSupported = false
+		inspection.SuggestedEngine = packager.EngineFFmpegCopy
+		inspection.CompatibilityReason = "ffmpeg compatibility engine is forced by channel settings"
+	}
+	inspection.FinalURL = publicURL(inspection.FinalURL, false)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":           true,
-		"url":          src,
-		"status":       res.StatusCode,
-		"content_type": res.ContentType,
-		"final_url":    res.FinalURL,
-		"dur_ms":       time.Since(start).Milliseconds(),
+		"ok":         true,
+		"dur_ms":     time.Since(start).Milliseconds(),
+		"inspection": inspection,
 	})
 }
 
@@ -591,6 +878,45 @@ func (s *Server) handleAdminImportM3U(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+// handleAdminExportM3U creates a playback-only distribution credential. The
+// administrator bearer token must never be embedded in a downloaded playlist.
+func (s *Server) handleAdminExportM3U(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+	if s.deps.Store == nil {
+		writeAppErr(w, apperr.New(apperr.CodeInternal, http.StatusInternalServerError, "store unavailable"))
+		return
+	}
+	plain, row, err := accesstoken.NewRow("M3U export", "Automatically created by the channel list export", nil)
+	if err != nil {
+		writeAppErr(w, apperr.Internal(err))
+		return
+	}
+	if err := s.deps.Store.InsertAccessToken(row); err != nil {
+		writeAppErr(w, apperr.Internal(err))
+		return
+	}
+	channels, err := s.deps.Catalog.List(false)
+	if err != nil {
+		_ = s.deps.Store.DeleteAccessToken(row.ID)
+		writeAppErr(w, apperr.Internal(err))
+		return
+	}
+	base := s.deps.Catalog.PublicBase()
+	epgURL := ""
+	if s.epgActive() {
+		epgURL = epgPublicURL(base)
+	}
+	body := s.deps.Catalog.M3U(channels, base, "/p/"+plain+"/play/", "", epgURL)
+	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="kiln-playlist.m3u"`)
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusCreated)
+	_, _ = w.Write([]byte(body))
+	s.deps.Observe.AddBytesOut(int64(len(body)))
 }
 
 func (s *Server) handleAdminEgress(w http.ResponseWriter, r *http.Request) {
@@ -987,12 +1313,44 @@ func (s *Server) handleAdminEgressTest(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		URL       string       `json:"url"`
 		ChannelID string       `json:"channel_id"`
+		Target    string       `json:"target"`
+		ProxyID   string       `json:"proxy_id"`
+		ProxyURL  string       `json:"proxy_url"`
 		Draft     *egressDraft `json:"draft,omitempty"`
 	}
 	dec := json.NewDecoder(io.LimitReader(r.Body, s.deps.Cfg.Security.MaxBodyBytes))
-	if err := dec.Decode(&req); err != nil || strings.TrimSpace(req.URL) == "" {
-		writeAppErr(w, apperr.New(apperr.CodeInvalid, 400, "url required"))
+	if err := dec.Decode(&req); err != nil {
+		writeAppErr(w, apperr.New(apperr.CodeInvalid, http.StatusBadRequest, "invalid connection test request"))
 		return
+	}
+	req.Target = strings.ToLower(strings.TrimSpace(req.Target))
+	req.URL = strings.TrimSpace(req.URL)
+	switch req.Target {
+	case "":
+		if req.URL == "" {
+			req.Target = "bing"
+			req.URL = "http://bing.com/"
+		} else {
+			req.Target = "source"
+		}
+	case "bing":
+		// Presets always use server-owned URLs. Ignoring a client URL prevents a
+		// caller from smuggling a private destination behind a trusted label.
+		req.URL = "http://bing.com/"
+	case "source", "custom":
+		if req.URL == "" {
+			writeAppErr(w, apperr.New(apperr.CodeInvalid, http.StatusBadRequest, "custom connection test requires a URL"))
+			return
+		}
+	default:
+		writeAppErr(w, apperr.New(apperr.CodeInvalid, http.StatusBadRequest, "connection test target is invalid"))
+		return
+	}
+	if req.Target == "source" || req.Target == "custom" {
+		if err := security.PublicProbeURL(r.Context(), req.URL, s.deps.Allowed); err != nil {
+			writeAppErr(w, apperr.New(apperr.CodeForbidden, http.StatusForbidden, err.Error()))
+			return
+		}
 	}
 	testRouter := s.deps.Egress
 	if req.Draft != nil {
@@ -1016,44 +1374,118 @@ func (s *Server) handleAdminEgressTest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if strings.TrimSpace(req.ProxyURL) != "" {
+		profile := store.ProxyProfileRow{ID: "inline-test", URL: strings.TrimSpace(req.ProxyURL)}
+		if err := validateProxyProfile(profile); err != nil {
+			writeAppErr(w, apperr.New(apperr.CodeInvalid, http.StatusBadRequest, err.Error()))
+			return
+		}
+		var err error
+		testRouter, err = proxyegress.NewRouter(proxyegress.Config{
+			Default: "inline-test", PlaylistPolicy: proxyegress.PolicyRewrite,
+			Profiles: []proxyegress.Profile{{ID: "inline-test", URL: profile.URL}},
+		})
+		if err != nil {
+			writeAppErr(w, apperr.New(apperr.CodeInvalid, http.StatusBadRequest, "proxy address is invalid"))
+			return
+		}
+	} else if strings.TrimSpace(req.ProxyID) != "" {
+		if testRouter == nil {
+			writeAppErr(w, apperr.New(apperr.CodeInvalid, http.StatusBadRequest, "proxy profile is unavailable"))
+			return
+		}
+		cfg := testRouter.Config()
+		cfg.Default = strings.TrimSpace(req.ProxyID)
+		cfg.Rules = nil
+		var err error
+		testRouter, err = proxyegress.NewRouter(cfg)
+		if err != nil {
+			writeAppErr(w, apperr.New(apperr.CodeInvalid, http.StatusBadRequest, err.Error()))
+			return
+		}
+	}
 	if testRouter == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "proxy_id": "direct", "rewrite": true})
-		return
+		var err error
+		testRouter, err = proxyegress.NewRouter(proxyegress.Config{Default: proxyegress.Direct, PlaylistPolicy: proxyegress.PolicyRewrite})
+		if err != nil {
+			writeAppErr(w, apperr.Internal(err))
+			return
+		}
 	}
 	d := testRouter.Resolve(req.URL, req.ChannelID)
 	start := time.Now()
-	testPull := s.deps.Sessions.Pull()
-	if req.Draft != nil {
-		testPull = pull.New(pull.Options{
-			Observe: s.deps.Observe, Allowed: s.deps.Allowed,
-			MaxPlaylist: s.deps.Cfg.Security.MaxPlaylistBytes, Router: testRouter,
-		})
+	client, err := testRouter.ClientForChannel(d.ProxyID, req.ChannelID, 10*time.Second)
+	if err != nil {
+		writeAppErr(w, apperr.New(apperr.CodeInvalid, http.StatusBadRequest, "proxy client could not be created"))
+		return
 	}
-	res, err := testPull.Get(r.Context(), pull.Request{
-		URL: req.URL, UserAgent: version.UserAgent(""), ChannelID: req.ChannelID,
-	})
+	client.CheckRedirect = func(redirect *http.Request, via []*http.Request) error {
+		if len(via) >= 5 {
+			return errors.New("too many redirects")
+		}
+		return security.PublicProbeURL(redirect.Context(), redirect.URL.String(), s.deps.Allowed)
+	}
+	httpRequest, err := http.NewRequestWithContext(r.Context(), http.MethodGet, req.URL, nil)
+	if err != nil {
+		writeAppErr(w, apperr.New(apperr.CodeInvalid, http.StatusBadRequest, "test URL is invalid"))
+		return
+	}
+	httpRequest.Header.Set("User-Agent", version.UserAgent(""))
+	res, err := client.Do(httpRequest)
 	out := map[string]any{
 		"proxy_id": d.ProxyID,
 		"reason":   d.Reason,
 		"rewrite":  d.Rewrite,
 		"dur_ms":   time.Since(start).Milliseconds(),
+		"target":   req.Target,
 	}
 	if d.ProxyURL != nil {
 		out["proxy_url"] = d.ProxyURL.Scheme + "://" + d.ProxyURL.Host
 	}
 	if err != nil {
 		out["ok"] = false
-		out["error"] = strings.ReplaceAll(err.Error(), req.URL, "[redacted-url]")
+		out["reachable"] = false
+		out["outcome"], out["error"] = egressProbeFailure(err)
 		writeJSON(w, http.StatusOK, out)
 		return
 	}
 	defer res.Body.Close()
-	_, _ = io.CopyN(io.Discard, res.Body, 2048)
-	out["ok"] = true
+	_, _ = io.CopyN(io.Discard, res.Body, 4096)
+	ok := res.StatusCode == http.StatusOK
+	out["ok"] = ok
+	out["reachable"] = true
 	out["status"] = res.StatusCode
-	out["final_url"] = publicURL(res.FinalURL, false)
-	out["via_proxy"] = res.ProxyID
+	out["final_url"] = publicURL(res.Request.URL.String(), false)
+	out["via_proxy"] = d.ProxyID
+	switch {
+	case res.StatusCode == http.StatusProxyAuthRequired:
+		out["outcome"], out["error"] = "proxy_auth", "the proxy requires authentication"
+	case res.StatusCode != http.StatusOK:
+		out["outcome"], out["error"] = "http_error", fmt.Sprintf("the test target returned HTTP %d", res.StatusCode)
+	default:
+		out["outcome"] = "success"
+	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+func egressProbeFailure(err error) (string, string) {
+	var dnsErr *net.DNSError
+	var netErr net.Error
+	message := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(message, "probe target") || strings.Contains(message, "private"):
+		return "blocked", "the test was blocked because its destination is not public"
+	case errors.As(err, &dnsErr):
+		return "dns", "the test target could not be resolved"
+	case errors.As(err, &netErr) && netErr.Timeout():
+		return "timeout", "the connection timed out"
+	case strings.Contains(message, "tls") || strings.Contains(message, "x509") || strings.Contains(message, "certificate"):
+		return "tls", "the TLS connection could not be established"
+	case strings.Contains(message, "proxyconnect") || strings.Contains(message, "socks"):
+		return "proxy", "the proxy connection could not be established"
+	default:
+		return "network", "the test target could not be reached"
+	}
 }
 
 func (s *Server) handleAdminAccessLogs(w http.ResponseWriter, r *http.Request) {

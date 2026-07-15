@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/babywbx/kiln/modules/config"
 	"github.com/babywbx/kiln/modules/packager/cmaf"
 	"github.com/babywbx/kiln/modules/packager/hls"
 	"github.com/babywbx/kiln/modules/packager/mpd"
@@ -96,6 +97,7 @@ type Options struct {
 	Fetcher                 Fetcher
 	PreferHeight            int
 	PreferredAudioLanguages []string
+	Selection               config.TrackSelection
 	PlaylistSize            int
 	LLHLS                   bool
 	PartTarget              time.Duration
@@ -347,7 +349,10 @@ func StartNative(ctx context.Context, opts Options) (*Native, error) {
 	if err != nil {
 		return nil, err
 	}
-	plan, err := PlanFromManifest(pres, opts.PreferHeight)
+	if len(opts.Selection.Audio.PreferredLanguages) == 0 {
+		opts.Selection.Audio.PreferredLanguages = append([]string(nil), opts.PreferredAudioLanguages...)
+	}
+	plan, err := PlanFromManifestWithSelection(pres, opts.PreferHeight, opts.Selection)
 	if err != nil {
 		return nil, err
 	}
@@ -721,6 +726,7 @@ func (n *Native) registerTracks() error {
 			Bandwidth: ts.rep.Bandwidth,
 			Width:     ts.rep.Width,
 			Height:    ts.rep.Height,
+			FrameRate: frameRateValue(ts.rep.FrameRate),
 		}); err != nil {
 			return err
 		}
@@ -731,6 +737,10 @@ func (n *Native) registerTracks() error {
 	}
 	preferred := preferredAudioIndex(languages, n.opts.PreferredAudioLanguages)
 	for i, ts := range n.audios {
+		isDefault := n.plan.DefaultAudioKey != "" && trackIdentity(ts.rep) == n.plan.DefaultAudioKey
+		if n.plan.DefaultAudioKey == "" {
+			isDefault = i == preferred
+		}
 		if err := n.pub.AddTrack(hls.Track{
 			Name:      ts.name,
 			Kind:      hls.KindAudio,
@@ -739,7 +749,7 @@ func (n *Native) registerTracks() error {
 			Channels:  ts.rep.AudioChannels,
 			Lang:      ts.rep.Lang,
 			Label:     audioLabel(ts.rep),
-			Default:   i == preferred,
+			Default:   isDefault,
 		}); err != nil {
 			return err
 		}
@@ -749,6 +759,8 @@ func (n *Native) registerTracks() error {
 		if err := n.pub.AddTrack(hls.Track{
 			Name: ts.name, Kind: hls.KindSubtitle,
 			Lang: language.Tag, Label: language.Name,
+			Default: n.plan.DefaultTextKey != "" && trackIdentity(ts.rep) == n.plan.DefaultTextKey,
+			Forced:  hasRole(ts.rep, "forced"),
 		}); err != nil {
 			return err
 		}
@@ -1563,12 +1575,12 @@ func (e *fatalError) Unwrap() error { return e.err }
 func (n *Native) refreshPlan(ctx context.Context, pres *mpd.Presentation) error {
 	var replan *Plan
 	for _, ts := range n.tracks() {
-		if rep, ok := findRepresentation(pres, ts.rep.ID); ok {
+		if rep, ok := findRepresentation(pres, ts.rep); ok {
 			ts.rep = rep
 			continue
 		}
 		if replan == nil {
-			plan, err := PlanFromManifest(pres, n.opts.PreferHeight)
+			plan, err := PlanFromManifestWithSelection(pres, n.opts.PreferHeight, n.opts.Selection)
 			if err != nil || !plan.Native() {
 				return &fatalError{fmt.Errorf("representation %s is gone and the manifest is no longer usable: %s",
 					ts.rep.ID, plan.Reason)}
@@ -1631,12 +1643,15 @@ func replacementFor(plan Plan, ts *trackState) (mpd.Representation, bool) {
 	return mpd.Representation{}, false
 }
 
-func findRepresentation(pres *mpd.Presentation, id string) (mpd.Representation, bool) {
+func findRepresentation(pres *mpd.Presentation, current mpd.Representation) (mpd.Representation, bool) {
 	if len(pres.Periods) == 0 {
 		return mpd.Representation{}, false
 	}
 	for _, rep := range pres.Periods[0].Representations {
-		if rep.ID == id {
+		if current.TrackKey != "" && rep.TrackKey == current.TrackKey {
+			return rep, true
+		}
+		if current.TrackKey == "" && rep.ID == current.ID && rep.Group == current.Group {
 			return rep, true
 		}
 	}

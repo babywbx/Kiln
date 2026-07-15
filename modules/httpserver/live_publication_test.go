@@ -4,6 +4,8 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
@@ -294,6 +296,63 @@ func TestImmutableAssetsAreCacheable(t *testing.T) {
 	defer pl.Body.Close()
 	if got := pl.Header.Get("Cache-Control"); !strings.Contains(got, "no-store") {
 		t.Errorf("playlist Cache-Control = %q, want no-store", got)
+	}
+}
+
+func TestPublishedFMP4AssetsSupportSingleAndMultipleRanges(t *testing.T) {
+	ts, _ := newLiveServer(t)
+	playlist := get(t, ts.URL+"/v1/play/dash1/index.m3u8")
+	playlist.Body.Close()
+	assetURL := ts.URL + "/v1/play/dash1/live/video-main-000001.m4s"
+
+	request, err := http.NewRequest(http.MethodGet, assetURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Range", "bytes=0-6")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusPartialContent || response.Header.Get("Content-Range") != "bytes 0-6/29" {
+		t.Fatalf("single range status=%d content-range=%q", response.StatusCode, response.Header.Get("Content-Range"))
+	}
+	if got := body(t, response); got != "payload" {
+		t.Fatalf("single range body = %q", got)
+	}
+
+	request, err = http.NewRequest(http.MethodGet, assetURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Range", "bytes=0-2,8-10")
+	response, err = http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	mediaType, params, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
+	if err != nil || mediaType != "multipart/byteranges" {
+		t.Fatalf("multi range content type = %q, err=%v", response.Header.Get("Content-Type"), err)
+	}
+	reader := multipart.NewReader(response.Body, params["boundary"])
+	var parts []string
+	for {
+		part, partErr := reader.NextPart()
+		if partErr == io.EOF {
+			break
+		}
+		if partErr != nil {
+			t.Fatal(partErr)
+		}
+		data, readErr := io.ReadAll(part)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		parts = append(parts, string(data))
+	}
+	if len(parts) != 2 || parts[0] != "pay" || parts[1] != "vid" {
+		t.Fatalf("multi range parts = %#v", parts)
 	}
 }
 

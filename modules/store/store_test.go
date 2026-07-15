@@ -4,11 +4,36 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/babywbx/kiln/modules/config"
 	"github.com/babywbx/kiln/modules/store"
 )
+
+func TestChannelTrackSelectionRoundTrip(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	want := config.TrackSelection{
+		Video:     config.VideoSelection{Mode: "cap", Track: config.TrackSelector{Key: "trk-video", RepresentationID: "v1080-50", Height: 1080, FrameRate: "50"}},
+		Audio:     config.AudioSelection{Mode: "prefer", Track: config.TrackSelector{Key: "trk-audio", RepresentationID: "a-yue", Language: "yue"}, PreferredLanguages: []string{"yue", "zh"}},
+		Subtitles: config.SubtitleSelection{Mode: "off"},
+	}
+	channel := config.Channel{ID: "selection", Title: "Selection", SourceURL: "https://example.com/live.m3u8", Ingress: "hls", OnDemand: true, Selection: want}
+	if err := db.UpsertChannel(channel); err != nil {
+		t.Fatal(err)
+	}
+	got, found, err := db.GetChannel("selection")
+	if err != nil || !found {
+		t.Fatalf("found=%v err=%v", found, err)
+	}
+	if !reflect.DeepEqual(got.Selection, want) {
+		t.Fatalf("selection = %#v, want %#v", got.Selection, want)
+	}
+}
 
 func TestOpenMigratesV1WithoutLosingData(t *testing.T) {
 	dir := t.TempDir()

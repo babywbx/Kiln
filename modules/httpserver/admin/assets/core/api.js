@@ -284,7 +284,7 @@ function nextEventTime() {
 }
 
 export async function api(path, options = {}) {
-  const { suppressUnauthorized = false, ...fetchOptions } = options;
+  const { suppressUnauthorized = false, rawText = false, ...fetchOptions } = options;
   const headers = new Headers(fetchOptions.headers || {});
   if (fetchOptions.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   if (session.token) headers.set("Authorization", `Bearer ${session.token}`);
@@ -308,7 +308,7 @@ export async function api(path, options = {}) {
     });
   }
   session.authenticated = true;
-  return data;
+  return rawText ? text : data;
 }
 
 export function isAbort(error) {
@@ -340,11 +340,13 @@ export const endpoints = {
   enableAllChannels: () => api("/v1/admin/channels/enable-all", { method: "POST", body: "{}" }),
   disableAllChannels: () => api("/v1/admin/channels/disable-all", { method: "POST", body: "{}" }),
   probeChannel: (id) => api(`/v1/admin/channels/${encodeURIComponent(id)}/probe`, { method: "POST", body: "{}" }),
+  probeSource: (body, signal) => api("/v1/admin/source-probes", { method: "POST", body: JSON.stringify(body), signal }),
   warmupChannel: (id) => api(`/v1/admin/channels/${encodeURIComponent(id)}/warmup`, { method: "POST", body: "{}" }),
   previewChannel: (id) => api(`/v1/admin/channels/${encodeURIComponent(id)}/preview`, { method: "POST", body: "{}" }),
   stopSession: (id) => api(`/v1/admin/sessions/${encodeURIComponent(id)}`, { method: "DELETE" }),
   upstreams: (signal) => api("/v1/admin/upstreams", { signal }),
   importM3U: (body) => api("/v1/admin/import/m3u", { method: "POST", body: JSON.stringify(body) }),
+  exportM3U: () => api("/v1/admin/exports/m3u", { method: "POST", body: "{}", rawText: true }),
 
   tokens: (signal) => api("/v1/admin/access-tokens", { signal }),
   createToken: (body) => api("/v1/admin/access-tokens", { method: "POST", body: JSON.stringify(body) }),

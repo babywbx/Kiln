@@ -48,6 +48,7 @@ type xmlAdaptationSet struct {
 	Width             int              `xml:"width,attr"`
 	Height            int              `xml:"height,attr"`
 	FrameRate         string           `xml:"frameRate,attr"`
+	AudioSamplingRate string           `xml:"audioSamplingRate,attr"`
 	MaxPlayoutRate    string           `xml:"maxPlayoutRate,attr"`
 	BaseURL           []string         `xml:"BaseURL"`
 	Essential         []xmlDescriptor  `xml:"EssentialProperty"`
@@ -139,6 +140,17 @@ type xmlSegmentBase struct {
 // Parse decodes a manifest. baseURL must be the final URL the manifest was
 // fetched from, after redirects, so relative references resolve correctly.
 func Parse(data []byte, baseURL string) (*Presentation, error) {
+	return parse(data, baseURL, false)
+}
+
+// ParseForInspection decodes enough of a manifest to describe every track,
+// including tracks whose addressing is not supported by the native engine.
+// Playback continues to use Parse so unsupported manifests still fail closed.
+func ParseForInspection(data []byte, baseURL string) (*Presentation, error) {
+	return parse(data, baseURL, true)
+}
+
+func parse(data []byte, baseURL string, tolerant bool) (*Presentation, error) {
 	var doc xmlMPD
 	dec := xml.NewDecoder(bytes.NewReader(data))
 	dec.Strict = true
@@ -203,7 +215,7 @@ func Parse(data []byte, baseURL string) (*Presentation, error) {
 
 	mpdBase := resolveAll(root, doc.BaseURL)
 	for _, xp := range doc.Periods {
-		period, err := normalizePeriod(xp, mpdBase)
+		period, err := normalizePeriod(xp, mpdBase, tolerant)
 		if err != nil {
 			return nil, err
 		}

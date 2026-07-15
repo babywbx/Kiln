@@ -2,9 +2,12 @@ package packager
 
 import (
 	"fmt"
+	"math"
 	"sort"
+	"strconv"
 	"strings"
 
+	"github.com/babywbx/kiln/modules/config"
 	"github.com/babywbx/kiln/modules/packager/cmaf"
 	"github.com/babywbx/kiln/modules/packager/mpd"
 )
@@ -33,8 +36,10 @@ type Plan struct {
 	Video  mpd.Representation
 	Videos []mpd.Representation
 
-	Audios []mpd.Representation
-	Texts  []mpd.Representation
+	Audios          []mpd.Representation
+	Texts           []mpd.Representation
+	DefaultAudioKey string
+	DefaultTextKey  string
 
 	SkippedAudios []string
 	SkippedText   []string
@@ -99,10 +104,20 @@ const maxNativeVideoTracks = 8
 const maxNativeTextTracks = 16
 
 func PlanFromManifest(p *mpd.Presentation, preferHeight int) (Plan, error) {
+	return PlanFromManifestWithSelection(p, preferHeight, config.TrackSelection{})
+}
+
+func PlanFromManifestWithSelection(p *mpd.Presentation, preferHeight int, selection config.TrackSelection) (Plan, error) {
 	if len(p.Periods) != 1 {
 		return unsupportedPlan(ReasonMultiPeriod, true), nil
 	}
-	videos, audios, texts := selectRenditions(p.Periods[0].Representations, preferHeight)
+	if reason, needed := selectedTrackNeedsCompatibility(p.Periods[0].Representations, selection); needed {
+		return unsupportedPlan(reason, true), nil
+	}
+	videos, audios, texts, err := selectRenditions(p.Periods[0].Representations, preferHeight, selection)
+	if err != nil {
+		return Plan{}, err
+	}
 	if len(videos) == 0 {
 		return unsupportedPlan(ReasonNoVideo, true), nil
 	}
@@ -137,11 +152,42 @@ func PlanFromManifest(p *mpd.Presentation, preferHeight int) (Plan, error) {
 		}
 		plan.Texts = append(plan.Texts, text)
 	}
+	plan.DefaultAudioKey = selectedDefaultAudio(plan.Audios, selection.Audio)
+	plan.DefaultTextKey = selectedDefaultText(plan.Texts, selection.Subtitles)
 	selected := append([]mpd.Representation(nil), plan.Videos...)
 	selected = append(selected, plan.Audios...)
 	selected = append(selected, plan.Texts...)
 	plan.UnknownEssential = unknownEssential(selected...)
 	return plan, nil
+}
+
+func selectedTrackNeedsCompatibility(reps []mpd.Representation, selection config.TrackSelection) (string, bool) {
+	checks := []struct {
+		mode     string
+		selector config.TrackSelector
+		kind     mpd.ContentType
+	}{
+		{selection.Video.Mode, selection.Video.Track, mpd.TypeVideo},
+		{selection.Audio.Mode, selection.Audio.Track, mpd.TypeAudio},
+		{selection.Subtitles.Mode, selection.Subtitles.Track, mpd.TypeText},
+	}
+	for _, check := range checks {
+		mode := normalizedMode(check.mode, "auto")
+		if !hasSelector(check.selector) || mode == "auto" || mode == "off" {
+			continue
+		}
+		selected, ok := findSelected(repsOfType(reps, check.kind), check.selector)
+		if !ok {
+			continue
+		}
+		if supported, reason := nativeTrackSupport(selected); !supported {
+			if reason == ReasonAddressing || strings.Contains(strings.ToLower(reason), "address") {
+				return ReasonAddressing, true
+			}
+			return ReasonManifestCodec, true
+		}
+	}
+	return "", false
 }
 
 func nativeAddressing(rep mpd.Representation) bool {
@@ -214,7 +260,7 @@ func VerifyTrackSet(plan *Plan, videos, audios, texts []cmaf.Track, keys cmaf.Ke
 	return nil
 }
 
-func selectRenditions(reps []mpd.Representation, preferHeight int) ([]mpd.Representation, []mpd.Representation, []mpd.Representation) {
+func selectRenditions(reps []mpd.Representation, preferHeight int, selection config.TrackSelection) ([]mpd.Representation, []mpd.Representation, []mpd.Representation, error) {
 	var groups []string
 	best := map[string]mpd.Representation{}
 	var videoCandidates []mpd.Representation
@@ -245,12 +291,57 @@ func selectRenditions(reps []mpd.Representation, preferHeight int) ([]mpd.Repres
 		}
 	}
 
+	videoMode := normalizedMode(selection.Video.Mode, "auto")
+	if selection.Video.MaxHeight > 0 {
+		preferHeight = selection.Video.MaxHeight
+	}
+	if videoMode == "cap" || videoMode == "exact" {
+		selected, ok := findSelected(videoCandidates, selection.Video.Track)
+		if !ok && hasSelector(selection.Video.Track) {
+			return nil, nil, nil, fmt.Errorf("selected video track is no longer present")
+		}
+		if ok {
+			preferHeight = selected.Height
+			videoCandidates = capVideoCandidates(videoCandidates, selected)
+		}
+	}
 	videos := abrLadder(videoCandidates, preferHeight)
 	audios := make([]mpd.Representation, 0, len(groups))
 	for _, g := range groups {
 		audios = append(audios, best[g])
 	}
-	return videos, audios, texts
+	audioMode := normalizedMode(selection.Audio.Mode, "auto")
+	if audioMode == "prefer" || audioMode == "only" {
+		selected, ok := findSelected(repsOfType(reps, mpd.TypeAudio), selection.Audio.Track)
+		if !ok && hasSelector(selection.Audio.Track) {
+			return nil, nil, nil, fmt.Errorf("selected audio track is no longer present")
+		}
+		if ok {
+			if audioMode == "only" {
+				audios = []mpd.Representation{selected}
+			} else {
+				for i := range audios {
+					if audios[i].Group == selected.Group {
+						audios[i] = selected
+					}
+				}
+			}
+		}
+	}
+	subtitleMode := normalizedMode(selection.Subtitles.Mode, "auto")
+	switch subtitleMode {
+	case "off":
+		texts = nil
+	case "prefer", "only":
+		selected, ok := findSelected(texts, selection.Subtitles.Track)
+		if !ok && hasSelector(selection.Subtitles.Track) {
+			return nil, nil, nil, fmt.Errorf("selected subtitle track is no longer present")
+		}
+		if ok && subtitleMode == "only" {
+			texts = []mpd.Representation{selected}
+		}
+	}
+	return videos, audios, texts, nil
 }
 
 func abrLadder(candidates []mpd.Representation, preferHeight int) []mpd.Representation {
@@ -262,7 +353,7 @@ func abrLadder(candidates []mpd.Representation, preferHeight int) []mpd.Represen
 		if preferHeight > 0 && candidate.Height > preferHeight {
 			continue
 		}
-		key := fmt.Sprintf("%dx%d", candidate.Width, candidate.Height)
+		key := fmt.Sprintf("%dx%d@%s", candidate.Width, candidate.Height, normalizedFrameRate(candidate.FrameRate))
 		if current, found := bestBySize[key]; !found || candidate.Bandwidth > current.Bandwidth {
 			bestBySize[key] = candidate
 		}
@@ -275,7 +366,7 @@ func abrLadder(candidates []mpd.Representation, preferHeight int) []mpd.Represen
 				lowest = candidate
 			}
 		}
-		bestBySize[fmt.Sprintf("%dx%d", lowest.Width, lowest.Height)] = lowest
+		bestBySize[fmt.Sprintf("%dx%d@%s", lowest.Width, lowest.Height, normalizedFrameRate(lowest.FrameRate))] = lowest
 	}
 	ladder := make([]mpd.Representation, 0, len(bestBySize))
 	for _, representation := range bestBySize {
@@ -291,6 +382,167 @@ func abrLadder(candidates []mpd.Representation, preferHeight int) []mpd.Represen
 		ladder = ladder[len(ladder)-maxNativeVideoTracks:]
 	}
 	return ladder
+}
+
+func capVideoCandidates(candidates []mpd.Representation, selected mpd.Representation) []mpd.Representation {
+	selectedFPS := frameRateValue(selected.FrameRate)
+	out := make([]mpd.Representation, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.Height > selected.Height {
+			continue
+		}
+		if candidate.Height == selected.Height && selectedFPS > 0 && frameRateValue(candidate.FrameRate) > selectedFPS+0.01 {
+			continue
+		}
+		out = append(out, candidate)
+	}
+	return out
+}
+
+func repsOfType(reps []mpd.Representation, kind mpd.ContentType) []mpd.Representation {
+	out := make([]mpd.Representation, 0, len(reps))
+	for _, rep := range reps {
+		if rep.Type == kind {
+			out = append(out, rep)
+		}
+	}
+	return out
+}
+
+func findSelected(reps []mpd.Representation, selector config.TrackSelector) (mpd.Representation, bool) {
+	var keyMatch mpd.Representation
+	keyMatches := 0
+	for _, rep := range reps {
+		if selector.Key != "" && trackIdentity(rep) == selector.Key {
+			keyMatch = rep
+			keyMatches++
+		}
+	}
+	if keyMatches == 1 {
+		return keyMatch, true
+	}
+	if keyMatches > 1 {
+		return mpd.Representation{}, false
+	}
+	var semanticMatch mpd.Representation
+	semanticMatches := 0
+	for _, rep := range reps {
+		if selector.RepresentationID != "" && rep.ID != selector.RepresentationID {
+			continue
+		}
+		if selector.AdaptationSetID != "" && rep.AdaptationSetID != selector.AdaptationSetID {
+			continue
+		}
+		if selector.Language != "" && !strings.EqualFold(rep.Lang, selector.Language) {
+			continue
+		}
+		if selector.Role != "" && !hasRole(rep, selector.Role) {
+			continue
+		}
+		if selector.Codec != "" && !strings.EqualFold(rep.Codecs, selector.Codec) {
+			continue
+		}
+		if selector.Height > 0 && rep.Height != selector.Height {
+			continue
+		}
+		if selector.FrameRate != "" && normalizedFrameRate(rep.FrameRate) != normalizedFrameRate(selector.FrameRate) {
+			continue
+		}
+		if hasSelector(selector) {
+			semanticMatch = rep
+			semanticMatches++
+		}
+	}
+	return semanticMatch, semanticMatches == 1
+}
+
+func hasSelector(selector config.TrackSelector) bool {
+	return selector.Key != "" || selector.AdaptationSetID != "" || selector.RepresentationID != "" ||
+		selector.Language != "" || selector.Role != "" || selector.Codec != "" ||
+		selector.Height > 0 || selector.FrameRate != ""
+}
+
+func selectedDefaultAudio(audios []mpd.Representation, selection config.AudioSelection) string {
+	if selected, ok := findSelected(audios, selection.Track); ok {
+		return trackIdentity(selected)
+	}
+	for _, preferred := range selection.PreferredLanguages {
+		for _, audio := range audios {
+			if strings.EqualFold(audio.Lang, preferred) {
+				return trackIdentity(audio)
+			}
+		}
+	}
+	for _, audio := range audios {
+		if hasRole(audio, "main") {
+			return trackIdentity(audio)
+		}
+	}
+	if len(audios) > 0 {
+		return trackIdentity(audios[0])
+	}
+	return ""
+}
+
+func selectedDefaultText(texts []mpd.Representation, selection config.SubtitleSelection) string {
+	if normalizedMode(selection.Mode, "auto") != "prefer" && normalizedMode(selection.Mode, "auto") != "only" {
+		return ""
+	}
+	if selected, ok := findSelected(texts, selection.Track); ok {
+		return trackIdentity(selected)
+	}
+	return ""
+}
+
+func trackIdentity(rep mpd.Representation) string {
+	if rep.TrackKey != "" {
+		return rep.TrackKey
+	}
+	return rep.Group + "\x1f" + rep.ID
+}
+
+func normalizedMode(mode, fallback string) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" {
+		return fallback
+	}
+	return mode
+}
+
+func hasRole(rep mpd.Representation, wanted string) bool {
+	for _, role := range rep.Roles {
+		if strings.EqualFold(strings.TrimSpace(role), wanted) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizedFrameRate(value string) string {
+	fps := frameRateValue(value)
+	if fps <= 0 {
+		return strings.TrimSpace(value)
+	}
+	return strconv.FormatFloat(fps, 'f', 3, 64)
+}
+
+func frameRateValue(value string) float64 {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	if numerator, denominator, ok := strings.Cut(value, "/"); ok {
+		n, nErr := strconv.ParseFloat(numerator, 64)
+		d, dErr := strconv.ParseFloat(denominator, 64)
+		if nErr == nil && dErr == nil && d != 0 {
+			return n / d
+		}
+	}
+	fps, _ := strconv.ParseFloat(value, 64)
+	if math.IsNaN(fps) || math.IsInf(fps, 0) {
+		return 0
+	}
+	return fps
 }
 
 func unsupportedPlan(reason string, fallback bool) Plan {

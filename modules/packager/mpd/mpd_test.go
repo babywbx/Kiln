@@ -9,6 +9,36 @@ import (
 	"time"
 )
 
+func TestAnonymousAdaptationTrackKeysSurviveManifestReordering(t *testing.T) {
+	manifest := func(first, second string) string {
+		return `<?xml version="1.0"?><MPD mediaPresentationDuration="PT4S"><Period>` + first + second + `</Period></MPD>`
+	}
+	video := `<AdaptationSet contentType="video" mimeType="video/mp4"><SegmentTemplate initialization="v.mp4" media="v-$Number$.m4s" duration="2"/><Representation id="shared" codecs="avc1" width="1280" height="720" bandwidth="1000000"/></AdaptationSet>`
+	audio := `<AdaptationSet contentType="audio" mimeType="audio/mp4" lang="yue"><Role value="main"/><SegmentTemplate initialization="a.mp4" media="a-$Number$.m4s" duration="2"/><Representation id="shared" codecs="mp4a" audioSamplingRate="48000" bandwidth="128000"/></AdaptationSet>`
+	first, err := Parse([]byte(manifest(video, audio)), "https://example.com/live.mpd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := Parse([]byte(manifest(audio, video)), "https://example.com/live.mpd?token=rotated")
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := func(presentation *Presentation) map[ContentType]string {
+		out := map[ContentType]string{}
+		for _, representation := range presentation.Periods[0].Representations {
+			out[representation.Type] = representation.TrackKey
+		}
+		return out
+	}
+	firstKeys, secondKeys := keys(first), keys(second)
+	if firstKeys[TypeVideo] == "" || firstKeys[TypeVideo] != secondKeys[TypeVideo] || firstKeys[TypeAudio] != secondKeys[TypeAudio] {
+		t.Fatalf("track keys changed after reordering: %#v != %#v", firstKeys, secondKeys)
+	}
+	if firstKeys[TypeVideo] == firstKeys[TypeAudio] {
+		t.Fatal("duplicate representation IDs in different adaptation sets collided")
+	}
+}
+
 const liveManifest = `<?xml version="1.0"?>
 <MPD xmlns="urn:mpeg:dash:schema:mpd:2011" xmlns:cenc="urn:mpeg:cenc:2013"
      type="dynamic"

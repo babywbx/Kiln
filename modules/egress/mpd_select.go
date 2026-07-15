@@ -17,6 +17,11 @@ type videoRep struct {
 	trick     bool
 }
 
+type audioRep struct {
+	full string
+	id   string
+}
+
 var (
 	repTagRe            = regexp.MustCompile(`(?s)<Representation\b[^>]*?/>|<Representation\b[^>]*>.*?</Representation>`)
 	attrRe              = regexp.MustCompile(`(\w+)="([^"]*)"`)
@@ -47,10 +52,17 @@ type StreamPick struct {
 }
 
 func PickStreams(mpd string, preferHeight int) StreamPick {
+	pick, _ := PickStreamsWithSelection(mpd, preferHeight, "", "")
+	return pick
+}
+
+func PickStreamsWithSelection(mpd string, preferHeight int, videoID, audioID string) (StreamPick, error) {
 	reps := repTagRe.FindAllString(mpd, -1)
 	var videos []videoRep
 	audioCount := 0
 	firstAudio := -1
+	selectedAudio := -1
+	selectedAudioMatches := 0
 	for _, r := range reps {
 		openEnd := strings.Index(r, ">")
 		if openEnd < 0 {
@@ -75,6 +87,10 @@ func PickStreams(mpd string, preferHeight int) StreamPick {
 			if firstAudio < 0 {
 				firstAudio = audioCount
 			}
+			if audioID != "" && id == audioID {
+				selectedAudio = audioCount
+				selectedAudioMatches++
+			}
 			audioCount++
 			continue
 		}
@@ -82,10 +98,25 @@ func PickStreams(mpd string, preferHeight int) StreamPick {
 			videos = append(videos, videoRep{full: r, id: id, bandwidth: bw, height: h, trick: trick})
 		}
 	}
+	if audioID != "" && selectedAudio < 0 {
+		return StreamPick{}, fmt.Errorf("selected audio representation %q is not present", audioID)
+	}
+	if audioID != "" && selectedAudioMatches > 1 {
+		return StreamPick{}, fmt.Errorf("selected audio representation %q is ambiguous across adaptation sets", audioID)
+	}
+	if selectedAudio >= 0 {
+		firstAudio = selectedAudio
+	}
 	pick := StreamPick{VideoIndex: 0, AudioIndex: firstAudio, Dynamic: isDynamicMPD(mpd)}
-	chosen := pickVideo(videos, preferHeight)
+	chosen := pickVideoByID(videos, preferHeight, videoID)
+	if videoID != "" && videoIDCount(videos, videoID) > 1 {
+		return StreamPick{}, fmt.Errorf("selected video representation %q is ambiguous across adaptation sets", videoID)
+	}
+	if videoID != "" && chosen == nil {
+		return StreamPick{}, fmt.Errorf("selected video representation %q is not present", videoID)
+	}
 	if chosen == nil {
-		return pick
+		return pick, nil
 	}
 	idx := 0
 	for _, v := range videos {
@@ -98,7 +129,7 @@ func PickStreams(mpd string, preferHeight int) StreamPick {
 		}
 		idx++
 	}
-	return pick
+	return pick, nil
 }
 
 func isDynamicMPD(mpd string) bool {
@@ -116,6 +147,10 @@ func isDynamicMPD(mpd string) bool {
 }
 
 func FilterMPDForPack(mpd, mpdURL string, preferHeight int) (string, string, error) {
+	return FilterMPDForPackWithSelection(mpd, mpdURL, preferHeight, "", "")
+}
+
+func FilterMPDForPackWithSelection(mpd, mpdURL string, preferHeight int, videoID, audioID string) (string, string, error) {
 	if !strings.Contains(mpd, "<MPD") && !strings.Contains(mpd, "<mpd") {
 		return "", "", fmt.Errorf("not an mpd document")
 	}
@@ -125,7 +160,7 @@ func FilterMPDForPack(mpd, mpdURL string, preferHeight int) (string, string, err
 	}
 
 	var videos []videoRep
-	var audios []string
+	var audios []audioRep
 	for _, r := range reps {
 		openEnd := strings.Index(r, ">")
 		if openEnd < 0 {
@@ -150,7 +185,7 @@ func FilterMPDForPack(mpd, mpdURL string, preferHeight int) (string, string, err
 			continue
 		}
 		if isAudio && !isVideo {
-			audios = append(audios, r)
+			audios = append(audios, audioRep{full: r, id: id})
 			continue
 		}
 		if isVideo {
@@ -159,15 +194,28 @@ func FilterMPDForPack(mpd, mpdURL string, preferHeight int) (string, string, err
 		}
 	}
 
-	chosenVideo := pickVideo(videos, preferHeight)
+	chosenVideo := pickVideoByID(videos, preferHeight, videoID)
+	if videoID != "" && videoIDCount(videos, videoID) > 1 {
+		return "", "", fmt.Errorf("selected video representation %q is ambiguous across adaptation sets", videoID)
+	}
+	if videoID != "" && chosenVideo == nil {
+		return "", "", fmt.Errorf("selected video representation %q is not present", videoID)
+	}
 	var keep []string
 	note := "none"
 	if chosenVideo != nil {
 		keep = append(keep, chosenVideo.full)
 		note = fmt.Sprintf("video id=%s height=%d bw=%d", chosenVideo.id, chosenVideo.height, chosenVideo.bandwidth)
 	}
-	if len(audios) > 0 {
-		keep = append(keep, audios[0])
+	chosenAudio := firstAudioByID(audios, audioID)
+	if audioID != "" && audioIDCount(audios, audioID) > 1 {
+		return "", "", fmt.Errorf("selected audio representation %q is ambiguous across adaptation sets", audioID)
+	}
+	if audioID != "" && chosenAudio == nil {
+		return "", "", fmt.Errorf("selected audio representation %q is not present", audioID)
+	}
+	if chosenAudio != nil {
+		keep = append(keep, chosenAudio.full)
 		note += " +audio"
 	}
 
@@ -209,6 +257,50 @@ func FilterMPDForPack(mpd, mpdURL string, preferHeight int) (string, string, err
 		}
 	}
 	return out, note, nil
+}
+
+func pickVideoByID(videos []videoRep, preferHeight int, videoID string) *videoRep {
+	if videoID != "" {
+		for i := range videos {
+			if videos[i].id == videoID && !videos[i].trick {
+				return &videos[i]
+			}
+		}
+		return nil
+	}
+	return pickVideo(videos, preferHeight)
+}
+
+func firstAudioByID(audios []audioRep, audioID string) *audioRep {
+	if audioID == "" && len(audios) > 0 {
+		return &audios[0]
+	}
+	for i := range audios {
+		if audios[i].id == audioID {
+			return &audios[i]
+		}
+	}
+	return nil
+}
+
+func videoIDCount(videos []videoRep, id string) int {
+	count := 0
+	for _, video := range videos {
+		if video.id == id {
+			count++
+		}
+	}
+	return count
+}
+
+func audioIDCount(audios []audioRep, id string) int {
+	count := 0
+	for _, audio := range audios {
+		if audio.id == id {
+			count++
+		}
+	}
+	return count
 }
 
 func trimSegmentTimelines(mpd string, keep int) (string, int) {

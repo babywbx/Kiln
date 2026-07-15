@@ -144,6 +144,23 @@ func TestValidateChannelID(t *testing.T) {
 	}
 }
 
+func TestValidateEngineSelectionRejectsExplicitFFmpegSubtitles(t *testing.T) {
+	selection := TrackSelection{Subtitles: SubtitleSelection{
+		Mode:  "only",
+		Track: TrackSelector{RepresentationID: "sub-zh"},
+	}}
+	if err := ValidateEngineSelection(EngineFFmpeg, selection); err == nil {
+		t.Fatal("explicit FFmpeg subtitle selection was accepted")
+	}
+	if err := ValidateEngineSelection(EngineAuto, selection); err != nil {
+		t.Fatalf("auto engine rejected selection: %v", err)
+	}
+	selection.Subtitles.Mode = "off"
+	if err := ValidateEngineSelection(EngineFFmpeg, selection); err != nil {
+		t.Fatalf("FFmpeg subtitle-off selection rejected: %v", err)
+	}
+}
+
 func TestStripJSONCTrailingComma(t *testing.T) {
 	in := []byte(`{"a":1,}`)
 	out := StripJSONC(in)

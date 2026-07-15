@@ -6,6 +6,7 @@ import { badge, button, card, channelCell, emptyState, field, iconButton, input,
 import { closeModal, confirmDialog, openModal, toast, toastError } from "/admin/assets/ui/overlay.js";
 import { matchBadge, matchMap } from "/admin/assets/views/epg.js";
 import { previewChannel } from "/admin/assets/views/preview.js";
+import { buildSearchIndex, searchIndex } from "/admin/assets/core/search.js";
 
 export function matchesQuery(channel, query) {
   if (!query) return true;
@@ -26,6 +27,9 @@ export async function renderChannels(ctx) {
   const epgCell = (channel) =>
     channel.disabled ? h("span", { class: "muted", text: "—" }) : matchBadge(matches.get(channel.id)?.status);
   let query = "";
+  let matched = null;
+  let searchable = null;
+  let romanizeToken = 0;
   const filter = input("filter", "", { placeholder: vt("channels.filter"), type: "search" });
   filter.setAttribute("aria-label", vt("channels.filterAria"));
 
@@ -144,6 +148,8 @@ export async function renderChannels(ctx) {
   const clearFilter = () => {
     filter.value = "";
     query = "";
+    matched = null;
+    romanizeToken += 1;
     applyFilter();
   };
 
@@ -178,7 +184,7 @@ export async function renderChannels(ctx) {
     const locked = Boolean(query.trim());
     let shown = 0;
     for (const entry of entries) {
-      const visible = matchesQuery(entry.channel, query);
+      const visible = matched ? matched.has(entry.channel.id) : matchesQuery(entry.channel, query);
       if (visible) shown += 1;
       if (entry.tr) entry.tr.hidden = !visible;
       if (entry.card) entry.card.hidden = !visible;
@@ -210,9 +216,27 @@ export async function renderChannels(ctx) {
     }
   };
 
+  const romanizeFilter = async () => {
+    const raw = query;
+    const token = (romanizeToken += 1);
+    if (!raw.trim()) return;
+    try {
+      searchable ??= buildSearchIndex(entries.map((entry) => entry.channel));
+      const results = await searchIndex(await searchable, raw, entries.length);
+      if (token !== romanizeToken) return;
+      matched = new Set(results.map((item) => item.id));
+      applyFilter();
+    } catch {
+      matched = null;
+    }
+  };
+
   filter.addEventListener("input", () => {
     query = filter.value;
+    matched = null;
+    romanizeToken += 1;
     applyFilter();
+    romanizeFilter();
   });
 
   const onLayoutChange = () => applyFilter();
@@ -222,11 +246,25 @@ export async function renderChannels(ctx) {
   applyFilter();
   ctx.watchStatus(repaintStates);
 
+  const exportM3U = async () => {
+    try {
+      const content = await endpoints.exportM3U();
+      const url = URL.createObjectURL(new Blob([content], { type: "application/vnd.apple.mpegurl" }));
+      const anchor = h("a", { href: url, download: "kiln-playlist.m3u" });
+      anchor.click();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+      toast(vt("channels.exportedM3U"), vt("channels.exportedM3UHint"));
+    } catch (error) {
+      toastError(error, vt("channels.exportFailed"));
+    }
+  };
+
   return frag(
     pageHead(vt("channels.title"), vt("channels.description"), [
       button(vt("channels.enableAll"), { iconName: "power", disabled: !store.channels.length, onClick: () => setAll(ctx, false) }),
       button(vt("channels.disableAll"), { iconName: "ban", disabled: !store.channels.length, onClick: () => setAll(ctx, true) }),
       button(vt("channels.importM3U"), { iconName: "upload", onClick: () => openImportModal(ctx) }),
+      button(vt("channels.exportM3U"), { iconName: "download", disabled: !store.channels.length, onClick: exportM3U }),
       linkButton(vt("channels.add"), "/admin/channels?new=1", { kind: "primary", iconName: "plus" }),
     ]),
     h("div", { class: "toolbar" }, h("div", { class: "search-field" }, icon("search", 18), filter), count),

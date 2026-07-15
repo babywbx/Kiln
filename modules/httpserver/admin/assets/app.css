@@ -862,6 +862,26 @@ td .empty-state { min-height: 200px; }
   background: var(--info-bg);
 }
 
+.track-discovery {
+  display: grid;
+  gap: 16px;
+  margin-top: 14px;
+  padding: 16px;
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
+  border-radius: var(--r-md);
+  background: linear-gradient(145deg, color-mix(in srgb, var(--accent) 7%, var(--surface)), var(--surface));
+}
+.track-discovery-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.track-discovery-head .field-hint { margin: 4px 0 0; }
+.track-grid { padding-top: 14px; border-top: 1px solid var(--border); }
+.track-control { display: grid; gap: 8px; }
+.track-control input[hidden] { display: none; }
+
 .disclosure { border-bottom: 1px solid var(--border); }
 .disclosure summary {
   display: flex;
@@ -1093,6 +1113,8 @@ dialog::backdrop { background: rgb(0 0 0 / 30%); backdrop-filter: blur(3px); }
   .command-actions { justify-content: flex-start; }
   .command-actions .button { flex: 1 1 auto; }
   .form-section { padding: 18px 16px; }
+  .track-discovery-head { align-items: stretch; flex-direction: column; }
+  .track-discovery-head .button { width: 100%; }
   .disclosure summary, .disclosure-body { padding-inline: 16px; }
   .form-footer { flex-direction: column; align-items: stretch; gap: 10px; padding: 16px; }
   .form-footer-actions .button { flex: 1; min-height: 42px; }

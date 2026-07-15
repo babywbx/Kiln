@@ -47,19 +47,24 @@ const (
 type Representation struct {
 	ID string
 
-	Group         string
-	Type          ContentType
-	MimeType      string
-	Codecs        string
-	Bandwidth     int
-	Width         int
-	Height        int
-	FrameRate     string
-	Lang          string
-	Roles         []string
-	AudioChannels int
-	Trick         bool
-	Essential     []string
+	PeriodID          string
+	AdaptationSetID   string
+	TrackKey          string
+	Group             string
+	Type              ContentType
+	MimeType          string
+	Codecs            string
+	Bandwidth         int
+	Width             int
+	Height            int
+	FrameRate         string
+	Lang              string
+	Roles             []string
+	AudioChannels     int
+	AudioSamplingRate string
+	Trick             bool
+	Essential         []string
+	UnsupportedReason string
 
 	DefaultKID string
 	Encrypted  bool

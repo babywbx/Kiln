@@ -70,6 +70,7 @@ func (a *NativeAdapter) Start(ctx context.Context, req Request) (Job, error) {
 		Fetcher:                 a.newFetcher(req),
 		PreferHeight:            req.PreferHeight,
 		PreferredAudioLanguages: append([]string(nil), req.PreferredAudioLanguages...),
+		Selection:               req.Selection,
 		PlaylistSize:            a.playlistSize,
 		LLHLS:                   a.LLHLS,
 		PartTarget:              a.PartTarget,
@@ -219,6 +220,9 @@ func (a *AdaptivePackager) Start(ctx context.Context, req Request) (Job, error) 
 }
 
 func (a *AdaptivePackager) startFFmpeg(ctx context.Context, req Request, reason string) (Job, error) {
+	if mode := strings.ToLower(strings.TrimSpace(req.Selection.Subtitles.Mode)); mode == "prefer" || mode == "only" {
+		return nil, apperr.New(apperr.CodeInvalid, 400, "the ffmpeg compatibility engine cannot honor an explicit subtitle selection")
+	}
 	job, err := a.ffmpeg.Start(ctx, cleanWorkDir(req, "ffmpeg"))
 	if err != nil {
 		return nil, err

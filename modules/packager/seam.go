@@ -17,6 +17,7 @@ type Request struct {
 	WorkDir                 string
 	PreferHeight            int
 	PreferredAudioLanguages []string
+	Selection               config.TrackSelection
 	Engine                  string
 	Log                     *slog.Logger
 }

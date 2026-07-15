@@ -178,7 +178,8 @@ func masterPlaylist(tracks []*track, independent bool) []byte {
 	}
 
 	const subtitleGroup = "subtitles"
-	for i, subtitle := range subtitles {
+	subtitleDefaultWritten := false
+	for _, subtitle := range subtitles {
 		lang := subtitle.Lang
 		if lang == "" {
 			lang = "und"
@@ -187,8 +188,10 @@ func masterPlaylist(tracks []*track, independent bool) []byte {
 		if label == "" {
 			label = subtitle.Name
 		}
-		fmt.Fprintf(&b, "#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=%q,NAME=%q,LANGUAGE=%q,DEFAULT=%s,AUTOSELECT=YES,FORCED=NO,URI=%q\n",
-			subtitleGroup, label, lang, yesNo(i == 0), subtitle.playlistName())
+		isDefault := subtitle.Default && !subtitleDefaultWritten && !subtitle.Forced
+		subtitleDefaultWritten = subtitleDefaultWritten || isDefault
+		fmt.Fprintf(&b, "#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=%q,NAME=%q,LANGUAGE=%q,DEFAULT=%s,AUTOSELECT=YES,FORCED=%s,URI=%q\n",
+			subtitleGroup, label, lang, yesNo(isDefault), yesNo(subtitle.Forced), subtitle.playlistName())
 	}
 
 	if len(videos) == 0 {
@@ -209,6 +212,9 @@ func masterPlaylist(tracks []*track, independent bool) []byte {
 		fmt.Fprintf(&b, "#EXT-X-STREAM-INF:BANDWIDTH=%d,CODECS=%q", maxInt(bandwidth, 1), codecs)
 		if video.Width > 0 && video.Height > 0 {
 			fmt.Fprintf(&b, ",RESOLUTION=%dx%d", video.Width, video.Height)
+		}
+		if video.FrameRate > 0 {
+			fmt.Fprintf(&b, ",FRAME-RATE=%.3f", video.FrameRate)
 		}
 		if len(audios) > 0 {
 			fmt.Fprintf(&b, ",AUDIO=%q", audioGroup)

@@ -55,24 +55,26 @@ type SpawnGate interface {
 }
 
 type DashOptions struct {
-	Binary       string
-	SourceURL    string
-	UserAgent    string
-	Headers      map[string]string
-	Keys         []config.KeyPair
-	WorkDir      string
-	HLSTime      int
-	HLSListSize  int
-	LogLevel     string
-	PreferHeight int
-	LowLatency   bool
-	Logger       *slog.Logger
-	OnBytesIn    func(n int64)
-	Egress       *proxyegress.Router
-	ChannelID    string
-	FFmpegMode   config.FFmpegMode
-	DockerImage  string
-	SpawnGate    SpawnGate
+	Binary                string
+	SourceURL             string
+	UserAgent             string
+	Headers               map[string]string
+	Keys                  []config.KeyPair
+	WorkDir               string
+	HLSTime               int
+	HLSListSize           int
+	LogLevel              string
+	PreferHeight          int
+	VideoRepresentationID string
+	AudioRepresentationID string
+	LowLatency            bool
+	Logger                *slog.Logger
+	OnBytesIn             func(n int64)
+	Egress                *proxyegress.Router
+	ChannelID             string
+	FFmpegMode            config.FFmpegMode
+	DockerImage           string
+	SpawnGate             SpawnGate
 }
 
 var kidRe = regexp.MustCompile(`(?i)default_KID="([0-9a-fA-F-]{32,36})"`)
@@ -117,11 +119,14 @@ func StartDashHLS(parent context.Context, opt DashOptions) (*DashJob, error) {
 		return nil, fmt.Errorf("no matching decryption key for mpd")
 	}
 
-	filtered, note, err := FilterMPDForPack(mpdBody, resolvedURL, opt.PreferHeight)
+	filtered, note, err := FilterMPDForPackWithSelection(mpdBody, resolvedURL, opt.PreferHeight, opt.VideoRepresentationID, opt.AudioRepresentationID)
 	if err != nil {
 		return nil, err
 	}
-	pick := PickStreams(mpdBody, opt.PreferHeight)
+	pick, err := PickStreamsWithSelection(mpdBody, opt.PreferHeight, opt.VideoRepresentationID, opt.AudioRepresentationID)
+	if err != nil {
+		return nil, err
+	}
 	absWork, err := filepath.Abs(opt.WorkDir)
 	if err != nil {
 		return nil, err

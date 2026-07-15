@@ -1,8 +1,11 @@
 package mpd
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -12,7 +15,7 @@ const (
 	trickModeScheme = "http://dashif.org/guidelines/trickmode"
 )
 
-func normalizePeriod(xp xmlPeriod, mpdBase *url.URL) (Period, error) {
+func normalizePeriod(xp xmlPeriod, mpdBase *url.URL, tolerant bool) (Period, error) {
 	period := Period{ID: xp.ID}
 	var err error
 	if period.Start, err = optDuration(xp.Start); err != nil {
@@ -28,33 +31,65 @@ func normalizePeriod(xp xmlPeriod, mpdBase *url.URL) (Period, error) {
 		tmpl := mergeTemplate(xp.SegmentTemplate, as.SegmentTemplate)
 		group := as.ID
 		if group == "" {
-			group = strconv.Itoa(i)
+			group = stableAdaptationGroup(as)
+			if group == "" {
+				group = strconv.Itoa(i)
+			}
 		}
 		for _, xr := range as.Representations {
-			rep, err := normalizeRepresentation(xr, as, tmpl, asBase)
+			rep, err := normalizeRepresentation(xr, as, tmpl, asBase, tolerant)
 			if err != nil {
 				return Period{}, err
 			}
 			rep.Group = group
+			rep.PeriodID = xp.ID
+			rep.AdaptationSetID = as.ID
+			rep.TrackKey = stableTrackKey(rep)
 			period.Representations = append(period.Representations, rep)
 		}
 	}
 	return period, nil
 }
 
-func normalizeRepresentation(xr xmlRepresation, as xmlAdaptationSet, parentTmpl *xmlSegmentTmpl, asBase *url.URL) (Representation, error) {
+func stableAdaptationGroup(as xmlAdaptationSet) string {
+	roles := make([]string, 0, len(as.Roles))
+	for _, role := range as.Roles {
+		roles = append(roles, strings.TrimSpace(role.Value))
+	}
+	sort.Strings(roles)
+	representations := make([]string, 0, len(as.Representations))
+	for _, rep := range as.Representations {
+		representations = append(representations, strings.Join([]string{
+			rep.ID, rep.Codecs, strconv.Itoa(rep.Width), strconv.Itoa(rep.Height),
+			rep.FrameRate, rep.AudioSamplingRate,
+		}, ":"))
+	}
+	sort.Strings(representations)
+	identity := strings.Join([]string{
+		as.ContentType, as.MimeType, as.Codecs, as.Lang, strings.Join(roles, ","),
+		strings.Join(representations, ","),
+	}, "\x1f")
+	if strings.Trim(identity, "\x1f,") == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(identity))
+	return "anon_" + base64.RawURLEncoding.EncodeToString(sum[:8])
+}
+
+func normalizeRepresentation(xr xmlRepresation, as xmlAdaptationSet, parentTmpl *xmlSegmentTmpl, asBase *url.URL, tolerant bool) (Representation, error) {
 	base := resolveAll(asBase, xr.BaseURL)
 
 	rep := Representation{
-		ID:        xr.ID,
-		MimeType:  firstNonEmpty(xr.MimeType, as.MimeType),
-		Codecs:    firstNonEmpty(xr.Codecs, as.Codecs),
-		Bandwidth: xr.Bandwidth,
-		Width:     firstNonZero(xr.Width, as.Width),
-		Height:    firstNonZero(xr.Height, as.Height),
-		FrameRate: firstNonEmpty(xr.FrameRate, as.FrameRate),
-		Lang:      as.Lang,
-		Trick:     firstNonEmpty(xr.MaxPlayoutRate, as.MaxPlayoutRate) != "",
+		ID:                xr.ID,
+		MimeType:          firstNonEmpty(xr.MimeType, as.MimeType),
+		Codecs:            firstNonEmpty(xr.Codecs, as.Codecs),
+		Bandwidth:         xr.Bandwidth,
+		Width:             firstNonZero(xr.Width, as.Width),
+		Height:            firstNonZero(xr.Height, as.Height),
+		FrameRate:         firstNonEmpty(xr.FrameRate, as.FrameRate),
+		AudioSamplingRate: firstNonEmpty(xr.AudioSamplingRate, as.AudioSamplingRate),
+		Lang:              as.Lang,
+		Trick:             firstNonEmpty(xr.MaxPlayoutRate, as.MaxPlayoutRate) != "",
 	}
 	for _, ep := range append(append([]xmlDescriptor{}, as.Essential...), xr.Essential...) {
 		scheme := strings.ToLower(strings.TrimSpace(ep.SchemeIDURI))
@@ -77,7 +112,7 @@ func normalizeRepresentation(xr xmlRepresation, as xmlAdaptationSet, parentTmpl 
 			rep.AudioChannels = n
 		}
 	}
-	rep.Type = deriveContentType(as.ContentType, rep.MimeType, rep.Codecs, rep.Height, xr.AudioSamplingRate)
+	rep.Type = deriveContentType(as.ContentType, rep.MimeType, rep.Codecs, rep.Height, rep.AudioSamplingRate)
 	for _, cp := range append(append([]xmlProtection{}, as.ContentProtection...), xr.ContentProtection...) {
 		if !strings.EqualFold(cp.SchemeIDURI, cencScheme) {
 			continue
@@ -96,10 +131,27 @@ func normalizeRepresentation(xr xmlRepresation, as xmlAdaptationSet, parentTmpl 
 
 	addr, err := normalizeAddressing(xr, as, parentTmpl, base, rep.ID, rep.Bandwidth)
 	if err != nil {
+		if tolerant {
+			rep.UnsupportedReason = err.Error()
+			return rep, nil
+		}
 		return Representation{}, fmt.Errorf("representation %s: %w", rep.ID, err)
 	}
 	rep.Addressing = addr
 	return rep, nil
+}
+
+// stableTrackKey is deliberately independent of URLs, timelines and KIDs so
+// a user's choice survives normal live-manifest refreshes and token rotation.
+func stableTrackKey(rep Representation) string {
+	identity := strings.Join([]string{
+		"v1", rep.PeriodID, rep.AdaptationSetID, rep.Group, rep.ID,
+		string(rep.Type), rep.Lang, strings.Join(rep.Roles, ","), rep.Codecs,
+		strconv.Itoa(rep.Width), strconv.Itoa(rep.Height), rep.FrameRate,
+		strconv.Itoa(rep.AudioChannels), rep.AudioSamplingRate,
+	}, "\x1f")
+	sum := sha256.Sum256([]byte(identity))
+	return "trk_" + base64.RawURLEncoding.EncodeToString(sum[:12])
 }
 
 func normalizeAddressing(xr xmlRepresation, as xmlAdaptationSet, parentTmpl *xmlSegmentTmpl, base *url.URL, repID string, bandwidth int) (Addressing, error) {

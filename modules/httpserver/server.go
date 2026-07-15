@@ -136,11 +136,13 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/admin/settings", s.requireAuth(s.handleAdminGetSettings))
 	s.mux.HandleFunc("PUT /v1/admin/settings", s.requireAuth(s.handleAdminPutSettings))
 	s.mux.HandleFunc("POST /v1/admin/channels/{id}/probe", s.requireAuth(s.handleAdminProbeChannel))
+	s.mux.HandleFunc("POST /v1/admin/source-probes", s.requireAuth(s.handleAdminProbeSource))
 	s.mux.HandleFunc("POST /v1/admin/channels/{id}/warmup", s.requireAuth(s.handleAdminWarmupChannel))
 	s.mux.HandleFunc("POST /v1/admin/channels/{id}/preview", s.requireAuth(s.handleAdminPreviewChannel))
 	s.mux.HandleFunc("DELETE /v1/admin/sessions/{id}", s.requireAuth(s.handleAdminStopSession))
 	s.mux.HandleFunc("PUT /v1/admin/channels/reorder", s.requireAuth(s.handleAdminReorderChannels))
 	s.mux.HandleFunc("POST /v1/admin/import/m3u", s.requireAuth(s.handleAdminImportM3U))
+	s.mux.HandleFunc("POST /v1/admin/exports/m3u", s.requireAuth(s.handleAdminExportM3U))
 	s.mux.HandleFunc("GET /v1/admin/access-logs", s.requireAuth(s.handleAdminAccessLogs))
 	s.mux.HandleFunc("DELETE /v1/admin/access-logs", s.requireAuth(s.handleAdminClearAccessLogs))
 	s.mux.HandleFunc("GET /v1/admin/egress", s.requireAuth(s.handleAdminEgress))
@@ -519,7 +521,8 @@ func (s *Server) handlePlayIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.deps.Sessions.Touch(id)
-	switch sess.Channel.Ingress {
+	_, _, _, mode := sess.SourceSnapshot()
+	switch mode {
 	case "hls":
 		s.serveHLSIndex(w, r, sess)
 	case "dash":
@@ -530,12 +533,13 @@ func (s *Server) handlePlayIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) serveHLSIndex(w http.ResponseWriter, r *http.Request, sess *session.Session) {
-	headers := s.deps.Sessions.HeadersFor(sess.Channel)
+	channel, sourceURL, _, _ := sess.SourceSnapshot()
+	headers := s.deps.Sessions.HeadersFor(channel)
 	body, finalURL, err := s.deps.Sessions.Pull().GetBytes(r.Context(), pull.Request{
-		URL:       mergeHLSDeliveryDirectives(sess.SourceURL, r.URL.Query()),
-		UserAgent: version.UserAgent(sess.Channel.UserAgent),
+		URL:       mergeHLSDeliveryDirectives(sourceURL, r.URL.Query()),
+		UserAgent: version.UserAgent(channel.UserAgent),
 		Headers:   headers,
-		ChannelID: sess.Channel.ID,
+		ChannelID: channel.ID,
 	})
 	if err != nil {
 		s.deps.Observe.IncError()
@@ -543,12 +547,12 @@ func (s *Server) serveHLSIndex(w http.ResponseWriter, r *http.Request, sess *ses
 		return
 	}
 	token := extractPlayToken(r)
-	prefix := "/v1/play/" + sess.Channel.ID + "/u/"
+	prefix := "/v1/play/" + channel.ID + "/u/"
 	if t := r.PathValue("token"); t != "" && accesstoken.Valid(t) {
-		prefix = "/p/" + t + "/play/" + sess.Channel.ID + "/u/"
+		prefix = "/p/" + t + "/play/" + channel.ID + "/u/"
 		token = ""
 	}
-	chID := sess.Channel.ID
+	chID := channel.ID
 	rewritten, err := egress.RewritePlaylist(string(body), finalURL, prefix, s.deps.Allowed, s.shouldRewrite(chID))
 	if err != nil {
 		s.deps.Observe.IncError()
@@ -592,7 +596,8 @@ func (s *Server) serveDashIndex(w http.ResponseWriter, r *http.Request, sess *se
 // writePlaylist serves a published playlist with every reference rewritten to
 // this server. Playlists are a moving window, so they stay uncacheable.
 func (s *Server) writePlaylist(w http.ResponseWriter, r *http.Request, sess *session.Session, body []byte, generation string) {
-	out := rewriteLocalPlaylist(body, playLivePrefix(r, sess.Channel.ID), extractPlayToken(r), generation)
+	channel, _, _, _ := sess.SourceSnapshot()
+	out := rewriteLocalPlaylist(body, playLivePrefix(r, channel.ID), extractPlayToken(r), generation)
 	s.deps.Observe.AddBytesOut(int64(len(out)))
 	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 	w.Header().Set("Cache-Control", "no-store")
@@ -700,8 +705,20 @@ func (s *Server) handlePlayLiveFile(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", contentTypeFor(file))
 	setAssetCacheHeaders(w, asset.Immutable)
-	http.ServeContent(w, r, file, asset.ModTime, f)
-	s.deps.Observe.AddBytesOut(st.Size())
+	counter := &bodyCountWriter{ResponseWriter: w}
+	http.ServeContent(counter, r, file, asset.ModTime, f)
+	s.deps.Observe.AddBytesOut(counter.written)
+}
+
+type bodyCountWriter struct {
+	http.ResponseWriter
+	written int64
+}
+
+func (w *bodyCountWriter) Write(body []byte) (int, error) {
+	n, err := w.ResponseWriter.Write(body)
+	w.written += int64(n)
+	return n, err
 }
 
 func redirectToPublicationGeneration(w http.ResponseWriter, r *http.Request, generation string) {

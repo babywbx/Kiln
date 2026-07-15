@@ -183,8 +183,8 @@ func (s *Service) Upsert(ch config.Channel) error {
 	if s.db == nil {
 		return fmt.Errorf("store not available")
 	}
-	ch = normalizeChannel(ch)
-	if err := store.ValidateChannel(ch, s.cfg.Upstreams); err != nil {
+	ch, err := s.PrepareChannel(ch)
+	if err != nil {
 		return err
 	}
 	return s.db.UpsertChannel(ch)
@@ -194,11 +194,19 @@ func (s *Service) UpsertIfRevision(ch config.Channel, expectedRevision int64) er
 	if s.db == nil {
 		return fmt.Errorf("store not available")
 	}
-	ch = normalizeChannel(ch)
-	if err := store.ValidateChannel(ch, s.cfg.Upstreams); err != nil {
+	ch, err := s.PrepareChannel(ch)
+	if err != nil {
 		return err
 	}
 	return s.db.UpsertChannelIfRevision(ch, expectedRevision)
+}
+
+func (s *Service) PrepareChannel(ch config.Channel) (config.Channel, error) {
+	ch = normalizeChannel(ch)
+	if err := store.ValidateChannel(ch, s.cfg.Upstreams); err != nil {
+		return config.Channel{}, err
+	}
+	return ch, nil
 }
 
 func (s *Service) UpsertBatchIfRevisions(channels []config.Channel, revisions map[string]int64) error {
@@ -237,6 +245,21 @@ func normalizeChannel(ch config.Channel) config.Channel {
 	for i := range ch.PreferredAudioLanguages {
 		ch.PreferredAudioLanguages[i] = strings.TrimSpace(ch.PreferredAudioLanguages[i])
 	}
+	ch.Selection.Video.Mode = strings.ToLower(strings.TrimSpace(ch.Selection.Video.Mode))
+	ch.Selection.Audio.Mode = strings.ToLower(strings.TrimSpace(ch.Selection.Audio.Mode))
+	ch.Selection.Subtitles.Mode = strings.ToLower(strings.TrimSpace(ch.Selection.Subtitles.Mode))
+	trimSelector := func(selector *config.TrackSelector) {
+		selector.Key = strings.TrimSpace(selector.Key)
+		selector.AdaptationSetID = strings.TrimSpace(selector.AdaptationSetID)
+		selector.RepresentationID = strings.TrimSpace(selector.RepresentationID)
+		selector.Language = strings.TrimSpace(selector.Language)
+		selector.Role = strings.TrimSpace(selector.Role)
+		selector.Codec = strings.TrimSpace(selector.Codec)
+		selector.FrameRate = strings.TrimSpace(selector.FrameRate)
+	}
+	trimSelector(&ch.Selection.Video.Track)
+	trimSelector(&ch.Selection.Audio.Track)
+	trimSelector(&ch.Selection.Subtitles.Track)
 	if !ch.OnDemand && !ch.Autostart {
 		ch.OnDemand = true
 	}

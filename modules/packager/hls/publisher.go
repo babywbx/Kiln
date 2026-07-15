@@ -33,9 +33,11 @@ type Track struct {
 	Bandwidth int
 	Width     int
 	Height    int
+	FrameRate float64
 	Channels  int
 	Lang      string
 	Default   bool
+	Forced    bool
 }
 
 type Config struct {

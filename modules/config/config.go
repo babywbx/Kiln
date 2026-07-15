@@ -154,8 +154,44 @@ type Channel struct {
 	RestartOnFailure        bool              `json:"restart_on_failure" toml:"restart_on_failure"`
 	PreferHeight            int               `json:"prefer_height" toml:"prefer_height"`
 	PreferredAudioLanguages []string          `json:"preferred_audio_languages,omitempty" toml:"preferred_audio_languages,omitempty"`
+	Selection               TrackSelection    `json:"selection,omitempty" toml:"selection,omitempty"`
 	// Packager overrides the global engine strategy for this channel.
 	Packager string `json:"packager" toml:"packager"`
+}
+
+type TrackSelector struct {
+	Key              string `json:"key,omitempty" toml:"key,omitempty"`
+	AdaptationSetID  string `json:"adaptation_set_id,omitempty" toml:"adaptation_set_id,omitempty"`
+	RepresentationID string `json:"representation_id,omitempty" toml:"representation_id,omitempty"`
+	Language         string `json:"language,omitempty" toml:"language,omitempty"`
+	Role             string `json:"role,omitempty" toml:"role,omitempty"`
+	Codec            string `json:"codec,omitempty" toml:"codec,omitempty"`
+	Height           int    `json:"height,omitempty" toml:"height,omitempty"`
+	FrameRate        string `json:"frame_rate,omitempty" toml:"frame_rate,omitempty"`
+}
+
+type VideoSelection struct {
+	Mode         string        `json:"mode,omitempty" toml:"mode,omitempty"` // auto | cap | exact
+	MaxHeight    int           `json:"max_height,omitempty" toml:"max_height,omitempty"`
+	MaxFrameRate string        `json:"max_frame_rate,omitempty" toml:"max_frame_rate,omitempty"`
+	Track        TrackSelector `json:"track,omitempty" toml:"track,omitempty"`
+}
+
+type AudioSelection struct {
+	Mode               string        `json:"mode,omitempty" toml:"mode,omitempty"` // auto | prefer | only
+	Track              TrackSelector `json:"track,omitempty" toml:"track,omitempty"`
+	PreferredLanguages []string      `json:"preferred_languages,omitempty" toml:"preferred_languages,omitempty"`
+}
+
+type SubtitleSelection struct {
+	Mode  string        `json:"mode,omitempty" toml:"mode,omitempty"` // auto | off | prefer | only
+	Track TrackSelector `json:"track,omitempty" toml:"track,omitempty"`
+}
+
+type TrackSelection struct {
+	Video     VideoSelection    `json:"video,omitempty" toml:"video,omitempty"`
+	Audio     AudioSelection    `json:"audio,omitempty" toml:"audio,omitempty"`
+	Subtitles SubtitleSelection `json:"subtitles,omitempty" toml:"subtitles,omitempty"`
 }
 
 type Observe struct {
@@ -599,6 +635,12 @@ func (c File) validate() error {
 		if ch.Packager != "" && !ValidEngine(ch.Packager) {
 			return fmt.Errorf("channel %q packager must be auto, native or ffmpeg", ch.ID)
 		}
+		if err := ValidateTrackSelection(ch.Selection); err != nil {
+			return fmt.Errorf("channel %q selection: %w", ch.ID, err)
+		}
+		if err := ValidateEngineSelection(c.EngineFor(ch), ch.Selection); err != nil {
+			return fmt.Errorf("channel %q selection: %w", ch.ID, err)
+		}
 	}
 	proxyIDs := map[string]struct{}{"direct": {}}
 	for _, p := range c.Proxies {
@@ -704,6 +746,73 @@ func ValidateSourceURL(raw string) error {
 		return fmt.Errorf("fragment is not allowed")
 	}
 	return nil
+}
+
+func ValidateTrackSelection(selection TrackSelection) error {
+	if !validSelectionMode(selection.Video.Mode, "", "auto", "cap", "exact") {
+		return fmt.Errorf("video mode must be auto, cap or exact")
+	}
+	if !validSelectionMode(selection.Audio.Mode, "", "auto", "prefer", "only") {
+		return fmt.Errorf("audio mode must be auto, prefer or only")
+	}
+	if !validSelectionMode(selection.Subtitles.Mode, "", "auto", "off", "prefer", "only") {
+		return fmt.Errorf("subtitle mode must be auto, off, prefer or only")
+	}
+	if strings.EqualFold(strings.TrimSpace(selection.Video.Mode), "exact") && emptyTrackSelector(selection.Video.Track) {
+		return fmt.Errorf("exact video mode requires a track selector")
+	}
+	if strings.EqualFold(strings.TrimSpace(selection.Audio.Mode), "only") && emptyTrackSelector(selection.Audio.Track) {
+		return fmt.Errorf("audio-only mode requires a track selector")
+	}
+	if mode := strings.ToLower(strings.TrimSpace(selection.Subtitles.Mode)); (mode == "prefer" || mode == "only") && emptyTrackSelector(selection.Subtitles.Track) {
+		return fmt.Errorf("explicit subtitle mode requires a track selector")
+	}
+	for _, selector := range []TrackSelector{selection.Video.Track, selection.Audio.Track, selection.Subtitles.Track} {
+		for _, value := range []string{
+			selector.Key, selector.AdaptationSetID, selector.RepresentationID,
+			selector.Language, selector.Role, selector.Codec, selector.FrameRate,
+		} {
+			if len(value) > 512 {
+				return fmt.Errorf("track selector value is too long")
+			}
+			for _, r := range value {
+				if unicode.IsControl(r) {
+					return fmt.Errorf("track selector contains control characters")
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// ValidateEngineSelection rejects combinations that an explicitly selected
+// execution engine cannot honor. Auto mode is intentionally allowed to make
+// the native/compatibility decision after inspecting the manifest.
+func ValidateEngineSelection(engine string, selection TrackSelection) error {
+	if !strings.EqualFold(strings.TrimSpace(engine), EngineFFmpeg) {
+		return nil
+	}
+	if mode := strings.ToLower(strings.TrimSpace(selection.Subtitles.Mode)); mode == "prefer" || mode == "only" {
+		return fmt.Errorf("ffmpeg engine cannot honor an explicit subtitle selection; use auto or off")
+	}
+	return nil
+}
+
+func emptyTrackSelector(selector TrackSelector) bool {
+	return strings.TrimSpace(selector.Key) == "" && strings.TrimSpace(selector.AdaptationSetID) == "" &&
+		strings.TrimSpace(selector.RepresentationID) == "" && strings.TrimSpace(selector.Language) == "" &&
+		strings.TrimSpace(selector.Role) == "" && strings.TrimSpace(selector.Codec) == "" &&
+		selector.Height <= 0 && strings.TrimSpace(selector.FrameRate) == ""
+}
+
+func validSelectionMode(value string, allowed ...string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	for _, candidate := range allowed {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 func (c File) UpstreamByID(id string) (Upstream, bool) {

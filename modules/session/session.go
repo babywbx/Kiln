@@ -85,6 +85,8 @@ type Manager struct {
 	mu              sync.Mutex
 	sessions        map[string]*Session
 	inflight        map[string]*startWait
+	reloading       map[string]struct{}
+	reloadPending   map[string]struct{}
 	closing         bool
 	restart         RestartPolicy
 	watchers        sync.WaitGroup
@@ -149,6 +151,12 @@ func (s *Session) State() string {
 	return s.state
 }
 
+func (s *Session) SourceSnapshot() (config.Channel, string, config.Upstream, string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.Channel, s.SourceURL, s.Upstream, s.Mode
+}
+
 func NewManager(cat *catalog.Service, pullClient *pull.Client, obs *observe.Service, dataDir string, ff config.FFmpeg, log *slog.Logger, egress *proxyegress.Router) *Manager {
 	if log == nil {
 		log = slog.Default()
@@ -165,6 +173,8 @@ func NewManager(cat *catalog.Service, pullClient *pull.Client, obs *observe.Serv
 		spawn:           newSpawnGate(ff.MaxStarts),
 		sessions:        map[string]*Session{},
 		inflight:        map[string]*startWait{},
+		reloading:       map[string]struct{}{},
+		reloadPending:   map[string]struct{}{},
 		restart:         defaultRestartPolicy(),
 		lifecycleCtx:    lifecycleCtx,
 		lifecycleCancel: lifecycleCancel,
@@ -279,6 +289,110 @@ func (m *Manager) Warmup(channelID string) error {
 		}
 	}()
 	return nil
+}
+
+// ReloadChannel applies HLS changes atomically and prepares replacement DASH
+// publications in the background. Viewers keep using the old DASH generation
+// while changed source, key, engine, and track-selection settings are checked.
+func (m *Manager) ReloadChannel(channelID string) bool {
+	ch, src, up, err := m.resolve(channelID)
+	if err != nil || ch.Disabled {
+		return false
+	}
+	m.mu.Lock()
+	s, ok := m.sessions[channelID]
+	if !ok {
+		m.mu.Unlock()
+		return false
+	}
+	if _, busy := m.reloading[channelID]; busy {
+		m.reloadPending[channelID] = struct{}{}
+		m.mu.Unlock()
+		return true
+	}
+	s.mu.RLock()
+	oldJob := s.job
+	oldWorkDir := s.workDir
+	s.mu.RUnlock()
+	if ch.Ingress != "dash" {
+		s.mu.Lock()
+		s.Channel = ch
+		s.SourceURL = src
+		s.Upstream = up
+		s.Mode = ch.Ingress
+		s.job = nil
+		s.publication = nil
+		s.workDir = ""
+		s.engine = ""
+		s.packMode = ""
+		s.fallbackReason = ""
+		s.lastError = ""
+		s.lastOK = time.Now()
+		s.state = "running"
+		s.mu.Unlock()
+		m.publish(s)
+		if oldJob != nil || oldWorkDir != "" {
+			m.watchers.Add(1)
+		}
+		m.mu.Unlock()
+		if oldJob != nil || oldWorkDir != "" {
+			go func() {
+				defer m.watchers.Done()
+				cleanupJob(oldJob, oldWorkDir)
+			}()
+		}
+		return true
+	}
+	m.reloading[channelID] = struct{}{}
+	candidate := &Session{Channel: ch, SourceURL: src, Upstream: up, Mode: ch.Ingress, StartedAt: s.StartedAt, ctx: s.ctx}
+	m.watchers.Add(1)
+	m.mu.Unlock()
+
+	go func() {
+		defer m.watchers.Done()
+		started, startErr := m.launchDash(candidate)
+		m.mu.Lock()
+		delete(m.reloading, channelID)
+		_, pending := m.reloadPending[channelID]
+		delete(m.reloadPending, channelID)
+		if startErr != nil {
+			current := m.currentJobLocked(channelID, s, oldJob)
+			m.mu.Unlock()
+			if current {
+				m.log.Error("channel reload failed; keeping current publication", "channel", channelID, "err", startErr)
+			}
+			if pending {
+				m.ReloadChannel(channelID)
+			}
+			return
+		}
+		if !m.currentJobLocked(channelID, s, oldJob) {
+			m.mu.Unlock()
+			cleanupDashStart(started)
+			if pending {
+				m.ReloadChannel(channelID)
+			}
+			return
+		}
+		s.mu.Lock()
+		oldWorkDir := s.workDir
+		s.Channel = ch
+		s.SourceURL = src
+		s.Upstream = up
+		s.Mode = ch.Ingress
+		s.installLocked(started)
+		s.mu.Unlock()
+		m.publish(s)
+		if ch.RestartOnFailure {
+			m.startWatcherLocked(channelID, s, started.job)
+		}
+		m.mu.Unlock()
+		cleanupJob(oldJob, oldWorkDir)
+		if pending {
+			m.ReloadChannel(channelID)
+		}
+	}()
+	return true
 }
 
 func (m *Manager) Acquire(channelID string) (*Session, error) {
@@ -423,7 +537,8 @@ func (m *Manager) finishStart(channelID string, w *startWait, s *Session) (*Sess
 	}
 	close(w.done)
 	m.mu.Unlock()
-	m.log.Info("session started", "channel", channelID, "ingress", s.Channel.Ingress,
+	channel, _, _, _ := s.SourceSnapshot()
+	m.log.Info("session started", "channel", channelID, "ingress", channel.Ingress,
 		"engine", engine, "pack_mode", packMode, "fallback_reason", fallbackReason)
 	return s, nil
 }
@@ -448,39 +563,41 @@ type dashStart struct {
 }
 
 func (m *Manager) launchDash(s *Session) (*dashStart, error) {
-	if err := config.ValidateChannelID(s.Channel.ID); err != nil {
+	ch, sourceURL, upstream, _ := s.SourceSnapshot()
+	if err := config.ValidateChannelID(ch.ID); err != nil {
 		return nil, apperr.Wrap(apperr.CodeInvalid, 400, "invalid channel id", err)
 	}
-	keys, err := channelKeys(s.Channel)
+	keys, err := channelKeys(ch)
 	if err != nil {
 		return nil, apperr.Wrap(apperr.CodeInvalid, 400, "load keys failed", err)
 	}
 	generation := newGeneration()
-	work := filepath.Join(m.dataDir, "sessions", s.Channel.ID, generation)
-	headers := maps.Clone(s.Upstream.Headers)
+	work := filepath.Join(m.dataDir, "sessions", ch.ID, generation)
+	headers := maps.Clone(upstream.Headers)
 	if headers == nil {
 		headers = map[string]string{}
 	}
-	maps.Copy(headers, s.Channel.Headers)
+	maps.Copy(headers, ch.Headers)
 
 	prefer := m.ffmpeg.PreferHeight
-	if s.Channel.PreferHeight > 0 {
-		prefer = s.Channel.PreferHeight
+	if ch.PreferHeight > 0 {
+		prefer = ch.PreferHeight
 	}
 	m.mu.Lock()
 	engine := m.pack
 	m.mu.Unlock()
 	job, err := engine.Start(s.ctx, packager.Request{
-		ChannelID:               s.Channel.ID,
-		SourceURL:               s.SourceURL,
+		ChannelID:               ch.ID,
+		SourceURL:               sourceURL,
 		Keys:                    keys,
 		Headers:                 headers,
-		UserAgent:               s.Channel.UserAgent,
+		UserAgent:               ch.UserAgent,
 		WorkDir:                 work,
 		PreferHeight:            prefer,
-		PreferredAudioLanguages: append([]string(nil), s.Channel.PreferredAudioLanguages...),
-		Engine:                  m.cat.Config().EngineFor(s.Channel),
-		Log:                     m.log.With("channel", s.Channel.ID),
+		PreferredAudioLanguages: append([]string(nil), ch.PreferredAudioLanguages...),
+		Selection:               ch.Selection,
+		Engine:                  m.cat.Config().EngineFor(ch),
+		Log:                     m.log.With("channel", ch.ID),
 	})
 	if err != nil {
 		_ = os.RemoveAll(work)
@@ -503,6 +620,11 @@ func (m *Manager) launchDash(s *Session) (*dashStart, error) {
 
 func (s *Session) install(started *dashStart) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.installLocked(started)
+}
+
+func (s *Session) installLocked(started *dashStart) {
 	s.job = started.job
 	s.publication = started.publication
 	s.generation = started.generation
@@ -513,7 +635,6 @@ func (s *Session) install(started *dashStart) {
 	s.lastError = ""
 	s.lastOK = time.Now()
 	s.state = "running"
-	s.mu.Unlock()
 }
 
 func (m *Manager) startWatcherLocked(channelID string, s *Session, job packager.Job) {
@@ -542,8 +663,9 @@ func (m *Manager) watchJob(channelID string, s *Session, failedJob packager.Job)
 		m.mu.Unlock()
 		return
 	}
-	if s.Channel.OnDemand {
-		idle := m.cat.Config().IdleTimeout(s.Channel)
+	channel, _, _, _ := s.SourceSnapshot()
+	if channel.OnDemand {
+		idle := m.cat.Config().IdleTimeout(channel)
 		s.mu.RLock()
 		lastTouch := s.lastTouch
 		s.mu.RUnlock()
@@ -850,10 +972,11 @@ func (m *Manager) reapOnce() {
 	now := time.Now()
 	cleanups := make([]sessionCleanup, 0)
 	for id, s := range m.sessions {
-		if !s.Channel.OnDemand {
+		channel, _, _, _ := s.SourceSnapshot()
+		if !channel.OnDemand {
 			continue
 		}
-		idle := m.cat.Config().IdleTimeout(s.Channel)
+		idle := m.cat.Config().IdleTimeout(channel)
 		s.mu.RLock()
 		lastTouch := s.lastTouch
 		s.mu.RUnlock()

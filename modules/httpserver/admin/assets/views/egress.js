@@ -207,8 +207,22 @@ export async function renderEgress(ctx) {
     );
   };
 
+  const testTarget = select("test_target", [
+    ["bing", i18n.t("egress.test.targetBing")],
+    ["source", i18n.t("egress.test.targetSource")],
+  ], "bing");
   const testURL = input("test_url", "", { type: "url", placeholder: "https://example.com/live/index.m3u8" });
   const testChannel = select("test_channel", [["", i18n.t("egress.test.noChannel")], ...store.channels.map((channel) => [channel.id, channel.title || channel.id])], "");
+  const testTargetField = field(i18n.t("egress.test.target"), testTarget);
+  const testURLField = field(i18n.t("egress.test.url"), testURL);
+  const testChannelField = field(i18n.t("egress.test.channel"), testChannel);
+  const syncTestTarget = () => {
+    const source = testTarget.value === "source";
+    testURLField.hidden = !source;
+    testChannelField.hidden = !source;
+  };
+  testTarget.addEventListener("change", syncTestTarget);
+  syncTestTarget();
   testChannel.addEventListener("change", () => {
     const channel = store.channels.find((item) => item.id === testChannel.value);
     if (!channel) return;
@@ -216,7 +230,7 @@ export async function renderEgress(ctx) {
   });
 
   const testProxy = async (proxy) => {
-    if (!testURL.value.trim()) {
+    if (testTarget.value === "source" && !testURL.value.trim()) {
       testURL.setAttribute("aria-invalid", "true");
       testURL.focus();
       toast(i18n.t("egress.test.urlRequired"), i18n.t("egress.test.proxyURLRequiredDescription"), "danger");
@@ -224,7 +238,7 @@ export async function renderEgress(ctx) {
     }
     const proxyDraft = { ...draft, default: proxy.id, rules: [], proxies: draft.proxies.map((item) => ({ ...item, disabled: item.id === proxy.id ? false : item.disabled })) };
     try {
-      const result = await endpoints.testEgress({ url: testURL.value.trim(), channel_id: "", draft: proxyDraft });
+      const result = await endpoints.testEgress({ target: testTarget.value, url: testTarget.value === "source" ? testURL.value.trim() : "", channel_id: "", draft: proxyDraft });
       testResult.replaceChildren(resultNotice(result, proxy.id));
     } catch (error) {
       toastError(error, i18n.t("egress.test.proxyFailed"));
@@ -234,7 +248,7 @@ export async function renderEgress(ctx) {
   const testButton = button(i18n.t("egress.test.route"), {
     iconName: "route",
     onClick: async () => {
-      if (!testURL.value.trim()) {
+      if (testTarget.value === "source" && !testURL.value.trim()) {
         testURL.setAttribute("aria-invalid", "true");
         toast(i18n.t("egress.test.urlRequired"), i18n.t("egress.test.routeURLRequiredDescription"), "danger");
         return;
@@ -243,7 +257,8 @@ export async function renderEgress(ctx) {
       testButton.disabled = true;
       try {
         const result = await endpoints.testEgress({
-          url: testURL.value.trim(),
+          target: testTarget.value,
+          url: testTarget.value === "source" ? testURL.value.trim() : "",
           channel_id: testChannel.value,
           draft,
         });
@@ -315,7 +330,7 @@ export async function renderEgress(ctx) {
         body: h(
           "div",
           { class: "stack" },
-          h("div", { class: "form-grid" }, field(i18n.t("egress.test.url"), testURL), field(i18n.t("egress.test.channel"), testChannel)),
+          h("div", { class: "form-grid" }, testTargetField, testURLField, testChannelField),
           h("div", { class: "inline-row" }, testButton, dirtyLabel),
           testResult,
         ),

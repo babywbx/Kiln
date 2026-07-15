@@ -16,7 +16,81 @@ import (
 	"github.com/babywbx/kiln/modules/observe"
 	"github.com/babywbx/kiln/modules/packager"
 	"github.com/babywbx/kiln/modules/session"
+	"github.com/babywbx/kiln/modules/store"
 )
+
+func TestReloadChannelSwitchesBetweenHLSAndDASH(t *testing.T) {
+	t.Parallel()
+
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	cfg := config.File{}
+	cat := catalog.New(cfg, db)
+	initial := config.Channel{
+		ID: "news", Title: "News", SourceURL: "https://one.example/live.m3u8",
+		Ingress: "hls", OnDemand: true,
+	}
+	if err := cat.Upsert(initial); err != nil {
+		t.Fatal(err)
+	}
+	manager := session.NewManager(
+		cat, nil, observe.New(), t.TempDir(), config.FFmpeg{},
+		slog.New(slog.NewTextHandler(io.Discard, nil)), nil,
+	)
+	job := newFakeJob()
+	manager.SetPackager(&fakePackager{results: []startResult{{job: job}}})
+	defer manager.StopChannel(initial.ID)
+
+	if err := manager.Warmup(initial.ID); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, func() bool {
+		sess, ok := manager.Get(initial.ID)
+		return ok && sess.State() == "running"
+	})
+
+	dash := initial
+	dash.SourceURL = "https://two.example/live.mpd"
+	dash.Ingress = "dash"
+	dash.Keys = "00112233445566778899aabbccddeeff:ffeeddccbbaa99887766554433221100"
+	if err := cat.Upsert(dash); err != nil {
+		t.Fatal(err)
+	}
+	if !manager.ReloadChannel(initial.ID) {
+		t.Fatal("ReloadChannel() did not accept HLS to DASH switch")
+	}
+	eventually(t, func() bool {
+		sess, ok := manager.Get(initial.ID)
+		if !ok {
+			return false
+		}
+		_, sourceURL, _, mode := sess.SourceSnapshot()
+		publication, _ := sess.PublicationSnapshot()
+		return mode == "dash" && sourceURL == dash.SourceURL && publication != nil
+	})
+
+	hls := initial
+	hls.SourceURL = "https://three.example/new.m3u8"
+	if err := cat.Upsert(hls); err != nil {
+		t.Fatal(err)
+	}
+	if !manager.ReloadChannel(initial.ID) {
+		t.Fatal("ReloadChannel() did not accept DASH to HLS switch")
+	}
+	sess, ok := manager.Get(initial.ID)
+	if !ok {
+		t.Fatal("active session disappeared after DASH to HLS switch")
+	}
+	_, sourceURL, _, mode := sess.SourceSnapshot()
+	publication, _ := sess.PublicationSnapshot()
+	if mode != "hls" || sourceURL != hls.SourceURL || publication != nil {
+		t.Fatalf("session = mode %q source %q publication %T", mode, sourceURL, publication)
+	}
+	eventually(t, job.IntentionalStop)
+}
 
 func TestManagerRetriesRestartStartFailuresUntilBudgetIsExhausted(t *testing.T) {
 	t.Parallel()

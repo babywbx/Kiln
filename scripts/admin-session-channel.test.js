@@ -132,4 +132,9 @@ test("admin tabs validate shared sessions and never revive a signed-out session"
   requests.length = 0;
   await seventh.api("/probe", { suppressUnauthorized: true });
   assert.deepEqual(requests, [`Bearer ${newerToken}`]);
+
+  requests.length = 0;
+  const raw = await seventh.api("/playlist.m3u", { rawText: true });
+  assert.equal(raw, JSON.stringify({ role: "admin" }));
+  assert.deepEqual(requests, [`Bearer ${newerToken}`]);
 });
