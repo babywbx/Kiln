@@ -26,8 +26,7 @@ import (
 )
 
 func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
-	c := claimsFrom(r)
-	if c.Role != "admin" {
+	if principalFrom(r).Role != "admin" {
 		writeAppErr(w, apperr.New(apperr.CodeForbidden, 403, "admin required"))
 		return false
 	}

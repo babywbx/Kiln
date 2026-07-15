@@ -4,6 +4,7 @@ import { LOCALE_OPTIONS, i18n, localeLabel } from "/admin/assets/core/i18n.js";
 import { store } from "/admin/assets/core/store.js";
 import { badge, button, card, field, input, notice, pageHead, select } from "/admin/assets/ui/kit.js";
 import { closeModal, openModal, toast } from "/admin/assets/ui/overlay.js";
+import { adminAPITokensCard } from "/admin/assets/views/api-tokens.js";
 
 const passwordEncoder = new TextEncoder();
 const controlCharacter = /\p{Cc}/u;
@@ -21,7 +22,11 @@ export function configureSettingsActions(actions = {}) {
 }
 
 export async function renderSettings(ctx) {
-  const data = await endpoints.settings(ctx.signal);
+  const [data, apiTokens, apiTokenLogs] = await Promise.all([
+    endpoints.settings(ctx.signal),
+    endpoints.adminAPITokens(ctx.signal),
+    endpoints.adminAPITokenLogs(ctx.signal),
+  ]);
   if (!ctx.alive()) return frag();
 
   const baseInput = input("public_base_url", data.public_base_url || "", { type: "url", placeholder: "https://kiln.example.com" });
@@ -94,6 +99,7 @@ export async function renderSettings(ctx) {
       "div",
       { class: "stack" },
       account,
+      adminAPITokensCard(ctx, apiTokens, apiTokenLogs, data.public_base_url),
       h(
         "div",
         { class: "split" },

@@ -116,6 +116,8 @@ export function input(name, value = "", options = {}) {
   if (options.disabled) el.disabled = true;
   if (options.min != null) el.min = String(options.min);
   if (options.max != null) el.max = String(options.max);
+  if (options.maxlength != null) el.maxLength = Number(options.maxlength);
+  if (options.pattern) el.pattern = options.pattern;
   return el;
 }
 

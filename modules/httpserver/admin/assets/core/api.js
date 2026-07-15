@@ -369,6 +369,28 @@ export const endpoints = {
     api("/v1/admin/egress", { method: "PUT", headers: { "If-Match": String(revision || 0) }, body: JSON.stringify(body) }),
   testEgress: (body) => api("/v1/admin/egress/test", { method: "POST", body: JSON.stringify(body) }),
 
+  adminAPITokens: (signal) => api("/v1/admin/api-tokens", { signal }),
+  createAdminAPIToken: (body) => api("/v1/admin/api-tokens", { method: "POST", body: JSON.stringify(body) }),
+  updateAdminAPIToken: (id, body, revision) =>
+    api(`/v1/admin/api-tokens/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      headers: { "If-Match": String(revision || 0) },
+      body: JSON.stringify(body),
+    }),
+  rotateAdminAPIToken: (id, revision) =>
+    api(`/v1/admin/api-tokens/${encodeURIComponent(id)}/rotate`, {
+      method: "POST", headers: { "If-Match": String(revision || 0) }, body: "{}",
+    }),
+  revokeAdminAPIToken: (id, revision) =>
+    api(`/v1/admin/api-tokens/${encodeURIComponent(id)}/revoke`, {
+      method: "POST", headers: { "If-Match": String(revision || 0) }, body: "{}",
+    }),
+  deleteAdminAPIToken: (id, revision) =>
+    api(`/v1/admin/api-tokens/${encodeURIComponent(id)}`, {
+      method: "DELETE", headers: { "If-Match": String(revision || 0) },
+    }),
+  adminAPITokenLogs: (signal) => api("/v1/admin/api-token-logs", { signal }),
+
   epgPresets: (signal) => api("/v1/admin/epg/presets", { signal }),
   epgSources: (signal) => api("/v1/admin/epg/sources", { signal }),
   epgMatches: (signal) => api("/v1/admin/epg/matches", { signal }),

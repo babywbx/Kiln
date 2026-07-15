@@ -717,6 +717,12 @@ input:not([type="checkbox"]):disabled, select:disabled { color: var(--muted); ba
 }
 
 .text-danger { color: var(--danger); }
+.text-success { color: var(--success); }
+.permission-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.permission-grid .check-row { align-items: flex-start; }
+.permission-grid .check-row span { display: grid; gap: 3px; }
+.permission-grid .check-row small { color: var(--muted); font-weight: 400; }
+@media (max-width: 720px) { .permission-grid { grid-template-columns: 1fr; } }
 
 .notice {
   display: flex;

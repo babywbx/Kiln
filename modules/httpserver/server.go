@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/babywbx/kiln/modules/accesstoken"
+	"github.com/babywbx/kiln/modules/admintoken"
 	"github.com/babywbx/kiln/modules/apperr"
 	"github.com/babywbx/kiln/modules/auth"
 	"github.com/babywbx/kiln/modules/catalog"
@@ -154,6 +155,13 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /v1/admin/egress/rules/{id}", s.requireAuth(s.handleAdminUpsertRule))
 	s.mux.HandleFunc("DELETE /v1/admin/egress/rules/{id}", s.requireAuth(s.handleAdminDeleteRule))
 	s.mux.HandleFunc("POST /v1/admin/egress/test", s.requireAuth(s.handleAdminEgressTest))
+	s.mux.HandleFunc("GET /v1/admin/api-tokens", s.requireAuth(s.handleAdminListAPITokens))
+	s.mux.HandleFunc("POST /v1/admin/api-tokens", s.requireAuth(s.handleAdminCreateAPIToken))
+	s.mux.HandleFunc("PUT /v1/admin/api-tokens/{id}", s.requireAuth(s.handleAdminUpdateAPIToken))
+	s.mux.HandleFunc("POST /v1/admin/api-tokens/{id}/rotate", s.requireAuth(s.handleAdminRotateAPIToken))
+	s.mux.HandleFunc("POST /v1/admin/api-tokens/{id}/revoke", s.requireAuth(s.handleAdminRevokeAPIToken))
+	s.mux.HandleFunc("DELETE /v1/admin/api-tokens/{id}", s.requireAuth(s.handleAdminDeleteAPIToken))
+	s.mux.HandleFunc("GET /v1/admin/api-token-logs", s.requireAuth(s.handleAdminAPITokenLogs))
 
 	s.mux.HandleFunc("GET /p/{token}/playlist.m3u", s.handleDistPlaylist)
 	s.mux.HandleFunc("GET /p/{token}/play/{id}/index.m3u8", s.handleDistPlayIndex)
@@ -176,6 +184,7 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 		reqID := r.Header.Get("X-Request-ID")
 		if reqID == "" {
 			reqID = randomID()
+			r.Header.Set("X-Request-ID", reqID)
 		}
 		ww := &statusWriter{ResponseWriter: w, code: 200}
 		ww.Header().Set("X-Request-ID", reqID)
@@ -377,15 +386,18 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	c := claimsFrom(r)
+	p := principalFrom(r)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"username":    c.Username(),
-		"role":        c.Role,
+		"username":    p.Subject,
+		"role":        p.Role,
 		"channel_ids": c.ChannelIDs,
+		"credential":  p.Kind,
+		"scopes":      p.Scopes,
 	})
 }
 
 func (s *Server) handleUpdateCredentials(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdmin(w, r) {
+	if !s.requireSessionAdmin(w, r) {
 		return
 	}
 	claims := claimsFrom(r)
@@ -429,13 +441,14 @@ func (s *Server) handleUpdateCredentials(w http.ResponseWriter, r *http.Request)
 
 func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
 	c := claimsFrom(r)
+	p := principalFrom(r)
 	base := s.deps.Catalog.PublicBase()
 	all, err := s.deps.Catalog.ListViews(base, false, false)
 	if err != nil {
 		writeAppErr(w, apperr.Internal(err))
 		return
 	}
-	if c.Role == "admin" || len(c.ChannelIDs) == 0 {
+	if p.Role == "admin" || len(c.ChannelIDs) == 0 {
 		writeJSON(w, http.StatusOK, map[string]any{"channels": all})
 		return
 	}
@@ -455,7 +468,7 @@ func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	snapshot := s.deps.Observe.Snapshot()
 	claims := claimsFrom(r)
-	if claims.Role != "admin" && len(claims.ChannelIDs) > 0 {
+	if principalFrom(r).Role != "admin" && len(claims.ChannelIDs) > 0 {
 		allowed := make(map[string]struct{}, len(claims.ChannelIDs))
 		for _, id := range claims.ChannelIDs {
 			allowed[id] = struct{}{}
@@ -937,7 +950,24 @@ func mergeHLSDeliveryDirectives(raw string, requestQuery url.Values) string {
 
 type ctxKey int
 
-const claimsKey ctxKey = 1
+const (
+	claimsKey    ctxKey = 1
+	principalKey ctxKey = 2
+)
+
+type requestPrincipal struct {
+	Kind    string
+	Subject string
+	Role    string
+	TokenID string
+	Prefix  string
+	Scopes  []string
+}
+
+func principalFrom(r *http.Request) requestPrincipal {
+	p, _ := r.Context().Value(principalKey).(requestPrincipal)
+	return p
+}
 
 func claimsFrom(r *http.Request) auth.Claims {
 	c, _ := r.Context().Value(claimsKey).(auth.Claims)
@@ -947,6 +977,10 @@ func claimsFrom(r *http.Request) auth.Claims {
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		tok := auth.BearerToken(r.Header.Get("Authorization"))
+		if admintoken.Valid(tok) {
+			s.requireAdminToken(w, r, tok, next)
+			return
+		}
 		c, err := s.deps.Auth.Parse(tok)
 		if err != nil {
 			writeAppErr(w, err)
@@ -956,8 +990,138 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			writeAppErr(w, auth.ErrInvalidToken)
 			return
 		}
-		next(w, r.WithContext(context.WithValue(r.Context(), claimsKey, c)))
+		principal := requestPrincipal{Kind: "session", Subject: c.Username(), Role: c.Role}
+		ctx := context.WithValue(r.Context(), claimsKey, c)
+		ctx = context.WithValue(ctx, principalKey, principal)
+		next(w, r.WithContext(ctx))
 	}
+}
+
+var adminTokenRouteScopes = map[string]admintoken.Scope{
+	"GET /v1/me":                               admintoken.ScopeRead,
+	"GET /v1/channels":                         admintoken.ScopeRead,
+	"GET /v1/status":                           admintoken.ScopeRead,
+	"GET /v1/admin/channels":                   admintoken.ScopeRead,
+	"GET /v1/admin/channels/{id}":              admintoken.ScopeRead,
+	"POST /v1/admin/channels":                  admintoken.ScopeWrite,
+	"PUT /v1/admin/channels/{id}":              admintoken.ScopeWrite,
+	"DELETE /v1/admin/channels/{id}":           admintoken.ScopeDelete,
+	"POST /v1/admin/channels/enable-all":       admintoken.ScopeWrite,
+	"POST /v1/admin/channels/disable-all":      admintoken.ScopeWrite,
+	"GET /v1/admin/epg/presets":                admintoken.ScopeRead,
+	"GET /v1/admin/epg/sources":                admintoken.ScopeRead,
+	"POST /v1/admin/epg/sources":               admintoken.ScopeWrite,
+	"PUT /v1/admin/epg/sources/{id}":           admintoken.ScopeWrite,
+	"DELETE /v1/admin/epg/sources/{id}":        admintoken.ScopeDelete,
+	"GET /v1/admin/epg/matches":                admintoken.ScopeRead,
+	"POST /v1/admin/epg/refresh":               admintoken.ScopeRefresh,
+	"GET /v1/admin/upstreams":                  admintoken.ScopeRead,
+	"GET /v1/admin/access-tokens":              admintoken.ScopeRead,
+	"POST /v1/admin/access-tokens":             admintoken.ScopeWrite,
+	"POST /v1/admin/access-tokens/{id}/revoke": admintoken.ScopeDelete,
+	"DELETE /v1/admin/access-tokens/{id}":      admintoken.ScopeDelete,
+	"GET /v1/admin/settings":                   admintoken.ScopeRead,
+	"PUT /v1/admin/settings":                   admintoken.ScopeWrite,
+	"POST /v1/admin/channels/{id}/probe":       admintoken.ScopeRefresh,
+	"POST /v1/admin/source-probes":             admintoken.ScopeRefresh,
+	"POST /v1/admin/channels/{id}/warmup":      admintoken.ScopeRefresh,
+	"POST /v1/admin/channels/{id}/preview":     admintoken.ScopeRefresh,
+	"DELETE /v1/admin/sessions/{id}":           admintoken.ScopeRefresh,
+	"PUT /v1/admin/channels/reorder":           admintoken.ScopeWrite,
+	"POST /v1/admin/import/m3u":                admintoken.ScopeWrite,
+	// Exporting an M3U creates a new playback credential, so this is a write
+	// even though the response itself is a read-only playlist.
+	"POST /v1/admin/exports/m3u":           admintoken.ScopeWrite,
+	"GET /v1/admin/access-logs":            admintoken.ScopeRead,
+	"DELETE /v1/admin/access-logs":         admintoken.ScopeDelete,
+	"GET /v1/admin/egress":                 admintoken.ScopeRead,
+	"PUT /v1/admin/egress":                 admintoken.ScopeWrite,
+	"POST /v1/admin/egress/proxies":        admintoken.ScopeWrite,
+	"PUT /v1/admin/egress/proxies/{id}":    admintoken.ScopeWrite,
+	"DELETE /v1/admin/egress/proxies/{id}": admintoken.ScopeDelete,
+	"POST /v1/admin/egress/rules":          admintoken.ScopeWrite,
+	"PUT /v1/admin/egress/rules/{id}":      admintoken.ScopeWrite,
+	"DELETE /v1/admin/egress/rules/{id}":   admintoken.ScopeDelete,
+	"POST /v1/admin/egress/test":           admintoken.ScopeRefresh,
+}
+
+var sessionOnlyAdminRoutes = map[string]struct{}{
+	"PUT /v1/me/credentials":                {},
+	"GET /v1/admin/api-tokens":              {},
+	"POST /v1/admin/api-tokens":             {},
+	"PUT /v1/admin/api-tokens/{id}":         {},
+	"POST /v1/admin/api-tokens/{id}/rotate": {},
+	"POST /v1/admin/api-tokens/{id}/revoke": {},
+	"DELETE /v1/admin/api-tokens/{id}":      {},
+	"GET /v1/admin/api-token-logs":          {},
+}
+
+func (s *Server) requireAdminToken(w http.ResponseWriter, r *http.Request, plain string, next http.HandlerFunc) {
+	if s.deps.Store == nil {
+		writeAppErr(w, auth.ErrInvalidToken)
+		return
+	}
+	row, found, err := s.deps.Store.GetAdminAPITokenByHash(admintoken.Hash(plain))
+	if err != nil {
+		writeAppErr(w, apperr.Internal(err))
+		return
+	}
+	if !found {
+		writeAppErr(w, auth.ErrInvalidToken)
+		return
+	}
+	required, registered := adminTokenRouteScopes[r.Pattern]
+	status := http.StatusOK
+	decision := "allow"
+	reason := ""
+	switch {
+	case !row.Enabled || row.RevokedAt > 0:
+		status, decision, reason = http.StatusUnauthorized, "deny", "revoked"
+	case row.ExpiresAt > 0 && row.ExpiresAt <= time.Now().Unix():
+		status, decision, reason = http.StatusUnauthorized, "deny", "expired"
+	case hasSessionOnlyRoute(r.Pattern):
+		status, decision, reason = http.StatusForbidden, "deny", "session_required"
+	case !registered:
+		status, decision, reason = http.StatusForbidden, "deny", "route_not_available"
+	case !admintoken.Allows(admintoken.DecodeScopes(row.ScopeJSON), required):
+		status, decision, reason = http.StatusForbidden, "deny", "missing_scope"
+	}
+	if decision == "deny" {
+		s.recordAdminTokenLog(r, row, string(required), decision, reason, status)
+		if status == http.StatusUnauthorized {
+			writeAppErr(w, auth.ErrInvalidToken)
+		} else {
+			writeAppErr(w, apperr.New(apperr.CodeForbidden, status, "API token permission denied"))
+		}
+		return
+	}
+	_ = s.deps.Store.TouchAdminAPIToken(row.ID)
+	principal := requestPrincipal{
+		Kind: "api_token", Subject: row.Name, Role: "admin", TokenID: row.ID,
+		Prefix: row.Prefix, Scopes: admintoken.DecodeScopes(row.ScopeJSON),
+	}
+	ctx := context.WithValue(r.Context(), principalKey, principal)
+	next(w, r.WithContext(ctx))
+	if sw, ok := w.(*statusWriter); ok {
+		status = sw.code
+	}
+	s.recordAdminTokenLog(r, row, string(required), decision, reason, status)
+}
+
+func hasSessionOnlyRoute(pattern string) bool {
+	_, ok := sessionOnlyAdminRoutes[pattern]
+	return ok
+}
+
+func (s *Server) recordAdminTokenLog(r *http.Request, token store.AdminAPITokenRow, scope, decision, reason string, status int) {
+	if s.deps.Store == nil {
+		return
+	}
+	_ = s.deps.Store.InsertAdminAPITokenLog(store.AdminAPITokenLogRow{
+		TokenID: token.ID, TokenPrefix: token.Prefix, Method: r.Method, Path: r.URL.Path,
+		Scope: scope, Decision: decision, Reason: reason, Status: status, Remote: clientIP(r),
+		UserAgent: r.UserAgent(), RequestID: r.Header.Get("X-Request-ID"),
+	})
 }
 
 func (s *Server) requirePlayAuth(next http.HandlerFunc) http.HandlerFunc {

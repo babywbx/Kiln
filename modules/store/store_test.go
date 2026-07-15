@@ -134,6 +134,102 @@ func TestAccessTokenExpiryRoundTrip(t *testing.T) {
 	}
 }
 
+func TestChannelEgressBindingIsAtomicAndKeepsAdvancedRules(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.SeedFromConfig(config.File{Egress: config.Egress{Default: "direct", PlaylistPolicy: "rewrite"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpsertProxyProfile(store.ProxyProfileRow{ID: "existing", Name: "Existing", URL: "http://127.0.0.1:8080"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpsertProxyRule(store.ProxyRuleRow{ID: "advanced", Priority: 50, Kind: "channel_id", Pattern: "demo", ProxyID: "direct"}); err != nil {
+		t.Fatal(err)
+	}
+	channel := config.Channel{ID: "demo", Title: "Demo", SourceURL: "https://example.com/live.m3u8", Ingress: "hls", OnDemand: true}
+	if err := db.UpsertChannelWithEgress(channel, 0, store.ChannelEgressBinding{Mode: "profile", ProfileID: "existing"}); err != nil {
+		t.Fatal(err)
+	}
+	rules, err := db.ListProxyRules()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasRule(rules, store.ManagedChannelRuleID("demo"), "existing") || !hasRule(rules, "advanced", "direct") {
+		t.Fatalf("rules = %#v", rules)
+	}
+	row, found, err := db.GetChannelRow("demo")
+	if err != nil || !found {
+		t.Fatalf("channel found=%v err=%v", found, err)
+	}
+	channel.Title = "Should roll back"
+	duplicate := store.ProxyProfileRow{ID: "existing", URL: "http://127.0.0.1:9999"}
+	if err := db.UpsertChannelWithEgress(channel, row.Revision, store.ChannelEgressBinding{Mode: "profile", NewProfile: &duplicate}); err == nil {
+		t.Fatal("duplicate quick profile unexpectedly succeeded")
+	}
+	rolledBack, _, err := db.GetChannelRow("demo")
+	if err != nil || rolledBack.Channel.Title != "Demo" {
+		t.Fatalf("partial channel update = %#v, err=%v", rolledBack, err)
+	}
+	if err := db.UpsertChannelWithEgress(rolledBack.Channel, rolledBack.Revision, store.ChannelEgressBinding{Mode: "auto"}); err != nil {
+		t.Fatal(err)
+	}
+	rules, _ = db.ListProxyRules()
+	if hasRule(rules, store.ManagedChannelRuleID("demo"), "existing") || !hasRule(rules, "advanced", "direct") {
+		t.Fatalf("automatic mode changed advanced rules: %#v", rules)
+	}
+}
+
+func hasRule(rules []store.ProxyRuleRow, id, proxyID string) bool {
+	for _, rule := range rules {
+		if rule.ID == id && rule.ProxyID == proxyID {
+			return true
+		}
+	}
+	return false
+}
+
+func TestAdminAPITokenLifecycleAndAudit(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	row := store.AdminAPITokenRow{
+		ID: "admin-token", Name: "Automation", TokenHash: "hash", Prefix: "kiln_v1_12345678",
+		ScopeJSON: `["read","refresh"]`, Enabled: true, CreatedAt: 100, Revision: 1,
+	}
+	if err := db.InsertAdminAPIToken(row); err != nil {
+		t.Fatal(err)
+	}
+	got, found, err := db.GetAdminAPITokenByHash("hash")
+	if err != nil || !found || got.TokenHash != "hash" {
+		t.Fatalf("token = %#v, found=%v err=%v", got, found, err)
+	}
+	if err := db.InsertAdminAPITokenLog(store.AdminAPITokenLogRow{
+		TokenID: row.ID, TokenPrefix: row.Prefix, Method: "GET", Path: "/v1/admin/channels",
+		Scope: "read", Decision: "allow", Status: 200,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	logs, err := db.ListAdminAPITokenLogs(10)
+	if err != nil || len(logs) != 1 || logs[0].Decision != "allow" {
+		t.Fatalf("logs = %#v, err=%v", logs, err)
+	}
+	if err := db.RotateAdminAPIToken(row.ID, "new-hash", "kiln_v1_new", 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, _ := db.GetAdminAPITokenByHash("hash"); found {
+		t.Fatal("old token hash survived rotation")
+	}
+	rotated, found, _ := db.GetAdminAPITokenByHash("new-hash")
+	if !found || rotated.Revision != 2 {
+		t.Fatalf("rotated = %#v", rotated)
+	}
+}
+
 func TestAuthOverridesPreserveConfigAuthorization(t *testing.T) {
 	db, err := store.Open(t.TempDir())
 	if err != nil {

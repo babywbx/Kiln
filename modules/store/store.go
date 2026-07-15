@@ -1639,6 +1639,231 @@ func (db *DB) DeleteAccessTokenIfRevision(id string, expectedRevision int64) err
 	return revisionResult(result)
 }
 
+type AdminAPITokenRow struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	TokenHash  string `json:"-"`
+	Prefix     string `json:"token_prefix"`
+	ScopeJSON  string `json:"-"`
+	Enabled    bool   `json:"enabled"`
+	Note       string `json:"note,omitempty"`
+	CreatedBy  string `json:"created_by,omitempty"`
+	CreatedAt  int64  `json:"created_at"`
+	ExpiresAt  int64  `json:"expires_at,omitempty"`
+	LastUsedAt int64  `json:"last_used_at,omitempty"`
+	RevokedAt  int64  `json:"revoked_at,omitempty"`
+	Revision   int64  `json:"revision"`
+	UpdatedAt  int64  `json:"updated_at"`
+}
+
+func (db *DB) InsertAdminAPIToken(row AdminAPITokenRow) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	_, err := db.sql.Exec(`INSERT INTO admin_api_tokens(
+		id, name, token_hash, token_prefix, scopes_json, enabled, note, created_by,
+		created_at, expires_at, last_used_at, revoked_at, revision, updated_at
+	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		row.ID, row.Name, row.TokenHash, row.Prefix, row.ScopeJSON, boolInt(row.Enabled),
+		row.Note, row.CreatedBy, row.CreatedAt, row.ExpiresAt, row.LastUsedAt, row.RevokedAt,
+		nonzeroRevision(row.Revision), nonzeroTime(row.UpdatedAt, row.CreatedAt),
+	)
+	return err
+}
+
+func (db *DB) ListAdminAPITokens() ([]AdminAPITokenRow, error) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	rows, err := db.sql.Query(`SELECT id, name, token_hash, token_prefix, scopes_json, enabled,
+		note, created_by, created_at, expires_at, last_used_at, revoked_at, revision, updated_at
+		FROM admin_api_tokens ORDER BY created_at DESC, id DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []AdminAPITokenRow{}
+	for rows.Next() {
+		row, err := scanAdminAPIToken(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+func (db *DB) GetAdminAPITokenByHash(hash string) (AdminAPITokenRow, bool, error) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	row, err := scanAdminAPIToken(db.sql.QueryRow(`SELECT id, name, token_hash, token_prefix,
+		scopes_json, enabled, note, created_by, created_at, expires_at, last_used_at,
+		revoked_at, revision, updated_at FROM admin_api_tokens WHERE token_hash=?`, hash))
+	if errors.Is(err, sql.ErrNoRows) {
+		return AdminAPITokenRow{}, false, nil
+	}
+	return row, err == nil, err
+}
+
+func (db *DB) GetAdminAPITokenByID(id string) (AdminAPITokenRow, bool, error) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	row, err := scanAdminAPIToken(db.sql.QueryRow(`SELECT id, name, token_hash, token_prefix,
+		scopes_json, enabled, note, created_by, created_at, expires_at, last_used_at,
+		revoked_at, revision, updated_at FROM admin_api_tokens WHERE id=?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return AdminAPITokenRow{}, false, nil
+	}
+	return row, err == nil, err
+}
+
+func scanAdminAPIToken(row interface{ Scan(...any) error }) (AdminAPITokenRow, error) {
+	var token AdminAPITokenRow
+	var enabled int
+	err := row.Scan(
+		&token.ID, &token.Name, &token.TokenHash, &token.Prefix, &token.ScopeJSON, &enabled,
+		&token.Note, &token.CreatedBy, &token.CreatedAt, &token.ExpiresAt, &token.LastUsedAt,
+		&token.RevokedAt, &token.Revision, &token.UpdatedAt,
+	)
+	token.Enabled = intBool(enabled)
+	return token, err
+}
+
+func (db *DB) UpdateAdminAPIToken(row AdminAPITokenRow, expectedRevision int64) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	if expectedRevision <= 0 {
+		return ErrRevisionConflict
+	}
+	result, err := db.sql.Exec(`UPDATE admin_api_tokens SET name=?, scopes_json=?, enabled=?,
+		note=?, expires_at=?, revision=revision+1, updated_at=?
+		WHERE id=? AND revision=? AND revoked_at=0`, row.Name, row.ScopeJSON, boolInt(row.Enabled),
+		row.Note, row.ExpiresAt, time.Now().Unix(), row.ID, expectedRevision)
+	if err != nil {
+		return err
+	}
+	return revisionResult(result)
+}
+
+func (db *DB) RotateAdminAPIToken(id, tokenHash, tokenPrefix string, expectedRevision int64) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	if expectedRevision <= 0 {
+		return ErrRevisionConflict
+	}
+	result, err := db.sql.Exec(`UPDATE admin_api_tokens SET token_hash=?, token_prefix=?,
+		last_used_at=0, revision=revision+1, updated_at=? WHERE id=? AND revision=? AND
+		enabled=1 AND revoked_at=0`, tokenHash, tokenPrefix, time.Now().Unix(), id, expectedRevision)
+	if err != nil {
+		return err
+	}
+	return revisionResult(result)
+}
+
+func (db *DB) TouchAdminAPIToken(id string) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	_, err := db.sql.Exec(`UPDATE admin_api_tokens SET last_used_at=? WHERE id=?`, time.Now().Unix(), id)
+	return err
+}
+
+func (db *DB) RevokeAdminAPIToken(id string, expectedRevision int64) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	if expectedRevision <= 0 {
+		return ErrRevisionConflict
+	}
+	now := time.Now().Unix()
+	result, err := db.sql.Exec(`UPDATE admin_api_tokens SET enabled=0, revoked_at=?,
+		revision=revision+1, updated_at=? WHERE id=? AND revision=? AND revoked_at=0`,
+		now, now, id, expectedRevision)
+	if err != nil {
+		return err
+	}
+	return revisionResult(result)
+}
+
+func (db *DB) DeleteAdminAPIToken(id string, expectedRevision int64) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	if expectedRevision <= 0 {
+		return ErrRevisionConflict
+	}
+	result, err := db.sql.Exec(`DELETE FROM admin_api_tokens WHERE id=? AND revision=?`, id, expectedRevision)
+	if err != nil {
+		return err
+	}
+	return revisionResult(result)
+}
+
+type AdminAPITokenLogRow struct {
+	ID          int64  `json:"id"`
+	TokenID     string `json:"token_id"`
+	TokenPrefix string `json:"token_prefix"`
+	Method      string `json:"method"`
+	Path        string `json:"path"`
+	Scope       string `json:"required_scope"`
+	Decision    string `json:"decision"`
+	Reason      string `json:"reason,omitempty"`
+	Status      int    `json:"status"`
+	Remote      string `json:"remote,omitempty"`
+	UserAgent   string `json:"user_agent,omitempty"`
+	RequestID   string `json:"request_id,omitempty"`
+	CreatedAt   int64  `json:"created_at"`
+}
+
+func (db *DB) InsertAdminAPITokenLog(row AdminAPITokenLogRow) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	if row.CreatedAt == 0 {
+		row.CreatedAt = time.Now().Unix()
+	}
+	_, err := db.sql.Exec(`INSERT INTO admin_api_token_logs(
+		token_id, token_prefix, method, path, required_scope, decision, reason, status,
+		remote, user_agent, request_id, created_at
+	) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, row.TokenID, row.TokenPrefix, row.Method, row.Path,
+		row.Scope, row.Decision, row.Reason, row.Status, row.Remote, row.UserAgent,
+		row.RequestID, row.CreatedAt)
+	if err != nil {
+		return err
+	}
+	_, _ = db.sql.Exec(`DELETE FROM admin_api_token_logs WHERE id NOT IN (
+		SELECT id FROM admin_api_token_logs ORDER BY id DESC LIMIT 5000
+	)`)
+	return nil
+}
+
+func (db *DB) ListAdminAPITokenLogs(limit int) ([]AdminAPITokenLogRow, error) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := db.sql.Query(`SELECT id, COALESCE(token_id, ''), token_prefix, method, path,
+		required_scope, decision, reason, status, remote, user_agent, request_id, created_at
+		FROM admin_api_token_logs ORDER BY id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []AdminAPITokenLogRow{}
+	for rows.Next() {
+		var row AdminAPITokenLogRow
+		if err := rows.Scan(&row.ID, &row.TokenID, &row.TokenPrefix, &row.Method,
+			&row.Path, &row.Scope, &row.Decision, &row.Reason, &row.Status, &row.Remote,
+			&row.UserAgent, &row.RequestID, &row.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+func nonzeroRevision(value int64) int64 {
+	if value > 0 {
+		return value
+	}
+	return 1
+}
+
 func (db *DB) GetSetting(key string) (string, bool, error) {
 	row, ok, err := db.GetSettingRow(key)
 	return row.Value, ok, err

@@ -122,6 +122,13 @@ func TestEPGEndToEnd(t *testing.T) {
 		!strings.Contains(string(playlist.Body), `tvg-logo="http://kiln.test/v1/logo/demo"`) {
 		t.Fatalf("EPG playlist %d %s", playlist.StatusCode, playlist.Body)
 	}
+	exported := adminJSON(t, http.MethodPost, ts.URL+"/v1/admin/exports/m3u", login.Token, map[string]any{})
+	if exported.StatusCode != http.StatusCreated ||
+		strings.Contains(string(exported.Body), login.Token) ||
+		!strings.Contains(string(exported.Body), "/p/v1") ||
+		!strings.Contains(string(exported.Body), "/play/demo/index.m3u8") {
+		t.Fatalf("safe M3U export %d %s", exported.StatusCode, exported.Body)
+	}
 	distributionToken, distributionRow, err := accesstoken.NewRow("EPG", "", nil)
 	if err != nil {
 		t.Fatal(err)
