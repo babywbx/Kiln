@@ -295,7 +295,7 @@ export async function renderEgress(ctx) {
       }),
       h(
         "div",
-        { class: "split-even" },
+        { class: "stack" },
         card({
           title: i18n.t("egress.proxy.title"),
           body: proxyBody,

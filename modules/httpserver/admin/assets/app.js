@@ -91,7 +91,7 @@ function buildShell() {
       h(
         "a",
         { class: "nav-item", href: `/admin/${section}`, "data-route": true, "data-nav": section },
-        icon(meta.icon, 20),
+        icon(meta.icon, 18),
         h("span", { class: "nav-label", text: sectionLabel(section) }),
       ),
     ),
