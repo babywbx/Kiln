@@ -132,7 +132,7 @@ preferred_audio_languages = ["yue", "zh"]
 }
 
 func TestValidateChannelID(t *testing.T) {
-	for _, id := range []string{"channel-1", "news-hd", "channel_2", "sports.us", "频道", "news hd", "~new", " news", strings.Repeat("a", 300)} {
+	for _, id := range []string{"channel1", "news-hd", "channel_2", "sports.us", "频道", "news hd", "~new", " news", strings.Repeat("a", 300)} {
 		if err := ValidateChannelID(id); err != nil {
 			t.Fatalf("ValidateChannelID(%q) = %v", id, err)
 		}

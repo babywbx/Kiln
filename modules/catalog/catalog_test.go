@@ -17,7 +17,7 @@ func TestM3UAdvertisesRewrittenEPG(t *testing.T) {
 
 	wants := []string{
 		`#EXTM3U x-tvg-url="https://kiln.example/v1/epg.xml.gz"`,
-		`tvg-id="demo-news"`,
+		`tvg-id="channel-news"`,
 		`tvg-name="News Channel"`,
 		`tvg-logo="https://logo.example/news.png"`,
 		`group-title="News"`,

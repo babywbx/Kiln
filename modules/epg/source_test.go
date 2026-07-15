@@ -1,6 +1,7 @@
 package epg_test
 
 import (
+	"regexp"
 	"slices"
 	"testing"
 
@@ -38,6 +39,17 @@ func TestPresetsContainVerifiedSourcesAndReturnIndependentCopies(t *testing.T) {
 	got[0].Name = "mutated"
 	if epg.Presets()[0].Name == "mutated" {
 		t.Fatal("Presets returned shared mutable state")
+	}
+}
+
+func TestPresetDescriptionsDoNotUseBroadcasterNamesAsExamples(t *testing.T) {
+	t.Parallel()
+
+	broadcasterName := regexp.MustCompile(`(?i)CCTV|TVBS?|BBC`)
+	for _, source := range epg.Presets() {
+		if broadcasterName.MatchString(source.Description) {
+			t.Fatalf("preset %q description names a broadcaster: %q", source.ID, source.Description)
+		}
 	}
 }
 

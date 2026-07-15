@@ -41,7 +41,7 @@ func TestResolveHostAndChannel(t *testing.T) {
 			{ID: "p1", URL: "http://127.0.0.1:7890"},
 		},
 		Rules: []Rule{
-			{Priority: 10, Kind: KindHostSuffix, Pattern: "origin.example.com", ProxyID: "p1"},
+			{Priority: 10, Kind: KindHostSuffix, Pattern: "edge.media.example", ProxyID: "p1"},
 			{Priority: 20, Kind: KindChannel, Pattern: "channel-news", ProxyID: "p1"},
 			{Priority: 5, Kind: KindHostExact, Pattern: "origin.example.com", ProxyID: Direct},
 		},
@@ -49,7 +49,7 @@ func TestResolveHostAndChannel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := r.Resolve("http://origin.example.com/x", "")
+	d := r.Resolve("http://primary.edge.media.example/x", "")
 	if d.ProxyID != "p1" || !d.Rewrite {
 		t.Fatalf("%+v", d)
 	}
@@ -77,7 +77,7 @@ func TestRoutingTransportDoesNotRewriteUpstreamURL(t *testing.T) {
 	r, err := NewRouter(Config{
 		Default:  Direct,
 		Profiles: []Profile{{ID: "p", URL: proxySrv.URL}},
-		Rules:    []Rule{{Priority: 10, Kind: KindHostSuffix, Pattern: "origin.example.com", ProxyID: "p"}},
+		Rules:    []Rule{{Priority: 10, Kind: KindHostSuffix, Pattern: "edge.media.example", ProxyID: "p"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -86,7 +86,7 @@ func TestRoutingTransportDoesNotRewriteUpstreamURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const target = "http://origin.example.com/session/x/index.mpd"
+	const target = "http://primary.edge.media.example:80/session/x/index.mpd"
 	resp, err := c.Get(target)
 	if err != nil {
 		t.Fatal(err)
@@ -198,7 +198,7 @@ func TestEnvForFFmpegUsesCDNHostNotLANOrigin(t *testing.T) {
 		Profiles:       []Profile{{ID: "local-http", URL: "http://127.0.0.1:7890"}},
 		Rules: []Rule{
 			{Priority: 5, Kind: KindHostExact, Pattern: "origin.example.com", ProxyID: Direct},
-			{Priority: 10, Kind: KindHostSuffix, Pattern: "origin.example.com", ProxyID: "local-http"},
+			{Priority: 10, Kind: KindHostSuffix, Pattern: "edge.media.example", ProxyID: "local-http"},
 		},
 		DockerProxyHost: "host.docker.internal",
 	})
@@ -206,12 +206,12 @@ func TestEnvForFFmpegUsesCDNHostNotLANOrigin(t *testing.T) {
 		t.Fatal(err)
 	}
 	// LAN origin alone must not inject a proxy (would miss CDN host rules).
-	env, err := r.EnvForFFmpeg("http://origin.example.com:8000/live/uhd", "demo-uhd", true)
+	env, err := r.EnvForFFmpeg("http://origin.example.com:8000/live/uhd", "channel-uhd", true)
 	if err != nil || len(env) != 0 {
 		t.Fatalf("lan origin env=%v err=%v", env, err)
 	}
 	// Resolved MPD / BaseURL host must inject docker-rewritten proxy for segment pulls.
-	env, err = r.EnvForFFmpeg("https://origin.example.com/session/x/index.mpd", "demo-uhd", true)
+	env, err = r.EnvForFFmpeg("https://primary.edge.media.example/session/x/index.mpd", "channel-uhd", true)
 	if err != nil {
 		t.Fatal(err)
 	}

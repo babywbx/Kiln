@@ -47,12 +47,12 @@ var presetSources = []Source{
 	{
 		ID: "hk-1", Name: "香港源 1", URL: "https://epg.pw/xmltv/epg_HK.xml.gz",
 		Region: "HK", IDKind: IDKindNumeric, Timezone: "Asia/Hong_Kong", ApproxBytes: 1_700_000,
-		Description: "香港地区节目单，常用频道覆盖完整",
+		Description: "香港地区节目单，常用频道覆盖较完整",
 	},
 	{
 		ID: "tw-1", Name: "台湾源 1", URL: "https://epg.pw/xmltv/epg_TW.xml.gz",
 		Region: "TW", IDKind: IDKindNumeric, Timezone: "Asia/Taipei", ApproxBytes: 2_100_000,
-		Description: "台湾地区节目单，常用频道覆盖完整",
+		Description: "台湾地区节目单，常用频道覆盖较完整",
 	},
 	{
 		ID: "cn-1", Name: "大陆源 1", URL: "https://epg.pw/xmltv/epg_CN.xml.gz",

@@ -87,14 +87,13 @@ id = "origin"
 base_url = "http://origin.example.com:8000"
 
 [[channels]]
-id = "demo-news"
+id = "channel-news"
 title = "News Channel"
 group = "News"
 epg_id = "channel-news"
 epg_name = "News Channel"
-epg_source = "hk-1"
 upstream = "origin"
-path = "/live/demo-dash"
+path = "/live/news"
 ingress = "dash"
 on_demand = true
 idle_timeout_sec = 120
@@ -103,12 +102,11 @@ restart_on_failure = true
 preferred_audio_languages = ["yue", "zh", "en"]
 
 [[channels]]
-id = "demo-uhd"
+id = "channel-uhd"
 title = "UHD Channel"
-group = "News"
+group = "Entertainment"
 epg_id = "channel-uhd"
 epg_name = "UHD Channel"
-epg_source = "hk-1"
 upstream = "origin"
 path = "/live/uhd"
 ingress = "dash"

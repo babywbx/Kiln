@@ -52,3 +52,24 @@ test("view translations interpolate values for each locale", () => {
     i18n.setLocale(previous);
   }
 });
+
+test("guide source labels stay compact and channel examples stay neutral", () => {
+  const previous = i18n.locale;
+  const automatic = { "zh-Hans": "自动", "zh-Hant": "自動", en: "Auto" };
+  const placeholders = { "zh-Hans": "频道名称", "zh-Hant": "頻道名稱", en: "Channel name" };
+  const guideSources = { "zh-Hans": "节目单源", "zh-Hant": "節目表來源", en: "Guide source" };
+  const broadcasterName = /CCTV|TVBS?|BBC/i;
+  try {
+    for (const locale of LOCALES) {
+      i18n.setLocale(locale);
+      assert.equal(vt("channel.epgAny"), automatic[locale]);
+      assert.equal(vt("channel.epgNamePlaceholder"), placeholders[locale]);
+      assert.equal(vt("channel.epgSource"), guideSources[locale]);
+      assert.doesNotMatch(vt("channel.epgNamePlaceholder"), broadcasterName);
+      assert.doesNotMatch(i18n.t("epg.preset.hongKongDescription"), broadcasterName);
+      assert.doesNotMatch(i18n.t("epg.preset.taiwanDescription"), broadcasterName);
+    }
+  } finally {
+    i18n.setLocale(previous);
+  }
+});
