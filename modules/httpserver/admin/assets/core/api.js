@@ -1,3 +1,5 @@
+import { i18n } from "./i18n.js";
+
 const TOKEN_KEY = "kiln.admin.token";
 const EXPIRES_KEY = "kiln.admin.expires";
 const ISSUED_KEY = "kiln.admin.issued";
@@ -12,7 +14,7 @@ export class ApiError extends Error {
   }
 
   get detail() {
-    return this.requestId ? `Request ID ${this.requestId}` : "";
+    return this.requestId ? i18n.t("shared.requestId", { id: this.requestId }) : "";
   }
 }
 
@@ -299,7 +301,7 @@ export async function api(path, options = {}) {
 
   if (!response.ok) {
     if (response.status === 401 && !suppressUnauthorized) onUnauthorized();
-    throw new ApiError(data?.error?.message || response.statusText || "请求失败", {
+    throw new ApiError(data?.error?.message || response.statusText || i18n.t("error.requestFailed"), {
       code: data?.error?.code,
       status: response.status,
       requestId,

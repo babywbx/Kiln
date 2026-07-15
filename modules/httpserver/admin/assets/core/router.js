@@ -2,12 +2,12 @@ import { subscribe } from "/admin/assets/core/store.js";
 import { resolveAdminRoute } from "/admin/assets/core/route-model.js";
 
 export const SECTIONS = {
-  overview: { label: "总览", icon: "layout-dashboard" },
-  channels: { label: "频道", icon: "tv" },
-  epg: { label: "节目单", icon: "list" },
-  access: { label: "访问控制", icon: "key-round" },
-  egress: { label: "网络出口", icon: "network" },
-  settings: { label: "系统设置", icon: "settings" },
+  overview: { icon: "layout-dashboard" },
+  channels: { icon: "tv" },
+  epg: { icon: "list" },
+  access: { icon: "key-round" },
+  egress: { icon: "network" },
+  settings: { icon: "settings" },
 };
 
 const routes = new Map();

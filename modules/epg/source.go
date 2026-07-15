@@ -47,37 +47,37 @@ var presetSources = []Source{
 	{
 		ID: "hk-1", Name: "香港源 1", URL: "https://epg.pw/xmltv/epg_HK.xml.gz",
 		Region: "HK", IDKind: IDKindNumeric, Timezone: "Asia/Hong_Kong", ApproxBytes: 1_700_000,
-		Description: "香港地区节目单，常用频道覆盖较完整",
+		Description: "香港地区 XMLTV 节目单",
 	},
 	{
 		ID: "tw-1", Name: "台湾源 1", URL: "https://epg.pw/xmltv/epg_TW.xml.gz",
 		Region: "TW", IDKind: IDKindNumeric, Timezone: "Asia/Taipei", ApproxBytes: 2_100_000,
-		Description: "台湾地区节目单，常用频道覆盖较完整",
+		Description: "台湾地区 XMLTV 节目单",
 	},
 	{
 		ID: "cn-1", Name: "大陆源 1", URL: "https://epg.pw/xmltv/epg_CN.xml.gz",
 		Region: "CN", IDKind: IDKindNumeric, Timezone: "Asia/Shanghai", ApproxBytes: 524_000,
-		Description: "中国大陆地区节目单",
+		Description: "中国大陆地区 XMLTV 节目单",
 	},
 	{
 		ID: "global-1", Name: "全球源 1", URL: "https://epg.pw/xmltv/epg.xml.gz",
 		Region: "global", IDKind: IDKindNumeric, Timezone: "Asia/Hong_Kong", ApproxBytes: 45_600_000,
-		Description: "全球全量节目单，体积较大，不建议默认启用",
+		Description: "全球 XMLTV 节目单，文件较大",
 	},
 	{
 		ID: "cn-2", Name: "大陆源 2", URL: "http://epg.51zmt.top:8000/e2.xml.gz",
 		Region: "CN/HK/TW", IDKind: IDKindNumeric, Timezone: "Asia/Shanghai", ApproxBytes: 704_000,
-		Description: "港台频道备份源，频道名以简体中文为主",
+		Description: "使用简体中文频道名称的 XMLTV 备选源",
 	},
 	{
 		ID: "cn-3", Name: "cn-3", URL: "https://epg.112114.xyz/pp.xml.gz",
 		Region: "CN", IDKind: IDKindName, Timezone: "Asia/Shanghai", ApproxBytes: 201_000,
-		Description: "中文频道名 ID 的轻量备选源",
+		Description: "使用频道名称作为 ID 的轻量 XMLTV 备选源",
 	},
 	{
 		ID: "cn-4", Name: "cn-4", URL: "https://live.fanmingming.com/e.xml",
 		Region: "CN", IDKind: IDKindName, Timezone: "Asia/Shanghai", ApproxBytes: 7_600_000,
-		Description: "中国大陆频道为主的未压缩 XMLTV 备选源",
+		Description: "未压缩的 XMLTV 备选源",
 	},
 }
 

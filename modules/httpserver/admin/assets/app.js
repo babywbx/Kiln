@@ -54,7 +54,7 @@ configureSettingsActions({
 function sectionLabel(section) {
   const key = `nav.${section}`;
   const translated = i18n.t(key);
-  return translated === key ? SECTIONS[section]?.label || i18n.t("shell.console") : translated;
+  return translated === key ? i18n.t("shell.console") : translated;
 }
 
 function readPreference(key) {

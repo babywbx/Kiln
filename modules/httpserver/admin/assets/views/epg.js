@@ -30,7 +30,7 @@ function sourceCopy(source) {
   const [nameKey, descriptionKey] = PRESET_COPY[source.id] || [];
   return {
     name: nameKey ? i18n.t(nameKey) : source.name || source.id,
-    description: descriptionKey ? i18n.t(descriptionKey) : source.description,
+    description: descriptionKey ? i18n.t(descriptionKey) : source.region === "custom" ? i18n.t("epg.customSourceDescription") : source.description,
   };
 }
 
@@ -311,10 +311,10 @@ function openSourceModal({ presets, proxies, configured = null, existing = [], a
   const copy = sourceCopy(source);
   const preset = presets.get(source.id) || null;
 
-  const idInput = input("id", source.id || "", { required: true, disabled: !isNew, placeholder: "my-epg" });
+  const idInput = input("id", source.id || "", { required: true, disabled: !isNew, placeholder: "guide-source" });
   const nameInput = input("name", source.name || "", { placeholder: i18n.t("epg.form.namePlaceholder") });
   const urlInput = input("url", source.url || "", { type: "url", required: true, placeholder: "https://example.com/epg.xml.gz" });
-  const timezoneInput = input("timezone", source.timezone || "", { placeholder: "Asia/Shanghai" });
+  const timezoneInput = input("timezone", source.timezone || "", { placeholder: "UTC" });
   const proxySelect = select("proxy", proxyChoices(proxies), source.proxy || "auto");
   const enabledToggle = h("input", { type: "checkbox", id: "epg-source-enabled", checked: isNew ? true : Boolean(configured.enabled) });
 

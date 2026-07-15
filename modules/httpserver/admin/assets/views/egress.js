@@ -344,7 +344,7 @@ function hasCredentials(proxy) {
 
 function openProxyModal(draft, after, existing = null) {
   const isEdit = Boolean(existing);
-  const idInput = input("id", existing?.id || "", { required: true, disabled: isEdit, placeholder: "home-proxy" });
+  const idInput = input("id", existing?.id || "", { required: true, disabled: isEdit, placeholder: "primary-proxy" });
   const nameInput = input("name", existing?.name || "", { placeholder: i18n.t("egress.proxy.namePlaceholder") });
   const urlInput = input("url", isEdit && existing?.credential_configured ? "" : existing?.url || "", { type: "url", required: !isEdit, placeholder: isEdit ? i18n.t("egress.proxy.urlEditPlaceholder") : "socks5h://127.0.0.1:1080" });
 
@@ -386,7 +386,7 @@ function openProxyModal(draft, after, existing = null) {
 
 function openRuleModal(draft, after, existing = null) {
   const isEdit = Boolean(existing);
-  const idInput = input("id", existing?.id || "", { required: true, disabled: isEdit, placeholder: "cn-upstream" });
+  const idInput = input("id", existing?.id || "", { required: true, disabled: isEdit, placeholder: "media-route" });
   const priorityInput = input("priority", existing?.priority ?? "100", { type: "number", min: 0 });
   const patternInput = input("pattern", existing?.pattern || "", { placeholder: "example.com" });
   const kindSelect = select("kind", translatedChoices(RULE_KINDS), existing?.kind || "host_suffix");

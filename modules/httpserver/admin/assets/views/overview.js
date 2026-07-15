@@ -84,7 +84,7 @@ export async function renderOverview(ctx) {
     "div",
     { class: "health-row" },
     h("div", { class: "health-item" }, h("span", {}, h("strong", { text: i18n.t("overview.health.http") }), httpDetail), httpBadge),
-    h("div", { class: "health-item" }, h("span", {}, h("strong", { text: i18n.t("overview.health.goroutines") }), h("small", { text: "Go runtime" })), goroutines),
+    h("div", { class: "health-item" }, h("span", {}, h("strong", { text: i18n.t("overview.health.goroutines") }), h("small", { text: i18n.t("overview.health.runtime") })), goroutines),
     h("div", { class: "health-item" }, h("span", {}, h("strong", { text: i18n.t("overview.health.lastSync") }), h("small", { text: i18n.t("overview.health.autoRefresh") })), syncedAt),
   );
   let lastOnline = null;

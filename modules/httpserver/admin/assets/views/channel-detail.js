@@ -111,7 +111,7 @@ function buildEditor(ctx, channel, revision, isNew, epg) {
   const groupInput = input("group", channel.group);
   const logoInput = input("logo_url", channel.logo_url, { type: "url", placeholder: "https://…" });
 
-  const epgIDInput = input("epg_id", channel.epg_id, { placeholder: "456556" });
+  const epgIDInput = input("epg_id", channel.epg_id, { placeholder: "channel-id" });
   const epgNameInput = input("epg_name", channel.epg_name, { placeholder: vt("channel.epgNamePlaceholder") });
   const epgSourceSelect = select("epg_source", epgSourceChoices(epg.sources, channel.epg_source), channel.epg_source || "");
 

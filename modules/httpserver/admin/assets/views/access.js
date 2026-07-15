@@ -238,7 +238,7 @@ async function revoke(ctx, token) {
     title: vt("access.revokeTitle"),
     description: vt("access.revokeDesc"),
     warning: vt("access.revokeWarning"),
-    confirmLabel: vt("common.disable"),
+    confirmLabel: vt("access.revokeAction"),
   });
   if (!accepted) return;
   try {
