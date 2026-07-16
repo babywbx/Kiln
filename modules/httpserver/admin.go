@@ -1413,16 +1413,17 @@ func (s *Server) handleAdminEgressTest(w http.ResponseWriter, r *http.Request) {
 	}
 	d := testRouter.Resolve(req.URL, req.ChannelID)
 	start := time.Now()
-	client, err := testRouter.ClientForChannel(d.ProxyID, req.ChannelID, 10*time.Second)
-	if err != nil {
-		writeAppErr(w, apperr.New(apperr.CodeInvalid, http.StatusBadRequest, "proxy client could not be created"))
-		return
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &publicProbeTransport{
+			router: testRouter, channelID: req.ChannelID, allowedPrivate: s.deps.Allowed,
+		},
 	}
 	client.CheckRedirect = func(redirect *http.Request, via []*http.Request) error {
 		if len(via) >= 5 {
 			return errors.New("too many redirects")
 		}
-		return security.PublicProbeURL(redirect.Context(), redirect.URL.String(), s.deps.Allowed)
+		return nil
 	}
 	httpRequest, err := http.NewRequestWithContext(r.Context(), http.MethodGet, req.URL, nil)
 	if err != nil {

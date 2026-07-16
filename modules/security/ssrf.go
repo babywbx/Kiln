@@ -80,34 +80,57 @@ func MediaHostOK(rawURL string, allowedPrivate map[string]struct{}) error {
 // connectivity probe is sent. Fixed public probe presets do not accept a URL
 // from the client and therefore do not need this path.
 func PublicProbeURL(ctx context.Context, rawURL string, allowedPrivate map[string]struct{}) error {
+	_, err := PinPublicProbeURL(ctx, rawURL, allowedPrivate)
+	return err
+}
+
+// PinPublicProbeURL validates every resolved address and returns a URL whose
+// host is the selected IP. Callers must preserve the original HTTP Host header
+// and TLS server name when sending the pinned request.
+func PinPublicProbeURL(ctx context.Context, rawURL string, allowedPrivate map[string]struct{}) (*url.URL, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
-		return fmt.Errorf("invalid public probe url")
+		return nil, fmt.Errorf("invalid public probe url")
 	}
 	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
-	if _, ok := allowedPrivate[host]; ok {
-		return nil
+	_, explicitlyAllowed := allowedPrivate[host]
+	if !explicitlyAllowed && (host == "localhost" || strings.HasSuffix(host, ".localhost") || strings.HasSuffix(host, ".local") ||
+		strings.HasSuffix(host, ".internal") || strings.Contains(host, "metadata")) {
+		return nil, fmt.Errorf("probe target is not public")
 	}
-	if host == "localhost" || strings.HasSuffix(host, ".localhost") || strings.HasSuffix(host, ".local") ||
-		strings.HasSuffix(host, ".internal") || strings.Contains(host, "metadata") {
-		return fmt.Errorf("probe target is not public")
-	}
+	var selected net.IP
 	if ip := net.ParseIP(host); ip != nil {
-		if !publicProbeIP(ip) {
-			return fmt.Errorf("probe target is not public")
+		if !explicitlyAllowed && !publicProbeIP(ip) {
+			return nil, fmt.Errorf("probe target is not public")
 		}
-		return nil
-	}
-	addresses, err := net.DefaultResolver.LookupIPAddr(ctx, host)
-	if err != nil || len(addresses) == 0 {
-		return fmt.Errorf("probe target dns lookup failed")
-	}
-	for _, address := range addresses {
-		if !publicProbeIP(address.IP) {
-			return fmt.Errorf("probe target resolved to a non-public address")
+		selected = ip
+	} else {
+		addresses, lookupErr := net.DefaultResolver.LookupIPAddr(ctx, host)
+		if lookupErr != nil || len(addresses) == 0 {
+			return nil, fmt.Errorf("probe target dns lookup failed")
+		}
+		for _, address := range addresses {
+			if !explicitlyAllowed && !publicProbeIP(address.IP) {
+				return nil, fmt.Errorf("probe target resolved to a non-public address")
+			}
+			if selected == nil {
+				selected = address.IP
+			}
 		}
 	}
-	return nil
+	if selected == nil {
+		return nil, fmt.Errorf("probe target dns lookup failed")
+	}
+	pinned := *u
+	port := u.Port()
+	if port != "" {
+		pinned.Host = net.JoinHostPort(selected.String(), port)
+	} else if selected.To4() == nil {
+		pinned.Host = "[" + selected.String() + "]"
+	} else {
+		pinned.Host = selected.String()
+	}
+	return &pinned, nil
 }
 
 func publicProbeIP(ip net.IP) bool {
