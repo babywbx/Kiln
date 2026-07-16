@@ -131,6 +131,44 @@ preferred_audio_languages = ["yue", "zh"]
 	}
 }
 
+func TestDebugPprofRequiresExplicitLoopbackListener(t *testing.T) {
+	base := File{
+		Server: Server{DataDir: t.TempDir()},
+		Auth: Auth{Users: []User{{
+			Username: "admin", PasswordHash: "hash", Role: "admin",
+		}}},
+	}
+
+	disabled := base
+	disabled.applyDefaults()
+	if disabled.Debug.Pprof.Enabled {
+		t.Fatal("pprof enabled by default")
+	}
+	if err := disabled.validate(); err != nil {
+		t.Fatalf("disabled pprof rejected: %v", err)
+	}
+
+	for _, listen := range []string{"127.0.0.1:6060", "[::1]:6060"} {
+		cfg := base
+		cfg.Debug.Pprof.Enabled = true
+		cfg.Debug.Pprof.Listen = listen
+		cfg.applyDefaults()
+		if err := cfg.validate(); err != nil {
+			t.Fatalf("loopback listener %q rejected: %v", listen, err)
+		}
+	}
+
+	for _, listen := range []string{"0.0.0.0:6060", "[::]:6060", "192.168.1.10:6060", "localhost:6060"} {
+		cfg := base
+		cfg.Debug.Pprof.Enabled = true
+		cfg.Debug.Pprof.Listen = listen
+		cfg.applyDefaults()
+		if err := cfg.validate(); err == nil {
+			t.Fatalf("non-loopback IP listener %q accepted", listen)
+		}
+	}
+}
+
 func TestValidateChannelID(t *testing.T) {
 	for _, id := range []string{"channel1", "news-hd", "channel_2", "sports.us", "频道", "news hd", "~new", " news", strings.Repeat("a", 300)} {
 		if err := ValidateChannelID(id); err != nil {

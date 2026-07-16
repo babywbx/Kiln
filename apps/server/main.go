@@ -17,6 +17,7 @@ import (
 	"github.com/babywbx/kiln/modules/auth"
 	"github.com/babywbx/kiln/modules/catalog"
 	"github.com/babywbx/kiln/modules/config"
+	"github.com/babywbx/kiln/modules/debugserver"
 	"github.com/babywbx/kiln/modules/epg"
 	"github.com/babywbx/kiln/modules/httpserver"
 	"github.com/babywbx/kiln/modules/logging"
@@ -47,6 +48,11 @@ func main() {
 		Color:  cfg.Logging.Color,
 	})
 	slog.SetDefault(log)
+	debugServer, err := debugserver.New(cfg.Debug.Pprof, log)
+	if err != nil {
+		log.Error("pprof setup failed", "err", err)
+		os.Exit(1)
+	}
 	shutdownTelemetry, err := telemetry.Setup(context.Background(), cfg.Observe, version.Version)
 	if err != nil {
 		log.Warn("OpenTelemetry setup failed", "err", err)
@@ -139,6 +145,14 @@ func main() {
 			cancel()
 		}
 	}()
+	if debugServer != nil {
+		go func() {
+			if err := debugServer.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Error("pprof server stopped", "err", err)
+				cancel()
+			}
+		}()
+	}
 
 	chs, _ := cat.List(false)
 	log.Info("kiln starting",
@@ -165,6 +179,9 @@ func main() {
 	shctx, shcancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer shcancel()
 	_ = srv.Shutdown(shctx)
+	if debugServer != nil {
+		_ = debugServer.Shutdown(shctx)
+	}
 	if err := shutdownTelemetry(shctx); err != nil {
 		log.Warn("OpenTelemetry shutdown failed", "err", err)
 	}

@@ -58,6 +58,11 @@ inflight_bytes = 100663296
 [observe]
 enabled = true
 
+[debug.pprof]
+# Access from inside the container namespace only unless explicitly tunneled.
+enabled = false
+listen = "127.0.0.1:6060"
+
 [epg]
 enabled = true
 cache = true

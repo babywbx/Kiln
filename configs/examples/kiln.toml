@@ -98,6 +98,12 @@ enabled = true
 # otlp_insecure = true
 # trace_sample_ratio = 0.1
 
+[debug.pprof]
+# Enable temporarily while collecting CPU, heap, block, or mutex profiles.
+# The listener must use a loopback IP and is never exposed by the public server.
+enabled = false
+listen = "127.0.0.1:6060"
+
 [epg]
 enabled = false
 cache = true

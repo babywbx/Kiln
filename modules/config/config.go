@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -20,6 +21,7 @@ type File struct {
 	Upstreams []Upstream     `json:"upstreams" toml:"upstreams"`
 	Channels  []Channel      `json:"channels" toml:"channels"`
 	Observe   Observe        `json:"observe" toml:"observe"`
+	Debug     Debug          `json:"debug" toml:"debug"`
 	FFmpeg    FFmpeg         `json:"ffmpeg" toml:"ffmpeg"`
 	Packager  Packager       `json:"packager" toml:"packager"`
 	Logging   Logging        `json:"logging" toml:"logging"`
@@ -200,6 +202,15 @@ type Observe struct {
 	OTLPInsecure     bool    `json:"otlp_insecure,omitempty" toml:"otlp_insecure,omitempty"`
 	TraceSampleRatio float64 `json:"trace_sample_ratio,omitempty" toml:"trace_sample_ratio,omitempty"`
 	ServiceName      string  `json:"service_name,omitempty" toml:"service_name,omitempty"`
+}
+
+type Debug struct {
+	Pprof Pprof `json:"pprof" toml:"pprof"`
+}
+
+type Pprof struct {
+	Enabled bool   `json:"enabled" toml:"enabled"`
+	Listen  string `json:"listen" toml:"listen"`
 }
 
 type FFmpegMode string
@@ -466,6 +477,9 @@ func (c *File) applyDefaults() {
 	if c.Observe.ServiceName == "" {
 		c.Observe.ServiceName = "kiln"
 	}
+	if c.Debug.Pprof.Listen == "" {
+		c.Debug.Pprof.Listen = "127.0.0.1:6060"
+	}
 	if c.Logging.Level == "" {
 		c.Logging.Level = "info"
 	}
@@ -561,6 +575,16 @@ func (c *File) resolveKeysPaths(configPath string) {
 func (c File) validate() error {
 	if !c.FFmpeg.Mode.Valid() {
 		return fmt.Errorf("ffmpeg.mode must be native or docker")
+	}
+	if c.Debug.Pprof.Enabled {
+		host, _, err := net.SplitHostPort(c.Debug.Pprof.Listen)
+		if err != nil {
+			return fmt.Errorf("debug.pprof.listen must be a loopback IP and port: %w", err)
+		}
+		ip := net.ParseIP(host)
+		if ip == nil || !ip.IsLoopback() {
+			return fmt.Errorf("debug.pprof.listen must use a loopback IP")
+		}
 	}
 	if len(c.Auth.Users) == 0 {
 		return fmt.Errorf("auth.users must not be empty")
