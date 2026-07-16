@@ -1,11 +1,14 @@
 .PHONY: build build-debug build-release test test-admin-ui coverage run tidy hash keys fmt vet lint vuln ci clean audit-admin-ui \
-        docker docker-multiarch docker-verify docker-smoke docker-reap fixtures \
+        docker docker-full docker-core docker-images docker-multiarch docker-core-multiarch \
+        docker-verify docker-verify-images docker-smoke docker-reap fixtures \
         media-oracle test-safety benchmark-performance soak
 
 VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT   ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 BUILT_AT ?= $(shell date -u +%FT%TZ)
 IMAGE    ?= kiln:local
+CORE_IMAGE ?= kiln:core-local
+BUSYBOX_IMAGE ?= busybox:1.37.0@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028
 PLATFORM ?= linux/amd64,linux/arm64
 
 BUILD_ARGS = --build-arg VERSION=$(VERSION) \
@@ -86,12 +89,26 @@ clean:
 audit-admin-ui:
 	./scripts/audit-admin-ui.sh $(or $(URL),http://127.0.0.1:8080/admin)
 
-docker:
-	docker buildx build -f deploy/docker/Dockerfile $(BUILD_ARGS) -t $(IMAGE) --load .
+docker: docker-full
+
+docker-full:
+	docker buildx build --target full -f deploy/docker/Dockerfile $(BUILD_ARGS) -t $(IMAGE) --load .
+
+docker-core:
+	docker buildx build --target core -f deploy/docker/Dockerfile $(BUILD_ARGS) -t $(CORE_IMAGE) --load .
+
+docker-images: docker-core docker-full
 
 docker-multiarch:
-	docker buildx build -f deploy/docker/Dockerfile $(BUILD_ARGS) \
+	docker buildx build --target full -f deploy/docker/Dockerfile $(BUILD_ARGS) \
 	  --platform $(PLATFORM) -t $(IMAGE) --output type=cacheonly .
+
+docker-core-multiarch:
+	docker buildx build --target core -f deploy/docker/Dockerfile $(BUILD_ARGS) \
+	  --platform $(PLATFORM) -t $(CORE_IMAGE) --output type=cacheonly .
+
+docker-verify-images:
+	deploy/docker/verify-images.sh $(CORE_IMAGE) $(IMAGE)
 
 docker-verify:
 	docker run --rm --entrypoint /bin/sh -v "$(PWD)/deploy/docker:/d:ro" $(IMAGE) \
@@ -101,7 +118,7 @@ docker-smoke:
 	@docker network create kilnsmoke >/dev/null 2>&1 || true
 	@docker rm -f kiln-origin >/dev/null 2>&1 || true
 	docker run -d --name kiln-origin --network kilnsmoke \
-	  -v "$(PWD)/testdata/cenc:/www:ro" busybox:1.36 httpd -f -p 8000 -h /www >/dev/null
+	  -v "$(PWD)/testdata/cenc:/www:ro" $(BUSYBOX_IMAGE) httpd -f -p 8000 -h /www >/dev/null
 	-docker run --rm --network kilnsmoke -e ORIGIN_URL=http://kiln-origin:8000 \
 	  -v "$(PWD):/src:ro" -w /src --entrypoint /bin/sh $(IMAGE) \
 	  deploy/docker/smoke.sh /usr/local/bin/ffmpeg testdata/cenc

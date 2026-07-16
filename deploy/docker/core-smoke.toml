@@ -1,0 +1,27 @@
+[server]
+listen = "0.0.0.0:8080"
+data_dir = "/var/lib/kiln/data"
+
+[auth]
+[[auth.users]]
+username = "admin"
+password_hash = "$2a$10$8JxhvnpdTX/TrOTi1XaYWuPlrZK1aw3ANgGIWpTO6KtD2M432w7Ie"
+role = "admin"
+
+[security]
+play_require_auth = false
+
+[packager]
+start_segments = 1
+prefetch_segments = 1
+
+[epg]
+enabled = false
+
+[[channels]]
+id = "core-h264"
+title = "Core H264"
+source_url = "http://kiln-origin:8000/h264/stream.mpd"
+ingress = "dash"
+keys = "ffeeddccbbaa99887766554433221100:00112233445566778899aabbccddeeff"
+on_demand = true

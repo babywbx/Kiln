@@ -1,4 +1,5 @@
-# Production-style single media stack.
+# Production-style full image.
+# Change target to core and image to kiln:core for a native-only deployment.
 # Copy and adjust paths; do not commit real secrets.
 
 services:
@@ -6,17 +7,18 @@ services:
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
+      target: full
     image: kiln:local
     container_name: kiln
     ports:
       - "8080:8080"
-    environment:
-      # Optional: inject Ed25519 private key PEM (otherwise auto under data volume)
-      # KILN_TOKEN_PRIVATE_KEY_FILE: /etc/kiln/ed25519.pem
-      # KILN_PUBLIC_BASE_URL: "http://your-host:8080"
-      # KILN_LOG_LEVEL: "info"
-      # KILN_LOG_FORMAT: "text"
-      # KILN_LOG_COLOR: "never"
+    # Optional environment:
+    # environment:
+    #   KILN_TOKEN_PRIVATE_KEY_FILE: /etc/kiln/ed25519.pem
+    #   KILN_PUBLIC_BASE_URL: "http://your-host:8080"
+    #   KILN_LOG_LEVEL: "info"
+    #   KILN_LOG_FORMAT: "text"
+    #   KILN_LOG_COLOR: "never"
     volumes:
       - ./kiln.toml:/etc/kiln/kiln.toml:ro
       - ./keys.txt:/etc/kiln/keys.txt:ro

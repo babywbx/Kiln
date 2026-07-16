@@ -1,6 +1,7 @@
-# Example config for the production media image.
+# Example config for the core and full production images.
 # Mount as /etc/kiln/kiln.toml
-# Use system ffmpeg from the image (do NOT point to host-only wrappers).
+# The full image uses its bundled ffmpeg. The core image leaves the
+# compatibility engine unavailable and uses the native packager by default.
 
 [server]
 listen = "0.0.0.0:8080"
@@ -45,7 +46,7 @@ prefer_height = 1080
 low_latency = true
 
 [packager]
-engine = "auto"
+# Omit engine to use the image default: native for core, auto for full.
 playlist_size = 8
 ll_hls = true
 part_target_ms = 500

@@ -13,10 +13,10 @@ jobs:
     name: Quality / Admin UI
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 24
+          node-version: 24.18.0
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
       - run: make test-admin-ui
@@ -25,8 +25,8 @@ jobs:
     name: Quality / Go
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
@@ -51,7 +51,7 @@ jobs:
           set -o pipefail
           make benchmark-performance | tee benchmarks.txt
       - name: Upload performance benchmarks
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: packager-benchmarks
           path: benchmarks.txt
@@ -61,47 +61,135 @@ jobs:
     name: Build / Container
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: docker/setup-qemu-action@v4
-      - uses: docker/setup-buildx-action@v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
-      - name: Build amd64 (runs capability + CENC assertions inside the build)
-        uses: docker/build-push-action@v7
+      - name: Build core amd64
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: deploy/docker/Dockerfile
+          target: core
           platforms: linux/amd64
           load: true
-          tags: kiln:ci-amd64
+          tags: kiln:ci-core-amd64
           build-args: |
             VERSION=ci
             COMMIT=${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=core-amd64
+          cache-to: type=gha,mode=max,scope=core-amd64
 
-      - name: Build arm64 (runs the same assertions under emulation)
-        uses: docker/build-push-action@v7
+      - name: Build full amd64
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: deploy/docker/Dockerfile
+          target: full
+          platforms: linux/amd64
+          load: true
+          tags: kiln:ci-full-amd64
+          build-args: |
+            VERSION=ci
+            COMMIT=${{ github.sha }}
+          cache-from: type=gha,scope=full-amd64
+          cache-to: type=gha,mode=max,scope=full-amd64
+
+      - name: Verify core and full image contracts
+        run: deploy/docker/verify-images.sh kiln:ci-core-amd64 kiln:ci-full-amd64
+
+      - name: Smoke image defaults and readiness
+        run: |
+          set -eu
+          cleanup() {
+            docker rm -f kiln-core-ci kiln-full-ci >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          for variant in core full; do
+            docker run -d --name "kiln-${variant}-ci" \
+              -v "$PWD/deploy/docker/kiln.docker.toml.example:/etc/kiln/kiln.toml:ro" \
+              -v "$PWD/configs/examples/keys.example.txt:/etc/kiln/keys.txt:ro" \
+              "kiln:ci-${variant}-amd64"
+            for attempt in 1 2 3 4 5 6 7 8 9 10; do
+              if docker exec "kiln-${variant}-ci" \
+                wget -q -O /dev/null http://127.0.0.1:8080/readyz; then
+                break
+              fi
+              if [ "$attempt" = 10 ]; then
+                docker logs "kiln-${variant}-ci"
+                exit 1
+              fi
+              sleep 1
+            done
+          done
+          docker logs kiln-core-ci 2>&1 | grep -q 'packager_engine=native'
+          docker logs kiln-core-ci 2>&1 | grep -q 'ffmpeg_available=false'
+          docker logs kiln-full-ci 2>&1 | grep -q 'packager_engine=auto'
+          docker logs kiln-full-ci 2>&1 | grep -q 'ffmpeg_available=true'
+
+      - name: Build core arm64
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          target: core
           platforms: linux/arm64
           outputs: type=cacheonly
           build-args: |
             VERSION=ci
             COMMIT=${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=core-arm64
+          cache-to: type=gha,mode=max,scope=core-arm64
 
-      - name: Smoke the remote (HTTP origin) path
+      - name: Build full arm64
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          target: full
+          platforms: linux/arm64
+          outputs: type=cacheonly
+          build-args: |
+            VERSION=ci
+            COMMIT=${{ github.sha }}
+          cache-from: type=gha,scope=full-arm64
+          cache-to: type=gha,mode=max,scope=full-arm64
+
+      - name: Smoke native core and full FFmpeg media paths
         run: |
+          set -eu
+          cleanup() {
+            docker rm -f kiln-core-media kiln-origin >/dev/null 2>&1 || true
+            docker network rm kilnsmoke >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          cleanup
           docker network create kilnsmoke
           docker run -d --name kiln-origin --network kilnsmoke \
-            -v "$PWD/testdata/cenc:/www:ro" busybox:1.36 httpd -f -p 8000 -h /www
+            -v "$PWD/testdata/cenc:/www:ro" \
+            busybox:1.37.0@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028 \
+            httpd -f -p 8000 -h /www
+          docker run -d --name kiln-core-media --network kilnsmoke \
+            -e KILN_PLAY_OPEN=1 \
+            -v "$PWD/deploy/docker/core-smoke.toml:/etc/kiln/kiln.toml:ro" \
+            kiln:ci-core-amd64
+          for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+            if docker exec kiln-core-media sh -ec \
+              'wget -q -O - http://127.0.0.1:8080/v1/play/core-h264/index.m3u8 | grep -q "#EXTM3U"'; then
+              break
+            fi
+            if [ "$attempt" = 15 ]; then
+              docker logs kiln-core-media
+              exit 1
+            fi
+            sleep 1
+          done
+          docker logs kiln-core-media 2>&1 | grep -q 'engine=native_rewrite'
           docker run --rm --network kilnsmoke \
             -e ORIGIN_URL=http://kiln-origin:8000 \
             -v "$PWD:/src:ro" -w /src \
-            --entrypoint /bin/sh kiln:ci-amd64 \
+            --entrypoint /bin/sh kiln:ci-full-amd64 \
             deploy/docker/smoke.sh /usr/local/bin/ffmpeg testdata/cenc
 
-      - name: Report image size
-        run: docker images --format '{{.Repository}}:{{.Tag}} {{.Size}}' kiln:ci-amd64
+      - name: Report image sizes
+        run: docker images --format '{{.Repository}}:{{.Tag}} {{.Size}}' | grep '^kiln:ci-'
