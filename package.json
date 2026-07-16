@@ -2,6 +2,7 @@
   "name": "kiln-admin-ui",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@11.13.1+sha512.svx2g7imUlQU59E+G6KMqt3elr9m7FQL+ut+cCuB8+C+TR8pXt9/n+A5Z0Co3ORQnFgt33mJH0VD/qMtN2RfJQ==",
   "scripts": {
     "test:admin-ui": "node --test scripts/*.test.js"
   }

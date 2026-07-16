@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"testing"
 
+	"github.com/Eyevinn/mp4ff/aac"
 	"github.com/Eyevinn/mp4ff/mp4"
 )
 
@@ -322,14 +323,25 @@ func makeEncryptedSTPP(t *testing.T, payload []byte) ([]byte, []byte) {
 		t.Fatalf("decode fixture key: %v", err)
 	}
 	iv := []byte{0, 1, 2, 3, 4, 5, 6, 7}
-	protection := &mp4.InitProtectData{
-		Tenc:   tenc,
-		Trex:   decodedInit.Init.Moov.Mvex.Trex,
-		Scheme: "cenc",
-		ProtFunc: func([]byte, string) ([]mp4.SubSamplePattern, error) {
-			return nil, nil
-		},
+	// Reuse mp4ff's public full-sample protector for the encrypted text fixture.
+	protectionInit := mp4.CreateEmptyInit()
+	protectionTrack := protectionInit.AddEmptyTrack(1000, "audio", "und")
+	if err := protectionTrack.SetAACDescriptor(aac.AAClc, 1000); err != nil {
+		t.Fatalf("SetAACDescriptor: %v", err)
 	}
+	protection, err := mp4.InitProtect(
+		protectionInit,
+		key,
+		iv,
+		"cenc",
+		mp4.UUID(kid),
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("InitProtect: %v", err)
+	}
+	protection.Tenc = tenc
+	protection.Trex = decodedInit.Init.Moov.Mvex.Trex
 	if _, err := mp4.EncryptFragment(fragment, key, iv, protection); err != nil {
 		t.Fatalf("EncryptFragment: %v", err)
 	}
