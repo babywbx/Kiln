@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/babywbx/kiln/modules/config"
 	"github.com/babywbx/kiln/modules/store"
@@ -131,6 +132,54 @@ func TestAccessTokenExpiryRoundTrip(t *testing.T) {
 	}
 	if got.ExpiresAt != want.ExpiresAt {
 		t.Fatalf("expires_at = %d, want %d", got.ExpiresAt, want.ExpiresAt)
+	}
+}
+
+func TestTouchAccessTokenCoalescesRecentWrites(t *testing.T) {
+	t.Parallel()
+
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Now().Unix()
+	recent := store.AccessTokenRow{
+		ID: "recent", Name: "Recent", TokenHash: "recent-hash", Prefix: "kiln_recent",
+		ScopeJSON: "{}", Enabled: true, CreatedAt: now - 100, LastUsedAt: now - 10,
+	}
+	stale := store.AccessTokenRow{
+		ID: "stale", Name: "Stale", TokenHash: "stale-hash", Prefix: "kiln_stale",
+		ScopeJSON: "{}", Enabled: true, CreatedAt: now - 200, LastUsedAt: now - 120,
+	}
+	if err := db.InsertAccessToken(recent); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.InsertAccessToken(stale); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.TouchAccessToken(recent.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.TouchAccessToken(stale.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := db.ListAccessTokens()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make(map[string]int64, len(rows))
+	for _, row := range rows {
+		got[row.ID] = row.LastUsedAt
+	}
+	if got[recent.ID] != recent.LastUsedAt {
+		t.Fatalf("recent last_used_at = %d, want unchanged %d", got[recent.ID], recent.LastUsedAt)
+	}
+	if got[stale.ID] < now {
+		t.Fatalf("stale last_used_at = %d, want at least %d", got[stale.ID], now)
 	}
 }
 
@@ -598,6 +647,10 @@ func TestEditableResourcesRejectStaleRevisions(t *testing.T) {
 	}
 	if err := db.RevokeAccessTokenIfRevision(token.ID, createdToken.Revision); err != nil {
 		t.Fatalf("revoke current token: %v", err)
+	}
+	revokedToken, ok, err := db.GetAccessTokenByHash(token.TokenHash)
+	if err != nil || !ok || revokedToken.Enabled || revokedToken.RevokedAt == 0 || revokedToken.Revision != 2 {
+		t.Fatalf("revoked token = %#v, found=%v err=%v", revokedToken, ok, err)
 	}
 	if err := db.RevokeAccessTokenIfRevision(token.ID, createdToken.Revision); !errors.Is(err, store.ErrRevisionConflict) {
 		t.Fatalf("stale token revoke error = %v", err)

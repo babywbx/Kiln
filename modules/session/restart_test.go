@@ -161,6 +161,53 @@ func TestManagerTouchDoesNotOverwriteRestartingState(t *testing.T) {
 	}
 }
 
+func TestManagerTouchDoesNotSynchronouslyRefreshPackagerStats(t *testing.T) {
+	t.Parallel()
+
+	job := newFakeJob()
+	job.setStats(packager.Stats{SegmentsPublished: 1})
+	engine := &fakePackager{results: []startResult{{job: job}}}
+	manager, _ := newRestartManager(t, engine)
+	defer manager.Shutdown()
+
+	if _, err := manager.Acquire("news"); err != nil {
+		t.Fatalf("Acquire() error = %v", err)
+	}
+	baseline := job.statsCalls.Load()
+
+	manager.Touch("news")
+	if _, err := manager.Acquire("news"); err != nil {
+		t.Fatalf("second Acquire() error = %v", err)
+	}
+	if got := job.statsCalls.Load(); got != baseline {
+		t.Fatalf("Stats() calls after touch/acquire = %d, want %d", got, baseline)
+	}
+}
+
+func TestManagerStartRefreshesPackagerStatsPeriodically(t *testing.T) {
+	job := newFakeJob()
+	job.setStats(packager.Stats{SegmentsPublished: 1})
+	engine := &fakePackager{results: []startResult{{job: job}}}
+	manager, obs := newRestartManager(t, engine)
+	manager.Start(t.Context())
+	defer manager.Shutdown()
+
+	if _, err := manager.Acquire("news"); err != nil {
+		t.Fatalf("Acquire() error = %v", err)
+	}
+	job.setStats(packager.Stats{SegmentsPublished: 2})
+
+	deadline := time.Now().Add(6 * time.Second)
+	for time.Now().Before(deadline) {
+		stat, ok := findSession(obs, "news")
+		if ok && stat.Packager != nil && stat.Packager.SegmentsPublished == 2 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("periodic observation did not refresh packager stats")
+}
+
 func TestStoppedBackoffCannotReplaceNewSessionForSameChannel(t *testing.T) {
 	t.Parallel()
 
@@ -466,6 +513,9 @@ func (p *fakePackager) requestsSnapshot() []packager.Request {
 
 type fakeJob struct {
 	publication packager.Publication
+	statsMu     sync.Mutex
+	stats       packager.Stats
+	statsCalls  atomic.Int32
 	done        chan struct{}
 	doneOnce    sync.Once
 	intentional atomic.Bool
@@ -522,7 +572,18 @@ func (j *fakeJob) PackMode() string                  { return "dynamic_timeline"
 func (j *fakeJob) FallbackReason() string            { return "" }
 func (j *fakeJob) Done() <-chan struct{}             { return j.done }
 func (j *fakeJob) IntentionalStop() bool             { return j.intentional.Load() }
-func (j *fakeJob) Stats() packager.Stats             { return packager.Stats{} }
+func (j *fakeJob) Stats() packager.Stats {
+	j.statsCalls.Add(1)
+	j.statsMu.Lock()
+	defer j.statsMu.Unlock()
+	return j.stats
+}
+
+func (j *fakeJob) setStats(stats packager.Stats) {
+	j.statsMu.Lock()
+	j.stats = stats
+	j.statsMu.Unlock()
+}
 
 func (j *fakeJob) Err() error {
 	j.errMu.Lock()

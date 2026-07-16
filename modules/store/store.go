@@ -16,8 +16,10 @@ import (
 )
 
 type DB struct {
-	sql *sql.DB
-	mu  sync.Mutex
+	sql                *sql.DB
+	mu                 sync.Mutex
+	accessTokens       map[string]AccessTokenRow
+	accessTokenTouches map[string]time.Time
 }
 
 var (
@@ -26,6 +28,8 @@ var (
 )
 
 const currentSchemaVersion = 11
+
+const accessTokenTouchInterval = time.Minute
 
 func Open(dataDir string) (*DB, error) {
 	if err := os.MkdirAll(dataDir, 0o750); err != nil {
@@ -1544,6 +1548,9 @@ func (db *DB) InsertAccessToken(row AccessTokenRow) error {
 		row.ID, row.Name, row.TokenHash, row.Prefix, row.ScopeJSON, boolInt(row.Enabled), row.Note,
 		row.CreatedAt, row.ExpiresAt, row.LastUsedAt, row.RevokedAt, nonzeroTime(row.UpdatedAt, row.CreatedAt),
 	)
+	if err == nil {
+		db.invalidateAccessTokenCache(row.ID)
+	}
 	return err
 }
 
@@ -1572,6 +1579,9 @@ func (db *DB) ListAccessTokens() ([]AccessTokenRow, error) {
 func (db *DB) GetAccessTokenByHash(hash string) (AccessTokenRow, bool, error) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
+	if row, ok := db.accessTokens[hash]; ok {
+		return row, true, nil
+	}
 	var r AccessTokenRow
 	var en int
 	err := db.sql.QueryRow(`SELECT id, name, token_hash, token_prefix, scope_json, enabled, note, created_at, expires_at, last_used_at, revoked_at, revision, updated_at
@@ -1585,26 +1595,55 @@ func (db *DB) GetAccessTokenByHash(hash string) (AccessTokenRow, bool, error) {
 		return AccessTokenRow{}, false, err
 	}
 	r.Enabled = intBool(en)
+	if db.accessTokens == nil {
+		db.accessTokens = make(map[string]AccessTokenRow)
+	}
+	db.accessTokens[hash] = r
 	return r, true, nil
 }
 
 func (db *DB) TouchAccessToken(id string) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	_, err := db.sql.Exec(`UPDATE access_tokens SET last_used_at = ? WHERE id = ?`, time.Now().Unix(), id)
+	now := time.Now()
+	if touched := db.accessTokenTouches[id]; !touched.IsZero() && now.Sub(touched) < accessTokenTouchInterval {
+		return nil
+	}
+	_, err := db.sql.Exec(`UPDATE access_tokens SET last_used_at = ? WHERE id = ? AND last_used_at < ?`,
+		now.Unix(), id, now.Add(-accessTokenTouchInterval).Unix())
+	if err == nil {
+		if db.accessTokenTouches == nil {
+			db.accessTokenTouches = make(map[string]time.Time)
+		}
+		db.accessTokenTouches[id] = now
+		for hash, row := range db.accessTokens {
+			if row.ID == id && row.LastUsedAt < now.Add(-accessTokenTouchInterval).Unix() {
+				row.LastUsedAt = now.Unix()
+				db.accessTokens[hash] = row
+			}
+		}
+	}
 	return err
 }
 
 func (db *DB) RevokeAccessToken(id string) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	return db.revokeAccessToken(id, 0)
+	err := db.revokeAccessToken(id, 0)
+	if err == nil {
+		db.invalidateAccessTokenCache(id)
+	}
+	return err
 }
 
 func (db *DB) RevokeAccessTokenIfRevision(id string, expectedRevision int64) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	return db.revokeAccessToken(id, expectedRevision)
+	err := db.revokeAccessToken(id, expectedRevision)
+	if err == nil {
+		db.invalidateAccessTokenCache(id)
+	}
+	return err
 }
 
 func (db *DB) revokeAccessToken(id string, expectedRevision int64) error {
@@ -1626,6 +1665,9 @@ func (db *DB) DeleteAccessToken(id string) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	_, err := db.sql.Exec(`DELETE FROM access_tokens WHERE id = ?`, id)
+	if err == nil {
+		db.invalidateAccessTokenCache(id)
+	}
 	return err
 }
 
@@ -1636,7 +1678,20 @@ func (db *DB) DeleteAccessTokenIfRevision(id string, expectedRevision int64) err
 	if err != nil {
 		return err
 	}
-	return revisionResult(result)
+	if err := revisionResult(result); err != nil {
+		return err
+	}
+	db.invalidateAccessTokenCache(id)
+	return nil
+}
+
+func (db *DB) invalidateAccessTokenCache(id string) {
+	for hash, row := range db.accessTokens {
+		if row.ID == id {
+			delete(db.accessTokens, hash)
+		}
+	}
+	delete(db.accessTokenTouches, id)
 }
 
 type AdminAPITokenRow struct {

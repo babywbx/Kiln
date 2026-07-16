@@ -748,11 +748,6 @@ func (p *Publisher) Stage(data []byte) (string, error) {
 		_ = os.Remove(name)
 		return "", fmt.Errorf("hls: stage asset: %w", err)
 	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		_ = os.Remove(name)
-		return "", fmt.Errorf("hls: sync asset: %w", err)
-	}
 	if err := tmp.Close(); err != nil {
 		_ = os.Remove(name)
 		return "", fmt.Errorf("hls: close asset: %w", err)

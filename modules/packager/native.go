@@ -994,10 +994,6 @@ func rewriteStagedPartSequence(path string, sequence uint32) error {
 		_ = file.Close()
 		return err
 	}
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
-		return err
-	}
 	return file.Close()
 }
 

@@ -272,7 +272,7 @@ func (m *Manager) Warmup(channelID string) error {
 		return context.Canceled
 	}
 	if s, ok := m.sessions[channelID]; ok {
-		m.touchAndPublish(s)
+		m.touch(s)
 		m.mu.Unlock()
 		return nil
 	}
@@ -408,7 +408,7 @@ func (m *Manager) Acquire(channelID string) (*Session, error) {
 			return nil, context.Canceled
 		}
 		if s, ok := m.sessions[channelID]; ok {
-			m.touchAndPublish(s)
+			m.touch(s)
 			m.mu.Unlock()
 			return s, nil
 		}
@@ -421,7 +421,7 @@ func (m *Manager) Acquire(channelID string) (*Session, error) {
 			if w.sess != nil {
 				m.mu.Lock()
 				if cur, ok := m.sessions[channelID]; ok {
-					m.touchAndPublish(cur)
+					m.touch(cur)
 					m.mu.Unlock()
 					return cur, nil
 				}
@@ -509,7 +509,7 @@ func (m *Manager) finishStart(channelID string, w *startWait, s *Session) (*Sess
 	}
 	if existing, ok := m.sessions[channelID]; ok {
 		w.cancel()
-		m.touchAndPublish(existing)
+		m.touch(existing)
 		w.sess = existing
 		m.mu.Unlock()
 		cleanupDashStart(started)
@@ -801,11 +801,15 @@ func (m *Manager) isCurrentJob(channelID string, s *Session, job packager.Job) b
 	return m.currentJobLocked(channelID, s, job)
 }
 
-func (m *Manager) touchAndPublish(s *Session) {
+func (m *Manager) touch(s *Session) {
+	now := time.Now()
 	s.mu.Lock()
-	s.lastTouch = time.Now()
+	s.lastTouch = now
+	channelID := s.Channel.ID
 	s.mu.Unlock()
-	m.publish(s)
+	if m.obs != nil {
+		m.obs.TouchSession(channelID, now)
+	}
 }
 
 type sessionCleanup struct {
@@ -886,7 +890,7 @@ func (m *Manager) Touch(channelID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if s, ok := m.sessions[channelID]; ok {
-		m.touchAndPublish(s)
+		m.touch(s)
 	}
 }
 
@@ -963,7 +967,29 @@ func (m *Manager) reaper(ctx context.Context) {
 			return
 		case <-t.C:
 			m.reapOnce()
+			m.refreshPublished()
 		}
+	}
+}
+
+func (m *Manager) refreshPublished() {
+	if m.obs == nil {
+		return
+	}
+	m.mu.Lock()
+	sessions := make(map[string]*Session, len(m.sessions))
+	for id, s := range m.sessions {
+		sessions[id] = s
+	}
+	m.mu.Unlock()
+
+	for id, s := range sessions {
+		stat := sessionStat(s)
+		m.mu.Lock()
+		if !m.closing && m.sessions[id] == s {
+			m.obs.UpsertSession(stat)
+		}
+		m.mu.Unlock()
 	}
 }
 
@@ -1092,6 +1118,10 @@ func (m *Manager) publish(s *Session) {
 	if m.obs == nil {
 		return
 	}
+	m.obs.UpsertSession(sessionStat(s))
+}
+
+func sessionStat(s *Session) observe.SessionStat {
 	s.mu.RLock()
 	stat := observe.SessionStat{
 		ChannelID:      s.Channel.ID,
@@ -1108,7 +1138,7 @@ func (m *Manager) publish(s *Session) {
 	job := s.job
 	s.mu.RUnlock()
 	stat.Packager = packagerStat(job)
-	m.obs.UpsertSession(stat)
+	return stat
 }
 
 // packagerStat copies the engine's counters into the status snapshot. An engine

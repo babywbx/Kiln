@@ -102,6 +102,16 @@ func (s *Service) UpsertSession(st SessionStat) {
 	s.mu.Unlock()
 }
 
+func (s *Service) TouchSession(channelID string, at time.Time) {
+	s.mu.Lock()
+	st, ok := s.sessions[channelID]
+	if ok {
+		st.LastTouch = at
+		s.sessions[channelID] = st
+	}
+	s.mu.Unlock()
+}
+
 func (s *Service) RemoveSession(channelID string) {
 	s.mu.Lock()
 	delete(s.sessions, channelID)

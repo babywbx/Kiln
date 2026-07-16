@@ -533,7 +533,6 @@ func (s *Server) handlePlayIndex(w http.ResponseWriter, r *http.Request) {
 		writeAppErr(w, err)
 		return
 	}
-	s.deps.Sessions.Touch(id)
 	_, _, _, mode := sess.SourceSnapshot()
 	switch mode {
 	case "hls":
@@ -855,7 +854,6 @@ func (s *Server) handlePlayUpstream(w http.ResponseWriter, r *http.Request) {
 		writeAppErr(w, err)
 		return
 	}
-	s.deps.Sessions.Touch(id)
 	headers := s.deps.Sessions.HeadersFor(ch)
 	res, err := s.deps.Sessions.Pull().Get(r.Context(), pull.Request{
 		URL:       abs,
