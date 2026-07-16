@@ -160,6 +160,8 @@ func main() {
 		"config", abs(*cfgPath),
 		"listen", cfg.Server.Listen,
 		"channels", len(chs),
+		"packager_engine", cfg.Packager.Engine,
+		"ffmpeg_available", sessions.FFmpegAvailable(),
 		"proxies", len(cfg.Proxies),
 		"egress_default", cfg.Egress.Default,
 		"playlist_policy", cfg.Egress.PlaylistPolicy,

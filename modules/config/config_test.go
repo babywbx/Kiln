@@ -131,6 +131,83 @@ preferred_audio_languages = ["yue", "zh"]
 	}
 }
 
+func TestDefaultPackagerEngineOnlyFillsAnEmptyConfigValue(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "kiln.toml")
+	base := `
+[server]
+data_dir = "./data"
+
+[auth]
+[[auth.users]]
+username = "admin"
+password_hash = "hash"
+role = "admin"
+`
+
+	t.Setenv("KILN_DEFAULT_PACKAGER_ENGINE", EngineNative)
+	if err := os.WriteFile(path, []byte(base), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Packager.Engine != EngineNative {
+		t.Fatalf("default engine = %q, want %q", cfg.Packager.Engine, EngineNative)
+	}
+
+	explicit := base + `
+[packager]
+engine = "auto"
+`
+	if err := os.WriteFile(path, []byte(explicit), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Packager.Engine != EngineAuto {
+		t.Fatalf("explicit engine = %q, want %q", cfg.Packager.Engine, EngineAuto)
+	}
+}
+
+func TestInvalidPackagerDefaultsAndExplicitValuesAreRejected(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "kiln.toml")
+	base := `
+[server]
+data_dir = "./data"
+
+[auth]
+[[auth.users]]
+username = "admin"
+password_hash = "hash"
+role = "admin"
+`
+
+	t.Setenv("KILN_DEFAULT_PACKAGER_ENGINE", "sidecar")
+	if err := os.WriteFile(path, []byte(base), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("invalid default packager engine was accepted")
+	}
+
+	t.Setenv("KILN_DEFAULT_PACKAGER_ENGINE", EngineNative)
+	explicit := base + `
+[packager]
+engine = "sidecar"
+`
+	if err := os.WriteFile(path, []byte(explicit), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("invalid explicit packager engine was accepted")
+	}
+}
+
 func TestDebugPprofRequiresExplicitLoopbackListener(t *testing.T) {
 	base := File{
 		Server: Server{DataDir: t.TempDir()},

@@ -440,8 +440,11 @@ func (c *File) applyDefaults() {
 	if c.FFmpeg.LogLevel == "" {
 		c.FFmpeg.LogLevel = "error"
 	}
-	if !ValidEngine(c.Packager.Engine) {
-		c.Packager.Engine = EngineAuto
+	if c.Packager.Engine == "" {
+		c.Packager.Engine = strings.TrimSpace(os.Getenv("KILN_DEFAULT_PACKAGER_ENGINE"))
+		if c.Packager.Engine == "" {
+			c.Packager.Engine = EngineAuto
+		}
 	}
 	if c.Packager.PlaylistSize <= 0 {
 		c.Packager.PlaylistSize = 8
@@ -575,6 +578,9 @@ func (c *File) resolveKeysPaths(configPath string) {
 func (c File) validate() error {
 	if !c.FFmpeg.Mode.Valid() {
 		return fmt.Errorf("ffmpeg.mode must be native or docker")
+	}
+	if !ValidEngine(c.Packager.Engine) {
+		return fmt.Errorf("packager.engine must be auto, native or ffmpeg")
 	}
 	if c.Debug.Pprof.Enabled {
 		host, _, err := net.SplitHostPort(c.Debug.Pprof.Listen)
