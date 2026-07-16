@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path"
 	"strconv"
 	"strings"
@@ -335,18 +334,15 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 	needFF := false
 	chs, _ := s.deps.Catalog.List(false)
 	for _, ch := range chs {
-		if ch.Ingress == "dash" {
+		if ch.Ingress == "dash" && s.deps.Cfg.EngineFor(ch) == config.EngineFFmpeg {
 			needFF = true
 			break
 		}
 	}
 	if needFF {
-		dependency := s.deps.Cfg.FFmpeg.Dependency()
-		if _, err := exec.LookPath(dependency); err != nil {
-			if _, statErr := os.Stat(dependency); statErr != nil {
-				writeAppErr(w, apperr.New(apperr.CodeNotReady, 503, "ffmpeg not available"))
-				return
-			}
+		if s.deps.Sessions == nil || !s.deps.Sessions.FFmpegAvailable() {
+			writeAppErr(w, apperr.New(apperr.CodeNotReady, 503, "ffmpeg compatibility engine is not available"))
+			return
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})

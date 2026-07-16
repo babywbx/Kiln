@@ -2,7 +2,9 @@ package packager
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -13,6 +15,17 @@ import (
 )
 
 const ffmpegIndexName = "index.m3u8"
+
+func CheckFFmpegDependency(cfg config.FFmpeg) error {
+	dependency := strings.TrimSpace(cfg.Dependency())
+	if dependency == "" {
+		return fmt.Errorf("ffmpeg dependency is not configured")
+	}
+	if _, err := exec.LookPath(dependency); err != nil {
+		return fmt.Errorf("find ffmpeg dependency %q: %w", dependency, err)
+	}
+	return nil
+}
 
 // FFmpegAdapter wraps the existing DASH-to-HLS ffmpeg job unchanged. Its
 // output, attempt fallback and restart semantics are exactly what they were

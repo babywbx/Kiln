@@ -223,6 +223,13 @@ func (a *AdaptivePackager) startFFmpeg(ctx context.Context, req Request, reason 
 	if mode := strings.ToLower(strings.TrimSpace(req.Selection.Subtitles.Mode)); mode == "prefer" || mode == "only" {
 		return nil, apperr.New(apperr.CodeInvalid, 400, "the ffmpeg compatibility engine cannot honor an explicit subtitle selection")
 	}
+	if a.ffmpeg == nil {
+		message := "ffmpeg compatibility engine is not available"
+		if reason != "" {
+			message = "source requires ffmpeg compatibility, but the ffmpeg engine is not available"
+		}
+		return nil, apperr.New(apperr.CodeUnavailable, 503, message)
+	}
 	job, err := a.ffmpeg.Start(ctx, cleanWorkDir(req, "ffmpeg"))
 	if err != nil {
 		return nil, err

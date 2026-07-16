@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -14,6 +15,7 @@ import (
 	"github.com/babywbx/kiln/modules/catalog"
 	"github.com/babywbx/kiln/modules/config"
 	"github.com/babywbx/kiln/modules/observe"
+	"github.com/babywbx/kiln/modules/pull"
 	"github.com/babywbx/kiln/modules/session"
 )
 
@@ -228,9 +230,14 @@ func newManagerWithBaseURL(t *testing.T, baseURL string, channel config.Channel)
 		Channels: []config.Channel{channel},
 	}
 	obs := observe.New()
+	allowed := map[string]struct{}{}
+	if upstreamURL, err := url.Parse(baseURL); err == nil {
+		allowed[upstreamURL.Hostname()] = struct{}{}
+	}
+	puller := pull.New(pull.Options{Observe: obs, Allowed: allowed})
 	manager := session.NewManager(
 		catalog.New(cfg, nil),
-		nil,
+		puller,
 		obs,
 		t.TempDir(),
 		config.FFmpeg{},

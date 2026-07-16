@@ -72,15 +72,16 @@ func (g spawnGate) Acquire(ctx context.Context) (func(), error) {
 }
 
 type Manager struct {
-	cat     *catalog.Service
-	pull    *pull.Client
-	obs     *observe.Service
-	egress  *proxyegress.Router
-	dataDir string
-	ffmpeg  config.FFmpeg
-	log     *slog.Logger
-	spawn   spawnGate
-	pack    packager.Packager
+	cat             *catalog.Service
+	pull            *pull.Client
+	obs             *observe.Service
+	egress          *proxyegress.Router
+	dataDir         string
+	ffmpeg          config.FFmpeg
+	log             *slog.Logger
+	spawn           spawnGate
+	pack            packager.Packager
+	ffmpegAvailable bool
 
 	mu              sync.Mutex
 	sessions        map[string]*Session
@@ -204,8 +205,19 @@ func (m *Manager) newPackager() packager.Packager {
 	native.LLHLS = cfg.LLHLS
 	native.PartTarget = time.Duration(cfg.PartTargetMS) * time.Millisecond
 	native.SetInflightBytes(cfg.InflightBytes)
-	ffmpeg := packager.NewFFmpegAdapter(m.ffmpeg, m.egress, m.spawn, onBytesIn)
+	var ffmpeg packager.Packager
+	if err := packager.CheckFFmpegDependency(m.ffmpeg); err != nil {
+		m.log.Info("ffmpeg compatibility engine unavailable",
+			"dependency", m.ffmpeg.Dependency(), "err", err)
+	} else {
+		m.ffmpegAvailable = true
+		ffmpeg = packager.NewFFmpegAdapter(m.ffmpeg, m.egress, m.spawn, onBytesIn)
+	}
 	return packager.NewAdaptivePackager(native, ffmpeg, m.log)
+}
+
+func (m *Manager) FFmpegAvailable() bool {
+	return m.ffmpegAvailable
 }
 
 // SetPackager replaces the engine before sessions are started.
@@ -601,6 +613,9 @@ func (m *Manager) launchDash(s *Session) (*dashStart, error) {
 	})
 	if err != nil {
 		_ = os.RemoveAll(work)
+		if _, ok := apperr.As(err); ok {
+			return nil, err
+		}
 		return nil, apperr.Wrap(apperr.CodeUpstream, 502, "dash packager failed", err)
 	}
 	if job == nil {

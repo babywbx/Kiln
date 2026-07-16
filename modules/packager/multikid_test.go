@@ -5,10 +5,12 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/babywbx/kiln/modules/apperr"
 	"github.com/babywbx/kiln/modules/config"
 	"github.com/babywbx/kiln/modules/packager/cmaf"
 )
@@ -126,5 +128,52 @@ func TestSingleKIDStartFailureFallsBackToFFmpeg(t *testing.T) {
 	}
 	if !spy.started {
 		t.Fatal("a plain fetch failure on a single-KID source should still try ffmpeg")
+	}
+}
+
+func TestAutoExplainsWhenFFmpegCompatibilityIsUnavailable(t *testing.T) {
+	origin := startOrigin(t, "h264")
+	native := NewNativeAdapter(func(Request) Fetcher {
+		return &breakSegments{inner: &httpFetcher{client: origin.Client(), hits: map[string]int{}}}
+	}, 8, time.Minute)
+	native.StartSegments = 1
+
+	pkg := NewAdaptivePackager(native, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	_, err := pkg.Start(context.Background(), Request{
+		ChannelID: "h264",
+		SourceURL: origin.URL + "/stream.mpd",
+		Keys:      []config.KeyPair{{KID: fixtureKID, Key: fixtureKey}},
+		WorkDir:   t.TempDir(),
+		Engine:    StrategyAuto,
+	})
+	appErr, ok := apperr.As(err)
+	if !ok {
+		t.Fatalf("error = %v, want a public unavailable error", err)
+	}
+	if appErr.Code != apperr.CodeUnavailable || appErr.HTTPStatus != http.StatusServiceUnavailable {
+		t.Fatalf("error = %#v, want unavailable status", appErr)
+	}
+	if !strings.Contains(appErr.Message, "source requires ffmpeg") {
+		t.Fatalf("message = %q, want the missing compatibility requirement", appErr.Message)
+	}
+}
+
+func TestForcedFFmpegExplainsWhenCompatibilityIsUnavailable(t *testing.T) {
+	pkg := NewAdaptivePackager(nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	_, err := pkg.Start(context.Background(), Request{
+		ChannelID: "forced",
+		WorkDir:   t.TempDir(),
+		Engine:    StrategyFFmpeg,
+	})
+	appErr, ok := apperr.As(err)
+	if !ok {
+		t.Fatalf("error = %v, want a public unavailable error", err)
+	}
+	if appErr.Code != apperr.CodeUnavailable || appErr.HTTPStatus != http.StatusServiceUnavailable {
+		t.Fatalf("error = %#v, want unavailable status", appErr)
+	}
+	if appErr.Message != "ffmpeg compatibility engine is not available" {
+		t.Fatalf("message = %q, want missing compatibility engine explanation", appErr.Message)
 	}
 }
