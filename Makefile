@@ -1,4 +1,4 @@
-.PHONY: build test test-admin-ui coverage run tidy hash keys fmt vet lint vuln ci clean audit-admin-ui \
+.PHONY: build build-debug build-release test test-admin-ui coverage run tidy hash keys fmt vet lint vuln ci clean audit-admin-ui \
         docker docker-multiarch docker-verify docker-smoke docker-reap fixtures \
         media-oracle test-safety benchmark-performance soak
 
@@ -16,8 +16,15 @@ LDFLAGS = -X github.com/babywbx/kiln/modules/version.Version=$(VERSION) \
           -X github.com/babywbx/kiln/modules/version.Commit=$(COMMIT) \
           -X github.com/babywbx/kiln/modules/version.BuiltAt=$(BUILT_AT)
 
-build:
+build: build-debug
+
+build-debug:
+	@mkdir -p dist
 	go build -o dist/kiln -ldflags="$(LDFLAGS)" ./apps/server
+
+build-release:
+	@mkdir -p dist
+	go build -trimpath -o dist/kiln -ldflags="-s -w $(LDFLAGS)" ./apps/server
 
 test:
 	go test -race ./...
