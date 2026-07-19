@@ -7,6 +7,9 @@
 listen = "0.0.0.0:8080"
 public_base_url = "http://127.0.0.1:8080"
 data_dir = "/var/lib/kiln/data"
+# Detects fractional CPU quotas plus nested/parent cgroup memory limits. A
+# nominal 4 GB / 4-core host keeps the fast path; smaller axes scale independently.
+resource_mode = "auto"
 read_timeout_sec = 15
 idle_timeout_sec = 120
 
@@ -69,6 +72,8 @@ enabled = true
 cache = true
 cache_dir = "/var/lib/kiln/data/epg"
 refresh_interval_min = 360
+# 0 is unlimited normally and becomes a CPU/memory-derived ceiling in auto.
+max_refresh_concurrency = 0
 max_source_bytes = 67108864
 default_timezone = "Asia/Hong_Kong"
 serve_timezone = "keep"

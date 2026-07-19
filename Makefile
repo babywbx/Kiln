@@ -1,7 +1,7 @@
-.PHONY: build build-debug build-release test test-admin-ui coverage run tidy hash keys fmt vet lint vuln ci clean audit-admin-ui \
+.PHONY: build build-debug build-release test test-extended test-admin-ui test-docker-targets test-local-tools test-complete coverage run tidy hash keys fmt vet lint vuln ci clean audit-admin-ui \
         docker docker-full docker-core docker-images docker-multiarch docker-core-multiarch \
         docker-verify docker-verify-images docker-smoke docker-reap fixtures \
-        media-oracle test-safety benchmark-performance soak
+        media-oracle test-safety test-resource-docker-basic test-resource-docker-extended benchmark-performance performance-live soak
 
 VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT   ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
@@ -10,6 +10,7 @@ IMAGE    ?= kiln:local
 CORE_IMAGE ?= kiln:core-local
 BUSYBOX_IMAGE ?= busybox:1.37.0@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028
 PLATFORM ?= linux/amd64,linux/arm64
+CORE_PLATFORM ?= linux/amd64,linux/arm64,linux/arm/v7,linux/arm/v6
 
 BUILD_ARGS = --build-arg VERSION=$(VERSION) \
              --build-arg COMMIT=$(COMMIT) \
@@ -32,20 +33,41 @@ build-release:
 test:
 	go test -race ./...
 
+test-extended:
+	go test -race -tags=extended ./...
+
 test-admin-ui:
 	node --test scripts/*.test.js
+
+test-docker-targets:
+	sh deploy/docker/go-target-env.test.sh
+	sh deploy/docker/resource-profile-smoke.test.sh basic
+
+test-local-tools:
+	sh deploy/docker/resource-profile-smoke.test.sh extended
+	sh scripts/live-performance.test.sh
+	sh scripts/test-tiering.test.sh
+
+test-resource-docker-basic:
+	sh deploy/docker/resource-profile-smoke.sh basic "$(CORE_IMAGE)"
+
+test-resource-docker-extended:
+	sh deploy/docker/resource-profile-smoke.sh extended "$(CORE_IMAGE)"
 
 media-oracle:
 	KILN_REQUIRE_MEDIA_ORACLE=1 go test ./modules/packager/... -run 'FFmpeg|NativeOutput'
 
 test-safety:
-	go test ./modules/packager/mpd -run '^FuzzAvailableSegments$$'
-	go test ./modules/packager/cmaf -run '^FuzzCMAF$$'
-	go test ./modules/packager/mpd -run '^$$' -fuzz '^FuzzAvailableSegments$$' -fuzztime=30s
-	go test ./modules/packager/cmaf -run '^$$' -fuzz '^FuzzCMAF$$' -fuzztime=30s
+	go test -tags=extended ./modules/packager/mpd -run '^FuzzAvailableSegments$$'
+	go test -tags=extended ./modules/packager/cmaf -run '^FuzzCMAF$$'
+	go test -tags=extended ./modules/packager/mpd -run '^$$' -fuzz '^FuzzAvailableSegments$$' -fuzztime=30s
+	go test -tags=extended ./modules/packager/cmaf -run '^$$' -fuzz '^FuzzCMAF$$' -fuzztime=30s
 
 benchmark-performance:
-	go test ./modules/packager/... -run '^$$' -bench . -benchmem
+	go test -tags=extended ./modules/packager/... ./modules/epg ./modules/httpserver -run '^$$' -bench . -benchmem
+
+performance-live:
+	sh scripts/live-performance.sh
 
 soak:
 	go run ./apps/soak -server "$(or $(SOAK_SERVER),http://127.0.0.1:8080)" \
@@ -81,7 +103,12 @@ vuln:
 	@command -v govulncheck >/dev/null 2>&1 || { echo "govulncheck not found: go install golang.org/x/vuln/cmd/govulncheck@latest"; exit 1; }
 	govulncheck ./...
 
-ci: fmt vet lint build test test-admin-ui media-oracle test-safety vuln
+ci: fmt vet lint build test test-admin-ui test-docker-targets media-oracle vuln
+
+test-complete: ci test-extended test-local-tools test-safety benchmark-performance
+	$(MAKE) docker-core
+	$(MAKE) test-resource-docker-extended
+	$(MAKE) docker-core-multiarch
 
 clean:
 	rm -rf dist coverage.out
@@ -105,7 +132,7 @@ docker-multiarch:
 
 docker-core-multiarch:
 	docker buildx build --target core -f deploy/docker/Dockerfile $(BUILD_ARGS) \
-	  --platform $(PLATFORM) -t $(CORE_IMAGE) --output type=cacheonly .
+	  --platform $(CORE_PLATFORM) -t $(CORE_IMAGE) --output type=cacheonly .
 
 docker-verify-images:
 	deploy/docker/verify-images.sh $(CORE_IMAGE) $(IMAGE)
