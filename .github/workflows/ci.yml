@@ -2,70 +2,111 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  admin-ui:
+  quality-admin-ui:
     name: Quality / Admin UI
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - name: Checkout Repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24.18.0
-      - run: corepack enable
-      - run: pnpm install --frozen-lockfile
-      - run: make test-admin-ui
 
-  go:
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run Admin UI Tests
+        run: make test-admin-ui
+
+  quality-go:
     name: Quality / Go
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - name: Checkout Repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
-      - name: Install FFmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
-      - name: Install lint/vuln tools
+
+      - name: Install Lint and Vulnerability Tools
         run: |
           go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
           go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
-      - run: make fmt
-      - run: make vet
-      - run: make lint
-      - run: make build
-      - name: Test with media oracle
+
+      - name: Run gofmt Check
+        run: make fmt
+
+      - name: Run go vet
+        run: make vet
+
+      - name: Run golangci-lint
+        run: make lint
+
+      - name: Run govulncheck
+        run: make vuln
+
+  test-go:
+    name: Test / Go
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install FFmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Build Server
+        run: make build
+
+      - name: Run Docker Target Script Tests
+        run: make test-docker-targets
+
+      - name: Run Tests with Media Oracle
         env:
           KILN_REQUIRE_MEDIA_ORACLE: "1"
         run: make test
-      - name: Run safety fuzzers
-        run: make test-safety
-      - name: Record performance benchmarks
-        run: |
-          set -o pipefail
-          make benchmark-performance | tee benchmarks.txt
-      - name: Upload performance benchmarks
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: packager-benchmarks
-          path: benchmarks.txt
-      - run: make vuln
 
-  docker:
-    name: Build / Container
+  build-docker:
+    name: Build / Docker Image
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - name: Checkout Repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      - name: Build core amd64
+      - name: Setup QEMU
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+
+      - name: Setup Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Build Core Image (amd64)
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
@@ -80,7 +121,7 @@ jobs:
           cache-from: type=gha,scope=core-amd64
           cache-to: type=gha,mode=max,scope=core-amd64
 
-      - name: Build full amd64
+      - name: Build Full Image (amd64)
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
@@ -95,10 +136,10 @@ jobs:
           cache-from: type=gha,scope=full-amd64
           cache-to: type=gha,mode=max,scope=full-amd64
 
-      - name: Verify core and full image contracts
+      - name: Verify Core and Full Image Contracts
         run: deploy/docker/verify-images.sh kiln:ci-core-amd64 kiln:ci-full-amd64
 
-      - name: Smoke image defaults and readiness
+      - name: Smoke Test Image Defaults and Readiness
         run: |
           set -eu
           cleanup() {
@@ -127,7 +168,10 @@ jobs:
           docker logs kiln-full-ci 2>&1 | grep -q 'packager_engine=auto'
           docker logs kiln-full-ci 2>&1 | grep -q 'ffmpeg_available=true'
 
-      - name: Build core arm64
+      - name: Smoke Test Integer Resource Profiles
+        run: make test-resource-docker-basic CORE_IMAGE=kiln:ci-core-amd64
+
+      - name: Build Core Image (arm64)
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
@@ -141,7 +185,7 @@ jobs:
           cache-from: type=gha,scope=core-arm64
           cache-to: type=gha,mode=max,scope=core-arm64
 
-      - name: Build full arm64
+      - name: Build Full Image (arm64)
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
@@ -155,7 +199,7 @@ jobs:
           cache-from: type=gha,scope=full-arm64
           cache-to: type=gha,mode=max,scope=full-arm64
 
-      - name: Smoke native core and full FFmpeg media paths
+      - name: Smoke Test Native Core and Full FFmpeg Media Paths
         run: |
           set -eu
           cleanup() {
@@ -191,5 +235,5 @@ jobs:
             --entrypoint /bin/sh kiln:ci-full-amd64 \
             deploy/docker/smoke.sh /usr/local/bin/ffmpeg testdata/cenc
 
-      - name: Report image sizes
+      - name: Report Image Sizes
         run: docker images --format '{{.Repository}}:{{.Tag}} {{.Size}}' | grep '^kiln:ci-'
