@@ -192,9 +192,38 @@ type playlistEncoder struct {
 	master func([]*track, bool) []byte
 }
 
+type assetRemoval struct {
+	name           string
+	retryInitTrack string
+}
+
+type assetRemovals struct {
+	// Inline common removals so grace cleanup adds no per-segment allocation.
+	inline   [4]assetRemoval
+	overflow []assetRemoval
+	count    int
+}
+
+func (r *assetRemovals) add(removal assetRemoval) {
+	if r.count < len(r.inline) {
+		r.inline[r.count] = removal
+	} else {
+		r.overflow = append(r.overflow, removal)
+	}
+	r.count++
+}
+
+func (r *assetRemovals) at(index int) assetRemoval {
+	if index < len(r.inline) {
+		return r.inline[index]
+	}
+	return r.overflow[index-len(r.inline)]
+}
+
 type Publisher struct {
-	cfg Config
-	now func() time.Time
+	cfg        Config
+	now        func() time.Time
+	removeFile func(string) error
 
 	mu         sync.RWMutex
 	order      []string
@@ -230,6 +259,7 @@ func New(cfg Config) (*Publisher, error) {
 	return &Publisher{
 		cfg:        cfg,
 		now:        cfg.Now,
+		removeFile: os.Remove,
 		tracks:     map[string]*track{},
 		playlists:  map[string][]byte{},
 		revisions:  map[string]uint64{},
@@ -266,7 +296,11 @@ func (p *Publisher) AddTrack(t Track) error {
 
 func (p *Publisher) PublishInit(name string, data []byte) error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	var removals assetRemovals
+	defer func() {
+		p.mu.Unlock()
+		p.removeAssets(removals)
+	}()
 	t, ok := p.tracks[name]
 	if !ok {
 		return fmt.Errorf("hls: unknown track %s", name)
@@ -282,7 +316,7 @@ func (p *Publisher) PublishInit(name string, data []byte) error {
 	t.initAssets[assetName] = struct{}{}
 	t.initCount++
 	t.initReady = true
-	p.reap(t)
+	removals = p.reap(t)
 	return nil
 }
 
@@ -364,7 +398,11 @@ func (p *Publisher) PublishPartStaged(pub PartPublication, staged string) error 
 
 func (p *Publisher) PublishStaged(pub Publication, staged string) error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	var removals assetRemovals
+	defer func() {
+		p.mu.Unlock()
+		p.removeAssets(removals)
+	}()
 	t, ok := p.tracks[pub.Track]
 	if !ok {
 		p.Discard(staged)
@@ -414,7 +452,7 @@ func (p *Publisher) PublishStaged(pub Publication, staged string) error {
 	metadataChanged := p.applyDateRanges(pub.DateRanges)
 	t.frontier = pub.Seq
 	t.hasFrontier = true
-	p.slide(t)
+	removals = p.slide(t)
 	if t.Kind == KindVideo {
 		p.ensureTrackDateRanges(t)
 		p.pruneDateRanges()
@@ -594,12 +632,13 @@ func (p *Publisher) setHint(t *track, msn, part uint64) {
 	}
 }
 
-func (p *Publisher) slide(t *track) {
+func (p *Publisher) slide(t *track) assetRemovals {
 	if p.cfg.Static {
-		return
+		return assetRemovals{}
 	}
 	for len(t.segments) > p.cfg.PlaylistSize {
 		gone := t.segments[0]
+		t.segments[0] = segment{}
 		t.segments = t.segments[1:]
 		t.mediaSequence++
 		if gone.Discontinuity {
@@ -608,22 +647,26 @@ func (p *Publisher) slide(t *track) {
 		gone.expiresAt = p.now().Add(p.cfg.Grace)
 		t.tombstones = append(t.tombstones, gone)
 	}
-	p.reap(t)
+	return p.reap(t)
 }
 
-func (p *Publisher) reap(t *track) {
+func (p *Publisher) reap(t *track) assetRemovals {
 	now := p.now()
+	var removals assetRemovals
 	kept := t.tombstones[:0]
 	for _, s := range t.tombstones {
 		if now.Before(s.expiresAt) {
 			kept = append(kept, s)
 			continue
 		}
-		p.removeAsset(s.Name)
+		delete(p.assets, s.Name)
+		removals.add(assetRemoval{name: s.Name})
 		for _, part := range s.Parts {
-			p.removeAsset(part.Name)
+			delete(p.assets, part.Name)
+			removals.add(assetRemoval{name: part.Name})
 		}
 	}
+	clear(t.tombstones[len(kept):])
 	t.tombstones = kept
 
 	reachable := map[string]struct{}{t.initName: {}}
@@ -637,16 +680,33 @@ func (p *Publisher) reap(t *track) {
 		if _, ok := reachable[name]; ok {
 			continue
 		}
-		if p.removeAsset(name) {
-			delete(t.initAssets, name)
-		}
+		delete(p.assets, name)
+		delete(t.initAssets, name)
+		removals.add(assetRemoval{name: name, retryInitTrack: t.Name})
 	}
+	return removals
 }
 
-func (p *Publisher) removeAsset(name string) bool {
-	delete(p.assets, name)
-	err := os.Remove(filepath.Join(p.cfg.Dir, name))
-	return err == nil || os.IsNotExist(err)
+func (p *Publisher) removeAssets(removals assetRemovals) {
+	var retries assetRemovals
+	for index := range removals.count {
+		removal := removals.at(index)
+		err := p.removeFile(filepath.Join(p.cfg.Dir, removal.name))
+		if err != nil && !os.IsNotExist(err) && removal.retryInitTrack != "" {
+			retries.add(removal)
+		}
+	}
+	if retries.count == 0 {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for index := range retries.count {
+		retry := retries.at(index)
+		if t := p.tracks[retry.retryInitTrack]; t != nil {
+			t.initAssets[retry.name] = struct{}{}
+		}
+	}
 }
 
 func (p *Publisher) refresh(changed *track) {

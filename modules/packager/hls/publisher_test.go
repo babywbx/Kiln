@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -186,6 +187,99 @@ func TestExpiredSegmentSurvivesGracePeriod(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, dropped)); !os.IsNotExist(err) {
 		t.Errorf("segment was not reaped after the grace period: %v", err)
+	}
+}
+
+func TestExpiredCleanupDoesNotBlockPublishedState(t *testing.T) {
+	p, c, _ := newTestPublisher(t, 1, time.Second)
+	publish(t, p, "audio-main", 1, 2)
+	publish(t, p, "video-main", 1, 2)
+	publish(t, p, "video-main", 2, 2)
+	c.add(2 * time.Second)
+
+	const expired = "video-main-000001.m4s"
+	cleanupStarted := make(chan struct{})
+	releaseCleanup := make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(releaseCleanup) })
+	p.removeFile = func(path string) error {
+		if filepath.Base(path) == expired {
+			close(cleanupStarted)
+			<-releaseCleanup
+		}
+		return os.Remove(path)
+	}
+
+	staged, err := p.Stage([]byte("segment-data"))
+	if err != nil {
+		t.Fatalf("Stage: %v", err)
+	}
+	published := make(chan error, 1)
+	go func() {
+		published <- p.PublishStaged(Publication{Track: "video-main", Seq: 3, Duration: 2}, staged)
+	}()
+
+	select {
+	case <-cleanupStarted:
+	case <-time.After(time.Second):
+		t.Fatal("expired asset cleanup did not start")
+	}
+
+	visible := make(chan bool, 1)
+	go func() {
+		playlist, playlistOK := p.Playlist("video-main.m3u8")
+		_, assetOK := p.Asset("video-main-000003.m4s")
+		visible <- playlistOK && assetOK && strings.Contains(string(playlist), "video-main-000003.m4s")
+	}()
+	select {
+	case ok := <-visible:
+		if !ok {
+			t.Fatal("new media was not visible while expired media was being removed")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("published state was blocked by expired asset cleanup")
+	}
+
+	releaseOnce.Do(func() { close(releaseCleanup) })
+	if err := <-published; err != nil {
+		t.Fatalf("PublishStaged: %v", err)
+	}
+}
+
+func TestExpiredCleanupClearsRetainedSliceSlots(t *testing.T) {
+	p, c, _ := newTestPublisher(t, 1, time.Second)
+	publish(t, p, "audio-main", 1, 2)
+	end := c.t.Add(time.Second)
+	if err := p.PublishSegment(Publication{
+		Track: "video-main", Seq: 1, Duration: 2, At: c.t,
+		DateRanges: []timedmeta.DateRange{{
+			ID: "ad-break", Class: "com.apple.hls.scte35", StartDate: c.t, EndDate: &end,
+		}},
+	}, []byte("segment-data")); err != nil {
+		t.Fatalf("PublishSegment(video-main, 1): %v", err)
+	}
+	if err := p.PublishSegment(Publication{
+		Track: "video-main", Seq: 2, Duration: 2, At: c.t.Add(2 * time.Second),
+	}, []byte("segment-data")); err != nil {
+		t.Fatalf("PublishSegment(video-main, 2): %v", err)
+	}
+
+	c.add(2 * time.Second)
+	if err := p.PublishInit("video-main", []byte("video-init-2")); err != nil {
+		t.Fatalf("PublishInit: %v", err)
+	}
+
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	video := p.tracks["video-main"]
+	if len(video.tombstones) != 0 {
+		t.Fatalf("expired tombstones = %d, want 0", len(video.tombstones))
+	}
+	retained := video.tombstones[:cap(video.tombstones)]
+	for index, tombstone := range retained {
+		if tombstone.Name != "" || tombstone.Parts != nil || tombstone.DateRanges != nil {
+			t.Fatalf("retained tombstone slot %d still references expired media", index)
+		}
 	}
 }
 
