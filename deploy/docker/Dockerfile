@@ -6,6 +6,7 @@ ARG GO_IMAGE=golang:1.26.5-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e5
 
 FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS build
 ARG TARGETARCH
+ARG TARGETVARIANT
 ARG VERSION=dev
 ARG COMMIT=unknown
 ARG BUILT_AT=unknown
@@ -15,13 +16,18 @@ RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY . .
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH \
-    go build -trimpath \
+    . ./deploy/docker/go-target-env.sh "$TARGETARCH" "$TARGETVARIANT" \
+ && CGO_ENABLED=0 GOOS=linux go build -trimpath \
       -ldflags="-s -w \
         -X github.com/babywbx/kiln/modules/version.Version=${VERSION} \
         -X github.com/babywbx/kiln/modules/version.Commit=${COMMIT} \
         -X github.com/babywbx/kiln/modules/version.BuiltAt=${BUILT_AT}" \
-      -o /out/kiln ./apps/server
+      -o /out/kiln ./apps/server \
+ && go version -m /out/kiln > /out/go-build-info \
+ && grep -Eq "build[[:space:]]+GOARCH=${GOARCH}$" /out/go-build-info \
+ && if [ -n "${GOARM:-}" ]; then grep -Eq "build[[:space:]]+GOARM=${GOARM}$" /out/go-build-info; fi \
+ && if [ -n "${GOAMD64:-}" ]; then grep -Eq "build[[:space:]]+GOAMD64=${GOAMD64}$" /out/go-build-info; fi \
+ && if [ -n "${GOARM64:-}" ]; then grep -Eq "build[[:space:]]+GOARM64=${GOARM64}$" /out/go-build-info; fi
 
 FROM ${ALPINE_IMAGE} AS runtime-base
 ARG VERSION=dev
@@ -34,6 +40,7 @@ RUN apk add --no-cache ca-certificates tzdata \
  && mkdir -p /var/lib/kiln/data /etc/kiln /usr/local/share/kiln \
  && chown -R kiln:kiln /var/lib/kiln /etc/kiln
 COPY --from=build  /out/kiln /usr/local/bin/kiln
+COPY --from=build  /out/go-build-info /usr/local/share/kiln/go-build-info
 LABEL org.opencontainers.image.title="Kiln" \
       org.opencontainers.image.source="https://github.com/babywbx/kiln" \
       org.opencontainers.image.version="${VERSION}" \
