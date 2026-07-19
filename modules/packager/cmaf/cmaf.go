@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Eyevinn/mp4ff/bits"
 	"github.com/Eyevinn/mp4ff/mp4"
 )
 
@@ -287,22 +288,44 @@ func (i *Init) decryptChecked(raw []byte, keys KeySet, reserve func(int64) error
 		return nil, err
 	}
 
-	size := int64(seg.Size())
+	size := int64(encodedSegmentSize(seg))
 	if reserve != nil {
 		if err := reserve(size); err != nil {
 			return nil, err
 		}
 	}
-	buf := bytes.NewBuffer(make([]byte, 0, size))
-	if err := seg.Encode(buf); err != nil {
+	maxInt := int64(^uint(0) >> 1)
+	if size < 0 || size > maxInt {
+		return nil, unsupportedf(ReasonMalformed, "clear segment size %d does not fit in memory", size)
+	}
+	clear := make([]byte, int(size))
+	w := bits.NewFixedSliceWriterFromSlice(clear)
+	if err := seg.EncodeSW(w); err != nil {
+		return nil, fmt.Errorf("encode clear segment: %w", err)
+	}
+	if err := w.AccError(); err != nil {
 		return nil, fmt.Errorf("encode clear segment: %w", err)
 	}
 	return &Segment{
-		Clear:    buf.Bytes(),
+		Clear:    w.Bytes(),
 		BaseTime: base,
 		Duration: dur,
 		Events:   eventMessages(seg),
 	}, nil
+}
+
+func encodedSegmentSize(seg *mp4.MediaSegment) uint64 {
+	var size uint64
+	if seg.Styp != nil {
+		size += seg.Styp.Size()
+	}
+	for _, sidx := range seg.Sidxs {
+		size += sidx.Size()
+	}
+	for _, fragment := range seg.Fragments {
+		size += fragment.Size()
+	}
+	return size
 }
 
 func (i *Init) decodeMediaSegment(raw []byte, keys KeySet) (*mp4.MediaSegment, error) {
@@ -319,10 +342,12 @@ func (i *Init) decodeMediaSegment(raw []byte, keys KeySet) (*mp4.MediaSegment, e
 	}
 
 	if i.Track.Encrypted {
-		if _, ok := keys[i.Track.KID]; !ok {
+		key, ok := keys[i.Track.KID]
+		if !ok {
 			return nil, unsupportedf(ReasonMissingKey, "no key for kid %s", i.Track.KID)
 		}
-		if err := mp4.DecryptSegmentWithKeys(seg, i.di, nil, keys, true); err != nil {
+		err = decryptProtectedWithKey(seg, i.di, key, i.Track.Scheme)
+		if err != nil {
 			return nil, fmt.Errorf("decrypt segment (kid %s): %w", i.Track.KID, err)
 		}
 	}

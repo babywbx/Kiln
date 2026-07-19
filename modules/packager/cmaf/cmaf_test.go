@@ -2,6 +2,7 @@ package cmaf
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -179,6 +180,58 @@ func TestDecryptDropsEncryptionBoxes(t *testing.T) {
 	}
 }
 
+func TestDecryptMatchesMP4FFReferenceBytes(t *testing.T) {
+	keys := testKeys(t)
+	for _, tc := range []struct {
+		dir    string
+		stream int
+	}{
+		{"h264", 0}, {"h264", 1},
+		{"hevc", 0}, {"hevc", 1},
+		{"cbcs", 0}, {"cbcs", 1},
+	} {
+		t.Run(fmt.Sprintf("%s/stream%d", tc.dir, tc.stream), func(t *testing.T) {
+			initName := fmt.Sprintf("init-stream%d.m4s", tc.stream)
+			chunkName := fmt.Sprintf("chunk-stream%d-00001.m4s", tc.stream)
+			initRaw := readFixture(t, tc.dir, initName)
+			init, err := ParseInit(initRaw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := init.Decrypt(readFixture(t, tc.dir, chunkName), keys)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			referenceInit, err := mp4.DecodeFile(bytes.NewReader(initRaw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			decryptInfo, err := mp4.DecryptInit(referenceInit.Init)
+			if err != nil {
+				t.Fatal(err)
+			}
+			referenceFile, err := mp4.DecodeFile(bytes.NewReader(
+				readFixture(t, tc.dir, chunkName),
+			))
+			if err != nil {
+				t.Fatal(err)
+			}
+			reference := referenceFile.Segments[0]
+			if err := mp4.DecryptSegmentWithKeys(reference, decryptInfo, nil, keys, true); err != nil {
+				t.Fatal(err)
+			}
+			var want bytes.Buffer
+			if err := reference.Encode(&want); err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got.Clear, want.Bytes()) {
+				t.Fatal("clear segment differs from mp4ff reference bytes")
+			}
+		})
+	}
+}
+
 func TestDecryptPreservesCallerInput(t *testing.T) {
 	init, err := ParseInit(readFixture(t, "hevc", "init-stream0.m4s"))
 	if err != nil {
@@ -191,6 +244,78 @@ func TestDecryptPreservesCallerInput(t *testing.T) {
 	}
 	if !bytes.Equal(raw, want) {
 		t.Fatal("Decrypt mutated its caller-owned input")
+	}
+}
+
+func TestDecryptOwnedReservedUsesTheEncodedSize(t *testing.T) {
+	init, err := ParseInit(readFixture(t, "h264", "init-stream0.m4s"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := readFixture(t, "h264", "chunk-stream0-00001.m4s")
+	var reserved int64
+	seg, err := init.DecryptOwnedReserved(raw, testKeys(t), func(size int64) error {
+		reserved = size
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reserved != int64(len(seg.Clear)) {
+		t.Fatalf("reserved %d bytes, encoded %d", reserved, len(seg.Clear))
+	}
+}
+
+func TestDecryptOwnedReservedReturnsReservationError(t *testing.T) {
+	init, err := ParseInit(readFixture(t, "h264", "init-stream0.m4s"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := errors.New("memory budget exhausted")
+	seg, err := init.DecryptOwnedReserved(
+		readFixture(t, "h264", "chunk-stream0-00001.m4s"),
+		testKeys(t),
+		func(int64) error { return want },
+	)
+	if seg != nil {
+		t.Fatal("reservation failure returned a segment")
+	}
+	if !errors.Is(err, want) {
+		t.Fatalf("error = %v, want %v", err, want)
+	}
+}
+
+func TestDecryptOwnedReservedAccountsForEverySidx(t *testing.T) {
+	initRaw, trackID := makeSTPPInit(t)
+	init, err := ParseInit(initRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := makeTextSegment(t, trackID, nil, []mp4.FullSample{{
+		Sample: mp4.Sample{Dur: 1000, Size: 1},
+		Data:   []byte{0},
+	}})
+	file, err := mp4.DecodeFile(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	file.Segments[0].AddSidx(mp4.CreateSidx(0))
+	file.Segments[0].AddSidx(mp4.CreateSidx(0))
+	var encoded bytes.Buffer
+	if err := file.Segments[0].Encode(&encoded); err != nil {
+		t.Fatal(err)
+	}
+
+	var reserved int64
+	seg, err := init.DecryptOwnedReserved(encoded.Bytes(), nil, func(size int64) error {
+		reserved = size
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reserved != int64(len(seg.Clear)) {
+		t.Fatalf("reserved %d bytes, encoded %d", reserved, len(seg.Clear))
 	}
 }
 

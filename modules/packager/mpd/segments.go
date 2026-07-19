@@ -67,9 +67,12 @@ func (p *Presentation) AvailableSegments(periodIdx int, rep Representation, now 
 	}
 	budget := expansionBudget{remaining: maxTimelineExpansion}
 	var segs []Segment
+	var timelineCutoff uint64
+	var hasTimelineCutoff bool
 	switch addr.Mode {
 	case AddressingTemplateTimeline:
-		segs, err = timelineSegments(rep, horizon, &budget)
+		timelineCutoff, hasTimelineCutoff = timeShiftCutoff(edge, p.TimeShiftBufferDepth, addr.Timescale, bounded)
+		segs, err = timelineSegments(rep, horizon, timelineCutoff, hasTimelineCutoff, &budget)
 	case AddressingTemplateDuration:
 		segs, err = durationSegments(rep, horizon, &budget)
 	case AddressingList:
@@ -81,7 +84,13 @@ func (p *Presentation) AvailableSegments(periodIdx int, rep Representation, now 
 		return nil, err
 	}
 	if bounded {
-		segs = trimToTimeShift(segs, edge, p.TimeShiftBufferDepth, addr.Timescale)
+		if addr.Mode == AddressingTemplateTimeline {
+			if hasTimelineCutoff {
+				segs = trimToCutoff(segs, timelineCutoff)
+			}
+		} else {
+			segs = trimToTimeShift(segs, edge, p.TimeShiftBufferDepth, addr.Timescale)
+		}
 	}
 	return segs, nil
 }
@@ -117,7 +126,18 @@ func (p *Presentation) staticEndTicks(period Period, addr Addressing) (uint64, e
 	return checkedAdd(uint64(ticks), addr.PresentationTimeOffset)
 }
 
-func timelineSegments(rep Representation, horizon uint64, budget *expansionBudget) ([]Segment, error) {
+func timeShiftCutoff(edge uint64, depth time.Duration, timescale uint64, bounded bool) (uint64, bool) {
+	if !bounded || depth <= 0 {
+		return 0, false
+	}
+	depthTicks := uint64(float64(depth) / float64(time.Second) * float64(timescale))
+	if depthTicks >= edge {
+		return 0, false
+	}
+	return edge - depthTicks, true
+}
+
+func timelineSegments(rep Representation, horizon, cutoff uint64, hasCutoff bool, budget *expansionBudget) ([]Segment, error) {
 	addr := rep.Addressing
 	var out []Segment
 	number := addr.StartNumber
@@ -130,10 +150,27 @@ func timelineSegments(rep Representation, horizon uint64, budget *expansionBudge
 			if err != nil {
 				return nil, addressingError(rep.ID, "repeat+1", err)
 			}
-			if err = budget.take(count); err != nil {
+			startIndex := uint64(0)
+			expansionCount := count
+			if hasCutoff && e.Duration > 0 {
+				startIndex = expiredTimelineSegments(e, count, cutoff)
+				publishedCount := publishedTimelineSegments(e, count, horizon)
+				expansionCount = publishedCount - startIndex
+			}
+			if err = budget.take(expansionCount); err != nil {
 				return nil, addressingError(rep.ID, "timeline expansion", err)
 			}
-			for i := uint64(0); i < count; i++ {
+			if hasCutoff && out == nil && expansionCount > 0 {
+				out = make([]Segment, 0, int(expansionCount))
+			}
+			if startIndex > 0 {
+				hasFollowing := startIndex < count || entryIndex+1 < len(addr.Timeline)
+				number, err = advanceSegmentNumber(number, startIndex, hasFollowing)
+				if err != nil {
+					return nil, addressingError(rep.ID, "startNumber+index", err)
+				}
+			}
+			for i := startIndex; i < count; i++ {
 				offset, mulErr := checkedMul(i, e.Duration)
 				if mulErr != nil {
 					return nil, addressingError(rep.ID, "index*duration", mulErr)
@@ -160,7 +197,24 @@ func timelineSegments(rep Representation, horizon uint64, budget *expansionBudge
 		if horizon == math.MaxUint64 {
 			return nil, fmt.Errorf("representation %s: @r=-1 without a live edge or period duration", rep.ID)
 		}
-		for i := uint64(0); ; i++ {
+		startIndex := uint64(0)
+		if hasCutoff && e.Duration > 0 {
+			startIndex = expiredTimelineSegments(e, math.MaxUint64, cutoff)
+			publishedCount := publishedTimelineSegments(e, math.MaxUint64, horizon)
+			expansionCount := publishedCount - startIndex
+			if err := budget.take(expansionCount); err != nil {
+				return nil, addressingError(rep.ID, "timeline expansion", err)
+			}
+			if out == nil && expansionCount > 0 {
+				out = make([]Segment, 0, int(expansionCount))
+			}
+			var err error
+			number, err = advanceSegmentNumber(number, startIndex, true)
+			if err != nil {
+				return nil, addressingError(rep.ID, "startNumber+index", err)
+			}
+		}
+		for i := startIndex; ; i++ {
 			offset, err := checkedMul(i, e.Duration)
 			if err != nil {
 				return nil, addressingError(rep.ID, "index*duration", err)
@@ -176,8 +230,10 @@ func timelineSegments(rep Representation, horizon uint64, budget *expansionBudge
 			if end > horizon {
 				break
 			}
-			if err = budget.take(1); err != nil {
-				return nil, addressingError(rep.ID, "timeline expansion", err)
+			if !hasCutoff || e.Duration == 0 {
+				if err = budget.take(1); err != nil {
+					return nil, addressingError(rep.ID, "timeline expansion", err)
+				}
 			}
 			out = append(out, makeSegment(rep, number, t, e.Duration))
 			number, err = checkedAdd(number, 1)
@@ -187,6 +243,40 @@ func timelineSegments(rep Representation, horizon uint64, budget *expansionBudge
 		}
 	}
 	return out, nil
+}
+
+func expiredTimelineSegments(entry TimelineEntry, count, cutoff uint64) uint64 {
+	if cutoff <= entry.Time {
+		return 0
+	}
+	expired := (cutoff - entry.Time) / entry.Duration
+	if expired > count {
+		return count
+	}
+	return expired
+}
+
+func publishedTimelineSegments(entry TimelineEntry, count, horizon uint64) uint64 {
+	if horizon <= entry.Time {
+		return 0
+	}
+	published := (horizon - entry.Time) / entry.Duration
+	if published > count {
+		return count
+	}
+	return published
+}
+
+func advanceSegmentNumber(number, count uint64, hasFollowing bool) (uint64, error) {
+	advanced, err := checkedAdd(number, count)
+	if err == nil {
+		return advanced, nil
+	}
+	// A finite timeline never uses the increment after its final segment.
+	if !hasFollowing && number > 0 && count == math.MaxUint64-number+1 {
+		return 0, nil
+	}
+	return 0, err
 }
 
 func durationSegments(rep Representation, horizon uint64, budget *expansionBudget) ([]Segment, error) {
@@ -254,14 +344,17 @@ func makeSegment(rep Representation, number, t, dur uint64) Segment {
 }
 
 func trimToTimeShift(segs []Segment, edge uint64, depth time.Duration, timescale uint64) []Segment {
-	if depth <= 0 || len(segs) == 0 {
+	if len(segs) == 0 {
 		return segs
 	}
-	depthTicks := uint64(float64(depth) / float64(time.Second) * float64(timescale))
-	if depthTicks >= edge {
+	cutoff, ok := timeShiftCutoff(edge, depth, timescale, true)
+	if !ok {
 		return segs
 	}
-	cutoff := edge - depthTicks
+	return trimToCutoff(segs, cutoff)
+}
+
+func trimToCutoff(segs []Segment, cutoff uint64) []Segment {
 	for i, s := range segs {
 		end, err := checkedAdd(s.Time, s.Duration)
 		if err != nil || end > cutoff {

@@ -203,6 +203,30 @@ func TestTimeShiftBufferTrimsExpiredSegments(t *testing.T) {
 	}
 }
 
+func TestTimeShiftBufferRetainsSegmentCrossingCutoff(t *testing.T) {
+	rep := Representation{ID: "v", Addressing: Addressing{
+		Mode:        AddressingTemplateTimeline,
+		Timescale:   1,
+		StartNumber: 10,
+		Timeline:    []TimelineEntry{{Duration: 4, Repeat: 2}},
+	}}
+	p := testPresentation(rep)
+	p.Dynamic = true
+	p.AvailabilityStartTime = time.Unix(1, 0)
+	p.TimeShiftBufferDepth = 5 * time.Second
+
+	segments, err := p.AvailableSegments(0, rep, p.AvailabilityStartTime.Add(12*time.Second))
+	if err != nil {
+		t.Fatalf("AvailableSegments: %v", err)
+	}
+	if len(segments) != 2 {
+		t.Fatalf("segments=%d, want 2", len(segments))
+	}
+	if first := segments[0]; first.Number != 11 || first.Time != 4 {
+		t.Fatalf("first segment=%+v", first)
+	}
+}
+
 // $Time$ addressing numbers by media time, not by segment index.
 func TestDurationAddressingUsesTimeIdentifier(t *testing.T) {
 	p := parseLive(t)

@@ -1,3 +1,5 @@
+//go:build extended
+
 package cmaf
 
 import (
@@ -67,6 +69,46 @@ func readFixtureForFuzz(f *testing.F, dir, name string) []byte {
 	return data
 }
 
+func TestDecryptOwnedReservedStaysWithinAllocationBudget(t *testing.T) {
+	init, err := ParseInit(readFixture(t, "h264", "init-stream0.m4s"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := readFixture(t, "h264", "chunk-stream0-00001.m4s")
+	keys := testKeys(t)
+
+	var decryptErr error
+	allocs := testing.AllocsPerRun(10, func() {
+		_, decryptErr = init.DecryptOwnedReserved(bytes.Clone(raw), keys, nil)
+	})
+	if decryptErr != nil {
+		t.Fatal(decryptErr)
+	}
+	if allocs > 180 {
+		t.Fatalf("DecryptOwnedReserved allocated %.0f objects, want at most 180", allocs)
+	}
+}
+
+func TestDecryptOwnedReservedCBCSStaysWithinAllocationBudget(t *testing.T) {
+	init, err := ParseInit(readFixture(t, "cbcs", "init-stream0.m4s"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := readFixture(t, "cbcs", "chunk-stream0-00001.m4s")
+	keys := testKeys(t)
+
+	var decryptErr error
+	allocs := testing.AllocsPerRun(10, func() {
+		_, decryptErr = init.DecryptOwnedReserved(bytes.Clone(raw), keys, nil)
+	})
+	if decryptErr != nil {
+		t.Fatal(decryptErr)
+	}
+	if allocs > 120 {
+		t.Fatalf("DecryptOwnedReserved CBCS allocated %.0f objects, want at most 120", allocs)
+	}
+}
+
 func BenchmarkDecrypt(b *testing.B) {
 	for _, dir := range []string{"h264", "hevc", "cbcs"} {
 		b.Run(dir, func(b *testing.B) {
@@ -86,9 +128,42 @@ func BenchmarkDecrypt(b *testing.B) {
 			if err != nil {
 				b.Fatal(err)
 			}
+			b.SetBytes(int64(len(segmentRaw)))
 			b.ReportAllocs()
 			for b.Loop() {
 				if _, err := init.Decrypt(segmentRaw, keys); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkDecryptOwned(b *testing.B) {
+	for _, dir := range []string{"h264", "hevc", "cbcs"} {
+		b.Run(dir, func(b *testing.B) {
+			initRaw, err := os.ReadFile(fixturePath(dir, "init-stream0.m4s"))
+			if err != nil {
+				b.Fatal(err)
+			}
+			segmentRaw, err := os.ReadFile(fixturePath(dir, "chunk-stream0-00001.m4s"))
+			if err != nil {
+				b.Fatal(err)
+			}
+			init, err := ParseInit(initRaw)
+			if err != nil {
+				b.Fatal(err)
+			}
+			keys, err := NewKeySet(map[string]string{fixtureKID: fixtureKey})
+			if err != nil {
+				b.Fatal(err)
+			}
+			owned := make([]byte, len(segmentRaw))
+			b.SetBytes(int64(len(segmentRaw)))
+			b.ReportAllocs()
+			for b.Loop() {
+				copy(owned, segmentRaw)
+				if _, err := init.DecryptOwnedReserved(owned, keys, nil); err != nil {
 					b.Fatal(err)
 				}
 			}
