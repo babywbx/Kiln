@@ -552,6 +552,40 @@ func TestEPGSourceRevisionRoundTrip(t *testing.T) {
 	}
 }
 
+func TestEPGSourceCanPersistADeletionBeforeItHasAnOverride(t *testing.T) {
+	directory := t.TempDir()
+	db, err := store.Open(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	if err := db.HideEPGSourceIfRevision("hk-1", 0); err != nil {
+		t.Fatalf("hide pristine preset: %v", err)
+	}
+	rows, err := db.ListEPGSources()
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("hidden rows = %#v, %v", rows, err)
+	}
+	if !rows[0].Deleted || rows[0].Enabled || rows[0].Revision != 1 {
+		t.Fatalf("hidden preset = %+v", rows[0])
+	}
+	if err := db.HideEPGSourceIfRevision("hk-1", 0); !errors.Is(err, store.ErrRevisionConflict) {
+		t.Fatalf("concurrent pristine delete error = %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err = store.Open(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err = db.ListEPGSources()
+	if err != nil || len(rows) != 1 || !rows[0].Deleted {
+		t.Fatalf("hidden preset after restart = %#v, %v", rows, err)
+	}
+}
+
 func TestAccessLogsCanBeDeletedByAgeAndCleared(t *testing.T) {
 	db, err := store.Open(t.TempDir())
 	if err != nil {

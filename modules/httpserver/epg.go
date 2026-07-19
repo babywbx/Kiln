@@ -253,11 +253,17 @@ func (s *Server) handleAdminDeleteEPGSource(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	expected := expectedRevision(r)
-	if expected <= 0 {
+	_, preset := epg.Preset(id)
+	if expected <= 0 && !preset {
 		writeAppErr(w, apperr.New(apperr.CodeInvalid, http.StatusPreconditionRequired, "If-Match revision required"))
 		return
 	}
-	err := s.deps.Store.DeleteEPGSourceIfRevision(id, expected)
+	var err error
+	if preset {
+		err = s.deps.Store.HideEPGSourceIfRevision(id, expected)
+	} else {
+		err = s.deps.Store.DeleteEPGSourceIfRevision(id, expected)
+	}
 	if errors.Is(err, store.ErrRevisionConflict) {
 		writeAppErr(w, apperr.New(apperr.CodeConflict, http.StatusConflict, "EPG source was updated elsewhere"))
 		return
@@ -291,7 +297,7 @@ func (s *Server) decodeEPGSourceRequest(w http.ResponseWriter, r *http.Request) 
 	request.Timezone = strings.TrimSpace(request.Timezone)
 	request.Proxy = strings.TrimSpace(request.Proxy)
 	if request.Proxy == "" {
-		request.Proxy = "auto"
+		request.Proxy = "direct"
 	}
 	return request, true
 }
@@ -391,7 +397,8 @@ func (s *Server) configuredEPGSources() ([]epg.ConfiguredSource, error) {
 	for _, row := range rows {
 		overrides = append(overrides, epg.SourceOverride{
 			ID: row.ID, Name: row.Name, URL: row.URL, Timezone: row.Timezone, Proxy: row.Proxy,
-			Enabled: row.Enabled, Revision: row.Revision, UpdatedAt: row.UpdatedAt,
+			Enabled: row.Enabled, Deleted: row.Deleted,
+			Revision: row.Revision, UpdatedAt: row.UpdatedAt,
 		})
 	}
 	return epg.ConfigureSources(overrides), nil

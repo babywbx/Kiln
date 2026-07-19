@@ -27,7 +27,7 @@ var (
 	ErrUsernameConflict = errors.New("store username conflict")
 )
 
-const currentSchemaVersion = 11
+const currentSchemaVersion = 12
 
 const accessTokenTouchInterval = time.Minute
 
@@ -123,6 +123,9 @@ func applyMigration(tx *sql.Tx, version int) error {
 		return err
 	case 11:
 		_, err := tx.Exec(schemaV11)
+		return err
+	case 12:
+		_, err := tx.Exec(schemaV12)
 		return err
 	default:
 		return fmt.Errorf("unknown schema version %d", version)
@@ -247,7 +250,7 @@ CREATE TABLE epg_sources (
   name TEXT NOT NULL DEFAULT '',
   url TEXT NOT NULL DEFAULT '',
   timezone TEXT NOT NULL DEFAULT '',
-  proxy TEXT NOT NULL DEFAULT 'auto',
+  proxy TEXT NOT NULL DEFAULT 'direct',
   enabled INTEGER NOT NULL DEFAULT 0,
   revision INTEGER NOT NULL DEFAULT 1,
   updated_at INTEGER NOT NULL DEFAULT 0
@@ -309,6 +312,10 @@ CREATE TABLE admin_api_token_logs (
 );
 CREATE INDEX idx_admin_api_token_logs_created ON admin_api_token_logs(created_at DESC);
 CREATE INDEX idx_admin_api_token_logs_token ON admin_api_token_logs(token_id, created_at DESC);
+`
+
+const schemaV12 = `
+ALTER TABLE epg_sources ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0;
 `
 
 func (db *DB) SeedFromConfig(cfg config.File) error {
@@ -1375,6 +1382,7 @@ type EPGSourceRow struct {
 	Timezone  string `json:"timezone,omitempty"`
 	Proxy     string `json:"proxy"`
 	Enabled   bool   `json:"enabled"`
+	Deleted   bool   `json:"deleted,omitempty"`
 	Revision  int64  `json:"revision"`
 	UpdatedAt int64  `json:"updated_at"`
 }
@@ -1382,7 +1390,7 @@ type EPGSourceRow struct {
 func (db *DB) ListEPGSources() ([]EPGSourceRow, error) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	rows, err := db.sql.Query(`SELECT id, name, url, timezone, proxy, enabled, revision, updated_at
+	rows, err := db.sql.Query(`SELECT id, name, url, timezone, proxy, enabled, deleted, revision, updated_at
 		FROM epg_sources ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -1391,11 +1399,12 @@ func (db *DB) ListEPGSources() ([]EPGSourceRow, error) {
 	out := []EPGSourceRow{}
 	for rows.Next() {
 		var row EPGSourceRow
-		var enabled int
-		if err := rows.Scan(&row.ID, &row.Name, &row.URL, &row.Timezone, &row.Proxy, &enabled, &row.Revision, &row.UpdatedAt); err != nil {
+		var enabled, deleted int
+		if err := rows.Scan(&row.ID, &row.Name, &row.URL, &row.Timezone, &row.Proxy, &enabled, &deleted, &row.Revision, &row.UpdatedAt); err != nil {
 			return nil, err
 		}
 		row.Enabled = intBool(enabled)
+		row.Deleted = intBool(deleted)
 		out = append(out, row)
 	}
 	return out, rows.Err()
@@ -1417,20 +1426,40 @@ func (db *DB) upsertEPGSource(row EPGSourceRow, expectedRevision int64) error {
 	now := time.Now().Unix()
 	if expectedRevision > 0 {
 		result, err := db.sql.Exec(`UPDATE epg_sources SET name=?, url=?, timezone=?, proxy=?, enabled=?,
-			revision=revision+1, updated_at=? WHERE id=? AND revision=?`,
-			row.Name, row.URL, row.Timezone, row.Proxy, boolInt(row.Enabled), now, row.ID, expectedRevision)
+			deleted=?, revision=revision+1, updated_at=? WHERE id=? AND revision=?`,
+			row.Name, row.URL, row.Timezone, row.Proxy, boolInt(row.Enabled), boolInt(row.Deleted), now, row.ID, expectedRevision)
 		if err != nil {
 			return err
 		}
 		return revisionResult(result)
 	}
-	_, err := db.sql.Exec(`INSERT INTO epg_sources(id, name, url, timezone, proxy, enabled, updated_at)
-		VALUES (?,?,?,?,?,?,?)
+	_, err := db.sql.Exec(`INSERT INTO epg_sources(id, name, url, timezone, proxy, enabled, deleted, updated_at)
+		VALUES (?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET name=excluded.name, url=excluded.url, timezone=excluded.timezone,
-		proxy=excluded.proxy, enabled=excluded.enabled, revision=epg_sources.revision+1,
+		proxy=excluded.proxy, enabled=excluded.enabled, deleted=excluded.deleted, revision=epg_sources.revision+1,
 		updated_at=excluded.updated_at`,
-		row.ID, row.Name, row.URL, row.Timezone, row.Proxy, boolInt(row.Enabled), now)
+		row.ID, row.Name, row.URL, row.Timezone, row.Proxy, boolInt(row.Enabled), boolInt(row.Deleted), now)
 	return err
+}
+
+func (db *DB) HideEPGSourceIfRevision(id string, expectedRevision int64) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	now := time.Now().Unix()
+	if expectedRevision > 0 {
+		result, err := db.sql.Exec(`UPDATE epg_sources SET enabled=0, deleted=1,
+			revision=revision+1, updated_at=? WHERE id=? AND revision=?`, now, id, expectedRevision)
+		if err != nil {
+			return err
+		}
+		return revisionResult(result)
+	}
+	result, err := db.sql.Exec(`INSERT INTO epg_sources(id, proxy, enabled, deleted, updated_at)
+		VALUES (?, 'direct', 0, 1, ?) ON CONFLICT(id) DO NOTHING`, id, now)
+	if err != nil {
+		return err
+	}
+	return revisionResult(result)
 }
 
 func (db *DB) DeleteEPGSourceIfRevision(id string, expectedRevision int64) error {

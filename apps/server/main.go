@@ -254,7 +254,8 @@ func buildEPGService(cfg config.File, db *store.DB, router *proxyegress.Router, 
 	for _, row := range rows {
 		overrides = append(overrides, epg.SourceOverride{
 			ID: row.ID, Name: row.Name, URL: row.URL, Timezone: row.Timezone, Proxy: row.Proxy,
-			Enabled: row.Enabled, Revision: row.Revision, UpdatedAt: row.UpdatedAt,
+			Enabled: row.Enabled, Deleted: row.Deleted,
+			Revision: row.Revision, UpdatedAt: row.UpdatedAt,
 		})
 	}
 	configured := epg.ConfigureSources(overrides)

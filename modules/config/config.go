@@ -545,7 +545,7 @@ func (c *File) applyDefaults() {
 	}
 	for i := range c.EPG.Sources {
 		if c.EPG.Sources[i].Proxy == "" {
-			c.EPG.Sources[i].Proxy = "auto"
+			c.EPG.Sources[i].Proxy = "direct"
 		}
 	}
 	for i := range c.Channels {

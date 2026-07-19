@@ -68,7 +68,7 @@ enabled = false
 listen = "127.0.0.1:6060"
 
 [epg]
-enabled = true
+enabled = false
 cache = true
 cache_dir = "/var/lib/kiln/data/epg"
 refresh_interval_min = 360
@@ -77,21 +77,6 @@ max_refresh_concurrency = 0
 max_source_bytes = 67108864
 default_timezone = "Asia/Hong_Kong"
 serve_timezone = "keep"
-
-[[epg.sources]]
-id = "hk-1"
-enabled = true
-proxy = "auto"
-
-[[epg.sources]]
-id = "tw-1"
-enabled = true
-proxy = "auto"
-
-[[epg.sources]]
-id = "cn-2"
-enabled = true
-proxy = "auto"
 
 [[upstreams]]
 id = "origin"

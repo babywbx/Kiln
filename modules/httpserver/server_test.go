@@ -240,6 +240,72 @@ func TestEPGRefreshRejectsNoActiveSources(t *testing.T) {
 	}
 }
 
+func TestBuiltInEPGSourcesCanBeDeletedUntilCatalogIsEmpty(t *testing.T) {
+	hash, err := auth.HashPassword("secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := t.TempDir()
+	db, err := store.Open(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	authService, err := auth.New(config.Auth{
+		TokenIssuer: "kiln", TokenAudience: "kiln",
+		Users: []config.User{{Username: "admin", PasswordHash: hash, Role: "admin"}},
+	}, time.Hour, auth.Options{DataDir: directory})
+	if err != nil {
+		t.Fatal(err)
+	}
+	login, err := authService.Login("admin", "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	epgService := epg.NewService(epg.ServiceConfig{}, nil, nil)
+	server := httpserver.New(httpserver.Deps{
+		Cfg: config.File{
+			Server:   config.Server{ReadTimeout: 5, IdleTimeout: 30},
+			Security: config.Security{MaxBodyBytes: 1 << 20},
+		},
+		Auth: authService, Observe: observe.New(), Store: db, EPG: epgService,
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	testServer := httptest.NewServer(server.Handler())
+	t.Cleanup(testServer.Close)
+
+	response := adminJSON(t, http.MethodGet, testServer.URL+"/v1/admin/epg/sources", login.Token, nil)
+	var sourceBody struct {
+		Sources []epg.ConfiguredSource `json:"sources"`
+	}
+	if err := json.Unmarshal(response.Body, &sourceBody); err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK || len(sourceBody.Sources) != len(epg.Presets()) {
+		t.Fatalf("initial sources = %d, status %d: %s", len(sourceBody.Sources), response.StatusCode, response.Body)
+	}
+	for _, source := range sourceBody.Sources {
+		if source.Enabled || source.Source.Proxy != "direct" {
+			t.Fatalf("new install source = %+v, want disabled direct preset", source)
+		}
+		deleted := adminJSONHeaders(t, http.MethodDelete,
+			testServer.URL+"/v1/admin/epg/sources/"+url.PathEscape(source.Source.ID),
+			login.Token, nil, map[string]string{"If-Match": strconv.FormatInt(source.Revision, 10)})
+		if deleted.StatusCode != http.StatusOK {
+			t.Fatalf("delete source %q = %d %s", source.Source.ID, deleted.StatusCode, deleted.Body)
+		}
+	}
+
+	response = adminJSON(t, http.MethodGet, testServer.URL+"/v1/admin/epg/sources", login.Token, nil)
+	sourceBody.Sources = nil
+	if err := json.Unmarshal(response.Body, &sourceBody); err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK || len(sourceBody.Sources) != 0 || len(epgService.Sources()) != 0 {
+		t.Fatalf("sources after complete deletion = %+v, active = %+v", sourceBody.Sources, epgService.Sources())
+	}
+}
+
 func TestEPGUnavailableReturnsLegalEmptyDocument(t *testing.T) {
 	cache := true
 	server := httpserver.New(httpserver.Deps{

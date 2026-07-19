@@ -92,10 +92,45 @@ func TestConfigureSourcesMergesPresetsAndSortsCustomSources(t *testing.T) {
 			t.Errorf("source %q has empty proxy", source.Source.ID)
 		}
 	}
-	if backup.Source.Name != "备用 EPG" || backup.Source.URL == "" || backup.Source.Proxy != "auto" {
+	if backup.Source.Name != "备用 EPG" || backup.Source.URL == "" || backup.Source.Proxy != "direct" {
 		t.Fatalf("merged preset = %+v", backup)
 	}
 	if !backup.Enabled || backup.Revision != 7 || backup.UpdatedAt != 123 {
 		t.Fatalf("merged metadata = %+v", backup)
+	}
+}
+
+func TestConfigureSourcesStartsDisabledAndKeepsDeletedSourcesHidden(t *testing.T) {
+	t.Parallel()
+
+	configured := epg.ConfigureSources(nil)
+	presets := epg.Presets()
+	if len(configured) != len(presets) {
+		t.Fatalf("new install sources = %d, want %d presets", len(configured), len(presets))
+	}
+	for index, source := range configured {
+		if source.Source.ID != presets[index].ID {
+			t.Fatalf("source %d = %q, want %q", index, source.Source.ID, presets[index].ID)
+		}
+		if source.Enabled || source.Revision != 0 {
+			t.Fatalf("new install source = %+v, want disabled pristine preset", source)
+		}
+		if source.Source.Proxy != "direct" {
+			t.Fatalf("new install source %q proxy = %q, want direct", source.Source.ID, source.Source.Proxy)
+		}
+	}
+
+	configured = epg.ConfigureSources([]epg.SourceOverride{
+		{ID: presets[0].ID, Deleted: true, Revision: 1},
+		{ID: "removed-custom", URL: "https://example.test/removed.xml", Deleted: true, Revision: 1},
+		{ID: "visible-custom", URL: "https://example.test/visible.xml"},
+	})
+	for _, source := range configured {
+		if source.Source.ID == presets[0].ID || source.Source.ID == "removed-custom" {
+			t.Fatalf("deleted source remained configured: %+v", source)
+		}
+	}
+	if got := configured[len(configured)-1].Source.ID; got != "visible-custom" {
+		t.Fatalf("last source = %q, want visible-custom", got)
 	}
 }

@@ -153,16 +153,14 @@ function sourceRow(configured, presets, statuses, proxies, after) {
 
   const remove = async () => {
     const accepted = await confirmDialog({
-      title: i18n.t(preset ? "epg.restoreTitle" : "epg.deleteTitle"),
-      description: preset
-        ? i18n.t("epg.restoreDescription", { source: copy.name })
-        : i18n.t("epg.deleteDescription", { source: copy.name }),
-      confirmLabel: i18n.t(preset ? "epg.restoreConfirm" : "epg.deleteConfirm"),
+      title: i18n.t("epg.deleteTitle"),
+      description: i18n.t("epg.deleteDescription", { source: copy.name }),
+      confirmLabel: i18n.t("epg.deleteConfirm"),
     });
     if (!accepted) return;
     try {
       await endpoints.deleteEPGSource(source.id, configured.revision);
-      toast(i18n.t(preset ? "epg.restored" : "epg.deleted"));
+      toast(i18n.t("epg.deleted"));
       await after();
     } catch (error) {
       toastError(error, i18n.t("epg.deleteFailed"));
@@ -203,7 +201,7 @@ function sourceRow(configured, presets, statuses, proxies, after) {
         badge(source.region || "custom", "neutral"),
         badge(ID_KINDS[source.id_kind] ? i18n.t(ID_KINDS[source.id_kind]) : source.id_kind || i18n.t("epg.unknown"), "neutral"),
         badge(source.timezone || i18n.t("epg.defaultTimezone"), "neutral"),
-        badge(i18n.t("epg.egressBadge", { proxy: source.proxy || "auto" }), "neutral"),
+        badge(i18n.t("epg.egressBadge", { proxy: source.proxy || "direct" }), "neutral"),
       ),
     ),
     h("td", {}, statusCell(configured.enabled, status)),
@@ -217,10 +215,9 @@ function sourceRow(configured, presets, statuses, proxies, after) {
           variant: "outline",
           onClick: () => openSourceModal({ presets, proxies, configured, after }),
         }),
-        iconButton("trash-2", i18n.t(preset ? "epg.restoreSourceAria" : "epg.deleteSourceAria", { source: copy.name }), {
+        iconButton("trash-2", i18n.t("epg.deleteSourceAria", { source: copy.name }), {
           kind: "danger",
           variant: "outline",
-          disabled: !configured.revision,
           onClick: remove,
         }),
       ),
@@ -287,7 +284,7 @@ function draftOf(configured, preset) {
     name: preset && source.name === preset.name ? "" : source.name,
     url: preset && source.url === preset.url ? "" : source.url,
     timezone: preset && source.timezone === preset.timezone ? "" : source.timezone,
-    proxy: source.proxy || "auto",
+    proxy: source.proxy || "direct",
     enabled: configured.enabled,
   };
 }
@@ -299,8 +296,8 @@ function persistSource(body, revision) {
 
 function proxyChoices(proxies) {
   return [
-    ["auto", i18n.t("epg.proxy.auto")],
     ["direct", i18n.t("epg.proxy.direct")],
+    ["auto", i18n.t("epg.proxy.auto")],
     ...proxies.filter((proxy) => !proxy.disabled).map((proxy) => [proxy.id, `${proxy.id} · ${proxy.name || i18n.t("epg.proxy.generic")}`]),
   ];
 }
@@ -315,7 +312,7 @@ function openSourceModal({ presets, proxies, configured = null, existing = [], a
   const nameInput = input("name", source.name || "", { placeholder: i18n.t("epg.form.namePlaceholder") });
   const urlInput = input("url", source.url || "", { type: "url", required: true, placeholder: "https://example.com/epg.xml.gz" });
   const timezoneInput = input("timezone", source.timezone || "", { placeholder: "UTC" });
-  const proxySelect = select("proxy", proxyChoices(proxies), source.proxy || "auto");
+  const proxySelect = select("proxy", proxyChoices(proxies), source.proxy || "direct");
   const enabledToggle = h("input", { type: "checkbox", id: "epg-source-enabled", checked: isNew ? true : Boolean(configured.enabled) });
 
   const submit = button(i18n.t(isNew ? "epg.form.add" : "epg.form.save"), {

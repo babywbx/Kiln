@@ -67,11 +67,7 @@
     "max_source_bytes": 67108864,
     "default_timezone": "Asia/Hong_Kong",
     "serve_timezone": "keep",
-    "sources": [
-      { "id": "hk-1", "enabled": true, "proxy": "auto" },
-      { "id": "tw-1", "enabled": true, "proxy": "auto" },
-      { "id": "cn-2", "enabled": true, "proxy": "auto" },
-    ],
+    "sources": [],
   },
   "upstreams": [
     {

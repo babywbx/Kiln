@@ -32,6 +32,7 @@ type SourceOverride struct {
 	Timezone  string `json:"timezone,omitempty"`
 	Proxy     string `json:"proxy,omitempty"`
 	Enabled   bool   `json:"enabled"`
+	Deleted   bool   `json:"deleted,omitempty"`
 	Revision  int64  `json:"revision,omitempty"`
 	UpdatedAt int64  `json:"updated_at,omitempty"`
 }
@@ -108,9 +109,13 @@ func ConfigureSources(overrides []SourceOverride) []ConfiguredSource {
 
 	configured := make([]ConfiguredSource, 0, len(presetSources)+len(byID))
 	for _, preset := range presetSources {
-		preset.Proxy = "auto"
+		preset.Proxy = "direct"
 		override, exists := byID[preset.ID]
 		if exists {
+			if override.Deleted {
+				delete(byID, preset.ID)
+				continue
+			}
 			preset = mergeSourceOverride(preset, override)
 			delete(byID, preset.ID)
 		}
@@ -127,9 +132,12 @@ func ConfigureSources(overrides []SourceOverride) []ConfiguredSource {
 	sort.Strings(customIDs)
 	for _, id := range customIDs {
 		override := byID[id]
+		if override.Deleted {
+			continue
+		}
 		source := Source{
 			ID: id, Name: id, Region: "custom", IDKind: IDKindMixed,
-			Timezone: DefaultTimezone, Description: "自定义节目单源", Proxy: "auto",
+			Timezone: DefaultTimezone, Description: "自定义节目单源", Proxy: "direct",
 		}
 		source = mergeSourceOverride(source, override)
 		configured = append(configured, ConfiguredSource{

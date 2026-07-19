@@ -29,7 +29,6 @@ default_timezone = "Asia/Hong_Kong"
 [[epg.sources]]
 id = "hk-1"
 enabled = true
-proxy = "auto"
 
 [[auth.users]]
 username = "admin"
@@ -84,6 +83,9 @@ preferred_audio_languages = ["yue", "zh"]
 	}
 	if cfg.EPG.CacheDir != filepath.Join(cfg.Server.DataDir, "epg") || len(cfg.EPG.Sources) != 1 || cfg.EPG.Sources[0].ID != "hk-1" {
 		t.Fatalf("epg defaults/sources: %+v", cfg.EPG)
+	}
+	if cfg.EPG.Sources[0].Proxy != "direct" {
+		t.Fatalf("EPG source default proxy = %q, want direct", cfg.EPG.Sources[0].Proxy)
 	}
 	dockerCfg := cfg
 	dockerCfg.FFmpeg.Mode = FFmpegModeDocker
