@@ -44,6 +44,48 @@ func TestParseUsesSourceTimezoneWhenOffsetIsMissing(t *testing.T) {
 	}
 }
 
+func TestParseAcceptsEveryXMLTVTimestampPrecision(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		value string
+		want  time.Time
+	}{
+		{value: "20260713", want: time.Date(2026, 7, 12, 16, 0, 0, 0, time.UTC)},
+		{value: "2026071308", want: time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)},
+		{value: "202607130830", want: time.Date(2026, 7, 13, 0, 30, 0, 0, time.UTC)},
+		{value: "20260713083045", want: time.Date(2026, 7, 13, 0, 30, 45, 0, time.UTC)},
+		{value: " 20260713083045\t+0800 ", want: time.Date(2026, 7, 13, 0, 30, 45, 0, time.UTC)},
+	}
+	for _, test := range tests {
+		programme := parseSingleProgramme(t, test.value, "Asia/Hong_Kong")
+		if !programme.Start.Time.Equal(test.want) {
+			t.Errorf("start %q = %s, want %s", test.value, programme.Start.Time, test.want)
+		}
+	}
+}
+
+func TestParseRejectsMalformedXMLTVTimestamps(t *testing.T) {
+	t.Parallel()
+
+	for _, value := range []string{
+		"2026071",
+		"202607130",
+		"20260713080",
+		"2026071308300",
+		"202607130830450",
+		"2026071a",
+		"20260713083045 UTC",
+		"20260713083045 +080",
+		"20260713083045 +08x0",
+	} {
+		raw := `<tv><programme channel="one" start="` + value + `"/></tv>`
+		if _, err := epg.Parse(strings.NewReader(raw), "Asia/Hong_Kong"); err == nil {
+			t.Errorf("Parse accepted malformed timestamp %q", value)
+		}
+	}
+}
+
 func TestMarshalProducesLegalEmptyTV(t *testing.T) {
 	t.Parallel()
 

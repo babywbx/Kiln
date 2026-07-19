@@ -4,13 +4,18 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 )
 
 const DefaultRefreshInterval = 6 * time.Hour
+
+// Keep only one bounded compressed output; XML and filtered documents stay transient.
+const maxGzipOutputCacheBytes = 8 << 20
 
 type ServiceConfig struct {
 	Sources           []Source
@@ -42,9 +47,25 @@ type Service struct {
 	store   CacheStore
 
 	refreshMu sync.Mutex
+	gzipMu    sync.Mutex
 	mu        sync.RWMutex
 	documents map[string]*Document
+	versions  map[string]documentVersion
 	statuses  map[string]SourceStatus
+
+	outputGeneration uint64
+	gzipOutputCache  gzipOutputCache
+}
+
+type gzipOutputCache struct {
+	generation uint64
+	channels   []ChannelRef
+	payload    []byte
+}
+
+type documentVersion struct {
+	digest   [sha256.Size]byte
+	timezone string
 }
 
 func NewService(config ServiceConfig, fetcher SourceFetcher, store CacheStore) *Service {
@@ -66,7 +87,8 @@ func NewService(config ServiceConfig, fetcher SourceFetcher, store CacheStore) *
 	}
 	return &Service{
 		config: config, fetcher: fetcher, store: store,
-		documents: make(map[string]*Document), statuses: make(map[string]SourceStatus),
+		documents: make(map[string]*Document), versions: make(map[string]documentVersion),
+		statuses: make(map[string]SourceStatus),
 	}
 }
 
@@ -88,10 +110,14 @@ func (s *Service) SetSources(sources []Source) {
 	defer s.mu.Unlock()
 
 	documents := make(map[string]*Document, len(sources))
+	versions := make(map[string]documentVersion, len(sources))
 	statuses := make(map[string]SourceStatus, len(sources))
 	for _, source := range sources {
 		if document := s.documents[source.ID]; document != nil {
 			documents[source.ID] = document
+			if version, ok := s.versions[source.ID]; ok {
+				versions[source.ID] = version
+			}
 		}
 		if status, ok := s.statuses[source.ID]; ok {
 			statuses[source.ID] = status
@@ -99,7 +125,9 @@ func (s *Service) SetSources(sources []Source) {
 	}
 	s.config.Sources = sources
 	s.documents = documents
+	s.versions = versions
 	s.statuses = statuses
+	s.invalidateOutputCacheLocked()
 }
 
 func cloneSources(sources []Source) []Source {
@@ -107,11 +135,18 @@ func cloneSources(sources []Source) []Source {
 }
 
 type sourceRefreshResult struct {
-	source   Source
+	source        Source
+	document      *Document
+	version       documentVersion
+	authoritative bool
+	metadata      CacheMetadata
+	stale         bool
+	err           error
+}
+
+type sourceDocumentState struct {
 	document *Document
-	metadata CacheMetadata
-	stale    bool
-	err      error
+	version  documentVersion
 }
 
 // Refresh updates sources concurrently and publishes a complete new snapshot
@@ -120,27 +155,39 @@ func (s *Service) Refresh(ctx context.Context) error {
 	s.refreshMu.Lock()
 	defer s.refreshMu.Unlock()
 
+	s.mu.RLock()
+	states := make(map[string]sourceDocumentState, len(s.config.Sources))
+	for _, source := range s.config.Sources {
+		states[source.ID] = sourceDocumentState{
+			document: s.documents[source.ID],
+			version:  s.versions[source.ID],
+		}
+	}
+	s.mu.RUnlock()
+
 	results := make(chan sourceRefreshResult, len(s.config.Sources))
 	var wait sync.WaitGroup
 	if s.config.MaxRefreshConcurrency <= 0 || s.config.MaxRefreshConcurrency >= len(s.config.Sources) {
 		for _, source := range s.config.Sources {
 			source := source
+			state := states[source.ID]
 			wait.Add(1)
 			go func() {
 				defer wait.Done()
-				results <- s.refreshSource(ctx, source)
+				results <- s.refreshSource(ctx, source, state)
 			}()
 		}
 	} else {
 		refreshSlots := make(chan struct{}, s.config.MaxRefreshConcurrency)
 		for _, source := range s.config.Sources {
 			source := source
+			state := states[source.ID]
 			refreshSlots <- struct{}{}
 			wait.Add(1)
 			go func() {
 				defer wait.Done()
 				defer func() { <-refreshSlots }()
-				results <- s.refreshSource(ctx, source)
+				results <- s.refreshSource(ctx, source, state)
 			}()
 		}
 	}
@@ -158,13 +205,21 @@ func (s *Service) Refresh(ctx context.Context) error {
 	}
 
 	s.mu.Lock()
+	documentsChanged := false
 	for _, source := range s.config.Sources {
 		result := bySource[source.ID]
 		status := s.statuses[source.ID]
 		status.SourceID = source.ID
 		status.LastAttempt = now
 		if result.document != nil {
-			s.documents[source.ID] = result.document
+			current := s.documents[source.ID]
+			currentVersion, versioned := s.versions[source.ID]
+			versionChanged := !versioned || currentVersion != result.version
+			if current == nil || result.authoritative && versionChanged {
+				s.documents[source.ID] = result.document
+				s.versions[source.ID] = result.version
+				documentsChanged = true
+			}
 		}
 		if result.metadata != (CacheMetadata{}) {
 			status.Metadata = result.metadata
@@ -184,17 +239,20 @@ func (s *Service) Refresh(ctx context.Context) error {
 		}
 		s.statuses[source.ID] = status
 	}
+	if documentsChanged {
+		s.invalidateOutputCacheLocked()
+	}
 	s.mu.Unlock()
 	return errors.Join(refreshErrors...)
 }
 
-func (s *Service) refreshSource(ctx context.Context, source Source) sourceRefreshResult {
+func (s *Service) refreshSource(ctx context.Context, source Source, state sourceDocumentState) sourceRefreshResult {
 	result := sourceRefreshResult{source: source}
 	var cached CacheEntry
 	var found bool
 	var cacheLoadError error
 	if s.store != nil {
-		cached, found, cacheLoadError = s.store.Load(source.ID)
+		cached, found, cacheLoadError = loadCacheEntry(s.store, source.ID)
 		if found && int64(len(cached.Data)) > s.config.MaxSourceBytes {
 			cacheLoadError = errors.Join(cacheLoadError, fmt.Errorf("cached XMLTV: %w (%d bytes)", ErrSourceTooLarge, s.config.MaxSourceBytes))
 			cached = CacheEntry{}
@@ -208,16 +266,32 @@ func (s *Service) refreshSource(ctx context.Context, source Source) sourceRefres
 	fetched, fetchError := s.fetcher.Fetch(ctx, source, cached.Metadata)
 	if fetchError != nil {
 		result.err = errors.Join(cacheLoadError, fetchError)
+		if state.document != nil {
+			result.document = state.document
+			result.version = state.version
+			result.stale = true
+			return result
+		}
 		if found {
-			result.document, result.err = parseFallback(source, s.timezoneFor(source), cached.Data, result.err)
+			timezone := s.timezoneFor(source)
+			result.document, result.err = parseFallback(source, timezone, cached.Data, result.err)
+			result.version = versionDocument(cached.Data, timezone)
 			result.stale = result.document != nil
 		}
 		return result
 	}
 	if !fetched.NotModified && int64(len(fetched.Data)) > s.config.MaxSourceBytes {
 		result.err = errors.Join(cacheLoadError, fmt.Errorf("downloaded XMLTV: %w (%d bytes)", ErrSourceTooLarge, s.config.MaxSourceBytes))
+		if state.document != nil {
+			result.document = state.document
+			result.version = state.version
+			result.stale = true
+			return result
+		}
 		if found {
-			result.document, result.err = parseFallback(source, s.timezoneFor(source), cached.Data, result.err)
+			timezone := s.timezoneFor(source)
+			result.document, result.err = parseFallback(source, timezone, cached.Data, result.err)
+			result.version = versionDocument(cached.Data, timezone)
 			result.stale = result.document != nil
 		}
 		return result
@@ -228,25 +302,50 @@ func (s *Service) refreshSource(ctx context.Context, source Source) sourceRefres
 			result.err = errors.Join(cacheLoadError, fmt.Errorf("source returned 304 without a cached body"))
 			return result
 		}
-		document, err := ParseBytes(cached.Data, s.timezoneFor(source))
+		timezone := s.timezoneFor(source)
+		version := versionDocument(cached.Data, timezone)
+		if state.document != nil && state.version == version {
+			result.document = state.document
+			result.version = state.version
+			result.authoritative = true
+			return result
+		}
+		document, err := ParseBytes(cached.Data, timezone)
 		if err != nil {
 			result.err = errors.Join(cacheLoadError, fmt.Errorf("parse cached XMLTV: %w", err))
 			return result
 		}
 		result.document = document
+		result.version = version
+		result.authoritative = true
 		return result
 	}
 
-	document, parseError := ParseBytes(fetched.Data, s.timezoneFor(source))
-	if parseError != nil {
-		result.err = errors.Join(cacheLoadError, fmt.Errorf("parse downloaded XMLTV: %w", parseError))
-		if found {
-			result.document, result.err = parseFallback(source, s.timezoneFor(source), cached.Data, result.err)
-			result.stale = result.document != nil
+	timezone := s.timezoneFor(source)
+	version := versionDocument(fetched.Data, timezone)
+	if state.document != nil && state.version == version {
+		result.document = state.document
+	} else {
+		document, parseError := ParseBytes(fetched.Data, timezone)
+		if parseError != nil {
+			result.err = errors.Join(cacheLoadError, fmt.Errorf("parse downloaded XMLTV: %w", parseError))
+			if state.document != nil {
+				result.document = state.document
+				result.version = state.version
+				result.stale = true
+				return result
+			}
+			if found {
+				result.document, result.err = parseFallback(source, timezone, cached.Data, result.err)
+				result.version = versionDocument(cached.Data, timezone)
+				result.stale = result.document != nil
+			}
+			return result
 		}
-		return result
+		result.document = document
 	}
-	result.document = document
+	result.version = version
+	result.authoritative = true
 	result.metadata = fetched.Metadata
 	if s.store != nil {
 		updatedAt := fetched.Metadata.FetchedAt
@@ -263,6 +362,10 @@ func (s *Service) refreshSource(ctx context.Context, source Source) sourceRefres
 	}
 	result.err = cacheLoadError
 	return result
+}
+
+func versionDocument(data []byte, timezone string) documentVersion {
+	return documentVersion{digest: sha256.Sum256(data), timezone: timezone}
 }
 
 func parseFallback(source Source, timezone string, data []byte, prior error) (*Document, error) {
@@ -387,6 +490,19 @@ func (s *Service) XML(channels []ChannelRef) ([]byte, error) {
 }
 
 func (s *Service) GzipXML(channels []ChannelRef) ([]byte, error) {
+	if payload, _, ok := s.cachedGzipOutput(channels); ok {
+		return payload, nil
+	}
+
+	// Serialize cache misses so a refresh followed by many player requests does
+	// not build several large XML and gzip buffers at once on constrained hosts.
+	s.gzipMu.Lock()
+	defer s.gzipMu.Unlock()
+	cachedPayload, generation, ok := s.cachedGzipOutput(channels)
+	if ok {
+		return cachedPayload, nil
+	}
+
 	payload, err := s.XML(channels)
 	if err != nil {
 		return nil, err
@@ -399,7 +515,50 @@ func (s *Service) GzipXML(channels []ChannelRef) ([]byte, error) {
 	if err := writer.Close(); err != nil {
 		return nil, fmt.Errorf("compress XMLTV: %w", err)
 	}
-	return compressed.Bytes(), nil
+	compressedPayload := compressed.Bytes()
+	if len(compressedPayload) > gzipOutputCacheLimit(s.config.MaxSourceBytes) {
+		return compressedPayload, nil
+	}
+
+	cached := gzipOutputCache{
+		generation: generation,
+		channels:   append([]ChannelRef(nil), channels...),
+		payload:    bytes.Clone(compressedPayload),
+	}
+	s.mu.Lock()
+	if s.outputGeneration == generation {
+		s.gzipOutputCache = cached
+	}
+	s.mu.Unlock()
+	return compressedPayload, nil
+}
+
+func (s *Service) cachedGzipOutput(channels []ChannelRef) ([]byte, uint64, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	generation := s.outputGeneration
+	if s.gzipOutputCache.payload != nil &&
+		s.gzipOutputCache.generation == generation &&
+		slices.Equal(s.gzipOutputCache.channels, channels) {
+		return bytes.Clone(s.gzipOutputCache.payload), generation, true
+	}
+	return nil, generation, false
+}
+
+func (s *Service) invalidateOutputCacheLocked() {
+	s.outputGeneration++
+	s.gzipOutputCache = gzipOutputCache{}
+}
+
+func gzipOutputCacheLimit(maxSourceBytes int64) int {
+	limit := maxSourceBytes / 4
+	if limit <= 0 {
+		return 0
+	}
+	if limit > maxGzipOutputCacheBytes {
+		return maxGzipOutputCacheBytes
+	}
+	return int(limit)
 }
 
 func findMatchedChannel(documents []SourceDocument, match MatchCandidate) (SourceDocument, Channel, bool) {

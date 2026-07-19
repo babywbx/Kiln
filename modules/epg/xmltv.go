@@ -5,15 +5,12 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
 )
 
 const DefaultTimezone = "Asia/Hong_Kong"
-
-var xmltvTimestampPattern = regexp.MustCompile(`^(\d{8}|\d{10}|\d{12}|\d{14})(?:\s*([+-]\d{4}))?$`)
 
 type Text struct {
 	Lang  string `json:"lang,omitempty"`
@@ -456,28 +453,78 @@ func Marshal(doc *Document) ([]byte, error) {
 }
 
 func parseTimestamp(value string, location *time.Location) (Timestamp, error) {
-	match := xmltvTimestampPattern.FindStringSubmatch(strings.TrimSpace(value))
-	if match == nil {
+	trimmed := strings.TrimSpace(value)
+	precision := 0
+	for precision < len(trimmed) && isASCIIDigit(trimmed[precision]) {
+		precision++
+	}
+	layout, ok := xmltvTimestampLayout(precision)
+	if !ok {
 		return Timestamp{}, fmt.Errorf("invalid timestamp %q", value)
 	}
-	layouts := map[int]string{
-		8: "20060102", 10: "2006010215", 12: "200601021504", 14: "20060102150405",
+	timestamp := trimmed[:precision]
+	remainder := trimmed[precision:]
+	for len(remainder) > 0 && isASCIIWhitespace(remainder[0]) {
+		remainder = remainder[1:]
 	}
-	layout := layouts[len(match[1])]
-	offset := match[2]
+	offset := ""
+	if len(remainder) > 0 {
+		if len(remainder) != 5 || (remainder[0] != '+' && remainder[0] != '-') ||
+			!allASCIIDigits(remainder[1:]) {
+			return Timestamp{}, fmt.Errorf("invalid timestamp %q", value)
+		}
+		offset = remainder
+	}
 	if offset != "" {
-		parsed, err := time.Parse(layout+" -0700", match[1]+" "+offset)
+		parsed, err := time.Parse(layout+" -0700", timestamp+" "+offset)
 		if err != nil {
 			return Timestamp{}, err
 		}
 		return Timestamp{Time: parsed, Offset: offset}, nil
 	}
-	parsed, err := time.ParseInLocation(layout, match[1], location)
+	parsed, err := time.ParseInLocation(layout, timestamp, location)
 	if err != nil {
 		return Timestamp{}, err
 	}
 	_, seconds := parsed.Zone()
 	return Timestamp{Time: parsed, Offset: formatOffset(seconds)}, nil
+}
+
+func xmltvTimestampLayout(precision int) (string, bool) {
+	switch precision {
+	case 8:
+		return "20060102", true
+	case 10:
+		return "2006010215", true
+	case 12:
+		return "200601021504", true
+	case 14:
+		return "20060102150405", true
+	default:
+		return "", false
+	}
+}
+
+func isASCIIDigit(value byte) bool {
+	return value >= '0' && value <= '9'
+}
+
+func allASCIIDigits(value string) bool {
+	for index := range len(value) {
+		if !isASCIIDigit(value[index]) {
+			return false
+		}
+	}
+	return true
+}
+
+func isASCIIWhitespace(value byte) bool {
+	switch value {
+	case ' ', '\t', '\n', '\f', '\r':
+		return true
+	default:
+		return false
+	}
 }
 
 func parseOptionalTimestamp(value string, location *time.Location) (*Timestamp, error) {

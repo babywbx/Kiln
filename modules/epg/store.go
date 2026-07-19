@@ -52,13 +52,19 @@ func NewDiskStore(directory string) (*DiskStore, error) {
 }
 
 func (s *DiskStore) Load(sourceID string) (CacheEntry, bool, error) {
+	entry, found, err := s.loadImmutable(sourceID)
+	return cloneCacheEntry(entry), found, err
+}
+
+// loadImmutable returns data owned by the store. Callers must not mutate it.
+func (s *DiskStore) loadImmutable(sourceID string) (CacheEntry, bool, error) {
 	if sourceID == "" {
 		return CacheEntry{}, false, fmt.Errorf("EPG cache source ID is empty")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if entry, ok := s.entries[sourceID]; ok {
-		return cloneCacheEntry(entry), true, nil
+		return entry, true, nil
 	}
 	payload, err := os.ReadFile(s.path(sourceID))
 	if os.IsNotExist(err) {
@@ -87,11 +93,11 @@ func (s *DiskStore) Load(sourceID string) (CacheEntry, bool, error) {
 		return CacheEntry{}, false, fmt.Errorf("read EPG cache %q: checksum mismatch", sourceID)
 	}
 	entry := CacheEntry{
-		SourceID: header.SourceID, Data: append([]byte(nil), data...),
+		SourceID: header.SourceID, Data: data,
 		Metadata: header.Metadata, UpdatedAt: header.UpdatedAt,
 	}
 	s.entries[sourceID] = entry
-	return cloneCacheEntry(entry), true, nil
+	return entry, true, nil
 }
 
 func (s *DiskStore) Save(entry CacheEntry) error {
@@ -112,11 +118,6 @@ func (s *DiskStore) Save(entry CacheEntry) error {
 	if err != nil {
 		return fmt.Errorf("encode EPG cache %q header: %w", entry.SourceID, err)
 	}
-	payload := make([]byte, 0, len(headerData)+1+len(entry.Data))
-	payload = append(payload, headerData...)
-	payload = append(payload, '\n')
-	payload = append(payload, entry.Data...)
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	temporary, err := os.CreateTemp(s.directory, ".epg-*.tmp")
@@ -129,7 +130,15 @@ func (s *DiskStore) Save(entry CacheEntry) error {
 		_ = temporary.Close()
 		return fmt.Errorf("set EPG cache %q permissions: %w", entry.SourceID, err)
 	}
-	if _, err := temporary.Write(payload); err != nil {
+	if _, err := temporary.Write(headerData); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("write EPG cache %q header: %w", entry.SourceID, err)
+	}
+	if _, err := temporary.Write([]byte{'\n'}); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("write EPG cache %q header delimiter: %w", entry.SourceID, err)
+	}
+	if _, err := temporary.Write(entry.Data); err != nil {
 		_ = temporary.Close()
 		return fmt.Errorf("write EPG cache %q: %w", entry.SourceID, err)
 	}
@@ -166,10 +175,16 @@ func NewMemoryStore() *MemoryStore {
 }
 
 func (s *MemoryStore) Load(sourceID string) (CacheEntry, bool, error) {
+	entry, found, err := s.loadImmutable(sourceID)
+	return cloneCacheEntry(entry), found, err
+}
+
+// loadImmutable returns data owned by the store. Callers must not mutate it.
+func (s *MemoryStore) loadImmutable(sourceID string) (CacheEntry, bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	entry, ok := s.entries[sourceID]
-	return cloneCacheEntry(entry), ok, nil
+	return entry, ok, nil
 }
 
 func (s *MemoryStore) Save(entry CacheEntry) error {
@@ -188,4 +203,15 @@ func (s *MemoryStore) Save(entry CacheEntry) error {
 func cloneCacheEntry(entry CacheEntry) CacheEntry {
 	entry.Data = append([]byte(nil), entry.Data...)
 	return entry
+}
+
+type immutableCacheStore interface {
+	loadImmutable(sourceID string) (CacheEntry, bool, error)
+}
+
+func loadCacheEntry(store CacheStore, sourceID string) (CacheEntry, bool, error) {
+	if store, ok := store.(immutableCacheStore); ok {
+		return store.loadImmutable(sourceID)
+	}
+	return store.Load(sourceID)
 }

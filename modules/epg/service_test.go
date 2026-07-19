@@ -54,12 +54,336 @@ func TestServiceRefreshFiltersRewritesAndCompressesXMLTV(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	xmlPayload, err := service.XML(channels)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(decoded, xmlPayload) {
+		t.Fatalf("gzip XML differs from XML:\ngzip: %s\nxml: %s", decoded, xmlPayload)
+	}
 	parsed, err := epg.Parse(bytes.NewReader(decoded), "Asia/Hong_Kong")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(parsed.Channels) != 1 || parsed.Channels[0].ID != "demo-news" {
 		t.Fatalf("gzip XML channels = %+v", parsed.Channels)
+	}
+}
+
+func TestServiceGzipXMLReflectsRefreshAndSourceChanges(t *testing.T) {
+	t.Parallel()
+
+	responses := [][]byte{
+		[]byte(`<tv><channel id="one"><display-name>One</display-name></channel><programme channel="one" start="20260713080000 +0800"><title>First</title></programme></tv>`),
+		[]byte(`<tv><channel id="one"><display-name>One</display-name></channel><programme channel="one" start="20260713080000 +0800"><title>Second</title></programme></tv>`),
+	}
+	var calls int
+	service := epg.NewService(epg.ServiceConfig{
+		Sources: []epg.Source{{ID: "source", Timezone: "Asia/Hong_Kong"}},
+	}, sourceFetcherFunc(func(context.Context, epg.Source, epg.CacheMetadata) (epg.FetchResult, error) {
+		response := responses[calls]
+		calls++
+		return epg.FetchResult{Data: response}, nil
+	}), nil)
+	channels := []epg.ChannelRef{{ID: "kiln-one", EPGID: "one"}}
+
+	if err := service.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	first := gunzipEPG(t, mustGzipEPG(t, service, channels))
+	if !strings.Contains(first, "First") {
+		t.Fatalf("initial gzip XML = %s", first)
+	}
+	if err := service.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	second := gunzipEPG(t, mustGzipEPG(t, service, channels))
+	if !strings.Contains(second, "Second") || strings.Contains(second, "First") {
+		t.Fatalf("refreshed gzip XML = %s", second)
+	}
+
+	service.SetSources([]epg.Source{{ID: "replacement", Timezone: "Asia/Hong_Kong"}})
+	empty := gunzipEPG(t, mustGzipEPG(t, service, channels))
+	if strings.Contains(empty, `channel id="kiln-one"`) {
+		t.Fatalf("removed source remained in gzip XML = %s", empty)
+	}
+}
+
+func TestServiceGzipXMLKeepsChannelSelectionsIndependent(t *testing.T) {
+	t.Parallel()
+
+	raw := []byte(`<tv><channel id="one"><display-name>One</display-name></channel>` +
+		`<channel id="two"><display-name>Two</display-name></channel></tv>`)
+	service := epg.NewService(epg.ServiceConfig{
+		Sources: []epg.Source{{ID: "source", Timezone: "Asia/Hong_Kong"}},
+	}, &fakeSourceFetcher{results: map[string]epg.FetchResult{"source": {Data: raw}}}, nil)
+	if err := service.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	one := gunzipEPG(t, mustGzipEPG(t, service, []epg.ChannelRef{{ID: "kiln-one", EPGID: "one"}}))
+	two := gunzipEPG(t, mustGzipEPG(t, service, []epg.ChannelRef{{ID: "kiln-two", EPGID: "two"}}))
+	if !strings.Contains(one, `channel id="kiln-one"`) || strings.Contains(one, `channel id="kiln-two"`) {
+		t.Fatalf("first channel selection = %s", one)
+	}
+	if !strings.Contains(two, `channel id="kiln-two"`) || strings.Contains(two, `channel id="kiln-one"`) {
+		t.Fatalf("second channel selection = %s", two)
+	}
+}
+
+func TestServiceGzipXMLReturnsIndependentPayloads(t *testing.T) {
+	t.Parallel()
+
+	raw := []byte(`<tv><channel id="one"><display-name>One</display-name></channel></tv>`)
+	service := epg.NewService(epg.ServiceConfig{
+		Sources: []epg.Source{{ID: "source", Timezone: "Asia/Hong_Kong"}},
+	}, &fakeSourceFetcher{results: map[string]epg.FetchResult{"source": {Data: raw}}}, nil)
+	if err := service.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	channels := []epg.ChannelRef{{ID: "kiln-one", EPGID: "one"}}
+
+	first := mustGzipEPG(t, service, channels)
+	first[0] = 0
+	second := mustGzipEPG(t, service, channels)
+	if got := gunzipEPG(t, second); !strings.Contains(got, `channel id="kiln-one"`) {
+		t.Fatalf("mutating one payload changed another = %s", got)
+	}
+}
+
+func TestServiceGzipXMLCacheSurvivesNotModifiedRefresh(t *testing.T) {
+	metadata := epg.CacheMetadata{ETag: `"guide-v1"`}
+	var calls int
+	service := epg.NewService(epg.ServiceConfig{
+		Sources: []epg.Source{{ID: "source", Timezone: "Asia/Hong_Kong"}},
+	}, sourceFetcherFunc(func(context.Context, epg.Source, epg.CacheMetadata) (epg.FetchResult, error) {
+		calls++
+		if calls == 1 {
+			return epg.FetchResult{
+				Data:     []byte(`<tv><channel id="one"><display-name>One</display-name></channel></tv>`),
+				Metadata: metadata,
+			}, nil
+		}
+		return epg.FetchResult{NotModified: true, Metadata: metadata}, nil
+	}), epg.NewMemoryStore())
+	channels := []epg.ChannelRef{{ID: "kiln-one", EPGID: "one"}}
+
+	if err := service.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	first := mustGzipEPG(t, service, channels)
+	refreshAllocations := testing.AllocsPerRun(5, func() {
+		if err := service.Refresh(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	})
+	_ = mustGzipEPG(t, service, channels)
+	refreshAndGzipAllocations := testing.AllocsPerRun(5, func() {
+		if err := service.Refresh(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if got := mustGzipEPG(t, service, channels); !bytes.Equal(got, first) {
+			t.Fatal("not-modified refresh changed gzip XML")
+		}
+	})
+	if added := refreshAndGzipAllocations - refreshAllocations; added > 2 {
+		t.Fatalf("GzipXML added %.0f allocations after not-modified refresh, want at most 2", added)
+	}
+}
+
+func TestServiceNotModifiedRefreshReparsesChangedTimezone(t *testing.T) {
+	raw := []byte(`<tv><channel id="one"><display-name>One</display-name></channel>` +
+		`<programme channel="one" start="20260713080000"><title>Morning</title></programme></tv>`)
+	var calls int
+	service := epg.NewService(epg.ServiceConfig{
+		Sources: []epg.Source{{ID: "source", Timezone: "Asia/Hong_Kong"}},
+	}, sourceFetcherFunc(func(context.Context, epg.Source, epg.CacheMetadata) (epg.FetchResult, error) {
+		calls++
+		if calls == 1 {
+			return epg.FetchResult{Data: raw}, nil
+		}
+		return epg.FetchResult{NotModified: true}, nil
+	}), epg.NewMemoryStore())
+	channels := []epg.ChannelRef{{ID: "kiln-one", EPGID: "one"}}
+
+	if err := service.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	before := service.Document(channels).Programmes[0].Start.Time
+	service.SetSources([]epg.Source{{ID: "source", Timezone: "UTC"}})
+	if err := service.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	after := service.Document(channels).Programmes[0].Start.Time
+	if before.Equal(after) || after.Hour() != 8 {
+		t.Fatalf("programme time before = %s, after timezone change = %s", before, after)
+	}
+}
+
+func TestServiceUnchangedRefreshReusesPublishedDocument(t *testing.T) {
+	raw := makeXMLTVFixture(8, 32)
+	for _, test := range []struct {
+		name   string
+		result epg.FetchResult
+	}{
+		{name: "not modified", result: epg.FetchResult{NotModified: true}},
+		{name: "identical body", result: epg.FetchResult{Data: raw}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var calls int
+			service := epg.NewService(epg.ServiceConfig{
+				Sources: []epg.Source{{ID: "source", Timezone: "Asia/Hong_Kong"}},
+			}, sourceFetcherFunc(func(context.Context, epg.Source, epg.CacheMetadata) (epg.FetchResult, error) {
+				calls++
+				if calls == 1 {
+					return epg.FetchResult{Data: raw}, nil
+				}
+				return test.result, nil
+			}), epg.NewMemoryStore())
+			if err := service.Refresh(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+
+			allocations := testing.AllocsPerRun(5, func() {
+				if err := service.Refresh(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			})
+			if allocations > 64 {
+				t.Fatalf("unchanged refresh allocations = %.0f, want at most 64", allocations)
+			}
+		})
+	}
+}
+
+func TestServiceGzipXMLCacheSurvivesIdenticalRefresh(t *testing.T) {
+	raw := []byte(`<tv><channel id="one"><display-name>One</display-name></channel></tv>`)
+	service := epg.NewService(epg.ServiceConfig{
+		Sources: []epg.Source{{ID: "source", Timezone: "Asia/Hong_Kong"}},
+	}, sourceFetcherFunc(func(context.Context, epg.Source, epg.CacheMetadata) (epg.FetchResult, error) {
+		return epg.FetchResult{Data: raw}, nil
+	}), nil)
+	channels := []epg.ChannelRef{{ID: "kiln-one", EPGID: "one"}}
+
+	if err := service.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	first := mustGzipEPG(t, service, channels)
+	refreshAllocations := testing.AllocsPerRun(5, func() {
+		if err := service.Refresh(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	})
+	_ = mustGzipEPG(t, service, channels)
+	refreshAndGzipAllocations := testing.AllocsPerRun(5, func() {
+		if err := service.Refresh(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if got := mustGzipEPG(t, service, channels); !bytes.Equal(got, first) {
+			t.Fatal("identical refresh changed gzip XML")
+		}
+	})
+	if added := refreshAndGzipAllocations - refreshAllocations; added > 2 {
+		t.Fatalf("GzipXML added %.0f allocations after identical refresh, want at most 2", added)
+	}
+}
+
+func TestServiceFallbackDoesNotReplaceNewerMemoryDocument(t *testing.T) {
+	oldRaw := []byte(`<tv><channel id="one"><display-name>Old</display-name></channel></tv>`)
+	newRaw := []byte(`<tv><channel id="one"><display-name>New</display-name></channel></tv>`)
+	store := failingSaveCacheStore{entry: epg.CacheEntry{
+		SourceID: "source",
+		Data:     oldRaw,
+		Metadata: epg.CacheMetadata{ETag: `"old"`},
+	}}
+	var calls int
+	service := epg.NewService(epg.ServiceConfig{
+		Sources: []epg.Source{{ID: "source", Timezone: "Asia/Hong_Kong"}},
+	}, sourceFetcherFunc(func(context.Context, epg.Source, epg.CacheMetadata) (epg.FetchResult, error) {
+		calls++
+		if calls == 1 {
+			return epg.FetchResult{Data: newRaw, Metadata: epg.CacheMetadata{ETag: `"new"`}}, nil
+		}
+		return epg.FetchResult{}, errors.New("upstream unavailable")
+	}), store)
+	channels := []epg.ChannelRef{{ID: "kiln-one", EPGID: "one"}}
+
+	if err := service.Refresh(context.Background()); err == nil {
+		t.Fatal("initial refresh succeeded despite cache save failure")
+	}
+	warm := gunzipEPG(t, mustGzipEPG(t, service, channels))
+	if !strings.Contains(warm, "New") {
+		t.Fatalf("initial gzip XML = %s", warm)
+	}
+	if err := service.Refresh(context.Background()); err == nil {
+		t.Fatal("fallback refresh succeeded despite upstream failure")
+	}
+
+	xmlPayload, err := service.XML(channels)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gzipPayload := gunzipEPG(t, mustGzipEPG(t, service, channels))
+	if !strings.Contains(string(xmlPayload), "New") || !strings.Contains(gzipPayload, "New") {
+		t.Fatalf("fallback diverged XML and gzip:\nxml: %s\ngzip: %s", xmlPayload, gzipPayload)
+	}
+}
+
+func TestServiceNotModifiedPublishesRevalidatedCachedDocument(t *testing.T) {
+	oldRaw := []byte(`<tv><channel id="one"><display-name>Old</display-name></channel></tv>`)
+	newRaw := []byte(`<tv><channel id="one"><display-name>New</display-name></channel></tv>`)
+	store := failingSaveCacheStore{entry: epg.CacheEntry{
+		SourceID: "source",
+		Data:     oldRaw,
+		Metadata: epg.CacheMetadata{ETag: `"old"`},
+	}}
+	var calls int
+	service := epg.NewService(epg.ServiceConfig{
+		Sources: []epg.Source{{ID: "source", Timezone: "Asia/Hong_Kong"}},
+	}, sourceFetcherFunc(func(context.Context, epg.Source, epg.CacheMetadata) (epg.FetchResult, error) {
+		calls++
+		if calls == 1 {
+			return epg.FetchResult{Data: newRaw, Metadata: epg.CacheMetadata{ETag: `"new"`}}, nil
+		}
+		return epg.FetchResult{NotModified: true, Metadata: epg.CacheMetadata{ETag: `"old"`}}, nil
+	}), store)
+	channels := []epg.ChannelRef{{ID: "kiln-one", EPGID: "one"}}
+
+	if err := service.Refresh(context.Background()); err == nil {
+		t.Fatal("initial refresh succeeded despite cache save failure")
+	}
+	if got := gunzipEPG(t, mustGzipEPG(t, service, channels)); !strings.Contains(got, "New") {
+		t.Fatalf("initial gzip XML = %s", got)
+	}
+	if err := service.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := gunzipEPG(t, mustGzipEPG(t, service, channels)); !strings.Contains(got, "Old") {
+		t.Fatalf("revalidated gzip XML = %s", got)
+	}
+}
+
+func TestServiceRepeatedGzipXMLAvoidsRebuildingDocument(t *testing.T) {
+	raw := []byte(`<tv><channel id="one"><display-name>One</display-name></channel>` +
+		`<programme channel="one" start="20260713080000 +0800"><title>First</title></programme></tv>`)
+	service := epg.NewService(epg.ServiceConfig{
+		Sources: []epg.Source{{ID: "source", Timezone: "Asia/Hong_Kong"}},
+	}, &fakeSourceFetcher{results: map[string]epg.FetchResult{"source": {Data: raw}}}, nil)
+	if err := service.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	channels := []epg.ChannelRef{{ID: "kiln-one", EPGID: "one"}}
+	if _, err := service.GzipXML(channels); err != nil {
+		t.Fatal(err)
+	}
+
+	allocations := testing.AllocsPerRun(5, func() {
+		if _, err := service.GzipXML(channels); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if allocations > 2 {
+		t.Fatalf("cached GzipXML allocations = %.0f, want at most 2", allocations)
 	}
 }
 
@@ -191,7 +515,9 @@ func TestServiceRefreshIsConcurrencySafe(t *testing.T) {
 		go func() {
 			defer wait.Done()
 			_ = service.Refresh(context.Background())
-			_ = service.Document([]epg.ChannelRef{{ID: "kiln", EPGID: "one"}})
+			channels := []epg.ChannelRef{{ID: "kiln", EPGID: "one"}}
+			_ = service.Document(channels)
+			_, _ = service.GzipXML(channels)
 		}()
 	}
 	wait.Wait()
@@ -427,4 +753,44 @@ type sourceFetcherFunc func(context.Context, epg.Source, epg.CacheMetadata) (epg
 
 func (f sourceFetcherFunc) Fetch(ctx context.Context, source epg.Source, metadata epg.CacheMetadata) (epg.FetchResult, error) {
 	return f(ctx, source, metadata)
+}
+
+type failingSaveCacheStore struct {
+	entry epg.CacheEntry
+}
+
+func (s failingSaveCacheStore) Load(sourceID string) (epg.CacheEntry, bool, error) {
+	if sourceID != s.entry.SourceID {
+		return epg.CacheEntry{}, false, nil
+	}
+	return s.entry, true, nil
+}
+
+func (failingSaveCacheStore) Save(epg.CacheEntry) error {
+	return errors.New("cache unavailable")
+}
+
+func mustGzipEPG(t *testing.T, service *epg.Service, channels []epg.ChannelRef) []byte {
+	t.Helper()
+	payload, err := service.GzipXML(channels)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return payload
+}
+
+func gunzipEPG(t *testing.T, payload []byte) string {
+	t.Helper()
+	reader, err := gzip.NewReader(bytes.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return string(decoded)
 }
