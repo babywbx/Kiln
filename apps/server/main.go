@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
+	"runtime/metrics"
 	"strings"
 	"syscall"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"github.com/babywbx/kiln/modules/observe"
 	"github.com/babywbx/kiln/modules/proxyegress"
 	"github.com/babywbx/kiln/modules/pull"
+	"github.com/babywbx/kiln/modules/resources"
 	"github.com/babywbx/kiln/modules/session"
 	"github.com/babywbx/kiln/modules/store"
 	"github.com/babywbx/kiln/modules/telemetry"
@@ -42,6 +44,17 @@ func main() {
 		boot.Error("config load failed", "err", err, "config", *cfgPath)
 		os.Exit(1)
 	}
+	resourceLimits := resources.Detect()
+	resourcePlan := resources.Resolve(resourceLimits, resources.Inputs{
+		Mode:              resources.Mode(cfg.Server.ResourceMode),
+		MemoryLimitMB:     cfg.Server.MemoryLimitMB,
+		InflightBytes:     cfg.Packager.InflightBytes,
+		StartSegments:     cfg.Packager.StartSegments,
+		PrefetchSegments:  cfg.Packager.PrefetchSegments,
+		EPGMaxConcurrency: cfg.EPG.MaxRefreshConcurrency,
+		EPGMaxSourceBytes: cfg.EPG.MaxSourceBytes,
+	})
+	applyResourcePlan(&cfg, resourcePlan)
 	log := logging.NewWith(logging.Options{
 		Level:  cfg.Logging.Level,
 		Format: cfg.Logging.Format,
@@ -160,6 +173,18 @@ func main() {
 		"config", abs(*cfgPath),
 		"listen", cfg.Server.Listen,
 		"channels", len(chs),
+		"resource_mode", resourcePlan.Mode,
+		"resource_constrained", resourcePlan.Constrained,
+		"effective_cpus", resourceLimits.CPUs,
+		"effective_cpu_milli", resourceLimits.CPUMilli,
+		"effective_memory_mb", resourceLimits.MemoryBytes>>20,
+		"memory_limit_mb", cfg.Server.MemoryLimitMB,
+		"effective_go_memory_limit_mb", effectiveGoMemoryLimitMB(),
+		"inflight_mb", cfg.Packager.InflightBytes>>20,
+		"start_segments", cfg.Packager.StartSegments,
+		"prefetch_segments", cfg.Packager.PrefetchSegments,
+		"epg_refresh_concurrency", cfg.EPG.MaxRefreshConcurrency,
+		"epg_max_source_mb", cfg.EPG.MaxSourceBytes>>20,
 		"packager_engine", cfg.Packager.Engine,
 		"ffmpeg_available", sessions.FFmpegAvailable(),
 		"proxies", len(cfg.Proxies),
@@ -190,6 +215,32 @@ func main() {
 	cancel()
 	sessions.Shutdown()
 	log.Info("shutting down")
+}
+
+func effectiveGoMemoryLimitMB() uint64 {
+	samples := []metrics.Sample{{Name: "/gc/gomemlimit:bytes"}}
+	metrics.Read(samples)
+	if samples[0].Value.Kind() != metrics.KindUint64 {
+		return 0
+	}
+	return goMemoryLimitMB(samples[0].Value.Uint64())
+}
+
+func goMemoryLimitMB(limit uint64) uint64 {
+	const maxInt64 = uint64(^uint64(0) >> 1)
+	if limit == maxInt64 {
+		return 0
+	}
+	return limit >> 20
+}
+
+func applyResourcePlan(cfg *config.File, plan resources.Plan) {
+	cfg.Server.MemoryLimitMB = plan.MemoryLimitMB
+	cfg.Packager.InflightBytes = plan.InflightBytes
+	cfg.Packager.StartSegments = plan.StartSegments
+	cfg.Packager.PrefetchSegments = plan.PrefetchSegments
+	cfg.EPG.MaxRefreshConcurrency = plan.EPGMaxConcurrency
+	cfg.EPG.MaxSourceBytes = plan.EPGMaxSourceBytes
 }
 
 func buildEPGService(cfg config.File, db *store.DB, router *proxyegress.Router, log *slog.Logger) (*epg.Service, error) {
@@ -241,7 +292,9 @@ func buildEPGService(cfg config.File, db *store.DB, router *proxyegress.Router, 
 	}
 	return epg.NewService(epg.ServiceConfig{
 		Sources: sources, DefaultTimezone: cfg.EPG.DefaultTimezone,
-		RefreshInterval: time.Duration(cfg.EPG.RefreshIntervalMin) * time.Minute,
+		RefreshInterval:       time.Duration(cfg.EPG.RefreshIntervalMin) * time.Minute,
+		MaxRefreshConcurrency: cfg.EPG.MaxRefreshConcurrency,
+		MaxSourceBytes:        cfg.EPG.MaxSourceBytes,
 		OnError: func(err error) {
 			log.Warn("EPG refresh failed", "err", err)
 		},

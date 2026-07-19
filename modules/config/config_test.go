@@ -173,6 +173,87 @@ engine = "auto"
 	}
 }
 
+func TestResourceModeDefaultsToAutoAndAllowsPerformanceOverride(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "kiln.toml")
+	base := `
+[server]
+data_dir = "./data"
+
+[auth]
+[[auth.users]]
+username = "admin"
+password_hash = "hash"
+role = "admin"
+`
+	if err := os.WriteFile(path, []byte(base), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Server.ResourceMode != ResourceModeAuto {
+		t.Fatalf("default resource mode = %q, want %q", cfg.Server.ResourceMode, ResourceModeAuto)
+	}
+
+	t.Setenv("KILN_RESOURCE_MODE", ResourceModePerformance)
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Server.ResourceMode != ResourceModePerformance {
+		t.Fatalf("environment resource mode = %q, want %q", cfg.Server.ResourceMode, ResourceModePerformance)
+	}
+
+	t.Setenv("KILN_RESOURCE_MODE", "unlimited-ish")
+	if _, err := Load(path); err == nil {
+		t.Fatal("invalid resource mode was accepted")
+	}
+}
+
+func TestNegativeServerMemoryLimitIsRejected(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "kiln.toml")
+	config := `
+[server]
+memory_limit_mb = -1
+
+[auth]
+[[auth.users]]
+username = "admin"
+password_hash = "hash"
+role = "admin"
+`
+	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("negative server.memory_limit_mb was accepted")
+	}
+}
+
+func TestServerMemoryLimitThatCannotBeRepresentedAsBytesIsRejected(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "kiln.toml")
+	config := `
+[server]
+memory_limit_mb = 9223372036854775807
+
+[auth]
+[[auth.users]]
+username = "admin"
+password_hash = "hash"
+role = "admin"
+`
+	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("overflowing server.memory_limit_mb was accepted")
+	}
+}
+
 func TestInvalidPackagerDefaultsAndExplicitValuesAreRejected(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "kiln.toml")

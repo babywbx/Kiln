@@ -54,14 +54,15 @@ type EgressRule struct {
 }
 
 type EPG struct {
-	Enabled            bool        `json:"enabled" toml:"enabled"`
-	Cache              *bool       `json:"cache,omitempty" toml:"cache,omitempty"`
-	CacheDir           string      `json:"cache_dir" toml:"cache_dir"`
-	RefreshIntervalMin int         `json:"refresh_interval_min" toml:"refresh_interval_min"`
-	MaxSourceBytes     int64       `json:"max_source_bytes" toml:"max_source_bytes"`
-	DefaultTimezone    string      `json:"default_timezone" toml:"default_timezone"`
-	ServeTimezone      string      `json:"serve_timezone" toml:"serve_timezone"`
-	Sources            []EPGSource `json:"sources" toml:"sources"`
+	Enabled               bool        `json:"enabled" toml:"enabled"`
+	Cache                 *bool       `json:"cache,omitempty" toml:"cache,omitempty"`
+	CacheDir              string      `json:"cache_dir" toml:"cache_dir"`
+	RefreshIntervalMin    int         `json:"refresh_interval_min" toml:"refresh_interval_min"`
+	MaxRefreshConcurrency int         `json:"max_refresh_concurrency" toml:"max_refresh_concurrency"`
+	MaxSourceBytes        int64       `json:"max_source_bytes" toml:"max_source_bytes"`
+	DefaultTimezone       string      `json:"default_timezone" toml:"default_timezone"`
+	ServeTimezone         string      `json:"serve_timezone" toml:"serve_timezone"`
+	Sources               []EPGSource `json:"sources" toml:"sources"`
 }
 
 func (e EPG) CacheEnabled() bool {
@@ -81,6 +82,7 @@ type Server struct {
 	Listen        string `json:"listen" toml:"listen"`
 	PublicBaseURL string `json:"public_base_url" toml:"public_base_url"`
 	DataDir       string `json:"data_dir" toml:"data_dir"`
+	ResourceMode  string `json:"resource_mode" toml:"resource_mode"`
 	ReadTimeout   int    `json:"read_timeout_sec" toml:"read_timeout_sec"`
 	WriteTimeout  int    `json:"write_timeout_sec" toml:"write_timeout_sec"`
 	IdleTimeout   int    `json:"idle_timeout_sec" toml:"idle_timeout_sec"`
@@ -91,6 +93,12 @@ type Server struct {
 	// harder. 0 leaves the runtime default.
 	MemoryLimitMB int `json:"memory_limit_mb" toml:"memory_limit_mb"`
 }
+
+const (
+	ResourceModeAuto        = "auto"
+	ResourceModePerformance = "performance"
+	ResourceModeConstrained = "constrained"
+)
 
 type Auth struct {
 	TokenPrivateKeyFile string `json:"token_private_key_file" toml:"token_private_key_file"`
@@ -376,6 +384,9 @@ func (c *File) applyEnvOverrides() {
 	if v := os.Getenv("KILN_DATA_DIR"); v != "" {
 		c.Server.DataDir = v
 	}
+	if v := os.Getenv("KILN_RESOURCE_MODE"); v != "" {
+		c.Server.ResourceMode = v
+	}
 	if v := os.Getenv("KILN_LOG_LEVEL"); v != "" {
 		c.Logging.Level = v
 	}
@@ -399,6 +410,9 @@ func (c *File) applyDefaults() {
 	}
 	if c.Server.DataDir == "" {
 		c.Server.DataDir = "./data"
+	}
+	if c.Server.ResourceMode == "" {
+		c.Server.ResourceMode = ResourceModeAuto
 	}
 	if c.Server.PublicBaseURL == "" {
 		c.Server.PublicBaseURL = "http://127.0.0.1:8080"
@@ -576,8 +590,22 @@ func (c *File) resolveKeysPaths(configPath string) {
 }
 
 func (c File) validate() error {
+	if c.Server.MemoryLimitMB < 0 {
+		return fmt.Errorf("server.memory_limit_mb must not be negative")
+	}
+	if int64(c.Server.MemoryLimitMB) > int64(^uint64(0)>>1)>>20 {
+		return fmt.Errorf("server.memory_limit_mb is too large")
+	}
+	switch c.Server.ResourceMode {
+	case ResourceModeAuto, ResourceModePerformance, ResourceModeConstrained:
+	default:
+		return fmt.Errorf("server.resource_mode must be auto, performance or constrained")
+	}
 	if !c.FFmpeg.Mode.Valid() {
 		return fmt.Errorf("ffmpeg.mode must be native or docker")
+	}
+	if c.EPG.MaxRefreshConcurrency < 0 {
+		return fmt.Errorf("epg.max_refresh_concurrency must not be negative")
 	}
 	if !ValidEngine(c.Packager.Engine) {
 		return fmt.Errorf("packager.engine must be auto, native or ffmpeg")

@@ -5,6 +5,8 @@
     "listen": "0.0.0.0:8080",
     "public_base_url": "http://127.0.0.1:8080",
     "data_dir": "./data",
+    // Keeps the fast path at nominal 4 GB / 4 CPUs and scales below either axis.
+    "resource_mode": "auto",
     "read_timeout_sec": 15,
     "idle_timeout_sec": 120,
   },
@@ -61,6 +63,7 @@
     "enabled": false,
     "cache": true,
     "refresh_interval_min": 360,
+    "max_refresh_concurrency": 0,
     "max_source_bytes": 67108864,
     "default_timezone": "Asia/Hong_Kong",
     "serve_timezone": "keep",

@@ -4,6 +4,12 @@
 listen = "0.0.0.0:8080"
 public_base_url = "http://127.0.0.1:8080"
 data_dir = "./data"
+# auto treats configured values as ceilings and scales them only when the
+# effective container/host limit is below 4 CPUs or about 3.5 GiB. Fractional
+# quotas and nested cgroup limits are retained. A nominal 4 GB / 4-core host
+# keeps the existing fast path. performance disables all adaptation;
+# constrained forces the reproducible 1 CPU / 1 GiB profile.
+resource_mode = "auto"
 read_timeout_sec = 15
 idle_timeout_sec = 120
 # Go's soft memory limit. Without it the runtime keeps freed pages mapped, so
@@ -109,6 +115,9 @@ enabled = false
 cache = true
 cache_dir = "./data/epg"
 refresh_interval_min = 360
+# 0 refreshes every source in parallel on normal hosts. In auto mode both zero
+# and unsafe positive values are capped from effective CPU and memory limits.
+max_refresh_concurrency = 0
 max_source_bytes = 67108864
 default_timezone = "Asia/Hong_Kong"
 serve_timezone = "keep"

@@ -37,3 +37,13 @@ func TestBuildEPGServiceUsesPersistedSourcesWithoutLegacyEnabledFlag(t *testing.
 		t.Fatalf("default EPG cache directory was not created: info=%v err=%v", info, err)
 	}
 }
+
+func TestGoMemoryLimitMBReportsRuntimeDefaultAsUnlimited(t *testing.T) {
+	const maxInt64 = uint64(^uint64(0) >> 1)
+	if got := goMemoryLimitMB(maxInt64); got != 0 {
+		t.Fatalf("default Go memory limit = %d MiB, want 0", got)
+	}
+	if got := goMemoryLimitMB(768 << 20); got != 768 {
+		t.Fatalf("explicit Go memory limit = %d MiB, want 768", got)
+	}
+}
