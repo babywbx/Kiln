@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+var benchmarkPlaylistSink []byte
+
 func benchmarkPublisher(b *testing.B, static bool, tracks, segments int) {
 	p, err := New(Config{Dir: b.TempDir(), Static: static, PlaylistSize: segments + 1, Grace: time.Second})
 	if err != nil {
@@ -50,3 +52,28 @@ func benchmarkPublisher(b *testing.B, static bool, tracks, segments int) {
 
 func BenchmarkDynamicMultiTrack(b *testing.B) { benchmarkPublisher(b, false, 8, 10) }
 func BenchmarkLongStatic(b *testing.B)        { benchmarkPublisher(b, true, 2, 1000) }
+
+func BenchmarkMediaPlaylist(b *testing.B) {
+	start := time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC)
+	media := &track{
+		Track:         Track{Name: "video-main", Kind: KindVideo},
+		initName:      "video-main-init.mp4",
+		mediaSequence: 100,
+		target:        2,
+	}
+	for index := range 8 {
+		media.segments = append(media.segments, segment{
+			Name:     segmentName(media.Name, uint64(index+100)),
+			Seq:      uint64(index + 100),
+			MSN:      uint64(index + 100),
+			Duration: 2.002,
+			At:       start.Add(time.Duration(index) * 2 * time.Second),
+			InitName: media.initName,
+		})
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		benchmarkPlaylistSink = mediaPlaylist(media, false)
+	}
+}

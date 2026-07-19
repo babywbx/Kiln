@@ -2,6 +2,7 @@ package hls
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -22,7 +23,9 @@ func mediaPlaylistWithOptions(t *track, endList bool, options PlaylistOptions) [
 	}
 	b = appendMediaHeader(b, t, lowLatency || skipped > 0, endList)
 	if skipped > 0 {
-		b = fmt.Appendf(b, "#EXT-X-SKIP:SKIPPED-SEGMENTS=%d\n", skipped)
+		b = append(b, "#EXT-X-SKIP:SKIPPED-SEGMENTS="...)
+		b = strconv.AppendInt(b, int64(skipped), 10)
+		b = append(b, '\n')
 	}
 	currentMap := ""
 	for i := skipped; i < len(t.segments); i++ {
@@ -30,13 +33,13 @@ func mediaPlaylistWithOptions(t *track, endList bool, options PlaylistOptions) [
 	}
 	if lowLatency {
 		if t.initName != "" && t.initName != currentMap {
-			b = fmt.Appendf(b, "#EXT-X-MAP:URI=%q\n", t.initName)
+			b = appendQuotedLine(b, "#EXT-X-MAP:URI=", t.initName)
 		}
 		for _, part := range t.parts {
 			b = appendPart(b, part)
 		}
 		if !endList && t.hint != nil {
-			b = fmt.Appendf(b, "#EXT-X-PRELOAD-HINT:TYPE=PART,URI=%q\n", t.hint.Name)
+			b = appendQuotedLine(b, "#EXT-X-PRELOAD-HINT:TYPE=PART,URI=", t.hint.Name)
 		}
 	}
 	if endList {
@@ -54,19 +57,30 @@ func appendMediaHeader(dst []byte, t *track, lowLatency, endList bool) []byte {
 	if lowLatency {
 		version = 9
 	}
-	dst = fmt.Appendf(dst, "#EXTM3U\n#EXT-X-VERSION:%d\n", version)
-	dst = fmt.Appendf(dst, "#EXT-X-TARGETDURATION:%d\n", target)
-	dst = fmt.Appendf(dst, "#EXT-X-MEDIA-SEQUENCE:%d\n", t.mediaSequence)
-	dst = fmt.Appendf(dst, "#EXT-X-DISCONTINUITY-SEQUENCE:%d\n", t.discontinuitySequence)
+	dst = append(dst, "#EXTM3U\n#EXT-X-VERSION:"...)
+	dst = strconv.AppendInt(dst, int64(version), 10)
+	dst = append(dst, "\n#EXT-X-TARGETDURATION:"...)
+	dst = strconv.AppendInt(dst, int64(target), 10)
+	dst = append(dst, "\n#EXT-X-MEDIA-SEQUENCE:"...)
+	dst = strconv.AppendUint(dst, t.mediaSequence, 10)
+	dst = append(dst, "\n#EXT-X-DISCONTINUITY-SEQUENCE:"...)
+	dst = strconv.AppendUint(dst, t.discontinuitySequence, 10)
+	dst = append(dst, '\n')
 	if lowLatency {
 		partTarget := t.partTarget
 		if partTarget <= 0 {
 			partTarget = 0.5
 		}
 		if !endList {
-			dst = fmt.Appendf(dst, "#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES,CAN-SKIP-UNTIL=%.6f,PART-HOLD-BACK=%.6f\n", float64(target)*6, partTarget*2)
+			dst = append(dst, "#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES,CAN-SKIP-UNTIL="...)
+			dst = strconv.AppendFloat(dst, float64(target)*6, 'f', 6, 64)
+			dst = append(dst, ",PART-HOLD-BACK="...)
+			dst = strconv.AppendFloat(dst, partTarget*2, 'f', 6, 64)
+			dst = append(dst, '\n')
 		}
-		dst = fmt.Appendf(dst, "#EXT-X-PART-INF:PART-TARGET=%.6f\n", partTarget)
+		dst = append(dst, "#EXT-X-PART-INF:PART-TARGET="...)
+		dst = strconv.AppendFloat(dst, partTarget, 'f', 6, 64)
+		dst = append(dst, '\n')
 	}
 	return dst
 }
@@ -76,7 +90,9 @@ func appendMediaSegment(dst []byte, s segment, first bool, currentMap *string) [
 	for _, part := range s.Parts {
 		dst = appendPart(dst, part)
 	}
-	dst = fmt.Appendf(dst, "#EXTINF:%.6f,\n", s.Duration)
+	dst = append(dst, "#EXTINF:"...)
+	dst = strconv.AppendFloat(dst, s.Duration, 'f', 6, 64)
+	dst = append(dst, ",\n"...)
 	dst = append(dst, s.Name...)
 	return append(dst, '\n')
 }
@@ -86,11 +102,13 @@ func appendMediaSegmentPrefix(dst []byte, s segment, first bool, currentMap *str
 		dst = append(dst, "#EXT-X-DISCONTINUITY\n"...)
 	}
 	if s.InitName != "" && s.InitName != *currentMap {
-		dst = fmt.Appendf(dst, "#EXT-X-MAP:URI=%q\n", s.InitName)
+		dst = appendQuotedLine(dst, "#EXT-X-MAP:URI=", s.InitName)
 		*currentMap = s.InitName
 	}
 	if !s.At.IsZero() && (first || s.Discontinuity) {
-		dst = fmt.Appendf(dst, "#EXT-X-PROGRAM-DATE-TIME:%s\n", s.At.Format(programDateLayout))
+		dst = append(dst, "#EXT-X-PROGRAM-DATE-TIME:"...)
+		dst = s.At.AppendFormat(dst, programDateLayout)
+		dst = append(dst, '\n')
 	}
 	for _, dateRange := range s.DateRanges {
 		tag := dateRange.MarshalTag()
@@ -103,10 +121,19 @@ func appendMediaSegmentPrefix(dst []byte, s segment, first bool, currentMap *str
 }
 
 func appendPart(dst []byte, part partialSegment) []byte {
-	dst = fmt.Appendf(dst, "#EXT-X-PART:DURATION=%.6f,URI=%q", part.Duration, part.Name)
+	dst = append(dst, "#EXT-X-PART:DURATION="...)
+	dst = strconv.AppendFloat(dst, part.Duration, 'f', 6, 64)
+	dst = append(dst, ",URI="...)
+	dst = strconv.AppendQuote(dst, part.Name)
 	if part.Independent {
 		dst = append(dst, ",INDEPENDENT=YES"...)
 	}
+	return append(dst, '\n')
+}
+
+func appendQuotedLine(dst []byte, prefix, value string) []byte {
+	dst = append(dst, prefix...)
+	dst = strconv.AppendQuote(dst, value)
 	return append(dst, '\n')
 }
 
