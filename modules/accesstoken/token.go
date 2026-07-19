@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
-	"regexp"
 	"strings"
 	"time"
 
@@ -19,8 +18,6 @@ const (
 	RandomLength   = 126
 	base62Alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 )
-
-var tokenPattern = regexp.MustCompile(`^v1[0-9A-Za-z]{126}$`)
 
 func Generate() (string, error) {
 	var b strings.Builder
@@ -38,7 +35,17 @@ func Generate() (string, error) {
 }
 
 func Valid(token string) bool {
-	return tokenPattern.MatchString(token)
+	if len(token) != len(VersionPrefix)+RandomLength || !strings.HasPrefix(token, VersionPrefix) {
+		return false
+	}
+	for i := len(VersionPrefix); i < len(token); i++ {
+		c := token[i]
+		if (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func Hash(token string) string {

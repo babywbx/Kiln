@@ -37,6 +37,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type Deps struct {
@@ -50,6 +51,7 @@ type Deps struct {
 	Egress   *proxyegress.Router
 	Log      *slog.Logger
 	Allowed  map[string]struct{}
+	Tracing  bool
 }
 
 type Server struct {
@@ -174,10 +176,13 @@ func (s *Server) routes() {
 
 func (s *Server) withMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		traceContext := otel.GetTextMapPropagator().Extract(r.Context(), propagation.HeaderCarrier(r.Header))
-		traceContext, span := otel.Tracer("kiln/httpserver").Start(traceContext, "http.server")
-		r = r.WithContext(traceContext)
-		span.SetAttributes(attribute.String("http.request.method", r.Method))
+		var span trace.Span
+		if s.deps.Tracing {
+			traceContext := otel.GetTextMapPropagator().Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+			traceContext, span = otel.Tracer("kiln/httpserver").Start(traceContext, "http.server")
+			r = r.WithContext(traceContext)
+			span.SetAttributes(attribute.String("http.request.method", r.Method))
+		}
 		start := time.Now()
 		s.deps.Observe.IncRequest()
 		reqID := r.Header.Get("X-Request-ID")
@@ -211,22 +216,26 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 				}
 			}
 			level := logging.AccessLevel(r.URL.Path, ww.code)
-			span.SetAttributes(attribute.Int("http.response.status_code", ww.code))
-			if r.Pattern != "" {
-				span.SetAttributes(attribute.String("http.route", r.Pattern))
+			if s.deps.Tracing {
+				span.SetAttributes(attribute.Int("http.response.status_code", ww.code))
+				if r.Pattern != "" {
+					span.SetAttributes(attribute.String("http.route", r.Pattern))
+				}
+				if ww.code >= http.StatusInternalServerError {
+					span.SetStatus(codes.Error, http.StatusText(ww.code))
+				}
+				span.End()
 			}
-			if ww.code >= http.StatusInternalServerError {
-				span.SetStatus(codes.Error, http.StatusText(ww.code))
+			if s.deps.Log.Enabled(r.Context(), level) {
+				s.deps.Log.Log(r.Context(), level, "request",
+					"remote", clientIP(r),
+					"method", r.Method,
+					"path", redactRequestPath(r.URL.Path),
+					"status", ww.code,
+					"dur_ms", time.Since(start).Milliseconds(),
+					"request_id", reqID,
+				)
 			}
-			span.End()
-			s.deps.Log.Log(r.Context(), level, "request",
-				"remote", clientIP(r),
-				"method", r.Method,
-				"path", redactRequestPath(r.URL.Path),
-				"status", ww.code,
-				"dur_ms", time.Since(start).Milliseconds(),
-				"request_id", reqID,
-			)
 			if abortResponse {
 				panic(http.ErrAbortHandler)
 			}

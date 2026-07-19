@@ -23,6 +23,49 @@ func TestGenerateTokenShape(t *testing.T) {
 	}
 }
 
+func TestValidRejectsMalformedToken(t *testing.T) {
+	valid := VersionPrefix + string(make([]byte, RandomLength))
+	validBytes := []byte(valid)
+	for i := len(VersionPrefix); i < len(validBytes); i++ {
+		validBytes[i] = 'a'
+	}
+	valid = string(validBytes)
+
+	for _, tc := range []struct {
+		name  string
+		token string
+		want  bool
+	}{
+		{name: "valid", token: valid, want: true},
+		{name: "short", token: valid[:len(valid)-1]},
+		{name: "long", token: valid + "a"},
+		{name: "wrong version", token: "v2" + valid[2:]},
+		{name: "symbol", token: valid[:20] + "-" + valid[21:]},
+		{name: "non ascii", token: valid[:20] + "界" + valid[23:]},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Valid(tc.token); got != tc.want {
+				t.Fatalf("Valid() = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
+func BenchmarkValid(b *testing.B) {
+	token := VersionPrefix + string(make([]byte, RandomLength))
+	tokenBytes := []byte(token)
+	for i := len(VersionPrefix); i < len(tokenBytes); i++ {
+		tokenBytes[i] = 'a'
+	}
+	token = string(tokenBytes)
+	b.ReportAllocs()
+	for b.Loop() {
+		if !Valid(token) {
+			b.Fatal("valid token rejected")
+		}
+	}
+}
+
 func TestScope(t *testing.T) {
 	if !AllowsChannel(ScopeAll, "a") {
 		t.Fatal("all")

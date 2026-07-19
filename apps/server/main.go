@@ -67,6 +67,7 @@ func main() {
 		os.Exit(1)
 	}
 	shutdownTelemetry, err := telemetry.Setup(context.Background(), cfg.Observe, version.Version)
+	tracingReady := err == nil && cfg.Observe.Enabled && cfg.Observe.OTLPEndpoint != ""
 	if err != nil {
 		log.Warn("OpenTelemetry setup failed", "err", err)
 		shutdownTelemetry = func(context.Context) error { return nil }
@@ -150,6 +151,7 @@ func main() {
 		Egress:   egressRouter,
 		Log:      log,
 		Allowed:  allowed,
+		Tracing:  tracingReady,
 	})
 
 	go func() {
