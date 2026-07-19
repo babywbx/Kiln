@@ -208,7 +208,196 @@ func Parse(r io.Reader, sourceTimezone string) (*Document, error) {
 }
 
 func ParseBytes(data []byte, sourceTimezone string) (*Document, error) {
-	return Parse(bytes.NewReader(data), sourceTimezone)
+	// The service already owns the source bytes. Offset-aware decoding avoids
+	// copying every inner XML fragment through rawDocument; the parity test
+	// intentionally keeps this optimized path aligned with Parse.
+	if strings.TrimSpace(sourceTimezone) == "" {
+		sourceTimezone = DefaultTimezone
+	}
+	location, err := time.LoadLocation(sourceTimezone)
+	if err != nil {
+		return nil, fmt.Errorf("load XMLTV timezone %q: %w", sourceTimezone, err)
+	}
+
+	decoder := xml.NewDecoder(bytes.NewReader(data))
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return nil, fmt.Errorf("decode XMLTV: %w", err)
+		}
+		start, ok := token.(xml.StartElement)
+		if !ok {
+			continue
+		}
+		if start.Name.Local != "tv" {
+			return nil, fmt.Errorf("decode XMLTV: root is %q, want tv", start.Name.Local)
+		}
+		return parseDocumentBytes(decoder, data, start, location)
+	}
+}
+
+func parseDocumentBytes(decoder *xml.Decoder, data []byte, root xml.StartElement, location *time.Location) (*Document, error) {
+	doc := &Document{
+		Date:              xmlAttribute(root, "date"),
+		SourceInfoURL:     xmlAttribute(root, "source-info-url"),
+		SourceInfoName:    xmlAttribute(root, "source-info-name"),
+		SourceDataURL:     xmlAttribute(root, "source-data-url"),
+		GeneratorInfoName: xmlAttribute(root, "generator-info-name"),
+		GeneratorInfoURL:  xmlAttribute(root, "generator-info-url"),
+		Channels:          make([]Channel, 0),
+		Programmes:        make([]Programme, 0),
+	}
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return nil, fmt.Errorf("decode XMLTV: %w", err)
+		}
+		switch item := token.(type) {
+		case xml.StartElement:
+			switch item.Name.Local {
+			case "channel":
+				channel, err := parseChannelBytes(decoder, data, item)
+				if err != nil {
+					return nil, fmt.Errorf("decode XMLTV channel %q: %w", xmlAttribute(item, "id"), err)
+				}
+				doc.Channels = append(doc.Channels, channel)
+			case "programme":
+				programme, err := parseProgrammeBytes(decoder, data, item, location)
+				if err != nil {
+					return nil, err
+				}
+				doc.Programmes = append(doc.Programmes, programme)
+			default:
+				if err := decoder.Skip(); err != nil {
+					return nil, fmt.Errorf("decode XMLTV: %w", err)
+				}
+			}
+		case xml.EndElement:
+			if item.Name == root.Name {
+				return doc, nil
+			}
+		}
+	}
+}
+
+func parseChannelBytes(decoder *xml.Decoder, data []byte, element xml.StartElement) (Channel, error) {
+	channel := Channel{
+		ID: xmlAttribute(element, "id"), DisplayNames: make([]Text, 0), Icons: make([]Icon, 0),
+	}
+	innerStart := decoder.InputOffset()
+	for {
+		tokenOffset := decoder.InputOffset()
+		token, err := decoder.Token()
+		if err != nil {
+			return Channel{}, err
+		}
+		switch child := token.(type) {
+		case xml.StartElement:
+			switch child.Name.Local {
+			case "display-name":
+				var value xmlText
+				if err := decoder.DecodeElement(&value, &child); err != nil {
+					return Channel{}, err
+				}
+				channel.DisplayNames = append(channel.DisplayNames, Text(value))
+			case "icon":
+				var value xmlIcon
+				if err := decoder.DecodeElement(&value, &child); err != nil {
+					return Channel{}, err
+				}
+				channel.Icons = append(channel.Icons, Icon(value))
+			case "url":
+				var value string
+				if err := decoder.DecodeElement(&value, &child); err != nil {
+					return Channel{}, err
+				}
+				channel.URLs = append(channel.URLs, value)
+			default:
+				if err := decoder.Skip(); err != nil {
+					return Channel{}, err
+				}
+			}
+		case xml.EndElement:
+			if child.Name == element.Name {
+				channel.InnerXML = string(data[innerStart:tokenOffset])
+				return channel, nil
+			}
+		}
+	}
+}
+
+func parseProgrammeBytes(decoder *xml.Decoder, data []byte, element xml.StartElement, location *time.Location) (Programme, error) {
+	channelID := xmlAttribute(element, "channel")
+	start, err := parseTimestamp(xmlAttribute(element, "start"), location)
+	if err != nil {
+		return Programme{}, fmt.Errorf("decode XMLTV programme %q start: %w", channelID, err)
+	}
+	stop, err := parseOptionalTimestamp(xmlAttribute(element, "stop"), location)
+	if err != nil {
+		return Programme{}, fmt.Errorf("decode XMLTV programme %q stop: %w", channelID, err)
+	}
+	pdcStart, err := parseOptionalTimestamp(xmlAttribute(element, "pdc-start"), location)
+	if err != nil {
+		return Programme{}, fmt.Errorf("decode XMLTV programme %q pdc-start: %w", channelID, err)
+	}
+	vpsStart, err := parseOptionalTimestamp(xmlAttribute(element, "vps-start"), location)
+	if err != nil {
+		return Programme{}, fmt.Errorf("decode XMLTV programme %q vps-start: %w", channelID, err)
+	}
+	programme := Programme{
+		Start: start, Stop: stop, PDCStart: pdcStart, VPSStart: vpsStart,
+		Channel: channelID, ShowView: xmlAttribute(element, "showview"),
+		VideoPlus: xmlAttribute(element, "videoplus"), ClumpIndex: xmlAttribute(element, "clumpidx"),
+		Titles: make([]Text, 0), SubTitles: make([]Text, 0),
+		Descriptions: make([]Text, 0), Categories: make([]Text, 0),
+	}
+	innerStart := decoder.InputOffset()
+	for {
+		tokenOffset := decoder.InputOffset()
+		token, err := decoder.Token()
+		if err != nil {
+			return Programme{}, fmt.Errorf("decode XMLTV programme %q body: %w", channelID, err)
+		}
+		switch child := token.(type) {
+		case xml.StartElement:
+			var target *[]Text
+			switch child.Name.Local {
+			case "title":
+				target = &programme.Titles
+			case "sub-title":
+				target = &programme.SubTitles
+			case "desc":
+				target = &programme.Descriptions
+			case "category":
+				target = &programme.Categories
+			}
+			if target == nil {
+				if err := decoder.Skip(); err != nil {
+					return Programme{}, fmt.Errorf("decode XMLTV programme %q body: %w", channelID, err)
+				}
+				continue
+			}
+			var value xmlText
+			if err := decoder.DecodeElement(&value, &child); err != nil {
+				return Programme{}, fmt.Errorf("decode XMLTV programme %q body: %w", channelID, err)
+			}
+			*target = append(*target, Text(value))
+		case xml.EndElement:
+			if child.Name == element.Name {
+				programme.InnerXML = string(data[innerStart:tokenOffset])
+				return programme, nil
+			}
+		}
+	}
+}
+
+func xmlAttribute(element xml.StartElement, name string) string {
+	for _, attribute := range element.Attr {
+		if attribute.Name.Local == name {
+			return attribute.Value
+		}
+	}
+	return ""
 }
 
 // Marshal encodes a complete XMLTV document with explicit timestamp offsets.

@@ -98,6 +98,47 @@ func TestServiceFallsBackToCachedDocumentWhenRefreshFails(t *testing.T) {
 	}
 }
 
+func TestServiceRejectsCachedDocumentAboveSourceLimit(t *testing.T) {
+	t.Parallel()
+
+	store := epg.NewMemoryStore()
+	raw := []byte(`<tv><channel id="one"><display-name>One</display-name></channel><!-- padding padding padding --></tv>`)
+	if err := store.Save(epg.CacheEntry{SourceID: "limited", Data: raw}); err != nil {
+		t.Fatal(err)
+	}
+	service := epg.NewService(epg.ServiceConfig{
+		Sources:        []epg.Source{{ID: "limited", Timezone: "Asia/Hong_Kong"}},
+		MaxSourceBytes: 32,
+	}, &fakeSourceFetcher{errors: map[string]error{"limited": errors.New("offline")}}, store)
+
+	err := service.Refresh(context.Background())
+	if !errors.Is(err, epg.ErrSourceTooLarge) {
+		t.Fatalf("Refresh error = %v, want ErrSourceTooLarge", err)
+	}
+	statuses := service.Statuses()
+	if len(statuses) != 1 || statuses[0].Available {
+		t.Fatalf("oversized cache became available: %+v", statuses)
+	}
+}
+
+func TestServiceRejectsFetcherResultAboveSourceLimit(t *testing.T) {
+	t.Parallel()
+
+	raw := []byte(`<tv><channel id="one"><display-name>One</display-name></channel><!-- padding padding padding --></tv>`)
+	service := epg.NewService(epg.ServiceConfig{
+		Sources:        []epg.Source{{ID: "limited", Timezone: "Asia/Hong_Kong"}},
+		MaxSourceBytes: 32,
+	}, &fakeSourceFetcher{results: map[string]epg.FetchResult{"limited": {Data: raw}}}, nil)
+
+	err := service.Refresh(context.Background())
+	if !errors.Is(err, epg.ErrSourceTooLarge) {
+		t.Fatalf("Refresh error = %v, want ErrSourceTooLarge", err)
+	}
+	if statuses := service.Statuses(); len(statuses) != 1 || statuses[0].Available {
+		t.Fatalf("oversized fetch became available: %+v", statuses)
+	}
+}
+
 func TestServiceReturnsLegalEmptyTVWithoutSources(t *testing.T) {
 	t.Parallel()
 
@@ -156,6 +197,98 @@ func TestServiceRefreshIsConcurrencySafe(t *testing.T) {
 	wait.Wait()
 	if got := len(service.Document([]epg.ChannelRef{{ID: "kiln", EPGID: "one"}}).Channels); got != 1 {
 		t.Fatalf("channel count = %d, want 1", got)
+	}
+}
+
+func TestServiceRefreshHonorsMaxRefreshConcurrency(t *testing.T) {
+	t.Parallel()
+
+	started := make(chan string, 3)
+	release := make(chan struct{}, 3)
+	fetcher := sourceFetcherFunc(func(_ context.Context, source epg.Source, _ epg.CacheMetadata) (epg.FetchResult, error) {
+		started <- source.ID
+		<-release
+		return epg.FetchResult{Data: []byte(`<tv></tv>`)}, nil
+	})
+	service := epg.NewService(epg.ServiceConfig{
+		Sources: []epg.Source{
+			{ID: "one", Timezone: "Asia/Hong_Kong"},
+			{ID: "two", Timezone: "Asia/Hong_Kong"},
+			{ID: "three", Timezone: "Asia/Hong_Kong"},
+		},
+		MaxRefreshConcurrency: 2,
+	}, fetcher, nil)
+	done := make(chan error, 1)
+	go func() { done <- service.Refresh(context.Background()) }()
+
+	for range 2 {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for initial refreshes")
+		}
+	}
+	select {
+	case id := <-started:
+		t.Fatalf("source %q started above the configured concurrency limit", id)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	release <- struct{}{}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("queued source did not start after capacity became available")
+	}
+	release <- struct{}{}
+	release <- struct{}{}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Refresh did not finish")
+	}
+}
+
+func TestServiceRefreshWithoutLimitStartsAllSources(t *testing.T) {
+	t.Parallel()
+
+	started := make(chan string, 3)
+	release := make(chan struct{}, 3)
+	fetcher := sourceFetcherFunc(func(_ context.Context, source epg.Source, _ epg.CacheMetadata) (epg.FetchResult, error) {
+		started <- source.ID
+		<-release
+		return epg.FetchResult{Data: []byte(`<tv></tv>`)}, nil
+	})
+	service := epg.NewService(epg.ServiceConfig{
+		Sources: []epg.Source{
+			{ID: "one", Timezone: "Asia/Hong_Kong"},
+			{ID: "two", Timezone: "Asia/Hong_Kong"},
+			{ID: "three", Timezone: "Asia/Hong_Kong"},
+		},
+	}, fetcher, nil)
+	done := make(chan error, 1)
+	go func() { done <- service.Refresh(context.Background()) }()
+
+	for range 3 {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("default refresh did not start every source in parallel")
+		}
+	}
+	for range 3 {
+		release <- struct{}{}
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Refresh did not finish")
 	}
 }
 

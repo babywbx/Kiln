@@ -17,7 +17,11 @@ type ServiceConfig struct {
 	DefaultTimezone   string
 	RefreshInterval   time.Duration
 	GeneratorInfoName string
-	OnError           func(error)
+	// MaxRefreshConcurrency limits simultaneous source fetch and parse work.
+	// Zero or less preserves the default of refreshing every source in parallel.
+	MaxRefreshConcurrency int
+	MaxSourceBytes        int64
+	OnError               func(error)
 }
 
 type SourceStatus struct {
@@ -53,6 +57,9 @@ func NewService(config ServiceConfig, fetcher SourceFetcher, store CacheStore) *
 	}
 	if config.GeneratorInfoName == "" {
 		config.GeneratorInfoName = "Kiln"
+	}
+	if config.MaxSourceBytes <= 0 {
+		config.MaxSourceBytes = DefaultMaxSourceBytes
 	}
 	if fetcher == nil {
 		fetcher = &Fetcher{}
@@ -107,21 +114,35 @@ type sourceRefreshResult struct {
 	err      error
 }
 
-// Refresh updates all sources in parallel and publishes a complete new
-// snapshot atomically. Overlapping Refresh calls are serialized.
+// Refresh updates sources concurrently and publishes a complete new snapshot
+// atomically. Overlapping Refresh calls are serialized.
 func (s *Service) Refresh(ctx context.Context) error {
 	s.refreshMu.Lock()
 	defer s.refreshMu.Unlock()
 
 	results := make(chan sourceRefreshResult, len(s.config.Sources))
 	var wait sync.WaitGroup
-	for _, source := range s.config.Sources {
-		source := source
-		wait.Add(1)
-		go func() {
-			defer wait.Done()
-			results <- s.refreshSource(ctx, source)
-		}()
+	if s.config.MaxRefreshConcurrency <= 0 || s.config.MaxRefreshConcurrency >= len(s.config.Sources) {
+		for _, source := range s.config.Sources {
+			source := source
+			wait.Add(1)
+			go func() {
+				defer wait.Done()
+				results <- s.refreshSource(ctx, source)
+			}()
+		}
+	} else {
+		refreshSlots := make(chan struct{}, s.config.MaxRefreshConcurrency)
+		for _, source := range s.config.Sources {
+			source := source
+			refreshSlots <- struct{}{}
+			wait.Add(1)
+			go func() {
+				defer wait.Done()
+				defer func() { <-refreshSlots }()
+				results <- s.refreshSource(ctx, source)
+			}()
+		}
 	}
 	wait.Wait()
 	close(results)
@@ -174,6 +195,11 @@ func (s *Service) refreshSource(ctx context.Context, source Source) sourceRefres
 	var cacheLoadError error
 	if s.store != nil {
 		cached, found, cacheLoadError = s.store.Load(source.ID)
+		if found && int64(len(cached.Data)) > s.config.MaxSourceBytes {
+			cacheLoadError = errors.Join(cacheLoadError, fmt.Errorf("cached XMLTV: %w (%d bytes)", ErrSourceTooLarge, s.config.MaxSourceBytes))
+			cached = CacheEntry{}
+			found = false
+		}
 		if found {
 			result.metadata = cached.Metadata
 		}
@@ -182,6 +208,14 @@ func (s *Service) refreshSource(ctx context.Context, source Source) sourceRefres
 	fetched, fetchError := s.fetcher.Fetch(ctx, source, cached.Metadata)
 	if fetchError != nil {
 		result.err = errors.Join(cacheLoadError, fetchError)
+		if found {
+			result.document, result.err = parseFallback(source, s.timezoneFor(source), cached.Data, result.err)
+			result.stale = result.document != nil
+		}
+		return result
+	}
+	if !fetched.NotModified && int64(len(fetched.Data)) > s.config.MaxSourceBytes {
+		result.err = errors.Join(cacheLoadError, fmt.Errorf("downloaded XMLTV: %w (%d bytes)", ErrSourceTooLarge, s.config.MaxSourceBytes))
 		if found {
 			result.document, result.err = parseFallback(source, s.timezoneFor(source), cached.Data, result.err)
 			result.stale = result.document != nil
