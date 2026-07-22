@@ -22,6 +22,7 @@ type Inputs struct {
 	Mode              Mode
 	MemoryLimitMB     int
 	InflightBytes     int64
+	MaxSegmentBytes   int64
 	StartSegments     int
 	PrefetchSegments  int
 	EPGMaxConcurrency int
@@ -33,8 +34,10 @@ type Plan struct {
 	Constrained       bool
 	MemoryLimitMB     int
 	InflightBytes     int64
+	MaxSegmentBytes   int64
 	StartSegments     int
 	PrefetchSegments  int
+	GCPercent         int
 	EPGMaxConcurrency int
 	EPGMaxSourceBytes int64
 }
@@ -42,6 +45,9 @@ type Plan struct {
 func Apply(file *config.File, plan Plan) {
 	file.Server.MemoryLimitMB = plan.MemoryLimitMB
 	file.Packager.InflightBytes = plan.InflightBytes
+	if plan.MaxSegmentBytes > 0 {
+		file.Packager.MaxSegmentBytes = plan.MaxSegmentBytes
+	}
 	file.Packager.StartSegments = plan.StartSegments
 	file.Packager.PrefetchSegments = plan.PrefetchSegments
 	file.EPG.MaxRefreshConcurrency = plan.EPGMaxConcurrency
@@ -58,6 +64,7 @@ func Resolve(limits Limits, input Inputs) Plan {
 		Mode:              normalizedMode(input.Mode),
 		MemoryLimitMB:     input.MemoryLimitMB,
 		InflightBytes:     input.InflightBytes,
+		MaxSegmentBytes:   input.MaxSegmentBytes,
 		StartSegments:     input.StartSegments,
 		PrefetchSegments:  input.PrefetchSegments,
 		EPGMaxConcurrency: input.EPGMaxConcurrency,
@@ -103,6 +110,24 @@ func Resolve(limits Limits, input Inputs) Plan {
 		plan.PrefetchSegments = lowerPositiveInt(plan.PrefetchSegments, pipelineLimit)
 	}
 	plan.EPGMaxConcurrency = lowerPositiveInt(plan.EPGMaxConcurrency, epgConcurrency(limits, cpuMilli))
+	return plan
+}
+
+// ResolveLite applies a stable low-memory ceiling even on large hosts. The
+// performance mode remains an explicit escape hatch for operators who prefer
+// throughput over the Lite runtime contract.
+func ResolveLite(limits Limits, input Inputs) Plan {
+	plan := Resolve(limits, input)
+	if plan.Mode == ModePerformance {
+		return plan
+	}
+	plan.Constrained = true
+	plan.MemoryLimitMB = lowerPositiveInt(plan.MemoryLimitMB, 24)
+	plan.InflightBytes = lowerPositive(plan.InflightBytes, 24<<20)
+	plan.MaxSegmentBytes = lowerPositive(plan.MaxSegmentBytes, 20<<20)
+	plan.StartSegments = lowerPositiveInt(plan.StartSegments, 1)
+	plan.PrefetchSegments = lowerPositiveInt(plan.PrefetchSegments, 1)
+	plan.GCPercent = 50
 	return plan
 }
 

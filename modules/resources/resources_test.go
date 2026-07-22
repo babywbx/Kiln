@@ -34,6 +34,57 @@ func TestResolveKeepsExistingPerformanceOnUnconstrainedSystems(t *testing.T) {
 	}
 }
 
+func TestResolveLiteUsesBoundedRuntimeOnLargeHosts(t *testing.T) {
+	got := resources.ResolveLite(resources.Limits{MemoryBytes: 64 * gib, CPUs: 16}, resources.Inputs{
+		Mode:             resources.ModeAuto,
+		InflightBytes:    96 << 20,
+		MaxSegmentBytes:  32 << 20,
+		StartSegments:    3,
+		PrefetchSegments: 3,
+	})
+
+	if !got.Constrained || got.MemoryLimitMB != 24 || got.InflightBytes != 24<<20 ||
+		got.MaxSegmentBytes != 20<<20 || got.StartSegments != 1 || got.PrefetchSegments != 1 ||
+		got.GCPercent != 50 {
+		t.Fatalf("lite plan = %+v, want 24 MiB heap, 24 MiB inflight, 20 MiB segments, 1/1 pipeline, GC 50", got)
+	}
+}
+
+func TestResolveLiteKeepsLowerOperatorLimits(t *testing.T) {
+	got := resources.ResolveLite(resources.Limits{MemoryBytes: 64 * gib, CPUs: 16}, resources.Inputs{
+		Mode:             resources.ModeAuto,
+		MemoryLimitMB:    16,
+		InflightBytes:    12 << 20,
+		MaxSegmentBytes:  8 << 20,
+		StartSegments:    1,
+		PrefetchSegments: 1,
+	})
+
+	if got.MemoryLimitMB != 16 || got.InflightBytes != 12<<20 || got.MaxSegmentBytes != 8<<20 {
+		t.Fatalf("lite plan raised lower limits: %+v", got)
+	}
+}
+
+func TestResolveLitePerformanceModeIsExplicitOptOut(t *testing.T) {
+	input := resources.Inputs{
+		Mode:             resources.ModePerformance,
+		MemoryLimitMB:    256,
+		InflightBytes:    96 << 20,
+		MaxSegmentBytes:  32 << 20,
+		StartSegments:    3,
+		PrefetchSegments: 3,
+	}
+
+	got := resources.ResolveLite(resources.Limits{MemoryBytes: 64 * gib, CPUs: 16}, input)
+
+	if got.Constrained || got.MemoryLimitMB != input.MemoryLimitMB ||
+		got.InflightBytes != input.InflightBytes || got.MaxSegmentBytes != input.MaxSegmentBytes ||
+		got.StartSegments != input.StartSegments || got.PrefetchSegments != input.PrefetchSegments ||
+		got.GCPercent != 0 {
+		t.Fatalf("performance opt-out changed: got=%+v input=%+v", got, input)
+	}
+}
+
 func TestResolveAutoBoundsOneCoreOneGiB(t *testing.T) {
 	input := resources.Inputs{
 		Mode:              resources.ModeAuto,

@@ -40,7 +40,7 @@ keys_file = "/etc/kiln/kiln.keys"
 playlist_size = 6
 start_segments = 2
 prefetch_segments = 2
-max_segment_bytes = 33554432
+max_segment_bytes = 20971520
 inflight_bytes = 25165824
 
 [epg]

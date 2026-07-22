@@ -17,6 +17,7 @@ import (
 	_ "time/tzdata"
 
 	"github.com/babywbx/kiln/modules/config"
+	"github.com/babywbx/kiln/modules/filecache"
 	"github.com/babywbx/kiln/modules/liteserver"
 	"github.com/babywbx/kiln/modules/logging"
 	"github.com/babywbx/kiln/modules/resources"
@@ -43,7 +44,6 @@ func run(args []string) int {
 	if *healthcheck != "" {
 		return runHealthcheck(*healthcheck)
 	}
-
 	if os.Getenv("KILN_DEFAULT_PACKAGER_ENGINE") == "" {
 		_ = os.Setenv("KILN_DEFAULT_PACKAGER_ENGINE", config.EngineNative)
 	}
@@ -59,18 +59,16 @@ func run(args []string) int {
 		return 1
 	}
 	resourceLimits := resources.Detect()
-	resourcePlan := resources.Resolve(resourceLimits, resources.Inputs{
-		Mode:              resources.Mode(cfg.Server.ResourceMode),
-		MemoryLimitMB:     cfg.Server.MemoryLimitMB,
-		InflightBytes:     cfg.Packager.InflightBytes,
-		StartSegments:     cfg.Packager.StartSegments,
-		PrefetchSegments:  cfg.Packager.PrefetchSegments,
-		EPGMaxConcurrency: cfg.EPG.MaxRefreshConcurrency,
-		EPGMaxSourceBytes: cfg.EPG.MaxSourceBytes,
-	})
+	resourcePlan := resolveLitePlan(cfg, resourceLimits)
 	resources.Apply(&cfg, resourcePlan)
+	configureLiteFileCache(resourcePlan)
 	if cfg.Server.MemoryLimitMB > 0 && os.Getenv("GOMEMLIMIT") == "" {
 		debug.SetMemoryLimit(int64(cfg.Server.MemoryLimitMB) << 20)
+	}
+	gcPercent := os.Getenv("GOGC")
+	if gcPercent == "" && resourcePlan.GCPercent > 0 {
+		debug.SetGCPercent(resourcePlan.GCPercent)
+		gcPercent = fmt.Sprintf("%d", resourcePlan.GCPercent)
 	}
 	if err := os.MkdirAll(cfg.Server.DataDir, 0o750); err != nil {
 		boot.Error("create data dir failed", "err", err, "path", cfg.Server.DataDir)
@@ -88,6 +86,9 @@ func run(args []string) int {
 		"effective_memory_mb", resourceLimits.MemoryBytes>>20,
 		"memory_limit_mb", cfg.Server.MemoryLimitMB,
 		"inflight_mb", cfg.Packager.InflightBytes>>20,
+		"max_segment_mb", cfg.Packager.MaxSegmentBytes>>20,
+		"gc_percent", gcPercent,
+		"drop_file_cache", filecache.Enabled(),
 		"start_segments", cfg.Packager.StartSegments,
 		"prefetch_segments", cfg.Packager.PrefetchSegments,
 	)
@@ -118,6 +119,23 @@ func run(args []string) int {
 		log.Warn("http shutdown failed", "err", err)
 	}
 	return exitCode
+}
+
+func resolveLitePlan(cfg config.File, limits resources.Limits) resources.Plan {
+	return resources.ResolveLite(limits, resources.Inputs{
+		Mode:              resources.Mode(cfg.Server.ResourceMode),
+		MemoryLimitMB:     cfg.Server.MemoryLimitMB,
+		InflightBytes:     cfg.Packager.InflightBytes,
+		MaxSegmentBytes:   cfg.Packager.MaxSegmentBytes,
+		StartSegments:     cfg.Packager.StartSegments,
+		PrefetchSegments:  cfg.Packager.PrefetchSegments,
+		EPGMaxConcurrency: cfg.EPG.MaxRefreshConcurrency,
+		EPGMaxSourceBytes: cfg.EPG.MaxSourceBytes,
+	})
+}
+
+func configureLiteFileCache(plan resources.Plan) {
+	filecache.SetEnabled(plan.Mode != resources.ModePerformance)
 }
 
 func validateLiteConfig(cfg config.File) error {

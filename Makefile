@@ -119,6 +119,10 @@ vuln:
 ci: fmt vet lint build test test-lite test-admin-ui test-docker-targets media-oracle vuln
 
 test-complete: ci test-extended test-local-tools test-safety benchmark-performance
+	$(MAKE) docker-lite
+	$(MAKE) docker-verify-lite
+	$(MAKE) docker-smoke-lite
+	$(MAKE) docker-lite-multiarch
 	$(MAKE) docker-core
 	$(MAKE) test-resource-docker-extended
 	$(MAKE) docker-core-multiarch

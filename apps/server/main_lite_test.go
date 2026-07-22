@@ -12,7 +12,48 @@ import (
 	"time"
 
 	"github.com/babywbx/kiln/modules/config"
+	"github.com/babywbx/kiln/modules/filecache"
+	"github.com/babywbx/kiln/modules/resources"
 )
+
+func TestResolveLitePlanEnforcesRuntimeContract(t *testing.T) {
+	cfg := config.File{
+		Server: config.Server{ResourceMode: string(resources.ModeAuto)},
+		Packager: config.Packager{
+			InflightBytes:    96 << 20,
+			MaxSegmentBytes:  32 << 20,
+			StartSegments:    3,
+			PrefetchSegments: 3,
+		},
+	}
+
+	plan := resolveLitePlan(cfg, resources.Limits{MemoryBytes: 64 << 30, CPUs: 16})
+
+	if plan.MemoryLimitMB != 24 || plan.InflightBytes != 24<<20 ||
+		plan.MaxSegmentBytes != 20<<20 || plan.StartSegments != 1 ||
+		plan.PrefetchSegments != 1 || plan.GCPercent != 50 {
+		t.Fatalf("resolveLitePlan() = %+v", plan)
+	}
+}
+
+func TestConfigureLiteFileCacheFollowsResourceMode(t *testing.T) {
+	t.Cleanup(func() { filecache.SetEnabled(true) })
+
+	configureLiteFileCache(resources.Plan{Mode: resources.ModePerformance})
+	if filecache.Enabled() {
+		t.Fatal("performance mode left low-memory file cache eviction enabled")
+	}
+
+	configureLiteFileCache(resources.Plan{Mode: resources.ModeAuto})
+	if !filecache.Enabled() {
+		t.Fatal("auto mode did not enable low-memory file cache eviction")
+	}
+
+	configureLiteFileCache(resources.Plan{Mode: resources.ModeConstrained})
+	if !filecache.Enabled() {
+		t.Fatal("constrained mode did not enable low-memory file cache eviction")
+	}
+}
 
 func TestValidateLiteConfigRejectsExcludedFeatures(t *testing.T) {
 	tests := []struct {
