@@ -35,6 +35,7 @@ var (
 	ErrStalled           = errors.New("media playlist stalled")
 	ErrSequenceRegressed = errors.New("media sequence regressed")
 	ErrTooManyErrors     = errors.New("consecutive HTTP error threshold reached")
+	errNoMediaAssets     = errors.New("playlist has no complete segment or part")
 )
 
 type Config struct {
@@ -315,23 +316,25 @@ func (r *Runner) checkChannel(ctx context.Context, state *channelState) error {
 	}
 	state.report.Bytes += uint64(len(body))
 	parsed := parsePlaylist(body)
-	playlistURLs := []string{indexURL}
+	playlistTargets := []playlistReference{{URI: indexURL}}
 	if parsed.Master {
-		playlistURLs = playlistURLs[:0]
+		playlistTargets = playlistTargets[:0]
 		for _, reference := range parsed.References {
-			resolved, resolveErr := resolveReference(indexURL, reference)
+			resolved, resolveErr := resolveReference(indexURL, reference.URI)
 			if resolveErr != nil {
 				return r.recordChannelError(state, resolveErr)
 			}
-			playlistURLs = append(playlistURLs, resolved)
+			reference.URI = resolved
+			playlistTargets = append(playlistTargets, reference)
 		}
-		if len(playlistURLs) == 0 {
+		if len(playlistTargets) == 0 {
 			return r.recordChannelError(state, errors.New("master playlist has no media renditions"))
 		}
 	}
 
 	now := time.Now().UTC()
-	for _, playlistURL := range uniqueStrings(playlistURLs) {
+	for _, target := range uniquePlaylistReferences(playlistTargets) {
+		playlistURL := target.URI
 		mediaBody := body
 		if playlistURL != indexURL {
 			mediaBody, _, err = r.get(ctx, playlistURL)
@@ -343,6 +346,9 @@ func (r *Runner) checkChannel(ctx context.Context, state *channelState) error {
 		}
 		media, mediaErr := parseMediaPlaylist(mediaBody)
 		if mediaErr != nil {
+			if target.AllowEmpty && errors.Is(mediaErr, errNoMediaAssets) {
+				continue
+			}
 			return r.recordChannelError(state, fmt.Errorf("parse media playlist: %w", mediaErr))
 		}
 		rendition := state.renditions[playlistURL]
@@ -627,7 +633,12 @@ func (r *Runner) writeJSON(value any) {
 
 type parsedPlaylist struct {
 	Master     bool
-	References []string
+	References []playlistReference
+}
+
+type playlistReference struct {
+	URI        string
+	AllowEmpty bool
 }
 
 func parsePlaylist(body []byte) parsedPlaylist {
@@ -643,14 +654,31 @@ func parsePlaylist(body []byte) parsedPlaylist {
 		case strings.HasPrefix(line, "#EXT-X-MEDIA:"):
 			result.Master = true
 			if reference := attributeValue(line, "URI"); reference != "" {
-				result.References = append(result.References, reference)
+				result.References = append(result.References, playlistReference{
+					URI:        reference,
+					AllowEmpty: strings.EqualFold(attributeValue(line, "TYPE"), "SUBTITLES"),
+				})
 			}
 		case line != "" && !strings.HasPrefix(line, "#") && nextVariant:
-			result.References = append(result.References, line)
+			result.References = append(result.References, playlistReference{URI: line})
 			nextVariant = false
 		}
 	}
-	result.References = uniqueStrings(result.References)
+	result.References = uniquePlaylistReferences(result.References)
+	return result
+}
+
+func uniquePlaylistReferences(references []playlistReference) []playlistReference {
+	seen := make(map[string]int, len(references))
+	result := make([]playlistReference, 0, len(references))
+	for _, reference := range references {
+		if index, ok := seen[reference.URI]; ok {
+			result[index].AllowEmpty = result[index].AllowEmpty && reference.AllowEmpty
+			continue
+		}
+		seen[reference.URI] = len(result)
+		result = append(result, reference)
+	}
 	return result
 }
 
@@ -710,7 +738,7 @@ func parseMediaPlaylist(body []byte) (mediaPlaylist, error) {
 		result.LatestAsset = latestPart
 	}
 	if result.LatestAsset == "" {
-		return result, errors.New("playlist has no complete segment or part")
+		return result, errNoMediaAssets
 	}
 	if segmentCount > 0 {
 		result.EndSequence = sequence + segmentCount - 1
@@ -721,17 +749,41 @@ func parseMediaPlaylist(body []byte) (mediaPlaylist, error) {
 }
 
 func attributeValue(line, key string) string {
-	needle := key + "=\""
-	start := strings.Index(line, needle)
-	if start < 0 {
-		return ""
+	attributes := line
+	if colon := strings.IndexByte(attributes, ':'); colon >= 0 {
+		attributes = attributes[colon+1:]
 	}
-	start += len(needle)
-	end := strings.IndexByte(line[start:], '"')
-	if end < 0 {
-		return ""
+	for len(attributes) > 0 {
+		end := len(attributes)
+		quoted := false
+		for index, char := range attributes {
+			switch char {
+			case '"':
+				quoted = !quoted
+			case ',':
+				if !quoted {
+					end = index
+				}
+			}
+			if end != len(attributes) {
+				break
+			}
+		}
+		attribute := strings.TrimSpace(attributes[:end])
+		name, value, ok := strings.Cut(attribute, "=")
+		if ok && strings.EqualFold(strings.TrimSpace(name), key) {
+			value = strings.TrimSpace(value)
+			if len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"' {
+				return value[1 : len(value)-1]
+			}
+			return value
+		}
+		if end == len(attributes) {
+			break
+		}
+		attributes = attributes[end+1:]
 	}
-	return line[start : start+end]
+	return ""
 }
 
 func resolveReference(baseURL, reference string) (string, error) {

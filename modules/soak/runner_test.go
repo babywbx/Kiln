@@ -70,6 +70,130 @@ func TestRunnerTracksPlaylistProgressAndEndpoints(t *testing.T) {
 	assertFinalJSONL(t, output.String(), false, false)
 }
 
+func TestRunnerAllowsEmptySparseSubtitleRenditions(t *testing.T) {
+	t.Parallel()
+	var sequence atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/play/news/index.m3u8":
+			_, _ = fmt.Fprint(w, "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",URI=\"audio.m3u8\"\n#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"subs\",URI=\"subs.m3u8\"\n#EXT-X-STREAM-INF:BANDWIDTH=1000,AUDIO=\"audio\",SUBTITLES=\"subs\"\nvideo.m3u8\n")
+		case r.URL.Path == "/v1/play/news/video.m3u8", r.URL.Path == "/v1/play/news/audio.m3u8":
+			seq := sequence.Add(1)
+			_, _ = fmt.Fprintf(w, "#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:%d\n#EXTINF:1,\nseg-%d.m4s\n", seq, seq)
+		case r.URL.Path == "/v1/play/news/subs.m3u8":
+			_, _ = fmt.Fprint(w, "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:0\n")
+		case strings.HasPrefix(r.URL.Path, "/v1/play/news/seg-"):
+			_, _ = w.Write([]byte("media"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	runner, err := New(Config{
+		BaseURL:              server.URL,
+		Channels:             []string{"news"},
+		Duration:             45 * time.Millisecond,
+		Interval:             5 * time.Millisecond,
+		StallTimeout:         100 * time.Millisecond,
+		RequestTimeout:       time.Second,
+		MaxConsecutiveErrors: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := runner.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if report.Channels[0].HTTPErrors != 0 || report.Channels[0].SegmentRequests == 0 {
+		t.Fatalf("unexpected sparse subtitle result: %+v", report.Channels[0])
+	}
+}
+
+func TestRunnerRejectsEmptyAudioWithSubtitleTextInAnotherAttribute(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/play/news/index.m3u8":
+			_, _ = fmt.Fprint(w, "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",NAME=\"TYPE=SUBTITLES\",URI=\"audio.m3u8\"\n#EXT-X-STREAM-INF:BANDWIDTH=1000,AUDIO=\"audio\"\nvideo.m3u8\n")
+		case "/v1/play/news/audio.m3u8":
+			_, _ = fmt.Fprint(w, "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:0\n")
+		case "/v1/play/news/video.m3u8":
+			_, _ = fmt.Fprint(w, "#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:1,\nseg.m4s\n")
+		case "/v1/play/news/seg.m4s":
+			_, _ = w.Write([]byte("media"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	runner, err := New(Config{
+		BaseURL:              server.URL,
+		Channels:             []string{"news"},
+		Duration:             time.Second,
+		Interval:             5 * time.Millisecond,
+		StallTimeout:         time.Second,
+		RequestTimeout:       time.Second,
+		MaxConsecutiveErrors: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := runner.Run(context.Background())
+	if !errors.Is(err, ErrTooManyErrors) {
+		t.Fatalf("want strict audio failure, got %v", err)
+	}
+	if report.Channels[0].HTTPErrors != 2 {
+		t.Fatalf("audio failures not tracked: %+v", report.Channels[0])
+	}
+}
+
+func TestRunnerChecksSubtitleAssetsAfterAnEmptyWindow(t *testing.T) {
+	t.Parallel()
+	var subtitleRequests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/play/news/index.m3u8":
+			_, _ = fmt.Fprint(w, "#EXTM3U\n#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"subs\",URI=\"subs.m3u8\"\n#EXT-X-STREAM-INF:BANDWIDTH=1000,SUBTITLES=\"subs\"\nvideo.m3u8\n")
+		case "/v1/play/news/subs.m3u8":
+			if subtitleRequests.Add(1) == 1 {
+				_, _ = fmt.Fprint(w, "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:0\n")
+				return
+			}
+			_, _ = fmt.Fprint(w, "#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:1,\nmissing.vtt\n")
+		case "/v1/play/news/video.m3u8":
+			_, _ = fmt.Fprint(w, "#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:1,\nseg.m4s\n")
+		case "/v1/play/news/seg.m4s":
+			_, _ = w.Write([]byte("media"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	runner, err := New(Config{
+		BaseURL:              server.URL,
+		Channels:             []string{"news"},
+		Duration:             time.Second,
+		Interval:             5 * time.Millisecond,
+		StallTimeout:         time.Second,
+		RequestTimeout:       time.Second,
+		MaxConsecutiveErrors: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := runner.Run(context.Background())
+	if !errors.Is(err, ErrTooManyErrors) {
+		t.Fatalf("want subtitle asset failure, got %v", err)
+	}
+	if report.Channels[0].HTTPErrors != 2 {
+		t.Fatalf("subtitle asset failures not tracked: %+v", report.Channels[0])
+	}
+}
+
 func TestRunnerFailsWhenMediaSequenceStalls(t *testing.T) {
 	t.Parallel()
 	server := staticHLSServer()
