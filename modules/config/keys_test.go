@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseKeysAcceptsWhatPeopleActuallyPaste(t *testing.T) {
 	keys, err := ParseKeys("# a comment\n\nffeeddccbbaa99887766554433221100:00112233445566778899aabbccddeeff\n" +
@@ -24,6 +27,7 @@ func TestParseKeysRejectsTheUsualMistakes(t *testing.T) {
 		"no separator": "ffeeddccbbaa99887766554433221100 00112233445566778899aabbccddeeff",
 		"short key":    "ffeeddccbbaa99887766554433221100:0011223344",
 		"not hex":      "ffeeddccbbaa99887766554433221100:zzzz2233445566778899aabbccddeeff",
+		"dashed key":   "ffeeddccbbaa99887766554433221100:00112233-4455-6677-8899-aabbccddeeff",
 		"empty":        "\n# nothing here\n",
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -34,32 +38,28 @@ func TestParseKeysRejectsTheUsualMistakes(t *testing.T) {
 	}
 }
 
-// The key must never be handed back to the page. The KID may: it is in the
-// manifest already.
-func TestMaskKeysHidesTheKeyButNotTheKID(t *testing.T) {
-	masked := MaskKeys("ffeeddccbbaa99887766554433221100:00112233445566778899aabbccddeeff")
-	if masked == "" {
-		t.Fatal("masking produced nothing")
+func TestParseKeysRejectsConflictingDuplicateKIDs(t *testing.T) {
+	_, err := ParseKeys(
+		"90a0bd01-d9f6-cbb3-9839-cd9b68fc26bc:00112233445566778899aabbccddeeff\n" +
+			"90A0BD01D9F6CBB39839CD9B68FC26BC:ffeeddccbbaa99887766554433221100\n",
+	)
+	if err == nil {
+		t.Fatal("conflicting duplicate KID was accepted")
 	}
-	if want := "ffeeddccbbaa99887766554433221100"; !contains(masked, want) {
-		t.Errorf("masked = %q, should still show the kid", masked)
-	}
-	if contains(masked, "00112233445566778899aabbccddeeff") {
-		t.Fatalf("masked = %q, the key leaked", masked)
-	}
-	if !KeysUnchanged(masked) {
-		t.Error("handing the masked value back must read as unchanged")
-	}
-	if KeysUnchanged("ffeeddccbbaa99887766554433221100:00112233445566778899aabbccddeeff") {
-		t.Error("a real key must not read as unchanged")
+	if !strings.Contains(err.Error(), "conflicting key") {
+		t.Fatalf("error = %q, want a conflict explanation", err)
 	}
 }
 
-func contains(s, sub string) bool {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
+func TestParseKeysDeduplicatesEquivalentKIDs(t *testing.T) {
+	keys, err := ParseKeys(
+		"90a0bd01-d9f6-cbb3-9839-cd9b68fc26bc:00112233445566778899aabbccddeeff\n" +
+			"90A0BD01D9F6CBB39839CD9B68FC26BC:00112233445566778899AABBCCDDEEFF\n",
+	)
+	if err != nil {
+		t.Fatalf("ParseKeys: %v", err)
 	}
-	return false
+	if len(keys) != 1 {
+		t.Fatalf("got %d keys, want one deduplicated key", len(keys))
+	}
 }

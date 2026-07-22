@@ -15,19 +15,20 @@ import (
 )
 
 type File struct {
-	Server    Server         `json:"server" toml:"server"`
-	Auth      Auth           `json:"auth" toml:"auth"`
-	Security  Security       `json:"security" toml:"security"`
-	Upstreams []Upstream     `json:"upstreams" toml:"upstreams"`
-	Channels  []Channel      `json:"channels" toml:"channels"`
-	Observe   Observe        `json:"observe" toml:"observe"`
-	Debug     Debug          `json:"debug" toml:"debug"`
-	FFmpeg    FFmpeg         `json:"ffmpeg" toml:"ffmpeg"`
-	Packager  Packager       `json:"packager" toml:"packager"`
-	Logging   Logging        `json:"logging" toml:"logging"`
-	Proxies   []ProxyProfile `json:"proxies" toml:"proxies"`
-	Egress    Egress         `json:"egress" toml:"egress"`
-	EPG       EPG            `json:"epg" toml:"epg"`
+	Server     Server         `json:"server" toml:"server"`
+	Auth       Auth           `json:"auth" toml:"auth"`
+	Security   Security       `json:"security" toml:"security"`
+	Upstreams  []Upstream     `json:"upstreams" toml:"upstreams"`
+	Channels   []Channel      `json:"channels" toml:"channels"`
+	Observe    Observe        `json:"observe" toml:"observe"`
+	Debug      Debug          `json:"debug" toml:"debug"`
+	FFmpeg     FFmpeg         `json:"ffmpeg" toml:"ffmpeg"`
+	Packager   Packager       `json:"packager" toml:"packager"`
+	Logging    Logging        `json:"logging" toml:"logging"`
+	Proxies    []ProxyProfile `json:"proxies" toml:"proxies"`
+	Egress     Egress         `json:"egress" toml:"egress"`
+	EPG        EPG            `json:"epg" toml:"epg"`
+	globalKeys []KeyPair
 }
 
 type ProxyProfile struct {
@@ -138,27 +139,22 @@ type Upstream struct {
 }
 
 type Channel struct {
-	ID             string `json:"id" toml:"id"`
-	Title          string `json:"title" toml:"title"`
-	Group          string `json:"group" toml:"group"`
-	LogoURL        string `json:"logo_url" toml:"logo_url"`
-	EPGID          string `json:"epg_id" toml:"epg_id"`
-	EPGName        string `json:"epg_name" toml:"epg_name"`
-	EPGSource      string `json:"epg_source" toml:"epg_source"`
-	SourceURL      string `json:"source_url,omitempty" toml:"source_url,omitempty"`
-	Upstream       string `json:"upstream" toml:"upstream"`
-	Path           string `json:"path" toml:"path"`
-	Ingress        string `json:"ingress" toml:"ingress"`
-	Disabled       bool   `json:"disabled" toml:"disabled"`
-	OnDemand       bool   `json:"on_demand" toml:"on_demand"`
-	Autostart      bool   `json:"autostart" toml:"autostart"`
-	IdleTimeoutSec int    `json:"idle_timeout_sec" toml:"idle_timeout_sec"`
-	MaxViewers     int    `json:"max_viewers" toml:"max_viewers"`
-	KeysFile       string `json:"keys_file" toml:"keys_file"`
-	// Keys holds kid:key lines inline. A deployed server often has no convenient
-	// path to drop a file at, so the admin form writes them here instead. It
-	// takes precedence over KeysFile when both are set.
-	Keys                    string            `json:"keys" toml:"keys"`
+	ID                      string            `json:"id" toml:"id"`
+	Title                   string            `json:"title" toml:"title"`
+	Group                   string            `json:"group" toml:"group"`
+	LogoURL                 string            `json:"logo_url" toml:"logo_url"`
+	EPGID                   string            `json:"epg_id" toml:"epg_id"`
+	EPGName                 string            `json:"epg_name" toml:"epg_name"`
+	EPGSource               string            `json:"epg_source" toml:"epg_source"`
+	SourceURL               string            `json:"source_url,omitempty" toml:"source_url,omitempty"`
+	Upstream                string            `json:"upstream" toml:"upstream"`
+	Path                    string            `json:"path" toml:"path"`
+	Ingress                 string            `json:"ingress" toml:"ingress"`
+	Disabled                bool              `json:"disabled" toml:"disabled"`
+	OnDemand                bool              `json:"on_demand" toml:"on_demand"`
+	Autostart               bool              `json:"autostart" toml:"autostart"`
+	IdleTimeoutSec          int               `json:"idle_timeout_sec" toml:"idle_timeout_sec"`
+	MaxViewers              int               `json:"max_viewers" toml:"max_viewers"`
 	UserAgent               string            `json:"user_agent" toml:"user_agent"`
 	Headers                 map[string]string `json:"headers" toml:"headers"`
 	RestartOnFailure        bool              `json:"restart_on_failure" toml:"restart_on_failure"`
@@ -254,7 +250,9 @@ type FFmpeg struct {
 // express "copy natively but transcode HEVC".
 type Packager struct {
 	// Engine is the default strategy: auto | native | ffmpeg.
-	Engine           string `json:"engine" toml:"engine"`
+	Engine string `json:"engine" toml:"engine"`
+	// KeysFile is the shared KID:key catalog for DASH channels.
+	KeysFile         string `json:"keys_file" toml:"keys_file"`
 	PlaylistSize     int    `json:"playlist_size" toml:"playlist_size"`
 	LLHLS            bool   `json:"ll_hls" toml:"ll_hls"`
 	PartTargetMS     int    `json:"part_target_ms" toml:"part_target_ms"`
@@ -326,6 +324,17 @@ func (c File) EngineFor(ch Channel) string {
 	return EngineAuto
 }
 
+// GlobalKeys returns a copy of the shared key catalog loaded at startup.
+func (c File) GlobalKeys() []KeyPair {
+	return append([]KeyPair(nil), c.globalKeys...)
+}
+
+// HasGlobalKeys reports whether packager.keys_file was loaded successfully.
+// It deliberately exposes no key material.
+func (c File) HasGlobalKeys() bool {
+	return len(c.globalKeys) > 0
+}
+
 func (c File) IdleTimeout(ch Channel) time.Duration {
 	sec := ch.IdleTimeoutSec
 	if sec <= 0 {
@@ -355,7 +364,10 @@ func Load(path string) (File, error) {
 	}
 	cfg.applyEnvOverrides()
 	cfg.applyDefaults()
-	cfg.resolveKeysPaths(path)
+	cfg.resolveKeysPath(path)
+	if err := cfg.loadGlobalKeys(); err != nil {
+		return File{}, err
+	}
 	if err := cfg.validate(); err != nil {
 		return File{}, err
 	}
@@ -566,27 +578,25 @@ func (c *File) applyDefaults() {
 	}
 }
 
-func (c *File) resolveKeysPaths(configPath string) {
+func (c *File) resolveKeysPath(configPath string) {
 	cfgDir := filepath.Dir(configPath)
-	for i := range c.Channels {
-		kf := c.Channels[i].KeysFile
-		if kf == "" || filepath.IsAbs(kf) {
-			continue
-		}
-		if _, err := os.Stat(kf); err == nil {
-			continue
-		}
-		candidates := []string{
-			filepath.Join(cfgDir, kf),
-			filepath.Join(cfgDir, filepath.Base(kf)),
-		}
-		for _, alt := range candidates {
-			if _, err := os.Stat(alt); err == nil {
-				c.Channels[i].KeysFile = alt
-				break
-			}
-		}
+	kf := strings.TrimSpace(c.Packager.KeysFile)
+	c.Packager.KeysFile = kf
+	if kf != "" && !filepath.IsAbs(kf) {
+		c.Packager.KeysFile = filepath.Clean(filepath.Join(cfgDir, kf))
 	}
+}
+
+func (c *File) loadGlobalKeys() error {
+	if c.Packager.KeysFile == "" {
+		return nil
+	}
+	keys, err := LoadKeysFile(c.Packager.KeysFile)
+	if err != nil {
+		return fmt.Errorf("packager.keys_file: %w", err)
+	}
+	c.globalKeys = keys
+	return nil
 }
 
 func (c File) validate() error {
@@ -682,13 +692,8 @@ func (c File) validate() error {
 		default:
 			return fmt.Errorf("channel %q ingress must be hls or dash", ch.ID)
 		}
-		if ch.Ingress == "dash" && !ch.Disabled && ch.KeysFile == "" && ch.Keys == "" {
-			return fmt.Errorf("channel %q dash ingress requires keys or keys_file", ch.ID)
-		}
-		if ch.Keys != "" {
-			if _, err := ParseKeys(ch.Keys); err != nil {
-				return fmt.Errorf("channel %q keys: %w", ch.ID, err)
-			}
+		if ch.Ingress == "dash" && !ch.Disabled && len(c.globalKeys) == 0 {
+			return fmt.Errorf("channel %q dash ingress requires global packager.keys_file", ch.ID)
 		}
 		if ch.Packager != "" && !ValidEngine(ch.Packager) {
 			return fmt.Errorf("channel %q packager must be auto, native or ffmpeg", ch.ID)

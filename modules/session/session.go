@@ -78,6 +78,7 @@ type Manager struct {
 	egress          *proxyegress.Router
 	dataDir         string
 	ffmpeg          config.FFmpeg
+	keys            []config.KeyPair
 	log             *slog.Logger
 	spawn           spawnGate
 	pack            packager.Packager
@@ -158,7 +159,7 @@ func (s *Session) SourceSnapshot() (config.Channel, string, config.Upstream, str
 	return s.Channel, s.SourceURL, s.Upstream, s.Mode
 }
 
-func NewManager(cat *catalog.Service, pullClient *pull.Client, obs *observe.Service, dataDir string, ff config.FFmpeg, log *slog.Logger, egress *proxyegress.Router) *Manager {
+func NewManager(cat *catalog.Service, pullClient *pull.Client, obs *observe.Service, dataDir string, ff config.FFmpeg, keys []config.KeyPair, log *slog.Logger, egress *proxyegress.Router) *Manager {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -170,6 +171,7 @@ func NewManager(cat *catalog.Service, pullClient *pull.Client, obs *observe.Serv
 		egress:          egress,
 		dataDir:         dataDir,
 		ffmpeg:          ff,
+		keys:            append([]config.KeyPair(nil), keys...),
 		log:             log,
 		spawn:           newSpawnGate(ff.MaxStarts),
 		sessions:        map[string]*Session{},
@@ -555,15 +557,6 @@ func (m *Manager) finishStart(channelID string, w *startWait, s *Session) (*Sess
 	return s, nil
 }
 
-// channelKeys prefers the keys typed into the channel over a file on disk. A
-// deployed server often has no path an operator can reach to drop a file at.
-func channelKeys(ch config.Channel) ([]config.KeyPair, error) {
-	if ch.Keys != "" {
-		return config.ParseKeys(ch.Keys)
-	}
-	return config.LoadKeysFile(ch.KeysFile)
-}
-
 type dashStart struct {
 	job            packager.Job
 	publication    packager.Publication
@@ -579,10 +572,10 @@ func (m *Manager) launchDash(s *Session) (*dashStart, error) {
 	if err := config.ValidateChannelID(ch.ID); err != nil {
 		return nil, apperr.Wrap(apperr.CodeInvalid, 400, "invalid channel id", err)
 	}
-	keys, err := channelKeys(ch)
-	if err != nil {
-		return nil, apperr.Wrap(apperr.CodeInvalid, 400, "load keys failed", err)
+	if len(m.keys) == 0 {
+		return nil, apperr.New(apperr.CodeInvalid, 400, "no global keys configured")
 	}
+	keys := append([]config.KeyPair(nil), m.keys...)
 	generation := newGeneration()
 	work := filepath.Join(m.dataDir, "sessions", ch.ID, generation)
 	headers := maps.Clone(upstream.Headers)

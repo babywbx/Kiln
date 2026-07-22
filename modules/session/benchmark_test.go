@@ -19,7 +19,6 @@ func BenchmarkManagerTouchActivePublication(b *testing.B) {
 			ID:        channelID,
 			SourceURL: "https://example.test/live.mpd",
 			Ingress:   "dash",
-			Keys:      "00112233445566778899aabbccddeeff:ffeeddccbbaa99887766554433221100",
 		}},
 	}
 	manager := session.NewManager(
@@ -28,6 +27,7 @@ func BenchmarkManagerTouchActivePublication(b *testing.B) {
 		observe.New(),
 		b.TempDir(),
 		config.FFmpeg{},
+		testKeyPairs(),
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		nil,
 	)

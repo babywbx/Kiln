@@ -131,7 +131,7 @@ func main() {
 		MaxPlaylist: cfg.Security.MaxPlaylistBytes,
 		Router:      egressRouter,
 	})
-	sessions := session.NewManager(cat, puller, obs, cfg.Server.DataDir, cfg.FFmpeg, log, egressRouter)
+	sessions := session.NewManager(cat, puller, obs, cfg.Server.DataDir, cfg.FFmpeg, cfg.GlobalKeys(), log, egressRouter)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

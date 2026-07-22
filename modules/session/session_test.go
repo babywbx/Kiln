@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -62,16 +61,11 @@ func TestManagerWarmupPublishesStarting(t *testing.T) {
 		upstream.Close()
 	}()
 
-	keysFile := t.TempDir() + "/channel.keys"
-	if err := os.WriteFile(keysFile, []byte("00112233445566778899aabbccddeeff:ffeeddccbbaa99887766554433221100\n"), 0o600); err != nil {
-		t.Fatalf("write keys: %v", err)
-	}
 	manager, obs := newManagerWithBaseURL(t, upstream.URL, config.Channel{
 		ID:       "news",
 		Upstream: "origin",
 		Path:     "/live.mpd",
 		Ingress:  "dash",
-		KeysFile: keysFile,
 	})
 	defer manager.StopChannel("news")
 
@@ -129,16 +123,11 @@ func TestManagerShutdownCancelsWarmup(t *testing.T) {
 		upstream.Close()
 	}()
 
-	keysFile := t.TempDir() + "/channel.keys"
-	if err := os.WriteFile(keysFile, []byte("00112233445566778899aabbccddeeff:ffeeddccbbaa99887766554433221100\n"), 0o600); err != nil {
-		t.Fatalf("write keys: %v", err)
-	}
 	manager, _ := newManagerWithBaseURL(t, upstream.URL, config.Channel{
 		ID:       "news",
 		Upstream: "origin",
 		Path:     "/live.mpd",
 		Ingress:  "dash",
-		KeysFile: keysFile,
 	})
 
 	if err := manager.Warmup("news"); err != nil {
@@ -178,13 +167,12 @@ func TestManagerRejectsStartsAfterShutdown(t *testing.T) {
 func TestManagerWarmupPublishesFailure(t *testing.T) {
 	t.Parallel()
 
-	manager, obs := newManager(t, config.Channel{
+	manager, obs := newManagerWithBaseURLAndKeys(t, "https://example.com", config.Channel{
 		ID:       "news",
 		Upstream: "origin",
 		Path:     "/live.mpd",
 		Ingress:  "dash",
-		KeysFile: t.TempDir() + "/missing.keys",
-	})
+	}, nil)
 
 	if err := manager.Warmup("news"); err != nil {
 		t.Fatalf("Warmup() error = %v", err)
@@ -221,6 +209,11 @@ func newManager(t *testing.T, channel config.Channel) (*session.Manager, *observ
 
 func newManagerWithBaseURL(t *testing.T, baseURL string, channel config.Channel) (*session.Manager, *observe.Service) {
 	t.Helper()
+	return newManagerWithBaseURLAndKeys(t, baseURL, channel, testKeyPairs())
+}
+
+func newManagerWithBaseURLAndKeys(t *testing.T, baseURL string, channel config.Channel, keys []config.KeyPair) (*session.Manager, *observe.Service) {
+	t.Helper()
 
 	cfg := config.File{
 		Upstreams: []config.Upstream{{
@@ -241,10 +234,18 @@ func newManagerWithBaseURL(t *testing.T, baseURL string, channel config.Channel)
 		obs,
 		t.TempDir(),
 		config.FFmpeg{},
+		keys,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		nil,
 	)
 	return manager, obs
+}
+
+func testKeyPairs() []config.KeyPair {
+	return []config.KeyPair{{
+		KID: "00112233445566778899aabbccddeeff",
+		Key: "ffeeddccbbaa99887766554433221100",
+	}}
 }
 
 func sessionState(obs *observe.Service, channelID string) string {

@@ -75,7 +75,6 @@ func readyHandler(t *testing.T, engine string) http.Handler {
 			Title:     "DASH",
 			SourceURL: "https://example.com/stream.mpd",
 			Ingress:   "dash",
-			Keys:      "ffeeddccbbaa99887766554433221100:00112233445566778899aabbccddeeff",
 			Packager:  engine,
 		}},
 		FFmpeg: config.FFmpeg{
@@ -95,7 +94,7 @@ func readyHandler(t *testing.T, engine string) http.Handler {
 	cat := catalog.New(cfg, db)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	obs := observe.New()
-	sessions := session.NewManager(cat, nil, obs, dir, cfg.FFmpeg, log, nil)
+	sessions := session.NewManager(cat, nil, obs, dir, cfg.FFmpeg, httpTestKeys(), log, nil)
 	server := httpserver.New(httpserver.Deps{
 		Cfg:      cfg,
 		Catalog:  cat,

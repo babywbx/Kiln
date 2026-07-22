@@ -55,6 +55,8 @@ max_body_bytes = 1048576
 # native = native only; an unsupported source fails instead of falling back
 # ffmpeg = always ffmpeg
 engine = "auto"
+# All DASH channels use this shared KID:key catalog.
+keys_file = "kiln.keys"
 playlist_size = 8
 # Enables CMAF parts, delta playlists, and blocking reload for native DASH.
 ll_hls = true
@@ -167,7 +169,6 @@ group = "Demo"
 upstream = "origin"
 path = "/live/demo-dash"
 ingress = "dash"
-keys_file = "keys.example.txt"
 prefer_height = 1080
 preferred_audio_languages = ["yue", "zh", "en"]
 on_demand = true

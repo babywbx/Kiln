@@ -12,6 +12,7 @@ role = "admin"
 play_require_auth = false
 
 [packager]
+keys_file = "/etc/kiln/kiln.keys"
 start_segments = 1
 prefetch_segments = 1
 
@@ -23,5 +24,4 @@ id = "core-h264"
 title = "Core H264"
 source_url = "http://kiln-origin:8000/h264/stream.mpd"
 ingress = "dash"
-keys = "ffeeddccbbaa99887766554433221100:00112233445566778899aabbccddeeff"
 on_demand = true

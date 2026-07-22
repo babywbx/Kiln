@@ -182,7 +182,7 @@ func (s *Service) planM3U(raw string) (ImportResult, []config.Channel, error) {
 		channel.Path = ""
 		channel.Ingress = entry.SuggestedIngress
 		channel = normalizeChannel(channel)
-		if err := store.ValidateChannel(channel, s.cfg.Upstreams); err != nil {
+		if err := store.ValidateChannel(channel, s.cfg.Upstreams, s.cfg.HasGlobalKeys()); err != nil {
 			entry.Skip = true
 			entry.Action = ImportSkip
 			entry.Note = joinNote(entry.Note, err.Error())

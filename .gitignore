@@ -42,6 +42,8 @@ scripts/*.local
 *.p12
 *.pfx
 *.keys
+!configs/examples/kiln.keys
+!deploy/docker/core-smoke.keys
 keys.local.txt
 *secret*.json
 *recovery-kit*.txt

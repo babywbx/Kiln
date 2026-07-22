@@ -36,7 +36,7 @@ func TestChannelTrackSelectionRoundTrip(t *testing.T) {
 	}
 }
 
-func TestOpenMigratesV1WithoutLosingData(t *testing.T) {
+func TestOpenMigratesV1WithoutLosingActiveData(t *testing.T) {
 	dir := t.TempDir()
 	createV1Database(t, dir)
 
@@ -60,6 +60,18 @@ func TestOpenMigratesV1WithoutLosingData(t *testing.T) {
 	}
 	if channels[0].SourceURL != "" || channels[1].SourceURL != "" {
 		t.Fatalf("legacy channels gained source URLs: %#v", channels)
+	}
+	raw, err := sql.Open("sqlite", "file:"+filepath.Join(dir, "kiln.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	var legacyKeysFile, legacyKeys string
+	if err := raw.QueryRow(`SELECT keys_file, keys FROM channels WHERE id='default-agent'`).Scan(&legacyKeysFile, &legacyKeys); err != nil {
+		t.Fatal(err)
+	}
+	if legacyKeysFile != "" || legacyKeys != "" {
+		t.Fatalf("legacy channel keys were not scrubbed: keys_file=%q keys=%q", legacyKeysFile, legacyKeys)
 	}
 
 	tokens, err := db.ListAccessTokens()
@@ -108,6 +120,55 @@ func TestOpenMigratesV1WithoutLosingData(t *testing.T) {
 	tokens, err = db.ListAccessTokens()
 	if err != nil || len(tokens) != 1 || tokens[0].ID != "legacy-token" {
 		t.Fatalf("tokens after reopen = %#v, %v", tokens, err)
+	}
+}
+
+func TestOpenScrubsRetiredChannelKeys(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "kiln.db")
+	raw, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = raw.Exec(`
+CREATE TABLE schema_version (version INTEGER NOT NULL);
+INSERT INTO schema_version(version) VALUES (12);
+CREATE TABLE channels (
+  id TEXT PRIMARY KEY,
+  keys_file TEXT NOT NULL DEFAULT '',
+  keys TEXT NOT NULL DEFAULT ''
+);
+INSERT INTO channels(id, keys_file, keys) VALUES (
+  'legacy', '/old/channel.keys',
+  '00112233445566778899aabbccddeeff:ffeeddccbbaa99887766554433221100'
+);
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err = sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	var keysFile, keys string
+	if err := raw.QueryRow(`SELECT keys_file, keys FROM channels WHERE id='legacy'`).Scan(&keysFile, &keys); err != nil {
+		t.Fatal(err)
+	}
+	if keysFile != "" || keys != "" {
+		t.Fatalf("retired channel keys were not scrubbed: keys_file=%q keys=%q", keysFile, keys)
 	}
 }
 
@@ -364,7 +425,7 @@ CREATE TABLE proxy_rules (
   proxy_id TEXT NOT NULL DEFAULT 'direct', disabled INTEGER NOT NULL DEFAULT 0
 );
 INSERT INTO channels VALUES
-  ('default-agent','Default','News','','origin','/default.m3u8','hls',0,1,0,90,0,'','Kiln/0.2','{}',0,0,0,101),
+  ('default-agent','Default','News','','origin','/default.m3u8','hls',0,1,0,90,0,'/old/channel.keys','Kiln/0.2','{}',0,0,0,101),
   ('custom-agent','Custom','News','','origin','/custom.m3u8','hls',0,1,0,90,0,'','Custom/7','{}',0,0,1,102);
 INSERT INTO access_tokens VALUES
   ('legacy-token','Legacy','legacy-hash','kiln_old','{"channels":[]}',1,'kept',103,0,0);

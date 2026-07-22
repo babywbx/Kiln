@@ -44,6 +44,8 @@
   },
   "packager": {
     "engine": "auto",
+    // Shared by every DASH channel.
+    "keys_file": "kiln.keys",
     "playlist_size": 8,
     "ll_hls": true,
     "part_target_ms": 500,
@@ -95,7 +97,6 @@
       "ingress": "dash",
       "on_demand": true,
       "idle_timeout_sec": 90,
-      "keys_file": "keys.example.txt",
       "restart_on_failure": true,
       "preferred_audio_languages": ["yue", "zh", "en"],
     },

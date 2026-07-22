@@ -81,9 +81,6 @@ func (s *Server) handleAdminGetChannel(w http.ResponseWriter, r *http.Request) {
 		masked[key] = value
 	}
 	ch.Headers = masked
-	// The KID is public, the key is not. The form shows which keys are set
-	// without the page ever holding one.
-	ch.Keys = config.MaskKeys(ch.Keys)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"channel":              ch,
 		"egress_binding":       s.channelEgressBinding(ch.ID),
@@ -175,17 +172,6 @@ func (s *Server) handleAdminUpsertChannel(w http.ResponseWriter, r *http.Request
 					ch.Headers[key] = value
 				}
 			}
-			// The form only ever received the masked keys, so handing them back
-			// unchanged means "leave them alone", not "set them to asterisks".
-			if config.KeysUnchanged(ch.Keys) {
-				ch.Keys = existing.Keys
-			}
-		}
-	}
-	if ch.Keys != "" {
-		if _, err := config.ParseKeys(ch.Keys); err != nil {
-			writeAppErr(w, apperr.Wrap(apperr.CodeInvalid, 400, "invalid keys", err))
-			return
 		}
 	}
 	if err := config.ValidateEngineSelection(s.deps.Cfg.EngineFor(ch), ch.Selection); err != nil {
@@ -696,9 +682,6 @@ func (s *Server) handleAdminProbeSource(w http.ResponseWriter, r *http.Request) 
 					ch.Headers[key] = value
 				}
 			}
-			if config.KeysUnchanged(ch.Keys) {
-				ch.Keys = existing.Keys
-			}
 		}
 	}
 	testPull, err := s.pullForChannelEgressProbe(request.Egress)
@@ -784,13 +767,10 @@ func (s *Server) probeSource(w http.ResponseWriter, r *http.Request, ch config.C
 		return
 	}
 	start := time.Now()
-	var keys []config.KeyPair
-	if strings.TrimSpace(ch.Keys) != "" {
-		keys, err = config.ParseKeys(ch.Keys)
-		if err != nil {
-			writeAppErr(w, apperr.Wrap(apperr.CodeInvalid, http.StatusBadRequest, "invalid keys", err))
-			return
-		}
+	keys := s.deps.Cfg.GlobalKeys()
+	if len(keys) == 0 {
+		writeAppErr(w, apperr.New(apperr.CodeInvalid, http.StatusBadRequest, "no global keys configured"))
+		return
 	}
 	fetcher := &packager.PullFetcher{
 		Client:    testPull,

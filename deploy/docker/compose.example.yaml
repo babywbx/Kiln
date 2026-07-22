@@ -21,7 +21,7 @@ services:
     #   KILN_LOG_COLOR: "never"
     volumes:
       - ./kiln.toml:/etc/kiln/kiln.toml:ro
-      - ./keys.txt:/etc/kiln/keys.txt:ro
+      - ./kiln.keys:/etc/kiln/kiln.keys:ro
       # - ./ed25519.pem:/etc/kiln/ed25519.pem:ro
       - kiln-data:/var/lib/kiln/data
     restart: unless-stopped

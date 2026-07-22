@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -172,6 +173,95 @@ engine = "auto"
 	}
 	if cfg.Packager.Engine != EngineAuto {
 		t.Fatalf("explicit engine = %q, want %q", cfg.Packager.Engine, EngineAuto)
+	}
+}
+
+func TestLoadPreloadsGlobalKeysBesideConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "kiln.toml")
+	keysPath := filepath.Join(dir, "kiln.keys")
+	if err := os.WriteFile(keysPath, []byte(
+		"00112233445566778899aabbccddeeff:ffeeddccbbaa99887766554433221100\n",
+	), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config := `
+[server]
+data_dir = "./data"
+
+[auth]
+[[auth.users]]
+username = "admin"
+password_hash = "hash"
+role = "admin"
+
+[packager]
+keys_file = "kiln.keys"
+
+[[upstreams]]
+id = "origin"
+base_url = "https://example.com"
+
+[[channels]]
+id = "dash"
+upstream = "origin"
+path = "/live.mpd"
+ingress = "dash"
+`
+	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Packager.KeysFile != keysPath {
+		t.Fatalf("packager keys_file = %q, want %q", cfg.Packager.KeysFile, keysPath)
+	}
+	keys := cfg.GlobalKeys()
+	if len(keys) != 1 || keys[0].KID != "00112233445566778899aabbccddeeff" {
+		t.Fatalf("global keys = %+v", keys)
+	}
+	keys[0].Key = "changed"
+	again := cfg.GlobalKeys()
+	if again[0].Key != "ffeeddccbbaa99887766554433221100" {
+		t.Fatal("GlobalKeys exposed mutable key storage")
+	}
+	encoded, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "ffeeddccbbaa99887766554433221100") {
+		t.Fatal("serialized config leaked a global key")
+	}
+}
+
+func TestLoadRejectsMissingGlobalKeysFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "kiln.toml")
+	config := `
+[server]
+data_dir = "./data"
+
+[auth]
+[[auth.users]]
+username = "admin"
+password_hash = "hash"
+role = "admin"
+
+[packager]
+keys_file = "kiln.keys"
+`
+	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("missing global keys file was accepted")
+	}
+	if !strings.Contains(err.Error(), "packager.keys_file") {
+		t.Fatalf("error = %q, want packager.keys_file context", err)
 	}
 }
 

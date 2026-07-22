@@ -149,7 +149,7 @@ jobs:
           for variant in core full; do
             docker run -d --name "kiln-${variant}-ci" \
               -v "$PWD/deploy/docker/kiln.docker.toml.example:/etc/kiln/kiln.toml:ro" \
-              -v "$PWD/configs/examples/keys.example.txt:/etc/kiln/keys.txt:ro" \
+              -v "$PWD/configs/examples/kiln.keys:/etc/kiln/kiln.keys:ro" \
               "kiln:ci-${variant}-amd64"
             for attempt in 1 2 3 4 5 6 7 8 9 10; do
               if docker exec "kiln-${variant}-ci" \
@@ -216,6 +216,7 @@ jobs:
           docker run -d --name kiln-core-media --network kilnsmoke \
             -e KILN_PLAY_OPEN=1 \
             -v "$PWD/deploy/docker/core-smoke.toml:/etc/kiln/kiln.toml:ro" \
+            -v "$PWD/deploy/docker/core-smoke.keys:/etc/kiln/kiln.keys:ro" \
             kiln:ci-core-amd64
           for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
             if docker exec kiln-core-media sh -ec \

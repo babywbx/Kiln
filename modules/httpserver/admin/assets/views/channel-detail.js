@@ -14,7 +14,7 @@ const BLANK = {
   id: "", title: "", group: "", logo_url: "", source_url: "", upstream: "", path: "", ingress: "hls",
   disabled: false, on_demand: true, autostart: false, idle_timeout_sec: 90,
   max_viewers: 0,
-  keys: "", keys_file: "", user_agent: "", headers: {}, restart_on_failure: false, prefer_height: 0,
+  user_agent: "", headers: {}, restart_on_failure: false, prefer_height: 0,
   preferred_audio_languages: [], selection: { video: { mode: "auto" }, audio: { mode: "auto" }, subtitles: { mode: "auto" } },
   packager: "", epg_id: "", epg_name: "", epg_source: "",
 };
@@ -146,15 +146,6 @@ function buildEditor(ctx, channel, revision, isNew, epg, egress) {
     ["native", vt("channel.packagerNative")],
     ["ffmpeg", vt("channel.packagerFFmpeg")],
   ], channel.packager || "");
-  const keysInput = h("textarea", {
-    name: "keys",
-    rows: 3,
-    spellcheck: "false",
-    autocomplete: "off",
-    placeholder: "ffeeddccbbaa99887766554433221100:00112233445566778899aabbccddeeff",
-    value: channel.keys || "",
-  });
-  keysInput.classList.add("mono");
   const userAgentInput = input("user_agent", channel.user_agent, { placeholder: vt("channel.uaAuto", { version: store.version || "—" }) });
   const restartSelect = select("restart_on_failure", [["false", vt("channel.restartNo")], ["true", vt("channel.restartYes")]], String(Boolean(channel.restart_on_failure)));
   const headersInput = h("textarea", {
@@ -396,20 +387,14 @@ function buildEditor(ctx, channel, revision, isNew, epg, egress) {
     probeDetail.textContent = vt("channel.trackStaleHint");
   };
   [
-    idInput, sourceInput, ingressSelect, userAgentInput, headersInput, keysInput, packagerSelect,
+    idInput, sourceInput, ingressSelect, userAgentInput, headersInput, packagerSelect,
     egressSelect, quickProxyName, quickProxyURL,
     videoSelect, audioSelect, subtitleSelect, videoCustom, audioCustom, subtitleCustom,
   ].forEach((control) => control.addEventListener("input", markProbeStale));
 
-  const keysPanel = h("div", { class: "panel span-all" }, field(
-    vt("channel.drmKeys"),
-    keysInput,
-    vt("channel.drmHint"),
-  ));
   const packagerField = field(vt("channel.packager"), packagerSelect, vt("channel.packagerHint"));
   const syncIngress = () => {
     const isDash = ingressSelect.value === "dash";
-    keysPanel.hidden = !isDash;
     packagerField.hidden = !isDash;
     restartSelect.disabled = isDash;
     if (isDash) restartSelect.value = "true";
@@ -457,8 +442,6 @@ function buildEditor(ctx, channel, revision, isNew, epg, egress) {
       preferred_audio_languages: preferredAudioInput.value.split(",").map((value) => value.trim()).filter(Boolean),
       selection: currentSelection(),
       packager: ingress === "dash" ? packagerSelect.value : "",
-      keys: keysInput.value.trim(),
-      keys_file: channel.keys_file || "",
       user_agent: userAgentInput.value.trim(),
       headers,
       restart_on_failure: ingress === "dash" || restartSelect.value === "true",
@@ -507,14 +490,12 @@ function buildEditor(ctx, channel, revision, isNew, epg, egress) {
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const ingress = ingressSelect.value;
     const body = buildDraft();
 
     const required = [
       [idInput, body.id],
       [titleInput, body.title],
       [sourceInput, sourceInput.value.trim()],
-      [keysInput, ingress !== "dash" || body.keys || body.keys_file],
     ];
     for (const [control] of required) control.removeAttribute("aria-invalid");
     const missing = required.filter(([, value]) => !value);
@@ -623,7 +604,6 @@ function buildEditor(ctx, channel, revision, isNew, epg, egress) {
         field(vt("channel.height"), heightInput, vt("channel.heightHint")),
         field(vt("channel.maxViewers"), maxViewersInput, vt("channel.maxViewersHint")),
         packagerField,
-        keysPanel,
       ),
     ),
     formSection("4", vt("channel.epgSection"), vt("channel.epgDesc"),

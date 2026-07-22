@@ -50,6 +50,7 @@ low_latency = true
 
 [packager]
 # Omit engine to use the image default: native for core, auto for full.
+keys_file = "/etc/kiln/kiln.keys"
 playlist_size = 8
 ll_hls = true
 part_target_ms = 500
@@ -93,7 +94,6 @@ path = "/live/news"
 ingress = "dash"
 on_demand = true
 idle_timeout_sec = 120
-keys_file = "/etc/kiln/keys.txt"
 restart_on_failure = true
 preferred_audio_languages = ["yue", "zh", "en"]
 
@@ -108,6 +108,5 @@ path = "/live/uhd"
 ingress = "dash"
 on_demand = true
 idle_timeout_sec = 120
-keys_file = "/etc/kiln/keys.txt"
 restart_on_failure = true
 preferred_audio_languages = ["yue", "zh", "en"]

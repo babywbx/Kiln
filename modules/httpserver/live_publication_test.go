@@ -143,11 +143,6 @@ func newLiveServer(t *testing.T) (*httptest.Server, *session.Manager) {
 	t.Helper()
 	dir := t.TempDir()
 
-	keysFile := filepath.Join(dir, "channel.keys")
-	if err := os.WriteFile(keysFile, []byte("ffeeddccbbaa99887766554433221100:00112233445566778899aabbccddeeff\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
 	hash, err := auth.HashPassword("secret-password")
 	if err != nil {
 		t.Fatal(err)
@@ -169,7 +164,6 @@ func newLiveServer(t *testing.T) (*httptest.Server, *session.Manager) {
 			Upstream:       "origin",
 			Path:           "/stream.mpd",
 			Ingress:        "dash",
-			KeysFile:       keysFile,
 			OnDemand:       true,
 			IdleTimeoutSec: 30,
 		}},
@@ -192,7 +186,7 @@ func newLiveServer(t *testing.T) (*httptest.Server, *session.Manager) {
 	cat := catalog.New(cfg, db)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	puller := pull.New(pull.Options{Observe: obs, MaxPlaylist: cfg.Security.MaxPlaylistBytes})
-	sessions := session.NewManager(cat, puller, obs, dir, cfg.FFmpeg, log, nil)
+	sessions := session.NewManager(cat, puller, obs, dir, cfg.FFmpeg, httpTestKeys(), log, nil)
 	sessions.SetPackager(fakePackager{})
 
 	srv := httpserver.New(httpserver.Deps{

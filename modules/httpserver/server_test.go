@@ -28,6 +28,13 @@ import (
 	"github.com/babywbx/kiln/modules/store"
 )
 
+func httpTestKeys() []config.KeyPair {
+	return []config.KeyPair{{
+		KID: "ffeeddccbbaa99887766554433221100",
+		Key: "00112233445566778899aabbccddeeff",
+	}}
+}
+
 func TestEPGEndToEnd(t *testing.T) {
 	var fetches int
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -433,7 +440,7 @@ func TestHLSPlayEndToEnd(t *testing.T) {
 	}
 	cat := catalog.New(cfg, db)
 	puller := pull.New(pull.Options{Observe: obs, Allowed: allowed, MaxPlaylist: cfg.Security.MaxPlaylistBytes})
-	sessions := session.NewManager(cat, puller, obs, dir, cfg.FFmpeg, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+	sessions := session.NewManager(cat, puller, obs, dir, cfg.FFmpeg, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 	sessions.Start(t.Context())
 
 	srv := httpserver.New(httpserver.Deps{

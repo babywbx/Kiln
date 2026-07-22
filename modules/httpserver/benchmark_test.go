@@ -5,8 +5,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -174,10 +172,6 @@ type distributionBenchmarkFixture struct {
 func newDistributionBenchmarkServer(b *testing.B) distributionBenchmarkFixture {
 	b.Helper()
 	directory := b.TempDir()
-	keysFile := filepath.Join(directory, "channel.keys")
-	if err := os.WriteFile(keysFile, []byte("ffeeddccbbaa99887766554433221100:00112233445566778899aabbccddeeff\n"), 0o600); err != nil {
-		b.Fatal(err)
-	}
 	cfg := config.File{
 		Server: config.Server{
 			PublicBaseURL: "http://kiln.test",
@@ -200,7 +194,6 @@ func newDistributionBenchmarkServer(b *testing.B) distributionBenchmarkFixture {
 			Upstream:       "origin",
 			Path:           "/stream.mpd",
 			Ingress:        "dash",
-			KeysFile:       keysFile,
 			OnDemand:       true,
 			IdleTimeoutSec: 30,
 		}},
@@ -236,6 +229,7 @@ func newDistributionBenchmarkServer(b *testing.B) distributionBenchmarkFixture {
 		obs,
 		directory,
 		config.FFmpeg{},
+		httpTestKeys(),
 		benchmarkLogger(),
 		nil,
 	)

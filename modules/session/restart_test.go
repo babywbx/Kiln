@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -27,7 +28,7 @@ func TestReloadChannelSwitchesBetweenHLSAndDASH(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	cfg := config.File{}
+	cfg := loadGlobalKeyConfig(t)
 	cat := catalog.New(cfg, db)
 	initial := config.Channel{
 		ID: "news", Title: "News", SourceURL: "https://one.example/live.m3u8",
@@ -38,6 +39,7 @@ func TestReloadChannelSwitchesBetweenHLSAndDASH(t *testing.T) {
 	}
 	manager := session.NewManager(
 		cat, nil, observe.New(), t.TempDir(), config.FFmpeg{},
+		cfg.GlobalKeys(),
 		slog.New(slog.NewTextHandler(io.Discard, nil)), nil,
 	)
 	job := newFakeJob()
@@ -55,7 +57,6 @@ func TestReloadChannelSwitchesBetweenHLSAndDASH(t *testing.T) {
 	dash := initial
 	dash.SourceURL = "https://two.example/live.mpd"
 	dash.Ingress = "dash"
-	dash.Keys = "00112233445566778899aabbccddeeff:ffeeddccbbaa99887766554433221100"
 	if err := cat.Upsert(dash); err != nil {
 		t.Fatal(err)
 	}
@@ -90,6 +91,65 @@ func TestReloadChannelSwitchesBetweenHLSAndDASH(t *testing.T) {
 		t.Fatalf("session = mode %q source %q publication %T", mode, sourceURL, publication)
 	}
 	eventually(t, job.IntentionalStop)
+}
+
+func TestManagerUsesPreloadedGlobalKeys(t *testing.T) {
+	cfg := loadGlobalKeyConfig(t)
+	cfg.Channels = []config.Channel{{
+		ID: "news", SourceURL: "https://example.com/live.mpd", Ingress: "dash",
+	}}
+
+	manager := session.NewManager(
+		catalog.New(cfg, nil), nil, observe.New(), t.TempDir(), config.FFmpeg{}, cfg.GlobalKeys(),
+		slog.New(slog.NewTextHandler(io.Discard, nil)), nil,
+	)
+	job := newFakeJob()
+	engine := &fakePackager{results: []startResult{{job: job}}}
+	manager.SetPackager(engine)
+	defer manager.StopChannel("news")
+
+	if _, err := manager.Acquire("news"); err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	requests := engine.requestsSnapshot()
+	if len(requests) != 1 || len(requests[0].Keys) != 1 {
+		t.Fatalf("packager requests = %+v", requests)
+	}
+	if got := requests[0].Keys[0].KID; got != "00112233445566778899aabbccddeeff" {
+		t.Fatalf("packager KID = %q", got)
+	}
+}
+
+func loadGlobalKeyConfig(t *testing.T) config.File {
+	t.Helper()
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "kiln.toml")
+	keysPath := filepath.Join(dir, "kiln.keys")
+	if err := os.WriteFile(keysPath, []byte(
+		"00112233445566778899aabbccddeeff:ffeeddccbbaa99887766554433221100\n",
+	), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte(`
+[server]
+data_dir = "./data"
+
+[auth]
+[[auth.users]]
+username = "admin"
+password_hash = "hash"
+role = "admin"
+
+[packager]
+keys_file = "kiln.keys"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg
 }
 
 func TestManagerRetriesRestartStartFailuresUntilBudgetIsExhausted(t *testing.T) {
@@ -327,7 +387,6 @@ func TestAutostartRetriesChannelsIndependently(t *testing.T) {
 			Upstream:  "origin",
 			Path:      "/live.mpd",
 			Ingress:   "dash",
-			Keys:      "00112233445566778899aabbccddeeff:ffeeddccbbaa99887766554433221100",
 			Autostart: true,
 		}
 	}
@@ -341,6 +400,7 @@ func TestAutostartRetriesChannelsIndependently(t *testing.T) {
 		observe.New(),
 		t.TempDir(),
 		config.FFmpeg{},
+		testKeyPairs(),
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		nil,
 	)
@@ -412,7 +472,6 @@ func TestShutdownCleansActiveSessionWhileAnotherStartIsBlocked(t *testing.T) {
 			Upstream:         "origin",
 			Path:             "/live.mpd",
 			Ingress:          "dash",
-			Keys:             "00112233445566778899aabbccddeeff:ffeeddccbbaa99887766554433221100",
 			RestartOnFailure: true,
 		}
 	}
@@ -425,6 +484,7 @@ func TestShutdownCleansActiveSessionWhileAnotherStartIsBlocked(t *testing.T) {
 		observe.New(),
 		t.TempDir(),
 		config.FFmpeg{},
+		testKeyPairs(),
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		nil,
 	)
@@ -464,7 +524,6 @@ func newRestartManager(t *testing.T, engine packager.Packager) (*session.Manager
 		Upstream:         "origin",
 		Path:             "/live.mpd",
 		Ingress:          "dash",
-		Keys:             "00112233445566778899aabbccddeeff:ffeeddccbbaa99887766554433221100",
 		RestartOnFailure: true,
 	})
 	manager.SetPackager(engine)

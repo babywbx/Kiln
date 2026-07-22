@@ -1,6 +1,8 @@
 package catalog
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -76,17 +78,57 @@ func TestUpsertChannelAcceptsDirectSourceURL(t *testing.T) {
 	}
 }
 
+func TestUpsertDASHChannelUsesGlobalKeys(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "kiln.toml")
+	if err := os.WriteFile(filepath.Join(dir, "kiln.keys"), []byte(
+		"00112233445566778899aabbccddeeff:ffeeddccbbaa99887766554433221100\n",
+	), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte(`
+[server]
+data_dir = "./data"
+
+[auth]
+[[auth.users]]
+username = "admin"
+password_hash = "hash"
+role = "admin"
+
+[packager]
+keys_file = "kiln.keys"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	svc := New(cfg, db)
+
+	want := config.Channel{
+		ID: "dash", SourceURL: "https://media.example/live.mpd", Ingress: "dash", OnDemand: true,
+	}
+	if err := svc.Upsert(want); err != nil {
+		t.Fatalf("upsert DASH with global keys: %v", err)
+	}
+}
+
 func TestPublicChannelViewsDoNotExposeSourceCredentials(t *testing.T) {
 	svc := New(config.File{Channels: []config.Channel{{
 		ID: "private", Title: "Private", SourceURL: "https://user:pass@origin.example/live.m3u8?token=secret", Ingress: "hls",
-		KeysFile: "/private/keys.txt", Keys: "0011:2233",
 	}}}, nil)
 	views, err := svc.ListViews("https://kiln.example", false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(views) != 1 || views[0].SourceURL != "" || views[0].Upstream != "" || views[0].Path != "" ||
-		views[0].KeysFile != "" || views[0].Keys != "" {
+	if len(views) != 1 || views[0].SourceURL != "" || views[0].Upstream != "" || views[0].Path != "" {
 		t.Fatalf("public channel leaked source fields: %+v", views)
 	}
 	adminViews, err := svc.ListViews("https://kiln.example", true, true)

@@ -18,24 +18,20 @@ type Service struct {
 }
 
 type ChannelView struct {
-	ID        string `json:"id"`
-	Title     string `json:"title"`
-	Group     string `json:"group,omitempty"`
-	LogoURL   string `json:"logo_url,omitempty"`
-	EPGID     string `json:"epg_id,omitempty"`
-	EPGName   string `json:"epg_name,omitempty"`
-	EPGSource string `json:"epg_source,omitempty"`
-	Ingress   string `json:"ingress"`
-	OnDemand  bool   `json:"on_demand"`
-	Autostart bool   `json:"autostart"`
-	SourceURL string `json:"source_url,omitempty"`
-	Upstream  string `json:"upstream,omitempty"`
-	Path      string `json:"path,omitempty"`
-	Disabled  bool   `json:"disabled,omitempty"`
-	KeysFile  string `json:"keys_file,omitempty"`
-	// Keys is the masked form: the KID, which is public, and a placeholder in
-	// place of the key, which never leaves the server.
-	Keys                    string   `json:"keys,omitempty"`
+	ID                      string   `json:"id"`
+	Title                   string   `json:"title"`
+	Group                   string   `json:"group,omitempty"`
+	LogoURL                 string   `json:"logo_url,omitempty"`
+	EPGID                   string   `json:"epg_id,omitempty"`
+	EPGName                 string   `json:"epg_name,omitempty"`
+	EPGSource               string   `json:"epg_source,omitempty"`
+	Ingress                 string   `json:"ingress"`
+	OnDemand                bool     `json:"on_demand"`
+	Autostart               bool     `json:"autostart"`
+	SourceURL               string   `json:"source_url,omitempty"`
+	Upstream                string   `json:"upstream,omitempty"`
+	Path                    string   `json:"path,omitempty"`
+	Disabled                bool     `json:"disabled,omitempty"`
 	PreferH                 int      `json:"prefer_height,omitempty"`
 	PreferredAudioLanguages []string `json:"preferred_audio_languages,omitempty"`
 	SortOrder               int      `json:"sort_order"`
@@ -93,8 +89,6 @@ func (s *Service) ListViews(publicBase string, includeDisabled, includeSource bo
 				view.SourceURL = ch.SourceURL
 				view.Upstream = ch.Upstream
 				view.Path = ch.Path
-				view.KeysFile = ch.KeysFile
-				view.Keys = config.MaskKeys(ch.Keys)
 				view.PreferH = ch.PreferHeight
 				view.PreferredAudioLanguages = append([]string(nil), ch.PreferredAudioLanguages...)
 			}
@@ -126,8 +120,6 @@ func (s *Service) ListViews(publicBase string, includeDisabled, includeSource bo
 			view.SourceURL = ch.SourceURL
 			view.Upstream = ch.Upstream
 			view.Path = ch.Path
-			view.KeysFile = ch.KeysFile
-			view.Keys = config.MaskKeys(ch.Keys)
 			view.PreferH = ch.PreferHeight
 			view.PreferredAudioLanguages = append([]string(nil), ch.PreferredAudioLanguages...)
 		}
@@ -203,7 +195,7 @@ func (s *Service) UpsertIfRevision(ch config.Channel, expectedRevision int64) er
 
 func (s *Service) PrepareChannel(ch config.Channel) (config.Channel, error) {
 	ch = normalizeChannel(ch)
-	if err := store.ValidateChannel(ch, s.cfg.Upstreams); err != nil {
+	if err := store.ValidateChannel(ch, s.cfg.Upstreams, s.cfg.HasGlobalKeys()); err != nil {
 		return config.Channel{}, err
 	}
 	return ch, nil
@@ -216,7 +208,7 @@ func (s *Service) UpsertBatchIfRevisions(channels []config.Channel, revisions ma
 	normalized := make([]config.Channel, 0, len(channels))
 	for _, ch := range channels {
 		ch = normalizeChannel(ch)
-		if err := store.ValidateChannel(ch, s.cfg.Upstreams); err != nil {
+		if err := store.ValidateChannel(ch, s.cfg.Upstreams, s.cfg.HasGlobalKeys()); err != nil {
 			return err
 		}
 		normalized = append(normalized, ch)
