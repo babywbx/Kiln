@@ -6,7 +6,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
+	"time"
 
 	"github.com/Eyevinn/mp4ff/bits"
 	"github.com/Eyevinn/mp4ff/mp4"
@@ -254,10 +256,11 @@ func describeSampleEntry(stsd *mp4.StsdBox, track *Track) error {
 }
 
 type Segment struct {
-	Clear    []byte
-	BaseTime uint64
-	Duration uint64
-	Events   []EventMessage
+	Clear           []byte
+	BaseTime        uint64
+	Duration        uint64
+	Events          []EventMessage
+	DecryptDuration time.Duration
 }
 
 func (i *Init) Decrypt(raw []byte, keys KeySet) (*Segment, error) {
@@ -266,6 +269,35 @@ func (i *Init) Decrypt(raw []byte, keys KeySet) (*Segment, error) {
 
 func (i *Init) DecryptOwnedReserved(raw []byte, keys KeySet, reserve func(int64) error) (*Segment, error) {
 	return i.decryptOwnedReserved(raw, keys, reserve)
+}
+
+// DecryptOwnedTo decrypts caller-owned media and writes the clear segment
+// directly to dst without allocating another segment-sized byte slice.
+func (i *Init) DecryptOwnedTo(raw []byte, keys KeySet, dst io.Writer) (segment *Segment, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			segment, err = nil, unsupportedf(ReasonMalformed, "media segment crashed the box parser: %v", recovered)
+		}
+	}()
+	started := time.Now()
+	media, err := i.decodeMediaSegment(raw, keys)
+	if err != nil {
+		return nil, err
+	}
+	decryptDuration := time.Since(started)
+	base, duration, err := segmentTiming(media, i.di, i.Track.ID)
+	if err != nil {
+		return nil, err
+	}
+	if err := media.Encode(dst); err != nil {
+		return nil, fmt.Errorf("encode clear segment: %w", err)
+	}
+	return &Segment{
+		BaseTime:        base,
+		Duration:        duration,
+		Events:          eventMessages(media),
+		DecryptDuration: decryptDuration,
+	}, nil
 }
 
 func (i *Init) decryptOwnedReserved(raw []byte, keys KeySet, reserve func(int64) error) (seg *Segment, err error) {
@@ -278,10 +310,12 @@ func (i *Init) decryptOwnedReserved(raw []byte, keys KeySet, reserve func(int64)
 }
 
 func (i *Init) decryptChecked(raw []byte, keys KeySet, reserve func(int64) error) (*Segment, error) {
+	started := time.Now()
 	seg, err := i.decodeMediaSegment(raw, keys)
 	if err != nil {
 		return nil, err
 	}
+	decryptDuration := time.Since(started)
 
 	base, dur, err := segmentTiming(seg, i.di, i.Track.ID)
 	if err != nil {
@@ -307,10 +341,11 @@ func (i *Init) decryptChecked(raw []byte, keys KeySet, reserve func(int64) error
 		return nil, fmt.Errorf("encode clear segment: %w", err)
 	}
 	return &Segment{
-		Clear:    w.Bytes(),
-		BaseTime: base,
-		Duration: dur,
-		Events:   eventMessages(seg),
+		Clear:           w.Bytes(),
+		BaseTime:        base,
+		Duration:        dur,
+		Events:          eventMessages(seg),
+		DecryptDuration: decryptDuration,
 	}, nil
 }
 

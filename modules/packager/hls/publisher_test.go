@@ -1,7 +1,9 @@
 package hls
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -243,6 +245,81 @@ func TestExpiredCleanupDoesNotBlockPublishedState(t *testing.T) {
 	releaseOnce.Do(func() { close(releaseCleanup) })
 	if err := <-published; err != nil {
 		t.Fatalf("PublishStaged: %v", err)
+	}
+}
+
+func TestStageWriteRemovesPartialFileAfterFailure(t *testing.T) {
+	p, _, dir := newTestPublisher(t, 1, time.Second)
+	want := errors.New("encode failed")
+	staged, err := p.StageWrite(func(dst io.Writer) error {
+		if _, writeErr := dst.Write([]byte("partial")); writeErr != nil {
+			return writeErr
+		}
+		return want
+	})
+	if staged != "" {
+		t.Fatalf("staged path = %q after failure", staged)
+	}
+	if !errors.Is(err, want) {
+		t.Fatalf("error = %v, want %v", err, want)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".tmp-") {
+			t.Fatalf("partial stage was not removed: %s", entry.Name())
+		}
+	}
+}
+
+func TestStageWriteRemovesPartialFileAfterPanic(t *testing.T) {
+	p, _, dir := newTestPublisher(t, 1, time.Second)
+	want := errors.New("encoder panic")
+	func() {
+		defer func() {
+			if recovered := recover(); recovered != want {
+				t.Fatalf("recovered = %v, want %v", recovered, want)
+			}
+		}()
+		_, _ = p.StageWrite(func(dst io.Writer) error {
+			_, _ = dst.Write([]byte("partial"))
+			panic(want)
+		})
+	}()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".tmp-") {
+			t.Fatalf("partial stage was not removed: %s", entry.Name())
+		}
+	}
+}
+
+func TestStageWriteRemovesPartialFileAfterCacheFlushFailure(t *testing.T) {
+	p, _, dir := newTestPublisher(t, 1, time.Second)
+	want := errors.New("sync failed")
+	p.dropAfterWrite = func(*os.File) error { return want }
+
+	staged, err := p.Stage([]byte("complete segment"))
+
+	if staged != "" {
+		t.Fatalf("staged path = %q after cache flush failure", staged)
+	}
+	if !errors.Is(err, want) {
+		t.Fatalf("error = %v, want %v", err, want)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".tmp-") {
+			t.Fatalf("failed stage was not removed: %s", entry.Name())
+		}
 	}
 }
 

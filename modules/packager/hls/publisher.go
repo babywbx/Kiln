@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/babywbx/kiln/modules/filecache"
 	"github.com/babywbx/kiln/modules/timedmeta"
 )
 
@@ -221,9 +223,10 @@ func (r *assetRemovals) at(index int) assetRemoval {
 }
 
 type Publisher struct {
-	cfg        Config
-	now        func() time.Time
-	removeFile func(string) error
+	cfg            Config
+	now            func() time.Time
+	removeFile     func(string) error
+	dropAfterWrite func(*os.File) error
 
 	mu         sync.RWMutex
 	order      []string
@@ -257,15 +260,16 @@ func New(cfg Config) (*Publisher, error) {
 		return nil, fmt.Errorf("hls: create output dir: %w", err)
 	}
 	return &Publisher{
-		cfg:        cfg,
-		now:        cfg.Now,
-		removeFile: os.Remove,
-		tracks:     map[string]*track{},
-		playlists:  map[string][]byte{},
-		revisions:  map[string]uint64{},
-		assets:     map[string]string{},
-		dateRanges: map[string]timedmeta.DateRange{},
-		changed:    make(chan struct{}),
+		cfg:            cfg,
+		now:            cfg.Now,
+		removeFile:     os.Remove,
+		dropAfterWrite: filecache.DropAfterWrite,
+		tracks:         map[string]*track{},
+		playlists:      map[string][]byte{},
+		revisions:      map[string]uint64{},
+		assets:         map[string]string{},
+		dateRanges:     map[string]timedmeta.DateRange{},
+		changed:        make(chan struct{}),
 		encoder: playlistEncoder{
 			media:  mediaPlaylist,
 			master: masterPlaylist,
@@ -798,20 +802,38 @@ func (p *Publisher) signalChange() {
 }
 
 func (p *Publisher) Stage(data []byte) (string, error) {
+	return p.StageWrite(func(dst io.Writer) error {
+		n, err := dst.Write(data)
+		if err == nil && n != len(data) {
+			return io.ErrShortWrite
+		}
+		return err
+	})
+}
+
+func (p *Publisher) StageWrite(write func(io.Writer) error) (string, error) {
 	tmp, err := os.CreateTemp(p.cfg.Dir, ".tmp-*")
 	if err != nil {
 		return "", fmt.Errorf("hls: create temp asset: %w", err)
 	}
 	name := tmp.Name()
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		_ = os.Remove(name)
+	completed := false
+	defer func() {
+		if !completed {
+			_ = tmp.Close()
+			_ = os.Remove(name)
+		}
+	}()
+	if err := write(tmp); err != nil {
 		return "", fmt.Errorf("hls: stage asset: %w", err)
 	}
+	if err := p.dropAfterWrite(tmp); err != nil {
+		return "", fmt.Errorf("hls: flush staged asset: %w", err)
+	}
 	if err := tmp.Close(); err != nil {
-		_ = os.Remove(name)
 		return "", fmt.Errorf("hls: close asset: %w", err)
 	}
+	completed = true
 	return name, nil
 }
 

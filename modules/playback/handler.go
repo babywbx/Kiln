@@ -19,6 +19,7 @@ import (
 	"github.com/babywbx/kiln/modules/apperr"
 	"github.com/babywbx/kiln/modules/config"
 	"github.com/babywbx/kiln/modules/egress"
+	"github.com/babywbx/kiln/modules/filecache"
 	"github.com/babywbx/kiln/modules/observe"
 	"github.com/babywbx/kiln/modules/packager"
 	"github.com/babywbx/kiln/modules/proxyegress"
@@ -254,6 +255,7 @@ func (h *Handler) HandleLiveFile(w http.ResponseWriter, r *http.Request) {
 	setAssetCacheHeaders(w, asset.Immutable)
 	counter := &bodyCountWriter{ResponseWriter: w}
 	http.ServeContent(counter, r, fileName, asset.ModTime, file)
+	filecache.DropAfterRead(file)
 	h.deps.Observe.AddBytesOut(counter.written)
 }
 

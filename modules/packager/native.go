@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"math/bits"
@@ -1274,7 +1275,51 @@ func (n *Native) prepare(ctx context.Context, ts *trackState, seg mpd.Segment) (
 		res.err = ctx.Err()
 		return res
 	}
-	started := time.Now()
+	if !n.opts.LLHLS {
+		if !reservation.resizeContext(ctx, segmentWorkingSet(int64(cap(raw)))) {
+			<-pool
+			res.err = errors.New("segment memory budget exhausted")
+			return res
+		}
+		var clear *cmaf.Segment
+		var decryptErr error
+		res.staged, err = n.pub.StageWrite(func(dst io.Writer) error {
+			clear, decryptErr = ts.init.DecryptOwnedTo(raw, n.opts.Keys, dst)
+			if decryptErr != nil {
+				return decryptErr
+			}
+			if n.stagePrepare != nil {
+				return n.stagePrepare()
+			}
+			return nil
+		})
+		<-pool
+		if clear != nil {
+			n.decryptNanos.Add(int64(clear.DecryptDuration))
+		}
+		if decryptErr != nil {
+			if unsupported, ok := cmaf.Unsupported(decryptErr); ok && unsupported.Reason == cmaf.ReasonMissingKey {
+				n.keyMismatches.Add(1)
+			}
+			res.err = fmt.Errorf("decrypt segment %s#%d: %w", ts.rep.ID, seg.Number, decryptErr)
+			return res
+		}
+		if err != nil {
+			res.err = err
+			return res
+		}
+		n.observeBudget("plaintext")
+		res.baseTime = clear.BaseTime
+		res.duration = clear.Duration
+		res.events = clear.Events
+		res.dur = seg.Seconds(ts.rep.Addressing.Timescale)
+		if clear.Duration > 0 && ts.init.Track.Timescale > 0 {
+			res.dur = float64(clear.Duration) / float64(ts.init.Track.Timescale)
+		}
+		reservation.release()
+		n.observeBudget("staged")
+		return res
+	}
 	clear, err := ts.init.DecryptOwnedReserved(raw, n.opts.Keys, func(clearCapacity int64) error {
 		if !reservation.resizeContext(ctx, addBytes(int64(cap(raw)), clearCapacity)) {
 			return errors.New("segment memory budget exhausted")
@@ -1282,7 +1327,9 @@ func (n *Native) prepare(ctx context.Context, ts *trackState, seg mpd.Segment) (
 		return nil
 	})
 	<-pool
-	n.decryptNanos.Add(int64(time.Since(started)))
+	if clear != nil {
+		n.decryptNanos.Add(int64(clear.DecryptDuration))
+	}
 	if err != nil {
 		if u, ok := cmaf.Unsupported(err); ok && u.Reason == cmaf.ReasonMissingKey {
 			n.keyMismatches.Add(1)

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -264,6 +265,60 @@ func TestDecryptOwnedReservedUsesTheEncodedSize(t *testing.T) {
 	if reserved != int64(len(seg.Clear)) {
 		t.Fatalf("reserved %d bytes, encoded %d", reserved, len(seg.Clear))
 	}
+}
+
+func TestDecryptOwnedToMatchesBufferedOutput(t *testing.T) {
+	for _, fixture := range []string{"h264", "hevc", "cbcs"} {
+		t.Run(fixture, func(t *testing.T) {
+			init, err := ParseInit(readFixture(t, fixture, "init-stream0.m4s"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw := readFixture(t, fixture, "chunk-stream0-00001.m4s")
+			buffered, err := init.DecryptOwnedReserved(bytes.Clone(raw), testKeys(t), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var streamed bytes.Buffer
+			metadata, err := init.DecryptOwnedTo(bytes.Clone(raw), testKeys(t), &streamed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(streamed.Bytes(), buffered.Clear) {
+				t.Fatal("streamed clear segment differs from buffered output")
+			}
+			if metadata.BaseTime != buffered.BaseTime || metadata.Duration != buffered.Duration ||
+				!reflect.DeepEqual(metadata.Events, buffered.Events) {
+				t.Fatalf("streamed metadata = %+v, want %+v", metadata, buffered)
+			}
+		})
+	}
+}
+
+func TestDecryptOwnedToReturnsWriterFailure(t *testing.T) {
+	init, err := ParseInit(readFixture(t, "h264", "init-stream0.m4s"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := errors.New("disk full")
+	writer := writerFunc(func([]byte) (int, error) { return 0, want })
+
+	segment, err := init.DecryptOwnedTo(
+		readFixture(t, "h264", "chunk-stream0-00001.m4s"), testKeys(t), writer,
+	)
+
+	if segment != nil {
+		t.Fatal("writer failure returned segment metadata")
+	}
+	if !errors.Is(err, want) {
+		t.Fatalf("error = %v, want %v", err, want)
+	}
+}
+
+type writerFunc func([]byte) (int, error)
+
+func (write writerFunc) Write(data []byte) (int, error) {
+	return write(data)
 }
 
 func TestDecryptOwnedReservedReturnsReservationError(t *testing.T) {

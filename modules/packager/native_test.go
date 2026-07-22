@@ -677,7 +677,7 @@ func TestAcquireDecryptRejectsCancelledContext(t *testing.T) {
 	}
 }
 
-func TestPrepareAccountsActualWorkingSetAndReleasesAfterStage(t *testing.T) {
+func TestPrepareStreamsClearMediaWithinCiphertextBudgetAndReleasesAfterStage(t *testing.T) {
 	data := fixtureSegment(t)
 	f := &controlledSegmentFetcher{data: data, starts: make(chan string, 1), release: map[string]chan struct{}{}, errs: map[string]error{}}
 	n, ts, segs, _ := pipelineNative(t, 1, f)
@@ -696,13 +696,38 @@ func TestPrepareAccountsActualWorkingSetAndReleasesAfterStage(t *testing.T) {
 	if observed["ciphertext"] != int64(len(data)) {
 		t.Fatalf("ciphertext usage = %d, want %d", observed["ciphertext"], len(data))
 	}
-	if observed["plaintext"] <= int64(len(data)) {
-		t.Fatalf("plaintext usage = %d, want above %d", observed["plaintext"], len(data))
+	wantWorkingSet := segmentWorkingSet(int64(len(data)))
+	if observed["plaintext"] != wantWorkingSet {
+		t.Fatalf("plaintext reservation = %d, want conservative working set %d", observed["plaintext"], wantWorkingSet)
 	}
 	if observed["staged"] != 0 || n.gate.usage() != 0 {
 		t.Fatalf("usage after Stage = %d, final = %d", observed["staged"], n.gate.usage())
 	}
 	n.pub.Discard(result.staged)
+}
+
+func TestPrepareDecryptMetricExcludesStagingLatency(t *testing.T) {
+	data := fixtureSegment(t)
+	fetcher := &controlledSegmentFetcher{
+		data: data, starts: make(chan string, 1), release: map[string]chan struct{}{}, errs: map[string]error{},
+	}
+	n, track, segments, _ := pipelineNative(t, 1, fetcher)
+	n.gate = newByteGate(int64(len(data)) * 4)
+	n.opts.MaxSegmentBytes = int64(len(data))
+	n.stagePrepare = func() error {
+		time.Sleep(200 * time.Millisecond)
+		return nil
+	}
+
+	result := n.prepare(context.Background(), track, segments[0])
+
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	defer n.pub.Discard(result.staged)
+	if got := n.Stats().DecryptSeconds; got < 0 || got >= 0.1 {
+		t.Fatalf("decrypt seconds = %.3f, want only CMAF decrypt work", got)
+	}
 }
 
 func TestPrepareReleasesBudgetOnAllExits(t *testing.T) {

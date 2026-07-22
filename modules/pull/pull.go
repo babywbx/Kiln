@@ -85,13 +85,14 @@ func New(opt Options) *Client {
 }
 
 type Result struct {
-	Body        io.ReadCloser
-	Header      http.Header
-	StatusCode  int
-	ContentType string
-	FinalURL    string
-	ProxyID     string
-	ProxyReason string
+	Body          io.ReadCloser
+	Header        http.Header
+	StatusCode    int
+	ContentLength int64
+	ContentType   string
+	FinalURL      string
+	ProxyID       string
+	ProxyReason   string
 }
 
 type Request struct {
@@ -168,13 +169,14 @@ func (c *Client) Do(ctx context.Context, method string, req Request) (result Res
 	}
 	body := &countingReadCloser{rc: resp.Body, obs: c.observe}
 	return Result{
-		Body:        body,
-		Header:      resp.Header.Clone(),
-		StatusCode:  resp.StatusCode,
-		ContentType: resp.Header.Get("Content-Type"),
-		FinalURL:    resp.Request.URL.String(),
-		ProxyID:     proxyID,
-		ProxyReason: reason,
+		Body:          body,
+		Header:        resp.Header.Clone(),
+		StatusCode:    resp.StatusCode,
+		ContentLength: resp.ContentLength,
+		ContentType:   resp.Header.Get("Content-Type"),
+		FinalURL:      resp.Request.URL.String(),
+		ProxyID:       proxyID,
+		ProxyReason:   reason,
 	}, nil
 }
 
@@ -202,18 +204,37 @@ func (c *Client) GetBytesLimitReserve(ctx context.Context, req Request, max int6
 	}
 	defer res.Body.Close()
 	var b []byte
-	for {
-		if int64(len(b)) == max {
-			var extra [1]byte
-			n, readErr := res.Body.Read(extra[:])
-			if n > 0 {
-				return nil, "", apperr.New(apperr.CodeUpstream, 502, "upstream response too large")
+	knownLength := res.ContentLength
+	if knownLength >= 0 {
+		maxInt := int64(^uint(0) >> 1)
+		if knownLength > max || knownLength > maxInt {
+			return nil, "", apperr.New(apperr.CodeUpstream, 502, "upstream response too large")
+		}
+		if reserve != nil && knownLength > 0 {
+			if err := reserve(knownLength); err != nil {
+				return nil, "", err
 			}
-			if readErr == io.EOF {
+		}
+		b = make([]byte, 0, int(knownLength))
+	}
+	for {
+		if knownLength >= 0 && int64(len(b)) == knownLength {
+			done, readErr := confirmBodyEnd(res.Body, "upstream response exceeds content length")
+			if readErr != nil {
+				return nil, "", readErr
+			}
+			if done {
 				return b, res.FinalURL, nil
 			}
+			continue
+		}
+		if int64(len(b)) == max {
+			done, readErr := confirmBodyEnd(res.Body, "upstream response too large")
 			if readErr != nil {
-				return nil, "", apperr.Wrap(apperr.CodeUpstream, 502, "read upstream body failed", readErr)
+				return nil, "", readErr
+			}
+			if done {
+				return b, res.FinalURL, nil
 			}
 			continue
 		}
@@ -258,6 +279,21 @@ func (c *Client) GetBytesLimitReserve(ctx context.Context, req Request, max int6
 			return nil, "", apperr.Wrap(apperr.CodeUpstream, 502, "read upstream body failed", readErr)
 		}
 	}
+}
+
+func confirmBodyEnd(body io.Reader, overflowMessage string) (bool, error) {
+	var extra [1]byte
+	n, err := body.Read(extra[:])
+	if n > 0 {
+		return false, apperr.New(apperr.CodeUpstream, 502, overflowMessage)
+	}
+	if err == io.EOF {
+		return true, nil
+	}
+	if err != nil {
+		return false, apperr.Wrap(apperr.CodeUpstream, 502, "read upstream body failed", err)
+	}
+	return false, nil
 }
 
 func (c *Client) Router() *proxyegress.Router { return c.router }
