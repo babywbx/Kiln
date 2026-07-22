@@ -166,15 +166,19 @@ docker-verify:
 	  /d/verify-ffmpeg.sh /usr/local/bin/ffmpeg
 
 docker-smoke:
-	@docker network create kilnsmoke >/dev/null 2>&1 || true
-	@docker rm -f kiln-origin >/dev/null 2>&1 || true
-	docker run -d --name kiln-origin --network kilnsmoke \
-	  -v "$(PWD)/testdata/cenc:/www:ro" $(BUSYBOX_IMAGE) httpd -f -p 8000 -h /www >/dev/null
-	-docker run --rm --network kilnsmoke -e ORIGIN_URL=http://kiln-origin:8000 \
-	  -v "$(PWD):/src:ro" -w /src --entrypoint /bin/sh $(IMAGE) \
-	  deploy/docker/smoke.sh /usr/local/bin/ffmpeg testdata/cenc
-	@docker rm -f kiln-origin >/dev/null
-	@docker network rm kilnsmoke >/dev/null
+	@set -eu; \
+	  cleanup() { \
+	    docker rm -f kiln-origin >/dev/null 2>&1 || true; \
+	    docker network rm kilnsmoke >/dev/null 2>&1 || true; \
+	  }; \
+	  trap cleanup EXIT INT TERM; \
+	  cleanup; \
+	  docker network create kilnsmoke >/dev/null; \
+	  docker run -d --name kiln-origin --network kilnsmoke \
+	    -v "$(PWD)/testdata/cenc:/www:ro" $(BUSYBOX_IMAGE) httpd -f -p 8000 -h /www >/dev/null; \
+	  docker run --rm --network kilnsmoke -e ORIGIN_URL=http://kiln-origin:8000 \
+	    -v "$(PWD):/src:ro" -w /src --entrypoint /bin/sh $(IMAGE) \
+	    deploy/docker/smoke.sh /usr/local/bin/ffmpeg testdata/cenc
 
 docker-smoke-lite:
 	deploy/docker/lite-smoke.sh $(LITE_IMAGE) $(BUSYBOX_IMAGE)

@@ -84,6 +84,10 @@ select_highest_variant() {
     }
     END { if (best_uri != "") print best_uri }
   ' "$manifest")
+  if [ -z "$variant" ] && awk '/^#EXTINF:|^#EXT-X-PART:/ { found = 1 } END { exit !found }' "$manifest"; then
+    printf '%s\n' "$master_url"
+    return 0
+  fi
   test -n "$variant" || {
     echo "no video variant found in manifest: $manifest" >&2
     return 1

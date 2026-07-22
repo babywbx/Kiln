@@ -22,6 +22,14 @@ if [ "$selected" != 'http://127.0.0.1:8080/v1/play/news/video-high.m3u8' ]; then
   exit 1
 fi
 
+selected=$("$SCRIPT" --select-highest-variant \
+  "$ROOT/testdata/liveperf/media.m3u8" \
+  'http://127.0.0.1:8080/v1/play/news/index.m3u8')
+if [ "$selected" != 'http://127.0.0.1:8080/v1/play/news/index.m3u8' ]; then
+  echo "media playlist capture URL = $selected" >&2
+  exit 1
+fi
+
 score=$("$SCRIPT" --score-capture 8000000 8000 8.000)
 expected_score='capture_bytes=8000000 capture_mbps=8.00 capture_realtime_ratio=1.00 capture_overrun_ms=0'
 if [ "$score" != "$expected_score" ]; then
