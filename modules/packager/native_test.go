@@ -36,6 +36,18 @@ type httpFetcher struct {
 	hits map[string]int
 }
 
+type refreshLogFetcher struct {
+	body      string
+	pinnedURL string
+}
+
+func (f refreshLogFetcher) Fetch(_ context.Context, rawURL string) ([]byte, string, error) {
+	if rawURL == f.pinnedURL {
+		return nil, "", fmt.Errorf("dial failed for %s", rawURL)
+	}
+	return []byte(f.body), rawURL, nil
+}
+
 func (f *httpFetcher) Fetch(ctx context.Context, url string) ([]byte, string, error) {
 	f.mu.Lock()
 	f.hits[url]++
@@ -63,6 +75,42 @@ func startOrigin(t *testing.T, dir string) *httptest.Server {
 	srv := httptest.NewServer(http.FileServer(http.Dir(root)))
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+func TestRefreshManifestRedactsPinnedURLCredentials(t *testing.T) {
+	t.Parallel()
+	const pinnedURL = "HTTPS://alice:password@cdn.example/live/index.mpd?token=secret#fragment"
+	const manifest = `<?xml version="1.0"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static"><Period/></MPD>`
+	var logs bytes.Buffer
+	opts := Options{
+		ManifestURL: "https://entry.example/index.mpd",
+		Fetcher:     refreshLogFetcher{body: manifest, pinnedURL: pinnedURL},
+	}
+	opts.applyDefaults()
+	native := &Native{
+		opts:    opts,
+		refresh: pinnedURL,
+		log:     slog.New(slog.NewTextHandler(&logs, nil)),
+	}
+	native.forceResolve.Store(true)
+
+	if _, err := native.refreshManifest(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	native.refresh = pinnedURL
+	if _, err := native.refreshManifest(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	output := logs.String()
+	if !strings.Contains(output, "https://cdn.example") {
+		t.Fatalf("redacted pinned URL missing from log: %s", output)
+	}
+	for _, secret := range []string{"alice", "password", "token=", "secret", "fragment"} {
+		if strings.Contains(output, secret) {
+			t.Fatalf("log leaked %q: %s", secret, output)
+		}
+	}
 }
 
 func keys(t *testing.T) cmaf.KeySet {

@@ -8,7 +8,9 @@ import (
 	"log/slog"
 	"math"
 	"math/bits"
+	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -137,6 +139,8 @@ const (
 
 	initialSegmentEstimate = 4 << 20
 )
+
+var logURLPattern = regexp.MustCompile(`(?i)https?://[^\s"'<>]+`)
 
 func (o *Options) applyDefaults() {
 	if o.StartSegments <= 0 {
@@ -1478,7 +1482,7 @@ func (n *Native) run(ctx context.Context, pres *mpd.Presentation) {
 				return
 			}
 			n.manifestErrs.Add(1)
-			n.log.Warn("mpd refresh failed", "err", err)
+			n.log.Warn("mpd refresh failed", "err", safeLogError(err))
 			timer.Reset(interval)
 			continue
 		}
@@ -1515,7 +1519,7 @@ func (n *Native) run(ctx context.Context, pres *mpd.Presentation) {
 func (n *Native) refreshManifest(ctx context.Context) (*mpd.Presentation, error) {
 	if n.forceResolve.Swap(false) && n.refresh != n.opts.ManifestURL {
 		n.log.Warn("media stalled on the pinned session, re-resolving from the entry url",
-			"pinned", n.refresh)
+			"pinned", safeLogURL(n.refresh))
 		return n.resolveEntry(ctx)
 	}
 
@@ -1528,8 +1532,23 @@ func (n *Native) refreshManifest(ctx context.Context) (*mpd.Presentation, error)
 		return nil, err
 	}
 	n.log.Warn("pinned manifest failed, re-resolving from the entry url",
-		"pinned", n.refresh, "err", err)
+		"pinned", safeLogURL(n.refresh), "err", safeLogError(err))
 	return n.resolveEntry(ctx)
+}
+
+func safeLogURL(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "<redacted-url>"
+	}
+	return (&url.URL{Scheme: parsed.Scheme, Host: parsed.Host}).String()
+}
+
+func safeLogError(err error) string {
+	if err == nil {
+		return ""
+	}
+	return logURLPattern.ReplaceAllStringFunc(err.Error(), safeLogURL)
 }
 
 // checkStalled ends a publication that cannot explain itself: the manifest is
