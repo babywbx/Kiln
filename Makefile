@@ -1,6 +1,6 @@
-.PHONY: build build-debug build-release test test-extended test-admin-ui test-docker-targets test-local-tools test-complete coverage run tidy hash keys fmt vet lint vuln ci clean audit-admin-ui \
-        docker docker-full docker-core docker-images docker-multiarch docker-core-multiarch \
-        docker-verify docker-verify-images docker-smoke docker-reap fixtures \
+.PHONY: build build-debug build-release build-lite test test-lite test-extended test-admin-ui test-docker-targets test-lite-contract test-local-tools test-complete coverage run tidy hash keys fmt vet lint vuln ci clean audit-admin-ui \
+		docker docker-full docker-core docker-lite docker-images docker-multiarch docker-core-multiarch docker-lite-multiarch \
+		docker-verify docker-verify-images docker-verify-lite docker-smoke docker-smoke-lite docker-reap fixtures \
         media-oracle test-safety test-resource-docker-basic test-resource-docker-extended benchmark-performance performance-live soak
 
 VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
@@ -8,9 +8,11 @@ COMMIT   ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 BUILT_AT ?= $(shell date -u +%FT%TZ)
 IMAGE    ?= kiln:local
 CORE_IMAGE ?= kiln:core-local
+LITE_IMAGE ?= kiln:lite-local
 BUSYBOX_IMAGE ?= busybox:1.37.0@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028
 PLATFORM ?= linux/amd64,linux/arm64
 CORE_PLATFORM ?= linux/amd64,linux/arm64,linux/arm/v7,linux/arm/v6
+LITE_PLATFORM ?= linux/amd64,linux/arm64
 
 BUILD_ARGS = --build-arg VERSION=$(VERSION) \
              --build-arg COMMIT=$(COMMIT) \
@@ -30,6 +32,11 @@ build-release:
 	@mkdir -p dist
 	go build -trimpath -o dist/kiln -ldflags="-s -w $(LDFLAGS)" ./apps/server
 
+build-lite:
+	@mkdir -p dist
+	CGO_ENABLED=0 go build -tags=lite -trimpath -o dist/kiln-lite \
+	  -ldflags="-s -w -buildid= $(LDFLAGS)" ./apps/server
+
 test:
 	go test -race ./...
 
@@ -42,6 +49,12 @@ test-admin-ui:
 test-docker-targets:
 	sh deploy/docker/go-target-env.test.sh
 	sh deploy/docker/resource-profile-smoke.test.sh basic
+
+test-lite-contract: build-lite
+	scripts/lite-contract.test.sh dist/kiln-lite
+
+test-lite: test-lite-contract
+	go test -race -tags=lite ./...
 
 test-local-tools:
 	sh deploy/docker/resource-profile-smoke.test.sh extended
@@ -103,7 +116,7 @@ vuln:
 	@command -v govulncheck >/dev/null 2>&1 || { echo "govulncheck not found: go install golang.org/x/vuln/cmd/govulncheck@latest"; exit 1; }
 	govulncheck ./...
 
-ci: fmt vet lint build test test-admin-ui test-docker-targets media-oracle vuln
+ci: fmt vet lint build test test-lite test-admin-ui test-docker-targets media-oracle vuln
 
 test-complete: ci test-extended test-local-tools test-safety benchmark-performance
 	$(MAKE) docker-core
@@ -124,7 +137,10 @@ docker-full:
 docker-core:
 	docker buildx build --target core -f deploy/docker/Dockerfile $(BUILD_ARGS) -t $(CORE_IMAGE) --load .
 
-docker-images: docker-core docker-full
+docker-lite:
+	docker buildx build --target lite -f deploy/docker/Dockerfile $(BUILD_ARGS) -t $(LITE_IMAGE) --load .
+
+docker-images: docker-lite docker-core docker-full
 
 docker-multiarch:
 	docker buildx build --target full -f deploy/docker/Dockerfile $(BUILD_ARGS) \
@@ -134,8 +150,16 @@ docker-core-multiarch:
 	docker buildx build --target core -f deploy/docker/Dockerfile $(BUILD_ARGS) \
 	  --platform $(CORE_PLATFORM) -t $(CORE_IMAGE) --output type=cacheonly .
 
+docker-lite-multiarch:
+	docker buildx build --target lite -f deploy/docker/Dockerfile $(BUILD_ARGS) \
+	  --platform $(LITE_PLATFORM) -t $(LITE_IMAGE) --output type=cacheonly .
+
 docker-verify-images:
 	deploy/docker/verify-images.sh $(CORE_IMAGE) $(IMAGE)
+	deploy/docker/verify-lite.sh $(LITE_IMAGE)
+
+docker-verify-lite:
+	deploy/docker/verify-lite.sh $(LITE_IMAGE)
 
 docker-verify:
 	docker run --rm --entrypoint /bin/sh -v "$(PWD)/deploy/docker:/d:ro" $(IMAGE) \
@@ -151,6 +175,9 @@ docker-smoke:
 	  deploy/docker/smoke.sh /usr/local/bin/ffmpeg testdata/cenc
 	@docker rm -f kiln-origin >/dev/null
 	@docker network rm kilnsmoke >/dev/null
+
+docker-smoke-lite:
+	deploy/docker/lite-smoke.sh $(LITE_IMAGE) $(BUSYBOX_IMAGE)
 
 docker-reap:
 	@docker ps -aq --filter label=kiln.ffmpeg=1 | xargs -r docker rm -f

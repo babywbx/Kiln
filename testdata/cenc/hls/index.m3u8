@@ -1,0 +1,10 @@
+#EXTM3U
+#EXT-X-VERSION:7
+#EXT-X-TARGETDURATION:2
+#EXT-X-MEDIA-SEQUENCE:1
+#EXT-X-MAP:URI="../cbcs-clear/init-stream0.m4s"
+#EXTINF:2.000,
+../cbcs-clear/chunk-stream0-00001.m4s
+#EXTINF:2.000,
+../cbcs-clear/chunk-stream0-00002.m4s
+#EXT-X-ENDLIST

@@ -1,8 +1,12 @@
-package httpserver
+//go:build !lite
+
+package httpserver_test
 
 import (
 	"strings"
 	"testing"
+
+	"github.com/babywbx/kiln/modules/playback"
 )
 
 // A master playlist references its renditions through URI="..." attributes, and
@@ -15,7 +19,7 @@ func TestRewriteLocalPlaylistCoversTagURIs(t *testing.T) {
 #EXT-X-STREAM-INF:BANDWIDTH=120000,CODECS="hvc1.1.6.L60.90,mp4a.40.2",AUDIO="audio"
 video-main.m3u8
 `
-	out := string(rewriteLocalPlaylist([]byte(in), "/v1/play/demo/live/", "t0k", "gen1"))
+	out := string(playback.RewriteLocalPlaylist([]byte(in), "/v1/play/demo/live/", "t0k", "gen1"))
 
 	for _, want := range []string{
 		`URI="/v1/play/demo/live/audio-main.m3u8?g=gen1&token=t0k"`,
@@ -36,7 +40,7 @@ func TestRewriteLocalPlaylistRewritesInitSegment(t *testing.T) {
 #EXTINF:2.000,
 video-main-000001.m4s
 `
-	out := string(rewriteLocalPlaylist([]byte(in), "/v1/play/demo/live/", "", "gen1"))
+	out := string(playback.RewriteLocalPlaylist([]byte(in), "/v1/play/demo/live/", "", "gen1"))
 	for _, want := range []string{
 		`#EXT-X-MAP:URI="/v1/play/demo/live/video-main-init.mp4?g=gen1"`,
 		"/v1/play/demo/live/video-main-000001.m4s?g=gen1",
@@ -51,7 +55,7 @@ video-main-000001.m4s
 // would only widen where the token appears.
 func TestRewriteLocalPlaylistOmitsQueryTokenForPathTokens(t *testing.T) {
 	in := "#EXT-X-MAP:URI=\"video-main-init.mp4\"\nvideo-main-000001.m4s\n"
-	out := string(rewriteLocalPlaylist([]byte(in), "/p/abc/play/demo/live/", "t0k", "gen1"))
+	out := string(playback.RewriteLocalPlaylist([]byte(in), "/p/abc/play/demo/live/", "t0k", "gen1"))
 
 	if strings.Contains(out, "token=") {
 		t.Errorf("path-token playlist should carry no query token:\n%s", out)
@@ -65,7 +69,7 @@ func TestRewriteLocalPlaylistOmitsQueryTokenForPathTokens(t *testing.T) {
 // alone rather than turned into a URL on this server.
 func TestRewriteLocalPlaylistRejectsTraversal(t *testing.T) {
 	in := "../../etc/passwd\nhttps://evil.example.com/seg.m4s\n"
-	out := string(rewriteLocalPlaylist([]byte(in), "/v1/play/demo/live/", "", "gen1"))
+	out := string(playback.RewriteLocalPlaylist([]byte(in), "/v1/play/demo/live/", "", "gen1"))
 
 	if strings.Contains(out, "/v1/play/demo/live/passwd") {
 		t.Errorf("traversal was rewritten into a servable URL:\n%s", out)

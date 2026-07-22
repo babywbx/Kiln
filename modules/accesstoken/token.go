@@ -8,9 +8,6 @@ import (
 	"fmt"
 	"math/big"
 	"strings"
-	"time"
-
-	"github.com/babywbx/kiln/modules/store"
 )
 
 const (
@@ -98,37 +95,4 @@ func AllowsChannel(scopeJSON, channelID string) bool {
 		}
 	}
 	return false
-}
-
-func NewRow(name, note string, channelIDs []string) (plain string, row store.AccessTokenRow, err error) {
-	plain, err = Generate()
-	if err != nil {
-		return "", store.AccessTokenRow{}, err
-	}
-	id, err := randomID()
-	if err != nil {
-		return "", store.AccessTokenRow{}, err
-	}
-	row = store.AccessTokenRow{
-		ID:        id,
-		Name:      strings.TrimSpace(name),
-		TokenHash: Hash(plain),
-		Prefix:    Prefix(plain),
-		ScopeJSON: EncodeScope(channelIDs),
-		Enabled:   true,
-		Note:      note,
-		CreatedAt: time.Now().Unix(),
-	}
-	if row.Name == "" {
-		row.Name = "link"
-	}
-	return plain, row, nil
-}
-
-func randomID() (string, error) {
-	var b [12]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(b[:]), nil
 }

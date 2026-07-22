@@ -1,18 +1,14 @@
+//go:build !lite
+
 package httpserver
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
-	"net/url"
-	"os"
-	"path"
-	"strconv"
 	"strings"
 	"time"
 
@@ -22,13 +18,11 @@ import (
 	"github.com/babywbx/kiln/modules/auth"
 	"github.com/babywbx/kiln/modules/catalog"
 	"github.com/babywbx/kiln/modules/config"
-	"github.com/babywbx/kiln/modules/egress"
 	"github.com/babywbx/kiln/modules/epg"
 	"github.com/babywbx/kiln/modules/logging"
 	"github.com/babywbx/kiln/modules/observe"
-	"github.com/babywbx/kiln/modules/packager"
+	"github.com/babywbx/kiln/modules/playback"
 	"github.com/babywbx/kiln/modules/proxyegress"
-	"github.com/babywbx/kiln/modules/pull"
 	"github.com/babywbx/kiln/modules/security"
 	"github.com/babywbx/kiln/modules/session"
 	"github.com/babywbx/kiln/modules/store"
@@ -59,9 +53,8 @@ type Server struct {
 	mux    *http.ServeMux
 	http   *http.Server
 	loginL *security.Limiter
+	play   *playback.Handler
 }
-
-const llhlsWaitTimeout = 15 * time.Second
 
 func New(deps Deps) *Server {
 	if deps.Log == nil {
@@ -72,6 +65,11 @@ func New(deps Deps) *Server {
 		mux:    http.NewServeMux(),
 		loginL: security.NewLimiter(deps.Cfg.Auth.LoginRatePerMin),
 	}
+	s.play = playback.New(playback.Deps{
+		Cfg: deps.Cfg, Catalog: deps.Catalog, Sessions: deps.Sessions,
+		Observe: deps.Observe, Egress: deps.Egress, Log: deps.Log,
+		Allowed: deps.Allowed, Authorize: s.authorizeChannel, Token: extractPlayToken,
+	})
 	s.routes()
 	handler := s.withMiddleware(s.mux)
 	s.http = &http.Server{
@@ -198,7 +196,7 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 		ww.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: http: https:; media-src 'self' blob:; connect-src 'self'; worker-src 'self' blob:; font-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
 		ww.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
 		ww.Header().Set("Pragma", "no-cache")
-		s.applyCORS(ww, r)
+		security.ApplyCORS(ww, r, s.deps.Cfg.Security.CORSOrigins)
 
 		defer func() {
 			abortResponse := false
@@ -228,7 +226,7 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 			}
 			if s.deps.Log.Enabled(r.Context(), level) {
 				s.deps.Log.Log(r.Context(), level, "request",
-					"remote", clientIP(r),
+					"remote", security.ClientIP(r),
 					"method", r.Method,
 					"path", redactRequestPath(r.URL.Path),
 					"status", ww.code,
@@ -245,67 +243,12 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 			ww.WriteHeader(http.StatusNoContent)
 			return
 		}
-		if !s.hostAllowed(r) {
+		if !security.IsLocalHealthRequest(r) && !security.RequestHostAllowed(r, s.deps.Cfg.Security.PublicHosts) {
 			writeAppErr(ww, apperr.New(apperr.CodeForbidden, 403, "host not allowed"))
 			return
 		}
 		next.ServeHTTP(ww, r)
 	})
-}
-
-func (s *Server) applyCORS(w http.ResponseWriter, r *http.Request) {
-	origins := s.deps.Cfg.Security.CORSOrigins
-	if len(origins) == 0 {
-		return
-	}
-	origin := r.Header.Get("Origin")
-	if origin == "" {
-		return
-	}
-	allow := false
-	for _, o := range origins {
-		if o == "*" || strings.EqualFold(o, origin) {
-			allow = true
-			if o != "*" {
-				origin = o
-			}
-			break
-		}
-	}
-	if !allow {
-		return
-	}
-	if origins[0] == "*" && len(origins) == 1 {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-	} else {
-		w.Header().Set("Access-Control-Allow-Origin", origin)
-		w.Header().Set("Vary", "Origin")
-	}
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Request-ID")
-	w.Header().Set("Access-Control-Max-Age", "600")
-}
-
-func (s *Server) hostAllowed(r *http.Request) bool {
-	hosts := s.deps.Cfg.Security.PublicHosts
-	if len(hosts) == 0 {
-		return true
-	}
-	h := r.Host
-	if i := strings.Index(h, ":"); i >= 0 {
-		h = h[:i]
-	}
-	h = strings.ToLower(h)
-	for _, allow := range hosts {
-		allow = strings.ToLower(strings.TrimSpace(allow))
-		if allow == "" {
-			continue
-		}
-		if allow == h || allow == "*" {
-			return true
-		}
-	}
-	return false
 }
 
 type statusWriter struct {
@@ -363,7 +306,7 @@ type loginReq struct {
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	ip := clientIP(r)
+	ip := security.ClientIP(r)
 	if !s.loginL.Allow(ip) {
 		writeAppErr(w, apperr.ErrTooMany)
 		return
@@ -406,7 +349,7 @@ func (s *Server) handleUpdateCredentials(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	claims := claimsFrom(r)
-	if !s.loginL.Allow("credentials:" + claims.Username() + ":" + clientIP(r)) {
+	if !s.loginL.Allow("credentials:" + claims.Username() + ":" + security.ClientIP(r)) {
 		writeAppErr(w, apperr.ErrTooMany)
 		return
 	}
@@ -525,107 +468,7 @@ func (s *Server) handlePlaylist(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePlayIndex(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if r.PathValue("token") == "" {
-		if err := s.authorizeChannel(r, id); err != nil {
-			writeAppErr(w, err)
-			return
-		}
-	}
-	sess, err := s.deps.Sessions.Acquire(id)
-	if err != nil {
-		s.deps.Observe.IncError()
-		writeAppErr(w, err)
-		return
-	}
-	_, _, _, mode := sess.SourceSnapshot()
-	switch mode {
-	case "hls":
-		s.serveHLSIndex(w, r, sess)
-	case "dash":
-		s.serveDashIndex(w, r, sess)
-	default:
-		writeAppErr(w, apperr.New(apperr.CodeInvalid, 400, "unsupported ingress"))
-	}
-}
-
-func (s *Server) serveHLSIndex(w http.ResponseWriter, r *http.Request, sess *session.Session) {
-	channel, sourceURL, _, _ := sess.SourceSnapshot()
-	headers := s.deps.Sessions.HeadersFor(channel)
-	body, finalURL, err := s.deps.Sessions.Pull().GetBytes(r.Context(), pull.Request{
-		URL:       mergeHLSDeliveryDirectives(sourceURL, r.URL.Query()),
-		UserAgent: version.UserAgent(channel.UserAgent),
-		Headers:   headers,
-		ChannelID: channel.ID,
-	})
-	if err != nil {
-		s.deps.Observe.IncError()
-		writeAppErr(w, err)
-		return
-	}
-	token := extractPlayToken(r)
-	prefix := "/v1/play/" + channel.ID + "/u/"
-	if t := r.PathValue("token"); t != "" && accesstoken.Valid(t) {
-		prefix = "/p/" + t + "/play/" + channel.ID + "/u/"
-		token = ""
-	}
-	chID := channel.ID
-	rewritten, err := egress.RewritePlaylist(string(body), finalURL, prefix, s.deps.Allowed, s.shouldRewrite(chID))
-	if err != nil {
-		s.deps.Observe.IncError()
-		writeAppErr(w, apperr.Internal(err))
-		return
-	}
-	if token != "" {
-		rewritten = appendTokenToPlaylistURLs(rewritten, token)
-	}
-	s.deps.Observe.AddBytesOut(int64(len(rewritten)))
-	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
-	w.Header().Set("Cache-Control", "no-store")
-	_, _ = w.Write([]byte(rewritten))
-}
-
-func (s *Server) shouldRewrite(channelID string) egress.RewriteDecision {
-	return func(abs string) bool {
-		if s.deps.Egress == nil {
-			return true
-		}
-		return s.deps.Egress.ShouldRewriteURL(abs, channelID)
-	}
-}
-
-func (s *Server) serveDashIndex(w http.ResponseWriter, r *http.Request, sess *session.Session) {
-	pub, generation := sess.PublicationSnapshot()
-	if pub == nil {
-		s.deps.Observe.IncError()
-		writeAppErr(w, apperr.New(apperr.CodeNotReady, 502, "playlist not ready"))
-		return
-	}
-	body, ok := pub.Playlist(pub.Master())
-	if !ok {
-		s.deps.Observe.IncError()
-		writeAppErr(w, apperr.New(apperr.CodeNotReady, 502, "playlist not ready"))
-		return
-	}
-	s.writePlaylist(w, r, sess, body, generation)
-}
-
-// writePlaylist serves a published playlist with every reference rewritten to
-// this server. Playlists are a moving window, so they stay uncacheable.
-func (s *Server) writePlaylist(w http.ResponseWriter, r *http.Request, sess *session.Session, body []byte, generation string) {
-	channel, _, _, _ := sess.SourceSnapshot()
-	out := rewriteLocalPlaylist(body, playLivePrefix(r, channel.ID), extractPlayToken(r), generation)
-	s.deps.Observe.AddBytesOut(int64(len(out)))
-	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
-	w.Header().Set("Cache-Control", "no-store")
-	_, _ = w.Write(out)
-}
-
-func playLivePrefix(r *http.Request, channelID string) string {
-	if t := r.PathValue("token"); t != "" && accesstoken.Valid(t) {
-		return "/p/" + t + "/play/" + channelID + "/live/"
-	}
-	return "/v1/play/" + channelID + "/live/"
+	s.play.HandleIndex(w, r)
 }
 
 // handlePlayLiveFile serves published playlists and media assets. It never
@@ -633,322 +476,11 @@ func playLivePrefix(r *http.Request, channelID string) string {
 // channel back up, which meant an idle-stopped channel could be revived by a
 // player that had not even re-read the playlist. Only the playlist acquires.
 func (s *Server) handlePlayLiveFile(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	file := path.Base(r.PathValue("file"))
-	if !safeFileName(file) {
-		writeAppErr(w, apperr.ErrNotFound)
-		return
-	}
-	if r.PathValue("token") == "" {
-		if err := s.authorizeChannel(r, id); err != nil {
-			writeAppErr(w, err)
-			return
-		}
-	}
-	sess, ok := s.deps.Sessions.Get(id)
-	if !ok {
-		// Gone, not Not Found: the player should go back to the playlist and
-		// renegotiate, which is what restarts an on-demand channel.
-		writeAppErr(w, apperr.New(apperr.CodeNotFound, 410, "session is not running"))
-		return
-	}
-	pub, generation := sess.PublicationSnapshot()
-	requested := r.URL.Query().Get("g")
-	if generation != "" && (requested == "" || requested != generation && strings.HasSuffix(file, ".m3u8")) {
-		redirectToPublicationGeneration(w, r, generation)
-		return
-	}
-	if requested != "" && requested != generation {
-		w.Header().Set("Retry-After", "1")
-		writeAppErr(w, apperr.New(apperr.CodeNotFound, http.StatusGone, "publication generation is gone"))
-		return
-	}
-	s.deps.Sessions.Touch(id)
-	if pub == nil {
-		writeAppErr(w, apperr.ErrNotFound)
-		return
-	}
-
-	if strings.HasSuffix(file, ".m3u8") {
-		body, ok, err := playlistForRequest(r, pub, file)
-		if err != nil {
-			writeAppErr(w, apperr.New(apperr.CodeInvalid, http.StatusBadRequest, err.Error()))
-			return
-		}
-		if !ok {
-			writeAppErr(w, apperr.ErrNotFound)
-			return
-		}
-		s.writePlaylist(w, r, sess, body, generation)
-		return
-	}
-
-	asset, ok := pub.Asset(file)
-	if !ok {
-		if contextual, supportsContext := pub.(packager.ContextPublication); supportsContext {
-			var err error
-			waitCtx, cancel := context.WithTimeout(r.Context(), llhlsWaitTimeout)
-			asset, ok, err = contextual.AssetContext(waitCtx, file)
-			cancel()
-			if err != nil {
-				if r.Context().Err() != nil || errors.Is(err, context.Canceled) {
-					return
-				}
-				if errors.Is(err, context.DeadlineExceeded) {
-					s.deps.Observe.IncError()
-					w.Header().Set("Retry-After", "1")
-					writeAppErr(w, apperr.New(apperr.CodeUnavailable, http.StatusServiceUnavailable, "media part not ready"))
-					return
-				}
-				writeAppErr(w, apperr.New(apperr.CodeInvalid, http.StatusBadRequest, err.Error()))
-				return
-			}
-		}
-	}
-	if !ok {
-		writeAppErr(w, apperr.ErrNotFound)
-		return
-	}
-	f, err := os.Open(asset.Path)
-	if err != nil {
-		writeAppErr(w, apperr.ErrNotFound)
-		return
-	}
-	defer f.Close()
-	st, err := f.Stat()
-	if err != nil || st.IsDir() {
-		writeAppErr(w, apperr.ErrNotFound)
-		return
-	}
-	w.Header().Set("Content-Type", contentTypeFor(file))
-	setAssetCacheHeaders(w, asset.Immutable)
-	counter := &bodyCountWriter{ResponseWriter: w}
-	http.ServeContent(counter, r, file, asset.ModTime, f)
-	s.deps.Observe.AddBytesOut(counter.written)
-}
-
-type bodyCountWriter struct {
-	http.ResponseWriter
-	written int64
-}
-
-func (w *bodyCountWriter) Write(body []byte) (int, error) {
-	n, err := w.ResponseWriter.Write(body)
-	w.written += int64(n)
-	return n, err
-}
-
-func redirectToPublicationGeneration(w http.ResponseWriter, r *http.Request, generation string) {
-	target := *r.URL
-	query := target.Query()
-	query.Set("g", generation)
-	target.RawQuery = query.Encode()
-	w.Header().Set("Cache-Control", "no-store")
-	http.Redirect(w, r, target.String(), http.StatusTemporaryRedirect)
-}
-
-func playlistForRequest(r *http.Request, publication packager.Publication, name string) ([]byte, bool, error) {
-	request, lowLatency, err := parseHLSPlaylistRequest(r)
-	if err != nil {
-		return nil, false, err
-	}
-	contextual, supportsContext := publication.(packager.ContextPublication)
-	if !lowLatency || !supportsContext {
-		body, ok := publication.Playlist(name)
-		return body, ok, nil
-	}
-	waitCtx, cancel := context.WithTimeout(r.Context(), llhlsWaitTimeout)
-	view, ok, err := contextual.PlaylistContext(waitCtx, name, request)
-	cancel()
-	if errors.Is(err, context.DeadlineExceeded) && r.Context().Err() == nil {
-		body, found := publication.Playlist(name)
-		return body, found, nil
-	}
-	if err != nil {
-		return nil, ok, err
-	}
-	return view.Body, ok, nil
-}
-
-func parseHLSPlaylistRequest(r *http.Request) (packager.PlaylistRequest, bool, error) {
-	query := r.URL.Query()
-	request := packager.PlaylistRequest{}
-	lowLatency := false
-	if raw, present := query["_HLS_skip"]; present {
-		lowLatency = true
-		value := ""
-		if len(raw) > 0 {
-			value = strings.ToUpper(strings.TrimSpace(raw[0]))
-		}
-		if value != "YES" && value != "V2" {
-			return request, true, fmt.Errorf("_HLS_skip must be YES or v2")
-		}
-		request.Skip = true
-	}
-	parseUint := func(key string) (*uint64, error) {
-		raw, present := query[key]
-		if !present {
-			return nil, nil
-		}
-		lowLatency = true
-		if len(raw) == 0 || strings.TrimSpace(raw[0]) == "" {
-			return nil, fmt.Errorf("%s requires an unsigned integer", key)
-		}
-		value, parseErr := strconv.ParseUint(raw[0], 10, 64)
-		if parseErr != nil {
-			return nil, fmt.Errorf("%s requires an unsigned integer", key)
-		}
-		return &value, nil
-	}
-	var err error
-	request.MSN, err = parseUint("_HLS_msn")
-	if err != nil {
-		return request, lowLatency, err
-	}
-	request.Part, err = parseUint("_HLS_part")
-	if err != nil {
-		return request, lowLatency, err
-	}
-	if request.Part != nil && request.MSN == nil {
-		return request, lowLatency, fmt.Errorf("_HLS_part requires _HLS_msn")
-	}
-	return request, lowLatency, nil
-}
-
-// setAssetCacheHeaders overrides the global no-store for published media.
-// Without this, a hundred players mean a hundred full re-reads and the shared
-// upstream fetch buys nothing at the HTTP layer. The exemption is opt-in per
-// route so it never widens the caching of admin or status responses.
-//
-// private, not public: these URLs can carry an access token, and a shared cache
-// holding them would widen where that token is exposed.
-func setAssetCacheHeaders(w http.ResponseWriter, immutable bool) {
-	w.Header().Del("Pragma")
-	if !immutable {
-		w.Header().Set("Cache-Control", "no-cache")
-		return
-	}
-	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	s.play.HandleLiveFile(w, r)
 }
 
 func (s *Server) handlePlayUpstream(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	escaped := r.PathValue("upstream")
-	abs, err := egress.DecodeUpstream(escaped)
-	if err != nil {
-		writeAppErr(w, apperr.New(apperr.CodeInvalid, 400, "bad upstream"))
-		return
-	}
-	if err := security.MediaHostOK(abs, s.deps.Allowed); err != nil {
-		writeAppErr(w, apperr.New(apperr.CodeForbidden, 403, "upstream host not allowed"))
-		return
-	}
-	abs = mergeHLSDeliveryDirectives(abs, r.URL.Query())
-	if r.PathValue("token") == "" {
-		if err := s.authorizeChannel(r, id); err != nil {
-			writeAppErr(w, err)
-			return
-		}
-	}
-	ch, ok := s.deps.Catalog.Get(id)
-	if !ok {
-		writeAppErr(w, session.ErrNotFound)
-		return
-	}
-	if _, err := s.deps.Sessions.Acquire(id); err != nil {
-		writeAppErr(w, err)
-		return
-	}
-	headers := s.deps.Sessions.HeadersFor(ch)
-	res, err := s.deps.Sessions.Pull().Get(r.Context(), pull.Request{
-		URL:       abs,
-		UserAgent: version.UserAgent(ch.UserAgent),
-		Headers:   headers,
-		ChannelID: id,
-	})
-	if err != nil {
-		s.deps.Observe.IncError()
-		writeAppErr(w, err)
-		return
-	}
-	defer res.Body.Close()
-
-	ct := res.ContentType
-	if ct == "" {
-		ct = contentTypeFor(abs)
-	}
-	if strings.Contains(ct, "mpegurl") || strings.HasSuffix(strings.Split(abs, "?")[0], ".m3u8") {
-		b, err := io.ReadAll(io.LimitReader(res.Body, s.deps.Cfg.Security.MaxPlaylistBytes+1))
-		if err != nil {
-			writeAppErr(w, apperr.Wrap(apperr.CodeUpstream, 502, "read playlist failed", err))
-			return
-		}
-		if int64(len(b)) > s.deps.Cfg.Security.MaxPlaylistBytes {
-			writeAppErr(w, apperr.New(apperr.CodeUpstream, 502, "playlist too large"))
-			return
-		}
-		token := extractPlayToken(r)
-		prefix := "/v1/play/" + id + "/u/"
-		if t := r.PathValue("token"); t != "" && accesstoken.Valid(t) {
-			prefix = "/p/" + t + "/play/" + id + "/u/"
-			token = ""
-		}
-		out, err := egress.RewritePlaylist(string(b), res.FinalURL, prefix, s.deps.Allowed, s.shouldRewrite(id))
-		if err != nil {
-			writeAppErr(w, apperr.Internal(err))
-			return
-		}
-		if token != "" {
-			out = appendTokenToPlaylistURLs(out, token)
-		}
-		s.deps.Observe.AddBytesOut(int64(len(out)))
-		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
-		w.Header().Set("Cache-Control", "no-store")
-		_, _ = w.Write([]byte(out))
-		return
-	}
-	w.Header().Set("Content-Type", ct)
-	w.Header().Set("Cache-Control", "no-cache")
-	stream := &commitTrackingWriter{ResponseWriter: w}
-	n, copyErr := io.Copy(stream, res.Body)
-	s.deps.Observe.AddBytesOut(n)
-	if copyErr != nil {
-		s.deps.Observe.IncError()
-		s.deps.Log.Warn("stream upstream body failed", "channel", id, "err", copyErr)
-		if !stream.committed {
-			writeAppErr(w, apperr.Wrap(apperr.CodeUpstream, http.StatusBadGateway, "read upstream body failed", copyErr))
-			return
-		}
-		panic(http.ErrAbortHandler)
-	}
-}
-
-type commitTrackingWriter struct {
-	http.ResponseWriter
-	committed bool
-}
-
-func (w *commitTrackingWriter) Write(p []byte) (int, error) {
-	n, err := w.ResponseWriter.Write(p)
-	if n > 0 {
-		w.committed = true
-	}
-	return n, err
-}
-
-func mergeHLSDeliveryDirectives(raw string, requestQuery url.Values) string {
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		return raw
-	}
-	query := parsed.Query()
-	for _, key := range []string{"_HLS_msn", "_HLS_part", "_HLS_skip"} {
-		if value := requestQuery.Get(key); value != "" {
-			query.Set(key, value)
-		}
-	}
-	parsed.RawQuery = query.Encode()
-	return parsed.String()
+	s.play.HandleUpstream(w, r)
 }
 
 type ctxKey int
@@ -1122,7 +654,7 @@ func (s *Server) recordAdminTokenLog(r *http.Request, token store.AdminAPITokenR
 	}
 	_ = s.deps.Store.InsertAdminAPITokenLog(store.AdminAPITokenLogRow{
 		TokenID: token.ID, TokenPrefix: token.Prefix, Method: r.Method, Path: r.URL.Path,
-		Scope: scope, Decision: decision, Reason: reason, Status: status, Remote: clientIP(r),
+		Scope: scope, Decision: decision, Reason: reason, Status: status, Remote: security.ClientIP(r),
 		UserAgent: r.UserAgent(), RequestID: r.Header.Get("X-Request-ID"),
 	})
 }
@@ -1170,98 +702,6 @@ func writeAppErr(w http.ResponseWriter, err error) {
 			"message": msg,
 		},
 	})
-}
-
-func contentTypeFor(name string) string {
-	n := strings.ToLower(strings.Split(name, "?")[0])
-	switch {
-	case strings.HasSuffix(n, ".m3u8"):
-		return "application/vnd.apple.mpegurl"
-	case strings.HasSuffix(n, ".ts"):
-		return "video/mp2t"
-	case strings.HasSuffix(n, ".m4s"), strings.HasSuffix(n, ".mp4"):
-		return "video/mp4"
-	case strings.HasSuffix(n, ".aac"):
-		return "audio/aac"
-	case strings.HasSuffix(n, ".vtt"):
-		return "text/vtt"
-	default:
-		return "application/octet-stream"
-	}
-}
-
-func appendTokenToPlaylistURLs(playlist, token string) string {
-	lines := strings.Split(playlist, "\n")
-	for i, line := range lines {
-		trim := strings.TrimSpace(line)
-		if trim == "" {
-			continue
-		}
-		if strings.HasPrefix(trim, "#") {
-			if strings.Contains(trim, `URI="`) {
-				lines[i] = injectTokenInURITag(trim, token)
-			}
-			continue
-		}
-		if strings.HasPrefix(trim, "http://") || strings.HasPrefix(trim, "https://") || strings.HasPrefix(trim, "/") {
-			lines[i] = appendQuery(trim, "token", token)
-		}
-	}
-	return strings.Join(lines, "\n")
-}
-
-func injectTokenInURITag(tag, token string) string {
-	const key = `URI="`
-	idx := strings.Index(tag, key)
-	if idx < 0 {
-		return tag
-	}
-	start := idx + len(key)
-	end := strings.Index(tag[start:], `"`)
-	if end < 0 {
-		return tag
-	}
-	uri := tag[start : start+end]
-	if strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://") || strings.HasPrefix(uri, "/") {
-		uri = appendQuery(uri, "token", token)
-	}
-	return tag[:start] + uri + tag[start+end:]
-}
-
-func appendQuery(raw, k, v string) string {
-	if strings.Contains(raw, k+"=") {
-		return raw
-	}
-	u, err := url.Parse(raw)
-	if err != nil {
-		sep := "?"
-		if strings.Contains(raw, "?") {
-			sep = "&"
-		}
-		return raw + sep + k + "=" + url.QueryEscape(v)
-	}
-	q := u.Query()
-	q.Set(k, v)
-	u.RawQuery = q.Encode()
-	return u.String()
-}
-
-func safeFileName(name string) bool {
-	if name == "" || name == "." || name == ".." {
-		return false
-	}
-	if strings.Contains(name, "/") || strings.Contains(name, "\\") || strings.Contains(name, "..") {
-		return false
-	}
-	return true
-}
-
-func clientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
 }
 
 func redactRequestPath(raw string) string {

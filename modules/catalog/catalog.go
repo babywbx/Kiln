@@ -3,12 +3,12 @@ package catalog
 import (
 	"fmt"
 	"net/url"
-	"path"
 	"strings"
 
-	"github.com/babywbx/kiln/modules/apperr"
+	"github.com/babywbx/kiln/modules/channelconfig"
 	"github.com/babywbx/kiln/modules/config"
 	"github.com/babywbx/kiln/modules/epg"
+	"github.com/babywbx/kiln/modules/mediaurl"
 	"github.com/babywbx/kiln/modules/store"
 )
 
@@ -280,28 +280,11 @@ func (s *Service) SetAllDisabled(disabled bool) ([]string, error) {
 }
 
 func (s *Service) SourceURL(ch config.Channel) (string, error) {
-	if raw := strings.TrimSpace(ch.SourceURL); raw != "" {
-		if err := config.ValidateSourceURL(raw); err != nil {
-			return "", apperr.Wrap(apperr.CodeInternal, 500, "invalid source url", err)
-		}
-		return raw, nil
-	}
-	up, ok := s.cfg.UpstreamByID(ch.Upstream)
-	if !ok {
-		return "", apperr.New(apperr.CodeInternal, 500, "unknown upstream")
-	}
-	return JoinURL(up.BaseURL, ch.Path), nil
+	return channelconfig.SourceURL(s.cfg, ch)
 }
 
 func (s *Service) Upstream(ch config.Channel) (config.Upstream, error) {
-	if strings.TrimSpace(ch.SourceURL) != "" {
-		return config.Upstream{}, nil
-	}
-	up, ok := s.cfg.UpstreamByID(ch.Upstream)
-	if !ok {
-		return config.Upstream{}, apperr.New(apperr.CodeInternal, 500, "unknown upstream")
-	}
-	return up, nil
+	return channelconfig.Upstream(s.cfg, ch)
 }
 
 func (s *Service) Upstreams() []config.Upstream {
@@ -309,105 +292,29 @@ func (s *Service) Upstreams() []config.Upstream {
 }
 
 func (s *Service) M3U(channels []config.Channel, publicBase, playPathPrefix, token, epgURL string) string {
-	var b strings.Builder
-	b.WriteString("#EXTM3U")
-	if epgURL != "" {
-		fmt.Fprintf(&b, ` x-tvg-url="%s"`, escapeAttr(epgURL))
-	}
-	b.WriteByte('\n')
-	for _, ch := range channels {
-		if ch.Disabled {
-			continue
-		}
-		title := ch.Title
-		if title == "" {
-			title = ch.ID
-		}
-		b.WriteString("#EXTINF:-1")
-		if ch.Group != "" {
-			fmt.Fprintf(&b, ` group-title="%s"`, escapeAttr(ch.Group))
-		}
-		logoURL := ch.LogoURL
-		if logoURL == "" {
-			logoName := ch.EPGName
+	return channelconfig.M3U(channels, channelconfig.M3UOptions{
+		PublicBase: publicBase, PlayPathPrefix: playPathPrefix, Token: token, EPGURL: epgURL,
+		FallbackLogo: func(channel config.Channel, title string) string {
+			logoName := channel.EPGName
 			if logoName == "" {
 				logoName = title
 			}
 			if candidates := epg.LogoCandidates(logoName); len(candidates) > 0 {
-				logoURL = strings.TrimRight(publicBase, "/") + "/v1/logo/" + url.PathEscape(ch.ID)
+				return strings.TrimRight(publicBase, "/") + "/v1/logo/" + url.PathEscape(channel.ID)
 			}
-		}
-		if logoURL != "" {
-			fmt.Fprintf(&b, ` tvg-logo="%s"`, escapeAttr(logoURL))
-		}
-		epgName := ch.EPGName
-		if epgName == "" {
-			epgName = title
-		}
-		fmt.Fprintf(&b, ` tvg-id="%s" tvg-name="%s",%s`, escapeAttr(ch.ID), escapeAttr(epgName), title)
-		b.WriteByte('\n')
-		u := publicBase + playPathPrefix + ch.ID + "/index.m3u8"
-		if token != "" {
-			u += "?token=" + url.QueryEscape(token)
-		}
-		b.WriteString(u)
-		b.WriteByte('\n')
-	}
-	return b.String()
+			return ""
+		},
+	})
 }
 
 func (s *Service) FilterByIDs(all []config.Channel, ids []string) []config.Channel {
-	if len(ids) == 0 {
-		return all
-	}
-	allow := map[string]struct{}{}
-	for _, id := range ids {
-		allow[id] = struct{}{}
-	}
-	out := make([]config.Channel, 0, len(ids))
-	for _, ch := range all {
-		if _, ok := allow[ch.ID]; ok {
-			out = append(out, ch)
-		}
-	}
-	return out
-}
-
-func escapeAttr(s string) string {
-	return strings.NewReplacer(`"`, `'`, "\n", " ", "\r", " ").Replace(s)
+	return channelconfig.FilterByIDs(all, ids)
 }
 
 func JoinURL(base, p string) string {
-	base = strings.TrimRight(base, "/")
-	if strings.HasPrefix(p, "http://") || strings.HasPrefix(p, "https://") {
-		return p
-	}
-	if !strings.HasPrefix(p, "/") {
-		p = "/" + p
-	}
-	return base + p
+	return channelconfig.JoinURL(base, p)
 }
 
 func ResolveRef(baseURL, ref string) (string, error) {
-	if strings.HasPrefix(ref, "http://") || strings.HasPrefix(ref, "https://") {
-		return ref, nil
-	}
-	u, err := url.Parse(baseURL)
-	if err != nil {
-		return "", err
-	}
-	if strings.HasPrefix(ref, "/") {
-		u.Path = ref
-		u.RawQuery = ""
-		u.Fragment = ""
-		return u.String(), nil
-	}
-	dir := path.Dir(u.Path)
-	if dir == "." {
-		dir = "/"
-	}
-	u.Path = path.Join(dir, ref)
-	u.RawQuery = ""
-	u.Fragment = ""
-	return u.String(), nil
+	return mediaurl.ResolveRef(baseURL, ref)
 }

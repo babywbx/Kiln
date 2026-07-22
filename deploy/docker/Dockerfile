@@ -4,7 +4,7 @@ ARG FFMPEG_IMAGE=mwader/static-ffmpeg:8.1.2@sha256:33f770f812cbfc3de96c547157fc9
 ARG ALPINE_IMAGE=alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
 ARG GO_IMAGE=golang:1.26.5-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651
 
-FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS build
+FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS build-base
 ARG TARGETARCH
 ARG TARGETVARIANT
 ARG VERSION=dev
@@ -14,6 +14,13 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY . .
+
+FROM build-base AS build
+ARG TARGETARCH
+ARG TARGETVARIANT
+ARG VERSION=dev
+ARG COMMIT=unknown
+ARG BUILT_AT=unknown
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     . ./deploy/docker/go-target-env.sh "$TARGETARCH" "$TARGETVARIANT" \
@@ -24,6 +31,28 @@ RUN --mount=type=cache,target=/go/pkg/mod \
         -X github.com/babywbx/kiln/modules/version.BuiltAt=${BUILT_AT}" \
       -o /out/kiln ./apps/server \
  && go version -m /out/kiln > /out/go-build-info \
+ && grep -Eq "build[[:space:]]+GOARCH=${GOARCH}$" /out/go-build-info \
+ && if [ -n "${GOARM:-}" ]; then grep -Eq "build[[:space:]]+GOARM=${GOARM}$" /out/go-build-info; fi \
+ && if [ -n "${GOAMD64:-}" ]; then grep -Eq "build[[:space:]]+GOAMD64=${GOAMD64}$" /out/go-build-info; fi \
+ && if [ -n "${GOARM64:-}" ]; then grep -Eq "build[[:space:]]+GOARM64=${GOARM64}$" /out/go-build-info; fi
+
+FROM build-base AS lite-build
+ARG TARGETARCH
+ARG TARGETVARIANT
+ARG VERSION=dev
+ARG COMMIT=unknown
+ARG BUILT_AT=unknown
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    . ./deploy/docker/go-target-env.sh "$TARGETARCH" "$TARGETVARIANT" \
+ && CGO_ENABLED=0 GOOS=linux go build -tags=lite -trimpath \
+      -ldflags="-s -w -buildid= \
+        -X github.com/babywbx/kiln/modules/version.Version=${VERSION} \
+        -X github.com/babywbx/kiln/modules/version.Commit=${COMMIT} \
+        -X github.com/babywbx/kiln/modules/version.BuiltAt=${BUILT_AT}" \
+      -o /out/kiln ./apps/server \
+ && go version -m /out/kiln > /out/go-build-info \
+ && grep -Eq "build[[:space:]]+-tags=lite$" /out/go-build-info \
  && grep -Eq "build[[:space:]]+GOARCH=${GOARCH}$" /out/go-build-info \
  && if [ -n "${GOARM:-}" ]; then grep -Eq "build[[:space:]]+GOARM=${GOARM}$" /out/go-build-info; fi \
  && if [ -n "${GOAMD64:-}" ]; then grep -Eq "build[[:space:]]+GOAMD64=${GOAMD64}$" /out/go-build-info; fi \
@@ -93,3 +122,41 @@ LABEL org.opencontainers.image.description="Kiln with native media processing an
       io.kiln.ffmpeg.source="${FFMPEG_IMAGE}"
 COPY --from=full-verify /verified /usr/local/share/kiln/build-verified
 USER kiln
+
+FROM ${ALPINE_IMAGE} AS lite-rootfs
+RUN apk add --no-cache ca-certificates \
+ && printf 'kiln:x:999:\n' > /etc/group \
+ && printf 'kiln:x:999:999:Kiln:/var/lib/kiln:/sbin/nologin\n' > /etc/passwd \
+ && mkdir -p /var/lib/kiln/data /etc/kiln \
+ && chown -R 999:999 /var/lib/kiln /etc/kiln
+
+FROM scratch AS lite
+ARG VERSION=dev
+ARG COMMIT=unknown
+COPY --from=lite-rootfs /etc/passwd /etc/group /etc/
+COPY --from=lite-rootfs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=lite-rootfs --chown=999:999 /var/lib/kiln /var/lib/kiln
+COPY --from=lite-rootfs --chown=999:999 /etc/kiln /etc/kiln
+COPY --from=lite-build /out/kiln /usr/local/bin/kiln
+COPY --from=lite-build /out/go-build-info /usr/local/share/kiln/go-build-info
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
+    KILN_DEFAULT_PACKAGER_ENGINE=native
+LABEL org.opencontainers.image.title="Kiln Lite" \
+      org.opencontainers.image.source="https://github.com/babywbx/kiln" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${COMMIT}" \
+      org.opencontainers.image.licenses="AGPL-3.0-only" \
+      org.opencontainers.image.description="Stateless Kiln with native media processing" \
+      io.kiln.variant="lite" \
+      io.kiln.ffmpeg.available="false" \
+      io.kiln.database.available="false" \
+      io.kiln.admin.available="false" \
+      io.kiln.packager.default="native" \
+      io.kiln.base.source="scratch"
+USER 999:999
+WORKDIR /var/lib/kiln
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+  CMD ["/usr/local/bin/kiln", "-healthcheck", "http://127.0.0.1:8080/healthz"]
+ENTRYPOINT ["/usr/local/bin/kiln"]
+CMD ["-config", "/etc/kiln/kiln.toml"]

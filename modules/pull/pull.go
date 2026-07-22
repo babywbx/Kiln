@@ -13,10 +13,6 @@ import (
 	"github.com/babywbx/kiln/modules/observe"
 	"github.com/babywbx/kiln/modules/proxyegress"
 	"github.com/babywbx/kiln/modules/security"
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/propagation"
 )
 
 type Client struct {
@@ -114,16 +110,9 @@ func (c *Client) Do(ctx context.Context, method string, req Request) (result Res
 	if parsed, err := url.Parse(req.URL); err == nil {
 		host = parsed.Hostname()
 	}
-	ctx, span := otel.Tracer("kiln/pull").Start(ctx, "upstream.request")
-	span.SetAttributes(attribute.String("http.request.method", method), attribute.String("server.address", host))
+	ctx, trace := startRequestTrace(ctx, method, host)
 	defer func() {
-		if resultErr != nil {
-			span.RecordError(resultErr)
-			span.SetStatus(codes.Error, "upstream request failed")
-		} else {
-			span.SetAttributes(attribute.Int("http.response.status_code", result.StatusCode))
-		}
-		span.End()
+		trace.finish(result.StatusCode, resultErr)
 	}()
 	if err := security.MediaHostOK(req.URL, c.allowed); err != nil {
 		return Result{}, apperr.Wrap(apperr.CodeForbidden, 403, "upstream host not allowed", err)
@@ -143,7 +132,7 @@ func (c *Client) Do(ctx context.Context, method string, req Request) (result Res
 			httpReq.Header.Set(k, v)
 		}
 	}
-	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(httpReq.Header))
+	injectRequestTrace(ctx, httpReq.Header)
 
 	client := c.fallback
 	proxyID := proxyegress.Direct

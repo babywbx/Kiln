@@ -4,7 +4,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/babywbx/kiln/modules/catalog"
+	"github.com/babywbx/kiln/modules/mediaurl"
 	"github.com/babywbx/kiln/modules/security"
 )
 
@@ -34,7 +34,7 @@ func RewritePlaylist(playlist, playlistURL, proxyPrefix string, allowedPrivate m
 			out = append(out, line)
 			continue
 		}
-		abs, err := catalog.ResolveRef(playlistURL, trim)
+		abs, err := mediaurl.ResolveRef(playlistURL, trim)
 		if err != nil {
 			return "", err
 		}
@@ -55,7 +55,7 @@ func rewriteTagURI(tag, playlistURL, proxyPrefix string, allowedPrivate map[stri
 		return tag, nil
 	}
 	uri := tag[start : start+end]
-	abs, err := catalog.ResolveRef(playlistURL, uri)
+	abs, err := mediaurl.ResolveRef(playlistURL, uri)
 	if err != nil {
 		return "", err
 	}

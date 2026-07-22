@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/babywbx/kiln/modules/apperr"
-	"github.com/babywbx/kiln/modules/catalog"
 	"github.com/babywbx/kiln/modules/config"
 	"github.com/babywbx/kiln/modules/observe"
 	"github.com/babywbx/kiln/modules/packager"
@@ -38,6 +37,13 @@ type RestartPolicy struct {
 	BaseDelay   time.Duration
 	MaxDelay    time.Duration
 	ResetAfter  time.Duration
+}
+
+type Catalog interface {
+	Config() config.File
+	Get(string) (config.Channel, bool)
+	SourceURL(config.Channel) (string, error)
+	Upstream(config.Channel) (config.Upstream, error)
 }
 
 func defaultRestartPolicy() RestartPolicy {
@@ -72,7 +78,7 @@ func (g spawnGate) Acquire(ctx context.Context) (func(), error) {
 }
 
 type Manager struct {
-	cat             *catalog.Service
+	cat             Catalog
 	pull            *pull.Client
 	obs             *observe.Service
 	egress          *proxyegress.Router
@@ -159,7 +165,19 @@ func (s *Session) SourceSnapshot() (config.Channel, string, config.Upstream, str
 	return s.Channel, s.SourceURL, s.Upstream, s.Mode
 }
 
-func NewManager(cat *catalog.Service, pullClient *pull.Client, obs *observe.Service, dataDir string, ff config.FFmpeg, keys []config.KeyPair, log *slog.Logger, egress *proxyegress.Router) *Manager {
+func NewManager(cat Catalog, pullClient *pull.Client, obs *observe.Service, dataDir string, ff config.FFmpeg, keys []config.KeyPair, log *slog.Logger, egress *proxyegress.Router) *Manager {
+	m := newManager(cat, pullClient, obs, dataDir, ff, keys, log, egress)
+	m.pack = m.newPackager()
+	return m
+}
+
+func NewNativeManager(cat Catalog, pullClient *pull.Client, obs *observe.Service, dataDir string, ff config.FFmpeg, keys []config.KeyPair, log *slog.Logger, egress *proxyegress.Router) *Manager {
+	m := newManager(cat, pullClient, obs, dataDir, ff, keys, log, egress)
+	m.pack = m.newNativePackager()
+	return m
+}
+
+func newManager(cat Catalog, pullClient *pull.Client, obs *observe.Service, dataDir string, ff config.FFmpeg, keys []config.KeyPair, log *slog.Logger, egress *proxyegress.Router) *Manager {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -183,17 +201,28 @@ func NewManager(cat *catalog.Service, pullClient *pull.Client, obs *observe.Serv
 		lifecycleCancel: lifecycleCancel,
 		shutdownDone:    make(chan struct{}),
 	}
-	m.pack = m.newPackager()
 	return m
 }
 
 func (m *Manager) newPackager() packager.Packager {
-	cfg := m.cat.Config().Packager
-	onBytesIn := func(n int64) {
-		if m.obs != nil {
-			m.obs.AddBytesIn(n)
-		}
+	native := m.newNativePackager()
+	var ffmpeg packager.Packager
+	if err := packager.CheckFFmpegDependency(m.ffmpeg); err != nil {
+		m.log.Info("ffmpeg compatibility engine unavailable",
+			"dependency", m.ffmpeg.Dependency(), "err", err)
+	} else {
+		m.ffmpegAvailable = true
+		ffmpeg = packager.NewFFmpegAdapter(m.ffmpeg, m.egress, m.spawn, func(n int64) {
+			if m.obs != nil {
+				m.obs.AddBytesIn(n)
+			}
+		})
 	}
+	return packager.NewAdaptivePackager(native, ffmpeg, m.log)
+}
+
+func (m *Manager) newNativePackager() *packager.NativeAdapter {
+	cfg := m.cat.Config().Packager
 	native := packager.NewNativeAdapter(
 		packager.NewPullFetcher(m.pull, cfg.MaxSegmentBytes),
 		cfg.PlaylistSize,
@@ -207,15 +236,7 @@ func (m *Manager) newPackager() packager.Packager {
 	native.LLHLS = cfg.LLHLS
 	native.PartTarget = time.Duration(cfg.PartTargetMS) * time.Millisecond
 	native.SetInflightBytes(cfg.InflightBytes)
-	var ffmpeg packager.Packager
-	if err := packager.CheckFFmpegDependency(m.ffmpeg); err != nil {
-		m.log.Info("ffmpeg compatibility engine unavailable",
-			"dependency", m.ffmpeg.Dependency(), "err", err)
-	} else {
-		m.ffmpegAvailable = true
-		ffmpeg = packager.NewFFmpegAdapter(m.ffmpeg, m.egress, m.spawn, onBytesIn)
-	}
-	return packager.NewAdaptivePackager(native, ffmpeg, m.log)
+	return native
 }
 
 func (m *Manager) FFmpegAvailable() bool {

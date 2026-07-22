@@ -1,3 +1,5 @@
+//go:build !lite
+
 package main
 
 import (
@@ -54,7 +56,7 @@ func main() {
 		EPGMaxConcurrency: cfg.EPG.MaxRefreshConcurrency,
 		EPGMaxSourceBytes: cfg.EPG.MaxSourceBytes,
 	})
-	applyResourcePlan(&cfg, resourcePlan)
+	resources.Apply(&cfg, resourcePlan)
 	log := logging.NewWith(logging.Options{
 		Level:  cfg.Logging.Level,
 		Format: cfg.Logging.Format,
@@ -234,15 +236,6 @@ func goMemoryLimitMB(limit uint64) uint64 {
 		return 0
 	}
 	return limit >> 20
-}
-
-func applyResourcePlan(cfg *config.File, plan resources.Plan) {
-	cfg.Server.MemoryLimitMB = plan.MemoryLimitMB
-	cfg.Packager.InflightBytes = plan.InflightBytes
-	cfg.Packager.StartSegments = plan.StartSegments
-	cfg.Packager.PrefetchSegments = plan.PrefetchSegments
-	cfg.EPG.MaxRefreshConcurrency = plan.EPGMaxConcurrency
-	cfg.EPG.MaxSourceBytes = plan.EPGMaxSourceBytes
 }
 
 func buildEPGService(cfg config.File, db *store.DB, router *proxyegress.Router, log *slog.Logger) (*epg.Service, error) {

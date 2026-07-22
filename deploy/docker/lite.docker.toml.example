@@ -1,0 +1,54 @@
+# Minimal, database-free configuration for kiln:lite.
+# Mount this file as /etc/kiln/kiln.toml and kiln.keys beside it.
+
+[server]
+listen = "0.0.0.0:8080"
+# Replace with the URL used by remote players.
+public_base_url = "https://kiln.example.com"
+data_dir = "/var/lib/kiln/data"
+resource_mode = "auto"
+read_timeout_sec = 15
+idle_timeout_sec = 120
+
+[logging]
+level = "info"
+format = "json"
+color = "never"
+
+[auth]
+token_ttl_hours = 24
+login_rate_per_min = 20
+token_issuer = "kiln"
+token_audience = "kiln"
+
+[[auth.users]]
+username = "admin"
+# Replace before deployment. Generate with:
+# go run scripts/hash-password.go 'your-password'
+password_hash = "$2a$10$8JxhvnpdTX/TrOTi1XaYWuPlrZK1aw3ANgGIWpTO6KtD2M432w7Ie"
+role = "admin"
+
+[security]
+play_require_auth = true
+allowed_hosts = []
+max_playlist_bytes = 8388608
+max_body_bytes = 1048576
+
+[packager]
+engine = "native"
+keys_file = "/etc/kiln/kiln.keys"
+playlist_size = 6
+start_segments = 2
+prefetch_segments = 2
+max_segment_bytes = 33554432
+inflight_bytes = 25165824
+
+[epg]
+enabled = false
+
+[[channels]]
+id = "news"
+title = "News"
+source_url = "https://media.example.com/live/index.m3u8"
+ingress = "hls"
+on_demand = true

@@ -2,6 +2,8 @@
 // limits while leaving unconstrained systems on the existing fast path.
 package resources
 
+import "github.com/babywbx/kiln/modules/config"
+
 type Mode string
 
 const (
@@ -35,6 +37,15 @@ type Plan struct {
 	PrefetchSegments  int
 	EPGMaxConcurrency int
 	EPGMaxSourceBytes int64
+}
+
+func Apply(file *config.File, plan Plan) {
+	file.Server.MemoryLimitMB = plan.MemoryLimitMB
+	file.Packager.InflightBytes = plan.InflightBytes
+	file.Packager.StartSegments = plan.StartSegments
+	file.Packager.PrefetchSegments = plan.PrefetchSegments
+	file.EPG.MaxRefreshConcurrency = plan.EPGMaxConcurrency
+	file.EPG.MaxSourceBytes = plan.EPGMaxSourceBytes
 }
 
 const (

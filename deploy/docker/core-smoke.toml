@@ -25,3 +25,10 @@ title = "Core H264"
 source_url = "http://kiln-origin:8000/h264/stream.mpd"
 ingress = "dash"
 on_demand = true
+
+[[channels]]
+id = "core-hls"
+title = "Core HLS"
+source_url = "http://kiln-origin:8000/hls/index.m3u8"
+ingress = "hls"
+on_demand = true

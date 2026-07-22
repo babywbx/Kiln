@@ -1,3 +1,5 @@
+//go:build !lite
+
 package httpserver
 
 import (
@@ -8,6 +10,7 @@ import (
 
 	"github.com/babywbx/kiln/modules/accesstoken"
 	"github.com/babywbx/kiln/modules/apperr"
+	"github.com/babywbx/kiln/modules/security"
 	"github.com/babywbx/kiln/modules/store"
 )
 
@@ -40,7 +43,7 @@ func (s *Server) logAccess(row store.AccessTokenRow, r *http.Request, channelID 
 		Path:        redactRequestPath(r.URL.Path),
 		ChannelID:   channelID,
 		Status:      status,
-		Remote:      clientIP(r),
+		Remote:      security.ClientIP(r),
 	})
 	days := 30
 	if raw, ok, _ := s.deps.Store.GetSetting("access_log_retention_days"); ok {
