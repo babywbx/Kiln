@@ -27,10 +27,37 @@ expect_label() {
   fi
 }
 
+expect_nonempty_label() {
+  got=$(label "$1")
+  case "$got" in
+    ''|'<no value>'|unknown)
+      echo "FATAL: $IMAGE label $1 is not populated" >&2
+      exit 1
+      ;;
+  esac
+}
+
+expect_label org.opencontainers.image.title "Kiln Lite"
+expect_label org.opencontainers.image.description \
+  "Minimal high-performance native media server."
+expect_label org.opencontainers.image.url https://github.com/babywbx/kiln
+expect_label org.opencontainers.image.documentation https://github.com/babywbx/kiln#docker
+expect_label org.opencontainers.image.source https://github.com/babywbx/kiln
+expect_label org.opencontainers.image.authors Babywbx
+expect_label org.opencontainers.image.vendor Babywbx
+expect_label org.opencontainers.image.licenses AGPL-3.0-only
+expect_label org.opencontainers.image.base.name scratch
+expect_nonempty_label org.opencontainers.image.version
+expect_nonempty_label org.opencontainers.image.revision
+expect_nonempty_label org.opencontainers.image.created
 expect_label io.kiln.variant lite
+expect_label io.kiln.media.engines native
+expect_label io.kiln.features playback
 expect_label io.kiln.ffmpeg.available false
 expect_label io.kiln.database.available false
 expect_label io.kiln.admin.available false
+expect_label io.kiln.epg.available false
+expect_label io.kiln.telemetry.available false
 expect_label io.kiln.packager.default native
 
 user=$(docker image inspect "$IMAGE" --format '{{.Config.User}}')

@@ -19,15 +19,61 @@ expect_label() {
   fi
 }
 
+expect_nonempty_label() {
+  image="$1"
+  key="$2"
+  got="$(label "$image" "$key")"
+  case "$got" in
+    ''|'<no value>'|unknown)
+      echo "FATAL: $image label $key is not populated" >&2
+      exit 1
+      ;;
+  esac
+}
+
+expect_common_labels() {
+  image="$1"
+  title="$2"
+  description="$3"
+  expect_label "$image" org.opencontainers.image.title "$title"
+  expect_label "$image" org.opencontainers.image.description "$description"
+  expect_label "$image" org.opencontainers.image.url https://github.com/babywbx/kiln
+  expect_label "$image" org.opencontainers.image.documentation https://github.com/babywbx/kiln#docker
+  expect_label "$image" org.opencontainers.image.source https://github.com/babywbx/kiln
+  expect_label "$image" org.opencontainers.image.authors Babywbx
+  expect_label "$image" org.opencontainers.image.vendor Babywbx
+  expect_label "$image" org.opencontainers.image.licenses AGPL-3.0-only
+  expect_nonempty_label "$image" org.opencontainers.image.version
+  expect_nonempty_label "$image" org.opencontainers.image.revision
+  expect_nonempty_label "$image" org.opencontainers.image.created
+}
+
+expect_common_labels "$CORE_IMAGE" "Kiln Core" \
+  "High-performance native media server."
+expect_common_labels "$FULL_IMAGE" "Kiln Full" \
+  "High-performance native media server with FFmpeg."
+
 expect_label "$CORE_IMAGE" io.kiln.variant core
+expect_label "$CORE_IMAGE" io.kiln.media.engines native
+expect_label "$CORE_IMAGE" io.kiln.features admin,database,epg,observability,playback
 expect_label "$CORE_IMAGE" io.kiln.ffmpeg.available false
+expect_label "$CORE_IMAGE" io.kiln.database.available true
+expect_label "$CORE_IMAGE" io.kiln.admin.available true
+expect_label "$CORE_IMAGE" io.kiln.epg.available true
+expect_label "$CORE_IMAGE" io.kiln.telemetry.available true
 expect_label "$CORE_IMAGE" io.kiln.packager.default native
 expect_label "$FULL_IMAGE" io.kiln.variant full
+expect_label "$FULL_IMAGE" io.kiln.media.engines native,ffmpeg
+expect_label "$FULL_IMAGE" io.kiln.features admin,database,epg,observability,playback
 expect_label "$FULL_IMAGE" io.kiln.ffmpeg.available true
+expect_label "$FULL_IMAGE" io.kiln.database.available true
+expect_label "$FULL_IMAGE" io.kiln.admin.available true
+expect_label "$FULL_IMAGE" io.kiln.epg.available true
+expect_label "$FULL_IMAGE" io.kiln.telemetry.available true
 expect_label "$FULL_IMAGE" io.kiln.packager.default auto
 
-core_base="$(label "$CORE_IMAGE" io.kiln.base.source)"
-full_base="$(label "$FULL_IMAGE" io.kiln.base.source)"
+core_base="$(label "$CORE_IMAGE" org.opencontainers.image.base.name)"
+full_base="$(label "$FULL_IMAGE" org.opencontainers.image.base.name)"
 case "$core_base" in
   alpine:3.24.1@sha256:*) ;;
   *)

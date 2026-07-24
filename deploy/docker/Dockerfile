@@ -61,6 +61,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 FROM ${ALPINE_IMAGE} AS runtime-base
 ARG VERSION=dev
 ARG COMMIT=unknown
+ARG BUILT_AT=unknown
 ARG ALPINE_IMAGE
 RUN apk add --no-cache ca-certificates tzdata \
  && delgroup ping \
@@ -71,11 +72,16 @@ RUN apk add --no-cache ca-certificates tzdata \
 COPY --from=build  /out/kiln /usr/local/bin/kiln
 COPY --from=build  /out/go-build-info /usr/local/share/kiln/go-build-info
 LABEL org.opencontainers.image.title="Kiln" \
+      org.opencontainers.image.url="https://github.com/babywbx/kiln" \
+      org.opencontainers.image.documentation="https://github.com/babywbx/kiln#docker" \
       org.opencontainers.image.source="https://github.com/babywbx/kiln" \
+      org.opencontainers.image.authors="Babywbx" \
+      org.opencontainers.image.vendor="Babywbx" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${COMMIT}" \
+      org.opencontainers.image.created="${BUILT_AT}" \
       org.opencontainers.image.licenses="AGPL-3.0-only" \
-      io.kiln.base.source="${ALPINE_IMAGE}"
+      org.opencontainers.image.base.name="${ALPINE_IMAGE}"
 USER kiln
 WORKDIR /var/lib/kiln
 EXPOSE 8080
@@ -93,9 +99,16 @@ RUN test ! -e /usr/local/bin/ffmpeg \
 FROM runtime-base AS core
 ENV KILN_DEFAULT_PACKAGER_ENGINE=native \
     KILN_RUNTIME_VARIANT=core
-LABEL org.opencontainers.image.description="Kiln with the native media engine and no bundled FFmpeg" \
+LABEL org.opencontainers.image.title="Kiln Core" \
+      org.opencontainers.image.description="High-performance native media server." \
       io.kiln.variant="core" \
+      io.kiln.media.engines="native" \
+      io.kiln.features="admin,database,epg,observability,playback" \
       io.kiln.ffmpeg.available="false" \
+      io.kiln.database.available="true" \
+      io.kiln.admin.available="true" \
+      io.kiln.epg.available="true" \
+      io.kiln.telemetry.available="true" \
       io.kiln.packager.default="native"
 COPY --from=core-verify /verified /usr/local/share/kiln/build-verified
 
@@ -117,9 +130,16 @@ FROM full-runtime AS full
 ARG FFMPEG_IMAGE
 ENV KILN_DEFAULT_PACKAGER_ENGINE=auto \
     KILN_RUNTIME_VARIANT=full
-LABEL org.opencontainers.image.description="Kiln with native media processing and bundled FFmpeg compatibility" \
+LABEL org.opencontainers.image.title="Kiln Full" \
+      org.opencontainers.image.description="High-performance native media server with FFmpeg." \
       io.kiln.variant="full" \
+      io.kiln.media.engines="native,ffmpeg" \
+      io.kiln.features="admin,database,epg,observability,playback" \
       io.kiln.ffmpeg.available="true" \
+      io.kiln.database.available="true" \
+      io.kiln.admin.available="true" \
+      io.kiln.epg.available="true" \
+      io.kiln.telemetry.available="true" \
       io.kiln.packager.default="auto" \
       io.kiln.ffmpeg.source="${FFMPEG_IMAGE}"
 COPY --from=full-verify /verified /usr/local/share/kiln/build-verified
@@ -135,6 +155,7 @@ RUN apk add --no-cache ca-certificates \
 FROM scratch AS lite
 ARG VERSION=dev
 ARG COMMIT=unknown
+ARG BUILT_AT=unknown
 COPY --from=lite-rootfs /etc/passwd /etc/group /etc/
 COPY --from=lite-rootfs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=lite-rootfs --chown=999:999 /var/lib/kiln /var/lib/kiln
@@ -144,17 +165,26 @@ COPY --from=lite-build /out/go-build-info /usr/local/share/kiln/go-build-info
 ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
     KILN_DEFAULT_PACKAGER_ENGINE=native
 LABEL org.opencontainers.image.title="Kiln Lite" \
+      org.opencontainers.image.description="Minimal high-performance native media server." \
+      org.opencontainers.image.url="https://github.com/babywbx/kiln" \
+      org.opencontainers.image.documentation="https://github.com/babywbx/kiln#docker" \
       org.opencontainers.image.source="https://github.com/babywbx/kiln" \
+      org.opencontainers.image.authors="Babywbx" \
+      org.opencontainers.image.vendor="Babywbx" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${COMMIT}" \
+      org.opencontainers.image.created="${BUILT_AT}" \
       org.opencontainers.image.licenses="AGPL-3.0-only" \
-      org.opencontainers.image.description="Stateless Kiln with native media processing" \
+      org.opencontainers.image.base.name="scratch" \
       io.kiln.variant="lite" \
+      io.kiln.media.engines="native" \
+      io.kiln.features="playback" \
       io.kiln.ffmpeg.available="false" \
       io.kiln.database.available="false" \
       io.kiln.admin.available="false" \
-      io.kiln.packager.default="native" \
-      io.kiln.base.source="scratch"
+      io.kiln.epg.available="false" \
+      io.kiln.telemetry.available="false" \
+      io.kiln.packager.default="native"
 USER 999:999
 WORKDIR /var/lib/kiln
 EXPOSE 8080
