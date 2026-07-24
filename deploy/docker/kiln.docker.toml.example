@@ -7,8 +7,8 @@
 listen = "0.0.0.0:8080"
 public_base_url = "http://127.0.0.1:8080"
 data_dir = "/var/lib/kiln/data"
-# Detects fractional CPU quotas plus nested/parent cgroup memory limits. A
-# nominal 4 GB / 4-core host keeps the fast path; smaller axes scale independently.
+# Detects fractional CPU quotas plus nested/parent cgroup memory limits. Memory
+# selects compact/balanced/standard below 1 GiB; CPU ceilings apply independently.
 resource_mode = "auto"
 read_timeout_sec = 15
 idle_timeout_sec = 120

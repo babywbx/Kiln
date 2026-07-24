@@ -6,9 +6,10 @@ SCRIPT="$ROOT/deploy/docker/resource-profile-smoke.sh"
 MODE=${1:-basic}
 
 basic=$("$SCRIPT" --list basic)
-expected_basic='1c1g
-2c2g
-4c4g'
+expected_basic='compact
+balanced
+standard
+large'
 if [ "$basic" != "$expected_basic" ]; then
   printf 'basic profiles:\n%s\nwant:\n%s\n' "$basic" "$expected_basic" >&2
   exit 1
@@ -19,10 +20,12 @@ case "$MODE" in
     ;;
   extended)
     extended=$("$SCRIPT" --list extended)
-    expected_extended='1c1g
-2c2g
-4c4g
-fractional-cgroup
+    expected_extended='compact
+balanced
+standard
+large
+fractional-cpu
+constrained-override
 performance-override'
     if [ "$extended" != "$expected_extended" ]; then
       printf 'extended profiles:\n%s\nwant:\n%s\n' "$extended" "$expected_extended" >&2

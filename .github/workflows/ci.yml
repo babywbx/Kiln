@@ -160,6 +160,14 @@ jobs:
       - name: Verify Lite Image Contract
         run: deploy/docker/verify-lite.sh kiln:ci-lite-amd64
 
+      - name: Verify Full Image Constrained-Memory Advisory
+        run: deploy/docker/full-resource-smoke.sh kiln:ci-full-amd64
+
+      - name: Smoke Test Core Compact Media Path
+        run: >-
+          deploy/docker/core-media-smoke.sh kiln:ci-core-amd64
+          busybox:1.37.0@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028
+
       - name: Smoke Test Image Defaults and Readiness
         run: |
           set -eu
@@ -241,7 +249,7 @@ jobs:
       - name: Verify and Smoke Test Lite Image (arm64)
         run: |
           deploy/docker/verify-lite.sh kiln:ci-lite-arm64
-          KILN_LITE_CHECK_RESOURCES=0 KILN_LITE_CPUS=2 KILN_LITE_MEMORY=512m \
+          KILN_SMOKE_CHECK_RESOURCES=0 KILN_SMOKE_CPUS=2 KILN_SMOKE_MEMORY=512m \
             make docker-smoke-lite LITE_IMAGE=kiln:ci-lite-arm64
 
       - name: Smoke Test Native Core and Full FFmpeg Media Paths

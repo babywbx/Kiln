@@ -50,6 +50,7 @@ done
 
 docker run --rm --entrypoint /bin/sh "$CORE_IMAGE" -ec '
   test "$KILN_DEFAULT_PACKAGER_ENGINE" = native
+  test "$KILN_RUNTIME_VARIANT" = core
   test ! -e /usr/local/bin/ffmpeg
   test "$(id -u)" = 999
   grep -qx "variant=core" /usr/local/share/kiln/build-verified
@@ -59,6 +60,7 @@ docker run --rm --entrypoint /bin/sh "$CORE_IMAGE" -ec '
 
 docker run --rm --entrypoint /bin/sh "$FULL_IMAGE" -ec '
   test "$KILN_DEFAULT_PACKAGER_ENGINE" = auto
+  test "$KILN_RUNTIME_VARIANT" = full
   test -x /usr/local/bin/ffmpeg
   test "$(id -u)" = 999
   grep -qx "variant=full" /usr/local/share/kiln/build-verified

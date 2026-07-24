@@ -91,7 +91,8 @@ RUN test ! -e /usr/local/bin/ffmpeg \
  && printf 'variant=core\nffmpeg=absent\npackager_default=native\n' > /verified
 
 FROM runtime-base AS core
-ENV KILN_DEFAULT_PACKAGER_ENGINE=native
+ENV KILN_DEFAULT_PACKAGER_ENGINE=native \
+    KILN_RUNTIME_VARIANT=core
 LABEL org.opencontainers.image.description="Kiln with the native media engine and no bundled FFmpeg" \
       io.kiln.variant="core" \
       io.kiln.ffmpeg.available="false" \
@@ -114,7 +115,8 @@ RUN /usr/local/bin/verify-ffmpeg.sh /usr/local/bin/ffmpeg \
 
 FROM full-runtime AS full
 ARG FFMPEG_IMAGE
-ENV KILN_DEFAULT_PACKAGER_ENGINE=auto
+ENV KILN_DEFAULT_PACKAGER_ENGINE=auto \
+    KILN_RUNTIME_VARIANT=full
 LABEL org.opencontainers.image.description="Kiln with native media processing and bundled FFmpeg compatibility" \
       io.kiln.variant="full" \
       io.kiln.ffmpeg.available="true" \

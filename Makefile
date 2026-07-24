@@ -1,7 +1,7 @@
 .PHONY: build build-debug build-release build-lite test test-lite test-extended test-admin-ui test-docker-targets test-lite-contract test-local-tools test-complete coverage run tidy hash keys fmt vet lint vuln ci clean audit-admin-ui \
 		docker docker-full docker-core docker-lite docker-images docker-multiarch docker-core-multiarch docker-lite-multiarch \
 		docker-verify docker-verify-images docker-verify-lite docker-smoke docker-smoke-lite docker-reap fixtures \
-        media-oracle test-safety test-resource-docker-basic test-resource-docker-extended benchmark-performance performance-live soak
+        media-oracle test-safety test-resource-docker-basic test-resource-docker-extended test-resource-docker-core-media test-resource-docker-full benchmark-performance performance-live soak
 
 VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT   ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
@@ -67,6 +67,12 @@ test-resource-docker-basic:
 test-resource-docker-extended:
 	sh deploy/docker/resource-profile-smoke.sh extended "$(CORE_IMAGE)"
 
+test-resource-docker-core-media:
+	sh deploy/docker/core-media-smoke.sh "$(CORE_IMAGE)" "$(BUSYBOX_IMAGE)"
+
+test-resource-docker-full:
+	sh deploy/docker/full-resource-smoke.sh "$(IMAGE)"
+
 media-oracle:
 	KILN_REQUIRE_MEDIA_ORACLE=1 go test ./modules/packager/... -run 'FFmpeg|NativeOutput'
 
@@ -125,6 +131,10 @@ test-complete: ci test-extended test-local-tools test-safety benchmark-performan
 	$(MAKE) docker-lite-multiarch
 	$(MAKE) docker-core
 	$(MAKE) test-resource-docker-extended
+	$(MAKE) test-resource-docker-core-media
+	$(MAKE) docker-full
+	$(MAKE) docker-verify-images
+	$(MAKE) test-resource-docker-full
 	$(MAKE) docker-core-multiarch
 
 clean:
@@ -185,7 +195,7 @@ docker-smoke:
 	    deploy/docker/smoke.sh /usr/local/bin/ffmpeg testdata/cenc
 
 docker-smoke-lite:
-	deploy/docker/lite-smoke.sh $(LITE_IMAGE) $(BUSYBOX_IMAGE)
+	deploy/docker/native-media-runtime-smoke.sh $(LITE_IMAGE) $(BUSYBOX_IMAGE)
 
 docker-reap:
 	@docker ps -aq --filter label=kiln.ffmpeg=1 | xargs -r docker rm -f

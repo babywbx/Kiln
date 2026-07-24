@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-BASE_URL=${1:-http://kiln-lite-smoke:8080}
+BASE_URL=${1:-http://kiln-native-smoke:8080}
 CHANNEL=${2:-core-h264}
 HLS_CHANNEL=${3:-core-hls}
 temporary=$(mktemp -d)
@@ -52,4 +52,4 @@ test -s "$temporary/hls-segment.m4s"
 printf 'hls_init=%s bytes\nhls_segment=%s bytes\n' \
   "$(wc -c < "$temporary/hls-init.mp4" | tr -d ' ')" \
   "$(wc -c < "$temporary/hls-segment.m4s" | tr -d ' ')"
-echo "RESULT: PASS - lite native media chain holds."
+echo "RESULT: PASS - native media chain holds."

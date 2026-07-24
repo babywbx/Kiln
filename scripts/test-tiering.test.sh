@@ -10,7 +10,7 @@ if printf '%s\n' "$normal" | grep -Eq 'ResourceMatrix|Fractional|AllocationBudge
 fi
 
 extended=$(cd "$ROOT" && go test -tags=extended ./modules/resources ./modules/packager/cmaf ./modules/packager/mpd -list '^(Test|Fuzz)')
-for name in TestResolveAutoResourceMatrix TestResolveAutoUsesFractionalCPUQuotaWithoutEnteringFastPathEarly TestDecryptOwnedReservedStaysWithinAllocationBudget FuzzAvailableSegments; do
+for name in TestResolveExtendedCPUCapsRemainIndependentFromMemoryProfiles TestDecryptOwnedReservedStaysWithinAllocationBudget FuzzAvailableSegments; do
   if ! printf '%s\n' "$extended" | grep -q "^$name$"; then
     echo "extended tests do not include $name" >&2
     exit 1

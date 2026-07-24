@@ -4,10 +4,10 @@ set -eu
 profile_list() {
   case "$1" in
     basic)
-      printf '%s\n' 1c1g 2c2g 4c4g
+      printf '%s\n' compact balanced standard large
       ;;
     extended)
-      printf '%s\n' 1c1g 2c2g 4c4g fractional-cgroup performance-override
+      printf '%s\n' compact balanced standard large fractional-cpu constrained-override performance-override
       ;;
     *)
       return 2
@@ -73,6 +73,16 @@ assert_log() {
   fi
 }
 
+assert_no_log() {
+  container=$1
+  value=$2
+  if docker logs "$container" 2>&1 | grep -Fq "$value"; then
+    echo "$container: unexpected log value: $value" >&2
+    docker logs "$container" >&2
+    return 1
+  fi
+}
+
 start_profile() {
   profile=$1
   shift
@@ -80,6 +90,7 @@ start_profile() {
   docker run -d --name "$ACTIVE_CONTAINER" "$@" \
     -v "$CONFIG:/etc/kiln/kiln.toml:ro" "$IMAGE" >/dev/null
   wait_ready "$ACTIVE_CONTAINER"
+  assert_log "$ACTIVE_CONTAINER" 'runtime_variant=core'
 }
 
 finish_profile() {
@@ -88,73 +99,126 @@ finish_profile() {
   ACTIVE_CONTAINER=
 }
 
-run_1c1g() {
-  start_profile 1c1g --cpus=1 --memory=1g --memory-swap=1g
+run_compact() {
+  start_profile compact --cpus=1 --memory=192m --memory-swap=192m
+  assert_log "$ACTIVE_CONTAINER" 'resource_profile=compact'
   assert_log "$ACTIVE_CONTAINER" 'resource_constrained=true'
   assert_log "$ACTIVE_CONTAINER" 'effective_cpu_milli=1000'
-  assert_log "$ACTIVE_CONTAINER" 'effective_memory_mb=1024'
-  assert_log "$ACTIVE_CONTAINER" 'memory_limit_mb=640'
-  assert_log "$ACTIVE_CONTAINER" 'effective_go_memory_limit_mb=640'
+  assert_log "$ACTIVE_CONTAINER" 'effective_memory_mb=192'
+  assert_log "$ACTIVE_CONTAINER" 'memory_limit_mb=48'
+  assert_log "$ACTIVE_CONTAINER" 'effective_go_memory_limit_mb=48'
   assert_log "$ACTIVE_CONTAINER" 'inflight_mb=32'
+  assert_log "$ACTIVE_CONTAINER" 'max_segment_mb=20'
+  assert_log "$ACTIVE_CONTAINER" 'gc_percent=75'
+  assert_log "$ACTIVE_CONTAINER" 'drop_file_cache=true'
   assert_log "$ACTIVE_CONTAINER" 'start_segments=1'
   assert_log "$ACTIVE_CONTAINER" 'prefetch_segments=1'
   assert_log "$ACTIVE_CONTAINER" 'epg_refresh_concurrency=1'
-  assert_log "$ACTIVE_CONTAINER" 'epg_max_source_mb=8'
-  finish_profile 1c1g
+  assert_log "$ACTIVE_CONTAINER" 'epg_max_source_mb=4'
+  assert_no_log "$ACTIVE_CONTAINER" 'FFmpeg memory is outside the Go soft limit'
+  finish_profile compact
 }
 
-run_2c2g() {
-  start_profile 2c2g --cpus=2 --memory=2g --memory-swap=2g
+run_balanced() {
+  start_profile balanced --cpus=2 --memory=384m --memory-swap=384m
+  assert_log "$ACTIVE_CONTAINER" 'resource_profile=balanced'
   assert_log "$ACTIVE_CONTAINER" 'resource_constrained=true'
   assert_log "$ACTIVE_CONTAINER" 'effective_cpu_milli=2000'
-  assert_log "$ACTIVE_CONTAINER" 'effective_memory_mb=2048'
-  assert_log "$ACTIVE_CONTAINER" 'memory_limit_mb=1280'
-  assert_log "$ACTIVE_CONTAINER" 'effective_go_memory_limit_mb=1280'
-  assert_log "$ACTIVE_CONTAINER" 'inflight_mb=64'
+  assert_log "$ACTIVE_CONTAINER" 'effective_memory_mb=384'
+  assert_log "$ACTIVE_CONTAINER" 'memory_limit_mb=96'
+  assert_log "$ACTIVE_CONTAINER" 'effective_go_memory_limit_mb=96'
+  assert_log "$ACTIVE_CONTAINER" 'inflight_mb=48'
+  assert_log "$ACTIVE_CONTAINER" 'max_segment_mb=32'
+  assert_log "$ACTIVE_CONTAINER" 'gc_percent=100'
+  assert_log "$ACTIVE_CONTAINER" 'drop_file_cache=true'
   assert_log "$ACTIVE_CONTAINER" 'start_segments=2'
   assert_log "$ACTIVE_CONTAINER" 'prefetch_segments=2'
   assert_log "$ACTIVE_CONTAINER" 'epg_refresh_concurrency=1'
-  assert_log "$ACTIVE_CONTAINER" 'epg_max_source_mb=16'
-  finish_profile 2c2g
+  assert_log "$ACTIVE_CONTAINER" 'epg_max_source_mb=4'
+  finish_profile balanced
 }
 
-run_4c4g() {
-  start_profile 4c4g --cpus=4 --memory=4g --memory-swap=4g
+run_standard() {
+  start_profile standard --cpus=2 --memory=768m --memory-swap=768m
+  assert_log "$ACTIVE_CONTAINER" 'resource_profile=standard'
+  assert_log "$ACTIVE_CONTAINER" 'resource_constrained=true'
+  assert_log "$ACTIVE_CONTAINER" 'effective_cpu_milli=2000'
+  assert_log "$ACTIVE_CONTAINER" 'effective_memory_mb=768'
+  assert_log "$ACTIVE_CONTAINER" 'memory_limit_mb=192'
+  assert_log "$ACTIVE_CONTAINER" 'effective_go_memory_limit_mb=192'
+  assert_log "$ACTIVE_CONTAINER" 'inflight_mb=64'
+  assert_log "$ACTIVE_CONTAINER" 'max_segment_mb=32'
+  assert_log "$ACTIVE_CONTAINER" 'gc_percent=100'
+  assert_log "$ACTIVE_CONTAINER" 'drop_file_cache=true'
+  assert_log "$ACTIVE_CONTAINER" 'start_segments=2'
+  assert_log "$ACTIVE_CONTAINER" 'prefetch_segments=2'
+  assert_log "$ACTIVE_CONTAINER" 'epg_refresh_concurrency=1'
+  assert_log "$ACTIVE_CONTAINER" 'epg_max_source_mb=6'
+  finish_profile standard
+}
+
+run_large() {
+  start_profile large --cpus=4 --memory=1g --memory-swap=1g
+  assert_log "$ACTIVE_CONTAINER" 'resource_profile=large'
   assert_log "$ACTIVE_CONTAINER" 'resource_constrained=false'
   assert_log "$ACTIVE_CONTAINER" 'effective_cpu_milli=4000'
-  assert_log "$ACTIVE_CONTAINER" 'effective_memory_mb=4096'
+  assert_log "$ACTIVE_CONTAINER" 'effective_memory_mb=1024'
   assert_log "$ACTIVE_CONTAINER" 'memory_limit_mb=0'
   assert_log "$ACTIVE_CONTAINER" 'effective_go_memory_limit_mb=0'
   assert_log "$ACTIVE_CONTAINER" 'inflight_mb=96'
+  assert_log "$ACTIVE_CONTAINER" 'max_segment_mb=32'
+  assert_log "$ACTIVE_CONTAINER" 'drop_file_cache=false'
   assert_log "$ACTIVE_CONTAINER" 'start_segments=3'
   assert_log "$ACTIVE_CONTAINER" 'prefetch_segments=3'
   assert_log "$ACTIVE_CONTAINER" 'epg_refresh_concurrency=0'
   assert_log "$ACTIVE_CONTAINER" 'epg_max_source_mb=64'
-  finish_profile 4c4g
+  finish_profile large
 }
 
-run_fractional_cgroup() {
-  start_profile fractional-cgroup --cpus=1.5 --memory=768m --memory-swap=768m --cgroupns=host
+run_fractional_cpu() {
+  start_profile fractional-cpu --cpus=1.5 --memory=768m --memory-swap=768m --cgroupns=host
+  assert_log "$ACTIVE_CONTAINER" 'resource_profile=standard'
   assert_log "$ACTIVE_CONTAINER" 'resource_constrained=true'
   assert_log "$ACTIVE_CONTAINER" 'effective_cpus=2'
   assert_log "$ACTIVE_CONTAINER" 'effective_cpu_milli=1500'
   assert_log "$ACTIVE_CONTAINER" 'effective_memory_mb=768'
-  assert_log "$ACTIVE_CONTAINER" 'memory_limit_mb=480'
-  assert_log "$ACTIVE_CONTAINER" 'effective_go_memory_limit_mb=480'
-  assert_log "$ACTIVE_CONTAINER" 'inflight_mb=24'
+  assert_log "$ACTIVE_CONTAINER" 'memory_limit_mb=192'
+  assert_log "$ACTIVE_CONTAINER" 'effective_go_memory_limit_mb=192'
+  assert_log "$ACTIVE_CONTAINER" 'inflight_mb=64'
   assert_log "$ACTIVE_CONTAINER" 'start_segments=2'
+  assert_log "$ACTIVE_CONTAINER" 'prefetch_segments=2'
   assert_log "$ACTIVE_CONTAINER" 'epg_refresh_concurrency=1'
   assert_log "$ACTIVE_CONTAINER" 'epg_max_source_mb=6'
-  finish_profile fractional-cgroup
+  finish_profile fractional-cpu
+}
+
+run_constrained_override() {
+  start_profile constrained-override --cpus=4 --memory=2g --memory-swap=2g \
+    -e KILN_RESOURCE_MODE=constrained
+  assert_log "$ACTIVE_CONTAINER" 'resource_profile=compact'
+  assert_log "$ACTIVE_CONTAINER" 'resource_mode=constrained'
+  assert_log "$ACTIVE_CONTAINER" 'resource_constrained=true'
+  assert_log "$ACTIVE_CONTAINER" 'memory_limit_mb=48'
+  assert_log "$ACTIVE_CONTAINER" 'inflight_mb=32'
+  assert_log "$ACTIVE_CONTAINER" 'max_segment_mb=20'
+  assert_log "$ACTIVE_CONTAINER" 'gc_percent=75'
+  assert_log "$ACTIVE_CONTAINER" 'drop_file_cache=true'
+  assert_log "$ACTIVE_CONTAINER" 'start_segments=1'
+  assert_log "$ACTIVE_CONTAINER" 'prefetch_segments=1'
+  finish_profile constrained-override
 }
 
 run_performance_override() {
-  start_profile performance-override --cpus=1 --memory=1g --memory-swap=1g \
-    -e KILN_RESOURCE_MODE=performance -e GOMEMLIMIT=768MiB
+  start_profile performance-override --cpus=1 --memory=192m --memory-swap=192m \
+    -e KILN_RESOURCE_MODE=performance -e GOMEMLIMIT=128MiB
+  assert_log "$ACTIVE_CONTAINER" 'resource_profile=configured'
+  assert_log "$ACTIVE_CONTAINER" 'resource_mode=performance'
   assert_log "$ACTIVE_CONTAINER" 'resource_constrained=false'
-  assert_log "$ACTIVE_CONTAINER" 'effective_go_memory_limit_mb=768'
+  assert_log "$ACTIVE_CONTAINER" 'effective_go_memory_limit_mb=128'
   assert_log "$ACTIVE_CONTAINER" 'memory_limit_mb=0'
   assert_log "$ACTIVE_CONTAINER" 'inflight_mb=96'
+  assert_log "$ACTIVE_CONTAINER" 'max_segment_mb=32'
+  assert_log "$ACTIVE_CONTAINER" 'drop_file_cache=false'
   assert_log "$ACTIVE_CONTAINER" 'start_segments=3'
   assert_log "$ACTIVE_CONTAINER" 'prefetch_segments=3'
   assert_log "$ACTIVE_CONTAINER" 'epg_refresh_concurrency=0'
@@ -162,10 +226,12 @@ run_performance_override() {
   finish_profile performance-override
 }
 
-run_1c1g
-run_2c2g
-run_4c4g
+run_compact
+run_balanced
+run_standard
+run_large
 if [ "$MODE" = extended ]; then
-  run_fractional_cgroup
+  run_fractional_cpu
+  run_constrained_override
   run_performance_override
 fi

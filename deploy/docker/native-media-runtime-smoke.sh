@@ -2,21 +2,29 @@
 set -eu
 
 IMAGE=${1:-kiln:lite-local}
-BUSYBOX_IMAGE=${2:-busybox:1.37.0}
-CHECK_RESOURCES=${KILN_LITE_CHECK_RESOURCES:-1}
-CPUS=${KILN_LITE_CPUS:-1}
-MEMORY=${KILN_LITE_MEMORY:-64m}
-MAX_PEAK_BYTES=${KILN_LITE_MAX_PEAK_BYTES:-62914560}
-ITERATIONS=${KILN_LITE_SMOKE_ITERATIONS:-10}
+BUSYBOX_IMAGE=${2:-busybox:1.37.0@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028}
+CHECK_RESOURCES=${KILN_SMOKE_CHECK_RESOURCES:-1}
+CPUS=${KILN_SMOKE_CPUS:-1}
+MEMORY=${KILN_SMOKE_MEMORY:-64m}
+MAX_PEAK_BYTES=${KILN_SMOKE_MAX_PEAK_BYTES:-62914560}
+MAX_RSS_KB=${KILN_SMOKE_MAX_RSS_KB:-32768}
+ITERATIONS=${KILN_SMOKE_ITERATIONS:-10}
+SMOKE_VARIANT=${KILN_SMOKE_VARIANT:-lite}
+HEALTHCHECK_MODE=${KILN_SMOKE_HEALTHCHECK_MODE:-binary}
+EXPECTED_PROFILE=${KILN_SMOKE_EXPECTED_PROFILE:-lite}
+EXPECTED_MEMORY_LIMIT_MB=${KILN_SMOKE_EXPECTED_MEMORY_LIMIT_MB:-24}
+EXPECTED_INFLIGHT_MB=${KILN_SMOKE_EXPECTED_INFLIGHT_MB:-24}
+EXPECTED_MAX_SEGMENT_MB=${KILN_SMOKE_EXPECTED_MAX_SEGMENT_MB:-20}
+EXPECTED_GC_PERCENT=${KILN_SMOKE_EXPECTED_GC_PERCENT:-50}
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
-RUN_ID=${KILN_LITE_RUN_ID:-$$}
-NETWORK=kiln-lite-smoke-$RUN_ID
-ORIGIN=kiln-lite-origin-$RUN_ID
-SERVER=kiln-lite-smoke-$RUN_ID
-PERF_SERVER=kiln-lite-performance-$RUN_ID
-DATA_VOLUME=kiln-lite-data-$RUN_ID
-PERF_DATA_VOLUME=kiln-lite-performance-data-$RUN_ID
-PROBE_VOLUME=kiln-lite-probe-$RUN_ID
+RUN_ID=${KILN_SMOKE_RUN_ID:-$$}
+NETWORK=kiln-$SMOKE_VARIANT-smoke-$RUN_ID
+ORIGIN=kiln-$SMOKE_VARIANT-origin-$RUN_ID
+SERVER=kiln-$SMOKE_VARIANT-smoke-$RUN_ID
+PERF_SERVER=kiln-$SMOKE_VARIANT-performance-$RUN_ID
+DATA_VOLUME=kiln-$SMOKE_VARIANT-data-$RUN_ID
+PERF_DATA_VOLUME=kiln-$SMOKE_VARIANT-performance-data-$RUN_ID
+PROBE_VOLUME=kiln-$SMOKE_VARIANT-probe-$RUN_ID
 
 cleanup() {
   docker rm -f "$ORIGIN" "$SERVER" "$PERF_SERVER" >/dev/null 2>&1 || true
@@ -27,6 +35,25 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 cleanup
+
+check_health() {
+  container=$1
+  endpoint=$2
+  case "$HEALTHCHECK_MODE" in
+    binary)
+      docker exec "$container" /usr/local/bin/kiln \
+        -healthcheck "http://127.0.0.1:8080/$endpoint"
+      ;;
+    external)
+      docker run --rm --network "container:$container" "$BUSYBOX_IMAGE" \
+        wget -q -O /dev/null "http://127.0.0.1:8080/$endpoint"
+      ;;
+    *)
+      echo "unknown healthcheck mode: $HEALTHCHECK_MODE" >&2
+      return 2
+      ;;
+  esac
+}
 
 docker network create "$NETWORK" >/dev/null
 docker volume create "$DATA_VOLUME" >/dev/null
@@ -61,20 +88,21 @@ while [ "$attempt" -le 15 ]; do
   sleep 1
 done
 
-docker exec "$SERVER" /usr/local/bin/kiln -healthcheck http://127.0.0.1:8080/healthz
+check_health "$SERVER" healthz
 logs=$(docker logs "$SERVER" 2>&1)
 if [ "$CHECK_RESOURCES" = "1" ]; then
   printf '%s\n' "$logs" | grep -q 'resource_constrained=true'
-  printf '%s\n' "$logs" | grep -q 'memory_limit_mb=24'
-  printf '%s\n' "$logs" | grep -q 'inflight_mb=24'
-  printf '%s\n' "$logs" | grep -q 'max_segment_mb=20'
-  printf '%s\n' "$logs" | grep -q 'gc_percent=50'
+  printf '%s\n' "$logs" | grep -q "resource_profile=$EXPECTED_PROFILE"
+  printf '%s\n' "$logs" | grep -q "memory_limit_mb=$EXPECTED_MEMORY_LIMIT_MB"
+  printf '%s\n' "$logs" | grep -q "inflight_mb=$EXPECTED_INFLIGHT_MB"
+  printf '%s\n' "$logs" | grep -q "max_segment_mb=$EXPECTED_MAX_SEGMENT_MB"
+  printf '%s\n' "$logs" | grep -q "gc_percent=$EXPECTED_GC_PERCENT"
   printf '%s\n' "$logs" | grep -q 'drop_file_cache=true'
 fi
 iteration=1
 while [ "$iteration" -le "$ITERATIONS" ]; do
   docker run --rm --network "$NETWORK" -v "$ROOT:/src:ro" "$BUSYBOX_IMAGE" \
-    sh /src/deploy/docker/lite-media-smoke.sh "http://$SERVER:8080"
+    sh /src/deploy/docker/native-media-chain-smoke.sh "http://$SERVER:8080"
   iteration=$((iteration + 1))
 done
 
@@ -90,11 +118,11 @@ esac
 if [ "$CHECK_RESOURCES" = "1" ]; then
   rss_kb=$(docker run --rm --pid "container:$SERVER" "$BUSYBOX_IMAGE" \
     awk '/^VmRSS:/ { print $2; exit }' /proc/1/status)
-  if [ -z "$rss_kb" ] || [ "$rss_kb" -gt 32768 ]; then
-    echo "FATAL: lite RSS is ${rss_kb:-unknown} KiB, want <= 32768 KiB" >&2
+  if [ -z "$rss_kb" ] || [ "$rss_kb" -gt "$MAX_RSS_KB" ]; then
+    echo "FATAL: $SMOKE_VARIANT RSS is ${rss_kb:-unknown} KiB, want <= $MAX_RSS_KB KiB" >&2
     exit 1
   fi
-  echo "lite_rss=$rss_kb KiB"
+  echo "${SMOKE_VARIANT}_rss=$rss_kb KiB"
 
   current_bytes=$(docker exec "$SERVER" /probe/loader --library-path /probe/lib \
     /probe/busybox cat /sys/fs/cgroup/memory.current)
@@ -114,19 +142,19 @@ if [ "$CHECK_RESOURCES" = "1" ]; then
     exit 1
   fi
   if [ "$peak_bytes" -gt "$MAX_PEAK_BYTES" ]; then
-    echo "FATAL: lite cgroup peak is $peak_bytes bytes, want <= $MAX_PEAK_BYTES" >&2
+    echo "FATAL: $SMOKE_VARIANT cgroup peak is $peak_bytes bytes, want <= $MAX_PEAK_BYTES" >&2
     exit 1
   fi
   if [ "${oom_events:-0}" -ne 0 ] || [ "${oom_kills:-0}" -ne 0 ]; then
-    echo "FATAL: lite cgroup reported oom=$oom_events oom_kill=$oom_kills" >&2
+    echo "FATAL: $SMOKE_VARIANT cgroup reported oom=$oom_events oom_kill=$oom_kills" >&2
     exit 1
   fi
-  echo "lite_cgroup_current=$current_bytes bytes"
-  echo "lite_cgroup_peak=$peak_bytes bytes"
-  echo "lite_cgroup_anon=$anon_bytes bytes file=$file_bytes bytes"
-  echo "lite_cgroup_oom=${oom_events:-0} oom_kill=${oom_kills:-0}"
+  echo "${SMOKE_VARIANT}_cgroup_current=$current_bytes bytes"
+  echo "${SMOKE_VARIANT}_cgroup_peak=$peak_bytes bytes"
+  echo "${SMOKE_VARIANT}_cgroup_anon=$anon_bytes bytes file=$file_bytes bytes"
+  echo "${SMOKE_VARIANT}_cgroup_oom=${oom_events:-0} oom_kill=${oom_kills:-0}"
 else
-  echo "lite_resources=skipped (non-native architecture)"
+  echo "${SMOKE_VARIANT}_resources=skipped"
 fi
 
 docker volume create "$PERF_DATA_VOLUME" >/dev/null
@@ -139,8 +167,7 @@ docker run -d --name "$PERF_SERVER" --network "$NETWORK" --read-only \
   "$IMAGE" >/dev/null
 attempt=1
 while [ "$attempt" -le 15 ]; do
-  if docker exec "$PERF_SERVER" /usr/local/bin/kiln \
-    -healthcheck http://127.0.0.1:8080/readyz; then
+  if check_health "$PERF_SERVER" readyz; then
     break
   fi
   if [ "$attempt" -eq 15 ]; then
@@ -154,4 +181,4 @@ performance_logs=$(docker logs "$PERF_SERVER" 2>&1)
 printf '%s\n' "$performance_logs" | grep -q 'resource_mode=performance'
 printf '%s\n' "$performance_logs" | grep -q 'resource_constrained=false'
 printf '%s\n' "$performance_logs" | grep -q 'drop_file_cache=false'
-echo "RESULT: PASS - lite fixture smoke and cgroup instrumentation hold."
+echo "RESULT: PASS - $SMOKE_VARIANT fixture smoke and cgroup instrumentation hold."
