@@ -71,12 +71,12 @@ var presetSources = []Source{
 		Description: "使用简体中文频道名称的 XMLTV 备选源",
 	},
 	{
-		ID: "cn-3", Name: "cn-3", URL: "https://epg.112114.xyz/pp.xml.gz",
+		ID: "cn-3", Name: "大陆源 3", URL: "https://epg.112114.xyz/pp.xml.gz",
 		Region: "CN", IDKind: IDKindName, Timezone: "Asia/Shanghai", ApproxBytes: 201_000,
 		Description: "使用频道名称作为 ID 的轻量 XMLTV 备选源",
 	},
 	{
-		ID: "cn-4", Name: "cn-4", URL: "https://live.fanmingming.com/e.xml",
+		ID: "cn-4", Name: "大陆源 4", URL: "https://live.fanmingming.com/e.xml",
 		Region: "CN", IDKind: IDKindName, Timezone: "Asia/Shanghai", ApproxBytes: 7_600_000,
 		Description: "未压缩的 XMLTV 备选源",
 	},

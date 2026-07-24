@@ -12,13 +12,13 @@ func TestPresetsContainVerifiedSourcesAndReturnIndependentCopies(t *testing.T) {
 	t.Parallel()
 
 	wantIDs := map[string]bool{
-		"hk-1":    false,
-		"tw-1":    false,
-		"cn-1":    false,
-		"global-1":   false,
-		"cn-2":       false,
-		"cn-3":      false,
-		"cn-4": false,
+		"hk-1":     false,
+		"tw-1":     false,
+		"cn-1":     false,
+		"global-1": false,
+		"cn-2":     false,
+		"cn-3":     false,
+		"cn-4":     false,
 	}
 
 	got := epg.Presets()

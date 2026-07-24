@@ -23,7 +23,7 @@ const PRESET_COPY = {
   "global-1": ["epg.preset.global", "epg.preset.globalDescription"],
   "cn-2": ["epg.preset.chinaAlt1", "epg.preset.chinaAlt1Description"],
   "cn-3": ["epg.preset.chinaAlt2", "epg.preset.chinaAlt2Description"],
-  fanmingming: ["epg.preset.chinaAlt3", "epg.preset.chinaAlt3Description"],
+  "cn-4": ["epg.preset.chinaAlt3", "epg.preset.chinaAlt3Description"],
 };
 
 function sourceCopy(source) {

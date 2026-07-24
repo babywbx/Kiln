@@ -6,9 +6,9 @@ import (
 )
 
 const (
-	logoSourcePrimary       = "logo-primary"
+	logoSourcePrimary   = "logo-primary"
 	logoSourceSecondary = "logo-secondary"
-	logoSourceTertiary     = "logo-tertiary"
+	logoSourceTertiary  = "logo-tertiary"
 )
 
 type LogoCandidate struct {
