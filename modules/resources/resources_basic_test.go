@@ -11,15 +11,16 @@ func TestResolveAutoIntegerProfiles(t *testing.T) {
 		name        string
 		memoryGiB   int64
 		cpus        int
+		profile     resources.Profile
 		constrained bool
 		memoryMiB   int
 		inflightMiB int64
 		pipeline    int
 		epg         int
 	}{
-		{name: "1c-1g", memoryGiB: 1, cpus: 1, constrained: true, memoryMiB: 640, inflightMiB: 32, pipeline: 1, epg: 1},
-		{name: "2c-2g", memoryGiB: 2, cpus: 2, constrained: true, memoryMiB: 1280, inflightMiB: 64, pipeline: 2, epg: 1},
-		{name: "4c-4g", memoryGiB: 4, cpus: 4, inflightMiB: 96, pipeline: 3},
+		{name: "1c-1g", memoryGiB: 1, cpus: 1, profile: resources.ProfileLarge, constrained: true, inflightMiB: 96, pipeline: 1, epg: 1},
+		{name: "2c-2g", memoryGiB: 2, cpus: 2, profile: resources.ProfileLarge, constrained: true, inflightMiB: 96, pipeline: 2, epg: 1},
+		{name: "4c-4g", memoryGiB: 4, cpus: 4, profile: resources.ProfileLarge, inflightMiB: 96, pipeline: 3},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -33,11 +34,11 @@ func TestResolveAutoIntegerProfiles(t *testing.T) {
 				PrefetchSegments:  3,
 				EPGMaxConcurrency: 0,
 			})
-			if got.Constrained != test.constrained || got.MemoryLimitMB != test.memoryMiB ||
+			if got.Profile != test.profile || got.Constrained != test.constrained || got.MemoryLimitMB != test.memoryMiB ||
 				got.InflightBytes != test.inflightMiB<<20 || got.StartSegments != test.pipeline ||
 				got.PrefetchSegments != test.pipeline || got.EPGMaxConcurrency != test.epg {
-				t.Fatalf("plan = %+v, want constrained=%v memory=%d MiB inflight=%d MiB pipeline=%d EPG=%d",
-					got, test.constrained, test.memoryMiB, test.inflightMiB, test.pipeline, test.epg)
+				t.Fatalf("plan = %+v, want profile=%s constrained=%v memory=%d MiB inflight=%d MiB pipeline=%d EPG=%d",
+					got, test.profile, test.constrained, test.memoryMiB, test.inflightMiB, test.pipeline, test.epg)
 			}
 		})
 	}

@@ -12,6 +12,17 @@ const (
 	ModeConstrained Mode = "constrained"
 )
 
+type Profile string
+
+const (
+	ProfileConfigured Profile = "configured"
+	ProfileCompact    Profile = "compact"
+	ProfileBalanced   Profile = "balanced"
+	ProfileStandard   Profile = "standard"
+	ProfileLarge      Profile = "large"
+	ProfileLite       Profile = "lite"
+)
+
 type Limits struct {
 	MemoryBytes int64
 	CPUs        int
@@ -31,6 +42,7 @@ type Inputs struct {
 
 type Plan struct {
 	Mode              Mode
+	Profile           Profile
 	Constrained       bool
 	MemoryLimitMB     int
 	InflightBytes     int64
@@ -38,6 +50,7 @@ type Plan struct {
 	StartSegments     int
 	PrefetchSegments  int
 	GCPercent         int
+	DropFileCache     bool
 	EPGMaxConcurrency int
 	EPGMaxSourceBytes int64
 }
@@ -55,13 +68,53 @@ func Apply(file *config.File, plan Plan) {
 }
 
 const (
-	oneGiB                = int64(1 << 30)
-	adaptiveMemoryCeiling = 7 * oneGiB / 2
+	oneGiB = int64(1 << 30)
+)
+
+type memoryBudget struct {
+	profile           Profile
+	memoryLimitMB     int
+	inflightBytes     int64
+	maxSegmentBytes   int64
+	pipelineSegments  int
+	gcPercent         int
+	epgMaxConcurrency int
+}
+
+var (
+	compactBudget = memoryBudget{
+		profile:           ProfileCompact,
+		memoryLimitMB:     48,
+		inflightBytes:     32 << 20,
+		maxSegmentBytes:   20 << 20,
+		pipelineSegments:  1,
+		gcPercent:         75,
+		epgMaxConcurrency: 1,
+	}
+	balancedBudget = memoryBudget{
+		profile:           ProfileBalanced,
+		memoryLimitMB:     96,
+		inflightBytes:     48 << 20,
+		maxSegmentBytes:   32 << 20,
+		pipelineSegments:  2,
+		gcPercent:         100,
+		epgMaxConcurrency: 1,
+	}
+	standardBudget = memoryBudget{
+		profile:           ProfileStandard,
+		memoryLimitMB:     192,
+		inflightBytes:     64 << 20,
+		maxSegmentBytes:   32 << 20,
+		pipelineSegments:  2,
+		gcPercent:         100,
+		epgMaxConcurrency: 1,
+	}
 )
 
 func Resolve(limits Limits, input Inputs) Plan {
 	plan := Plan{
 		Mode:              normalizedMode(input.Mode),
+		Profile:           ProfileConfigured,
 		MemoryLimitMB:     input.MemoryLimitMB,
 		InflightBytes:     input.InflightBytes,
 		MaxSegmentBytes:   input.MaxSegmentBytes,
@@ -73,42 +126,58 @@ func Resolve(limits Limits, input Inputs) Plan {
 	if plan.Mode == ModePerformance {
 		return plan
 	}
-
-	cpuMilli := effectiveCPUMilli(limits)
-	memoryConstrained := limits.MemoryBytes > 0 && limits.MemoryBytes < adaptiveMemoryCeiling
-	cpuConstrained := cpuMilli > 0 && cpuMilli < 4000
 	if plan.Mode == ModeConstrained {
-		// Forced mode is intentionally reproducible even on a large development
-		// host: use the 1 GiB / 1 CPU profile as its effective ceiling.
-		if limits.MemoryBytes <= 0 || limits.MemoryBytes > oneGiB {
-			limits.MemoryBytes = oneGiB
-		}
-		if limits.CPUs <= 0 || limits.CPUs > 1 {
-			limits.CPUs = 1
-		}
-		limits.CPUMilli = 1000
-		cpuMilli = 1000
-		memoryConstrained = true
-		cpuConstrained = true
+		return applyMemoryBudget(plan, compactBudget, 4<<20)
 	}
-	plan.Constrained = plan.Mode == ModeConstrained || memoryConstrained || cpuConstrained
-	if !plan.Constrained {
+	if budget, epgSourceBytes, ok := automaticMemoryBudget(limits.MemoryBytes); ok {
+		plan = applyMemoryBudget(plan, budget, epgSourceBytes)
+		return applyCPUCaps(plan, limits)
+	}
+	if limits.MemoryBytes >= oneGiB {
+		plan.Profile = ProfileLarge
+	}
+	return applyCPUCaps(plan, limits)
+}
+
+func automaticMemoryBudget(memoryBytes int64) (memoryBudget, int64, bool) {
+	switch {
+	case memoryBytes <= 0:
+		return memoryBudget{}, 0, false
+	case memoryBytes < 256<<20:
+		return compactBudget, 4 << 20, true
+	case memoryBytes < 512<<20:
+		return balancedBudget, epgSourceLimit(memoryBytes), true
+	case memoryBytes < oneGiB:
+		return standardBudget, epgSourceLimit(memoryBytes), true
+	default:
+		return memoryBudget{}, 0, false
+	}
+}
+
+func applyMemoryBudget(plan Plan, budget memoryBudget, epgSourceBytes int64) Plan {
+	plan.Profile = budget.profile
+	plan.Constrained = true
+	plan.MemoryLimitMB = lowerPositiveInt(plan.MemoryLimitMB, budget.memoryLimitMB)
+	plan.InflightBytes = lowerPositive(plan.InflightBytes, budget.inflightBytes)
+	plan.MaxSegmentBytes = lowerPositive(plan.MaxSegmentBytes, budget.maxSegmentBytes)
+	plan.StartSegments = lowerPositiveInt(plan.StartSegments, budget.pipelineSegments)
+	plan.PrefetchSegments = lowerPositiveInt(plan.PrefetchSegments, budget.pipelineSegments)
+	plan.GCPercent = budget.gcPercent
+	plan.DropFileCache = true
+	plan.EPGMaxConcurrency = lowerPositiveInt(plan.EPGMaxConcurrency, budget.epgMaxConcurrency)
+	plan.EPGMaxSourceBytes = lowerPositive(plan.EPGMaxSourceBytes, epgSourceBytes)
+	return plan
+}
+
+func applyCPUCaps(plan Plan, limits Limits) Plan {
+	cpuMilli := effectiveCPUMilli(limits)
+	if cpuMilli <= 0 || cpuMilli >= 4000 {
 		return plan
 	}
-
-	if memoryConstrained {
-		memoryLimitMB, inflightLimit, pipelineLimit := memoryBudgets(limits.MemoryBytes)
-		plan.MemoryLimitMB = lowerPositiveInt(plan.MemoryLimitMB, memoryLimitMB)
-		plan.InflightBytes = lowerPositive(plan.InflightBytes, inflightLimit)
-		plan.StartSegments = lowerPositiveInt(plan.StartSegments, pipelineLimit)
-		plan.PrefetchSegments = lowerPositiveInt(plan.PrefetchSegments, pipelineLimit)
-		plan.EPGMaxSourceBytes = lowerPositive(plan.EPGMaxSourceBytes, epgSourceLimit(limits.MemoryBytes))
-	}
-	if cpuConstrained {
-		pipelineLimit := roundedUpUnits(cpuMilli, 1000)
-		plan.StartSegments = lowerPositiveInt(plan.StartSegments, pipelineLimit)
-		plan.PrefetchSegments = lowerPositiveInt(plan.PrefetchSegments, pipelineLimit)
-	}
+	plan.Constrained = true
+	pipelineLimit := roundedUpUnits(cpuMilli, 1000)
+	plan.StartSegments = lowerPositiveInt(plan.StartSegments, pipelineLimit)
+	plan.PrefetchSegments = lowerPositiveInt(plan.PrefetchSegments, pipelineLimit)
 	plan.EPGMaxConcurrency = lowerPositiveInt(plan.EPGMaxConcurrency, epgConcurrency(limits, cpuMilli))
 	return plan
 }
@@ -121,6 +190,7 @@ func ResolveLite(limits Limits, input Inputs) Plan {
 	if plan.Mode == ModePerformance {
 		return plan
 	}
+	plan.Profile = ProfileLite
 	plan.Constrained = true
 	plan.MemoryLimitMB = lowerPositiveInt(plan.MemoryLimitMB, 24)
 	plan.InflightBytes = lowerPositive(plan.InflightBytes, 24<<20)
@@ -128,6 +198,7 @@ func ResolveLite(limits Limits, input Inputs) Plan {
 	plan.StartSegments = lowerPositiveInt(plan.StartSegments, 1)
 	plan.PrefetchSegments = lowerPositiveInt(plan.PrefetchSegments, 1)
 	plan.GCPercent = 50
+	plan.DropFileCache = true
 	return plan
 }
 
@@ -158,31 +229,6 @@ func normalizedMode(mode Mode) Mode {
 		return ModeAuto
 	}
 	return mode
-}
-
-func memoryBudgets(memoryBytes int64) (memoryLimitMB int, inflightBytes int64, pipeline int) {
-	memoryMB := memoryBytes >> 20
-	memoryLimitMB = int(memoryMB * 5 / 8)
-	inflightMB := memoryMB / 32
-	if inflightMB < 24 {
-		inflightMB = 24
-	}
-	if inflightMB > 96 {
-		inflightMB = 96
-	}
-	pipeline = memoryPipeline(memoryBytes)
-	return memoryLimitMB, inflightMB << 20, pipeline
-}
-
-func memoryPipeline(memoryBytes int64) int {
-	switch {
-	case memoryBytes < 768<<20:
-		return 1
-	case memoryBytes < 5*oneGiB/2:
-		return 2
-	default:
-		return 3
-	}
 }
 
 func epgConcurrency(limits Limits, cpuMilli int64) int {

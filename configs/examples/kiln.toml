@@ -4,22 +4,16 @@
 listen = "0.0.0.0:8080"
 public_base_url = "http://127.0.0.1:8080"
 data_dir = "./data"
-# auto treats configured values as ceilings and scales them only when the
-# effective container/host limit is below 4 CPUs or about 3.5 GiB. Fractional
-# quotas and nested cgroup limits are retained. A nominal 4 GB / 4-core host
-# keeps the existing fast path. performance disables all adaptation;
-# constrained forces the reproducible 1 CPU / 1 GiB profile.
+# auto selects compact below 256 MiB, balanced below 512 MiB, standard below
+# 1 GiB, and otherwise keeps configured values. CPU ceilings are independent.
+# Fractional quotas and nested cgroup limits are retained. performance disables
+# all adaptation; constrained always forces the compact profile.
 resource_mode = "auto"
 read_timeout_sec = 15
 idle_timeout_sec = 120
-# Go's soft memory limit. Without it the runtime keeps freed pages mapped, so
-# resident memory tracks the peak rather than what is live. Soft: the process is
-# never killed for exceeding it. 0 leaves the runtime default.
-#
-# It has to sit above packager.inflight_bytes, which is live heap: setting it
-# below the in-flight budget only makes the collector run harder against memory
-# it cannot reclaim. Resident memory lands at roughly inflight_bytes + 60 MB.
-memory_limit_mb = 256
+# Optional Go soft memory limit. auto supplies one for constrained memory
+# profiles; 0 keeps the runtime default in the large profile.
+memory_limit_mb = 0
 
 [logging]
 level = "info"       # debug | info | warn | error

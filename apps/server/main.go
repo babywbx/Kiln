@@ -21,6 +21,7 @@ import (
 	"github.com/babywbx/kiln/modules/catalog"
 	"github.com/babywbx/kiln/modules/config"
 	"github.com/babywbx/kiln/modules/debugserver"
+	"github.com/babywbx/kiln/modules/distribution"
 	"github.com/babywbx/kiln/modules/epg"
 	"github.com/babywbx/kiln/modules/httpserver"
 	"github.com/babywbx/kiln/modules/logging"
@@ -46,6 +47,7 @@ func main() {
 		boot.Error("config load failed", "err", err, "config", *cfgPath)
 		os.Exit(1)
 	}
+	runtimeVariant, validRuntimeVariant := distribution.DetectRuntimeVariant()
 	resourceLimits := resources.Detect()
 	resourcePlan := resources.Resolve(resourceLimits, resources.Inputs{
 		Mode:              resources.Mode(cfg.Server.ResourceMode),
@@ -58,12 +60,18 @@ func main() {
 		EPGMaxSourceBytes: cfg.EPG.MaxSourceBytes,
 	})
 	resources.Apply(&cfg, resourcePlan)
+	configureFileCache(resourcePlan)
 	log := logging.NewWith(logging.Options{
 		Level:  cfg.Logging.Level,
 		Format: cfg.Logging.Format,
 		Color:  cfg.Logging.Color,
 	})
 	slog.SetDefault(log)
+	if !validRuntimeVariant {
+		log.Warn("unknown runtime variant; using standalone",
+			"environment", os.Getenv(distribution.RuntimeVariantEnv),
+		)
+	}
 	debugServer, err := debugserver.New(cfg.Debug.Pprof, log)
 	if err != nil {
 		log.Error("pprof setup failed", "err", err)
@@ -81,6 +89,7 @@ func main() {
 	if cfg.Server.MemoryLimitMB > 0 && os.Getenv("GOMEMLIMIT") == "" {
 		debug.SetMemoryLimit(int64(cfg.Server.MemoryLimitMB) << 20)
 	}
+	gcPercent := configureGC(resourcePlan)
 
 	if err := os.MkdirAll(cfg.Server.DataDir, 0o750); err != nil {
 		log.Error("create data dir failed", "err", err, "path", cfg.Server.DataDir)
@@ -173,12 +182,29 @@ func main() {
 	}
 
 	chs, _ := cat.List(false)
+	if shouldWarnFFmpegMemory(resourcePlan, sessions.FFmpegAvailable(), cfg, chs) {
+		scope := "subprocess"
+		if cfg.FFmpeg.Mode == config.FFmpegModeDocker {
+			scope = "external_container"
+		}
+		log.Warn("FFmpeg memory is outside the Go soft limit",
+			"runtime_variant", runtimeVariant,
+			"resource_profile", resourcePlan.Profile,
+			"cgroup_memory_mb", resourceLimits.MemoryBytes>>20,
+			"go_soft_limit_mb", effectiveGoMemoryLimitMB(),
+			"ffmpeg_mode", cfg.FFmpeg.Mode,
+			"ffmpeg_scope", scope,
+			"advisory_only", true,
+		)
+	}
 	log.Info("kiln starting",
 		"version", version.Version,
+		"runtime_variant", runtimeVariant,
 		"config", abs(*cfgPath),
 		"listen", cfg.Server.Listen,
 		"channels", len(chs),
 		"resource_mode", resourcePlan.Mode,
+		"resource_profile", resourcePlan.Profile,
 		"resource_constrained", resourcePlan.Constrained,
 		"effective_cpus", resourceLimits.CPUs,
 		"effective_cpu_milli", resourceLimits.CPUMilli,
@@ -187,6 +213,8 @@ func main() {
 		"effective_go_memory_limit_mb", effectiveGoMemoryLimitMB(),
 		"inflight_mb", cfg.Packager.InflightBytes>>20,
 		"max_segment_mb", cfg.Packager.MaxSegmentBytes>>20,
+		"gc_percent", gcPercent,
+		"drop_file_cache", resourcePlan.DropFileCache,
 		"start_segments", cfg.Packager.StartSegments,
 		"prefetch_segments", cfg.Packager.PrefetchSegments,
 		"epg_refresh_concurrency", cfg.EPG.MaxRefreshConcurrency,

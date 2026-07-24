@@ -1,4 +1,4 @@
-//go:build !linux || !lite
+//go:build !linux
 
 package filecache
 

@@ -4,11 +4,7 @@ import "sync/atomic"
 
 var enabled atomic.Bool
 
-func init() {
-	enabled.Store(true)
-}
-
-// SetEnabled controls the process-wide Lite page-cache policy.
+// SetEnabled controls the process-wide media page-cache policy.
 func SetEnabled(value bool) {
 	enabled.Store(value)
 }

@@ -15,6 +15,7 @@ import (
 
 	"github.com/babywbx/kiln/modules/config"
 	"github.com/babywbx/kiln/modules/proxyegress"
+	"github.com/babywbx/kiln/modules/resources"
 	"github.com/babywbx/kiln/modules/store"
 )
 
@@ -149,5 +150,30 @@ func TestGoMemoryLimitMBReportsRuntimeDefaultAsUnlimited(t *testing.T) {
 	}
 	if got := goMemoryLimitMB(768 << 20); got != 768 {
 		t.Fatalf("explicit Go memory limit = %d MiB, want 768", got)
+	}
+}
+
+func TestFFmpegMemoryAdvisoryRequiresAConstrainedSelectableEngine(t *testing.T) {
+	compact := resources.Plan{Profile: resources.ProfileCompact, Constrained: true}
+	large := resources.Plan{Profile: resources.ProfileLarge}
+	auto := config.File{Packager: config.Packager{Engine: config.EngineAuto}}
+	native := config.File{Packager: config.Packager{Engine: config.EngineNative}}
+
+	if !shouldWarnFFmpegMemory(compact, true, auto, nil) {
+		t.Fatal("compact auto engine did not request the FFmpeg memory advisory")
+	}
+	if shouldWarnFFmpegMemory(compact, false, auto, nil) {
+		t.Fatal("unavailable FFmpeg requested a memory advisory")
+	}
+	if shouldWarnFFmpegMemory(compact, true, native, nil) {
+		t.Fatal("native-only configuration requested an FFmpeg memory advisory")
+	}
+	if shouldWarnFFmpegMemory(large, true, auto, nil) {
+		t.Fatal("large profile requested a constrained-memory advisory")
+	}
+	if !shouldWarnFFmpegMemory(compact, true, native, []config.Channel{{
+		ID: "compat", Packager: config.EngineFFmpeg,
+	}}) {
+		t.Fatal("channel FFmpeg override did not request the memory advisory")
 	}
 }

@@ -36,22 +36,17 @@ func TestResolveLitePlanEnforcesRuntimeContract(t *testing.T) {
 	}
 }
 
-func TestConfigureLiteFileCacheFollowsResourceMode(t *testing.T) {
-	t.Cleanup(func() { filecache.SetEnabled(true) })
+func TestConfigureFileCacheFollowsResolvedPlan(t *testing.T) {
+	t.Cleanup(func() { filecache.SetEnabled(false) })
 
-	configureLiteFileCache(resources.Plan{Mode: resources.ModePerformance})
+	configureFileCache(resources.Plan{DropFileCache: true})
+	if !filecache.Enabled() {
+		t.Fatal("enabled resource plan did not enable page-cache reclamation")
+	}
+
+	configureFileCache(resources.Plan{DropFileCache: false})
 	if filecache.Enabled() {
-		t.Fatal("performance mode left low-memory file cache eviction enabled")
-	}
-
-	configureLiteFileCache(resources.Plan{Mode: resources.ModeAuto})
-	if !filecache.Enabled() {
-		t.Fatal("auto mode did not enable low-memory file cache eviction")
-	}
-
-	configureLiteFileCache(resources.Plan{Mode: resources.ModeConstrained})
-	if !filecache.Enabled() {
-		t.Fatal("constrained mode did not enable low-memory file cache eviction")
+		t.Fatal("disabled resource plan left page-cache reclamation enabled")
 	}
 }
 

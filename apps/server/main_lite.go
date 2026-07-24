@@ -61,15 +61,11 @@ func run(args []string) int {
 	resourceLimits := resources.Detect()
 	resourcePlan := resolveLitePlan(cfg, resourceLimits)
 	resources.Apply(&cfg, resourcePlan)
-	configureLiteFileCache(resourcePlan)
+	configureFileCache(resourcePlan)
 	if cfg.Server.MemoryLimitMB > 0 && os.Getenv("GOMEMLIMIT") == "" {
 		debug.SetMemoryLimit(int64(cfg.Server.MemoryLimitMB) << 20)
 	}
-	gcPercent := os.Getenv("GOGC")
-	if gcPercent == "" && resourcePlan.GCPercent > 0 {
-		debug.SetGCPercent(resourcePlan.GCPercent)
-		gcPercent = fmt.Sprintf("%d", resourcePlan.GCPercent)
-	}
+	gcPercent := configureGC(resourcePlan)
 	if err := os.MkdirAll(cfg.Server.DataDir, 0o750); err != nil {
 		boot.Error("create data dir failed", "err", err, "path", cfg.Server.DataDir)
 		return 1
@@ -81,6 +77,7 @@ func run(args []string) int {
 	log.Info("kiln lite starting",
 		"version", version.Version,
 		"resource_mode", resourcePlan.Mode,
+		"resource_profile", resourcePlan.Profile,
 		"resource_constrained", resourcePlan.Constrained,
 		"effective_cpu_milli", resourceLimits.CPUMilli,
 		"effective_memory_mb", resourceLimits.MemoryBytes>>20,
@@ -132,10 +129,6 @@ func resolveLitePlan(cfg config.File, limits resources.Limits) resources.Plan {
 		EPGMaxConcurrency: cfg.EPG.MaxRefreshConcurrency,
 		EPGMaxSourceBytes: cfg.EPG.MaxSourceBytes,
 	})
-}
-
-func configureLiteFileCache(plan resources.Plan) {
-	filecache.SetEnabled(plan.Mode != resources.ModePerformance)
 }
 
 func validateLiteConfig(cfg config.File) error {

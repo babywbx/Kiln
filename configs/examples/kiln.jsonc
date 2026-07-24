@@ -5,7 +5,7 @@
     "listen": "0.0.0.0:8080",
     "public_base_url": "http://127.0.0.1:8080",
     "data_dir": "./data",
-    // Keeps the fast path at nominal 4 GB / 4 CPUs and scales below either axis.
+    // Selects memory profiles below 1 GiB, then applies CPU ceilings independently.
     "resource_mode": "auto",
     "read_timeout_sec": 15,
     "idle_timeout_sec": 120,
