@@ -36,6 +36,20 @@ func Open(dataDir string) (*DB, error) {
 		return nil, err
 	}
 	path := filepath.Join(dataDir, "kiln.db")
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	if err := file.Close(); err != nil {
+		return nil, err
+	}
+	if err := restrictSQLiteSidecarPermissions(path); err != nil {
+		return nil, err
+	}
 	dsn := "file:" + path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)"
 	sqlDB, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -47,7 +61,20 @@ func Open(dataDir string) (*DB, error) {
 		_ = sqlDB.Close()
 		return nil, err
 	}
+	if err := restrictSQLiteSidecarPermissions(path); err != nil {
+		_ = sqlDB.Close()
+		return nil, err
+	}
 	return db, nil
+}
+
+func restrictSQLiteSidecarPermissions(path string) error {
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if err := os.Chmod(path+suffix, 0o600); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 func (db *DB) Close() error {

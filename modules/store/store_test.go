@@ -3,14 +3,99 @@ package store_test
 import (
 	"database/sql"
 	"errors"
+	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 	"time"
 
 	"github.com/babywbx/kiln/modules/config"
 	"github.com/babywbx/kiln/modules/store"
 )
+
+func TestOpenRestrictsDatabasePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not expose Unix permission bits")
+	}
+
+	for _, test := range []struct {
+		name     string
+		existing bool
+	}{
+		{name: "new database"},
+		{name: "existing database", existing: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "kiln.db")
+			if test.existing {
+				if err := os.WriteFile(path, nil, 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(path, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			db, err := store.Open(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := info.Mode().Perm(); got != 0o600 {
+				t.Fatalf("kiln.db permissions = %04o, want 0600", got)
+			}
+		})
+	}
+}
+
+func TestOpenRestrictsSQLiteSidecarPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not expose Unix permission bits")
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "kiln.db")
+	raw, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	if _, err := raw.Exec(`PRAGMA journal_mode=WAL`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`CREATE TABLE setup (value INTEGER)`); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		if err := os.Chmod(path+suffix, 0o644); err != nil {
+			t.Fatalf("prepare %s: %v", filepath.Base(path+suffix), err)
+		}
+	}
+
+	db, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		info, err := os.Stat(path + suffix)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Errorf("%s permissions = %04o, want 0600", filepath.Base(path+suffix), got)
+		}
+	}
+}
 
 func TestChannelTrackSelectionRoundTrip(t *testing.T) {
 	db, err := store.Open(t.TempDir())
