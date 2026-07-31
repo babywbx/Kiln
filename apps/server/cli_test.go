@@ -20,6 +20,12 @@ func TestRunAllowsVersionWithoutConfig(t *testing.T) {
 	}
 }
 
+func TestRunAllowsHelpWithoutConfig(t *testing.T) {
+	if code := run([]string{"-h"}); code != 0 {
+		t.Fatalf("run -h returned %d, want 0", code)
+	}
+}
+
 func TestRunAllowsHealthcheckWithoutConfig(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)

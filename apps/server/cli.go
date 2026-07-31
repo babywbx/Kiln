@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"net/http"
@@ -17,6 +18,9 @@ func runCLI(args []string, variant string, start func(string) int) int {
 	showVersion := flags.Bool("version", false, "print version information")
 	healthcheck := flags.String("healthcheck", "", "check an HTTP health endpoint and exit")
 	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 	if *showVersion {
