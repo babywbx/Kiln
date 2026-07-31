@@ -5,8 +5,25 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 )
+
+func TestPinnedRequestRejectsHostnameResolvingToPrivateAddress(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("private"))
+	}))
+	defer origin.Close()
+
+	client := New(Options{})
+	_, err := client.Get(context.Background(), Request{
+		URL:            strings.Replace(origin.URL, "127.0.0.1", "localhost", 1),
+		PinDestination: true,
+	})
+	if err == nil {
+		t.Fatal("pinned request reached a private hostname")
+	}
+}
 
 func TestGetBytesReservesOldAndNewBuffersDuringGrowth(t *testing.T) {
 	body := make([]byte, 40<<10)

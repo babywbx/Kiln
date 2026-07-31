@@ -12,7 +12,7 @@ https://cdn.example/x.ts
 	allowed := map[string]struct{}{"origin.example": {}}
 	out, err := RewritePlaylist(in, "http://origin.example/live/index.m3u8", "/v1/play/ch/u/", allowed, func(abs string) bool {
 		return !contains(abs, "cdn.example")
-	})
+	}, func(string) string { return "signed" })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,7 +28,11 @@ func TestRewritePlaylistRewriteAllPublic(t *testing.T) {
 	in := `#EXTM3U
 https://cdn.example/x.ts
 `
-	out, err := RewritePlaylist(in, "http://origin.example/live/index.m3u8", "/v1/play/ch/u/", nil, func(string) bool { return true })
+	out, err := RewritePlaylist(
+		in, "http://origin.example/live/index.m3u8", "/v1/play/ch/u/", nil,
+		func(string) bool { return true },
+		func(string) string { return "signed" },
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

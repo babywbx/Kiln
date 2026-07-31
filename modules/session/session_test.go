@@ -202,6 +202,31 @@ func TestManagerWarmupRejectsUnknownChannel(t *testing.T) {
 	}
 }
 
+func TestManagerEnforcesMaximumActiveViewers(t *testing.T) {
+	t.Parallel()
+
+	manager, _ := newManager(t, config.Channel{
+		ID:         "news",
+		Upstream:   "origin",
+		Path:       "/live.m3u8",
+		Ingress:    "hls",
+		MaxViewers: 1,
+	})
+
+	if err := manager.RefreshViewer("news", "viewer-a"); err != session.ErrViewerLease {
+		t.Fatalf("RefreshViewer(before admit) error = %v, want ErrViewerLease", err)
+	}
+	if err := manager.AdmitViewer("news", "viewer-a"); err != nil {
+		t.Fatalf("AdmitViewer(first) error = %v", err)
+	}
+	if err := manager.RefreshViewer("news", "viewer-a"); err != nil {
+		t.Fatalf("RefreshViewer(active) error = %v", err)
+	}
+	if err := manager.AdmitViewer("news", "viewer-b"); err != session.ErrViewerLimit {
+		t.Fatalf("AdmitViewer(second) error = %v, want ErrViewerLimit", err)
+	}
+}
+
 func newManager(t *testing.T, channel config.Channel) (*session.Manager, *observe.Service) {
 	t.Helper()
 	return newManagerWithBaseURL(t, "https://example.com", channel)

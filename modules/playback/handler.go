@@ -2,6 +2,10 @@ package playback
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,7 +33,10 @@ import (
 	"github.com/babywbx/kiln/modules/version"
 )
 
-const llhlsWaitTimeout = 15 * time.Second
+const (
+	llhlsWaitTimeout = 15 * time.Second
+	viewerQuery      = "viewer"
+)
 
 type Catalog interface {
 	Get(string) (config.Channel, bool)
@@ -48,7 +55,8 @@ type Deps struct {
 }
 
 type Handler struct {
-	deps Deps
+	deps    Deps
+	signKey [sha256.Size]byte
 }
 
 func New(deps Deps) *Handler {
@@ -64,7 +72,11 @@ func New(deps Deps) *Handler {
 	if deps.Token == nil {
 		deps.Token = func(*http.Request) string { return "" }
 	}
-	return &Handler{deps: deps}
+	handler := &Handler{deps: deps}
+	if _, err := rand.Read(handler.signKey[:]); err != nil {
+		panic("generate playback signing key: " + err.Error())
+	}
+	return handler
 }
 
 func (h *Handler) HandleIndex(w http.ResponseWriter, r *http.Request) {
@@ -74,6 +86,10 @@ func (h *Handler) HandleIndex(w http.ResponseWriter, r *http.Request) {
 			writeAppError(w, err)
 			return
 		}
+	}
+	viewerID, ok := h.ensureViewerLease(w, r, id)
+	if !ok {
+		return
 	}
 	active, err := h.deps.Sessions.Acquire(id)
 	if err != nil {
@@ -85,15 +101,15 @@ func (h *Handler) HandleIndex(w http.ResponseWriter, r *http.Request) {
 	_, _, _, mode := active.SourceSnapshot()
 	switch mode {
 	case "hls":
-		h.serveHLSIndex(w, r, active)
+		h.serveHLSIndex(w, r, active, viewerID)
 	case "dash":
-		h.serveDASHIndex(w, r, active)
+		h.serveDASHIndex(w, r, active, viewerID)
 	default:
 		writeAppError(w, apperr.New(apperr.CodeInvalid, http.StatusBadRequest, "unsupported ingress"))
 	}
 }
 
-func (h *Handler) serveHLSIndex(w http.ResponseWriter, r *http.Request, active *session.Session) {
+func (h *Handler) serveHLSIndex(w http.ResponseWriter, r *http.Request, active *session.Session, viewerID string) {
 	channel, sourceURL, _, _ := active.SourceSnapshot()
 	body, finalURL, err := h.deps.Sessions.Pull().GetBytes(r.Context(), pull.Request{
 		URL:       mergeHLSDeliveryDirectives(sourceURL, r.URL.Query()),
@@ -114,6 +130,7 @@ func (h *Handler) serveHLSIndex(w http.ResponseWriter, r *http.Request, active *
 	}
 	rewritten, err := egress.RewritePlaylist(
 		string(body), finalURL, prefix, h.deps.Allowed, h.shouldRewrite(channel.ID),
+		h.signUpstream(channel.ID),
 	)
 	if err != nil {
 		h.deps.Observe.IncError()
@@ -123,6 +140,10 @@ func (h *Handler) serveHLSIndex(w http.ResponseWriter, r *http.Request, active *
 	if token != "" {
 		rewritten = appendTokenToPlaylistURLs(rewritten, token)
 	}
+	rewritten = appendViewerToPlaylistURLs(rewritten, r.URL.Query().Get(viewerQuery))
+	if !h.admitViewer(w, channel.ID, viewerID) {
+		return
+	}
 	h.deps.Observe.AddBytesOut(int64(len(rewritten)))
 	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 	w.Header().Set("Cache-Control", "no-store")
@@ -130,12 +151,15 @@ func (h *Handler) serveHLSIndex(w http.ResponseWriter, r *http.Request, active *
 }
 
 func (h *Handler) shouldRewrite(channelID string) egress.RewriteDecision {
+	channel, _ := h.deps.Catalog.Get(channelID)
 	return func(absolute string) bool {
-		return h.deps.Egress == nil || h.deps.Egress.ShouldRewriteURL(absolute, channelID)
+		return channel.MaxViewers > 0 ||
+			h.deps.Egress == nil ||
+			h.deps.Egress.ShouldRewriteURL(absolute, channelID)
 	}
 }
 
-func (h *Handler) serveDASHIndex(w http.ResponseWriter, r *http.Request, active *session.Session) {
+func (h *Handler) serveDASHIndex(w http.ResponseWriter, r *http.Request, active *session.Session, viewerID string) {
 	publication, generation := active.PublicationSnapshot()
 	if publication == nil {
 		h.deps.Observe.IncError()
@@ -148,12 +172,17 @@ func (h *Handler) serveDASHIndex(w http.ResponseWriter, r *http.Request, active 
 		writeAppError(w, apperr.New(apperr.CodeNotReady, http.StatusBadGateway, "playlist not ready"))
 		return
 	}
+	channel, _, _, _ := active.SourceSnapshot()
+	if !h.admitViewer(w, channel.ID, viewerID) {
+		return
+	}
 	h.writePlaylist(w, r, active, body, generation)
 }
 
 func (h *Handler) writePlaylist(w http.ResponseWriter, r *http.Request, active *session.Session, body []byte, generation string) {
 	channel, _, _, _ := active.SourceSnapshot()
 	out := RewriteLocalPlaylist(body, playLivePrefix(r, channel.ID), h.deps.Token(r), generation)
+	out = []byte(appendViewerToPlaylistURLs(string(out), r.URL.Query().Get(viewerQuery)))
 	h.deps.Observe.AddBytesOut(int64(len(out)))
 	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 	w.Header().Set("Cache-Control", "no-store")
@@ -179,6 +208,9 @@ func (h *Handler) HandleLiveFile(w http.ResponseWriter, r *http.Request) {
 			writeAppError(w, err)
 			return
 		}
+	}
+	if !h.refreshViewer(w, r, id) {
+		return
 	}
 	active, ok := h.deps.Sessions.Get(id)
 	if !ok {
@@ -266,6 +298,10 @@ func (h *Handler) HandleUpstream(w http.ResponseWriter, r *http.Request) {
 		writeAppError(w, apperr.New(apperr.CodeInvalid, http.StatusBadRequest, "bad upstream"))
 		return
 	}
+	if !h.validUpstreamSignature(id, absolute, r.URL.Query().Get("sig")) {
+		writeAppError(w, apperr.New(apperr.CodeForbidden, http.StatusForbidden, "invalid upstream signature"))
+		return
+	}
 	if err := security.MediaHostOK(absolute, h.deps.Allowed); err != nil {
 		writeAppError(w, apperr.New(apperr.CodeForbidden, http.StatusForbidden, "upstream host not allowed"))
 		return
@@ -276,6 +312,13 @@ func (h *Handler) HandleUpstream(w http.ResponseWriter, r *http.Request) {
 			writeAppError(w, err)
 			return
 		}
+	}
+	if !h.refreshViewer(w, r, id) {
+		return
+	}
+	if err := security.PublicProbeURL(r.Context(), absolute, h.deps.Allowed); err != nil {
+		writeAppError(w, apperr.New(apperr.CodeForbidden, http.StatusForbidden, "upstream host not allowed"))
+		return
 	}
 	channel, ok := h.deps.Catalog.Get(id)
 	if !ok {
@@ -288,7 +331,7 @@ func (h *Handler) HandleUpstream(w http.ResponseWriter, r *http.Request) {
 	}
 	response, err := h.deps.Sessions.Pull().Get(r.Context(), pull.Request{
 		URL: absolute, UserAgent: version.UserAgent(channel.UserAgent),
-		Headers: h.deps.Sessions.HeadersFor(channel), ChannelID: id,
+		Headers: h.deps.Sessions.HeadersFor(channel), ChannelID: id, PinDestination: true,
 	})
 	if err != nil {
 		h.deps.Observe.IncError()
@@ -320,7 +363,10 @@ func (h *Handler) HandleUpstream(w http.ResponseWriter, r *http.Request) {
 			prefix = "/p/" + pathToken + "/play/" + id + "/u/"
 			token = ""
 		}
-		out, err := egress.RewritePlaylist(string(body), response.FinalURL, prefix, h.deps.Allowed, h.shouldRewrite(id))
+		out, err := egress.RewritePlaylist(
+			string(body), response.FinalURL, prefix, h.deps.Allowed, h.shouldRewrite(id),
+			h.signUpstream(id),
+		)
 		if err != nil {
 			writeAppError(w, apperr.Internal(err))
 			return
@@ -328,6 +374,7 @@ func (h *Handler) HandleUpstream(w http.ResponseWriter, r *http.Request) {
 		if token != "" {
 			out = appendTokenToPlaylistURLs(out, token)
 		}
+		out = appendViewerToPlaylistURLs(out, r.URL.Query().Get(viewerQuery))
 		h.deps.Observe.AddBytesOut(int64(len(out)))
 		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 		w.Header().Set("Cache-Control", "no-store")
@@ -348,6 +395,112 @@ func (h *Handler) HandleUpstream(w http.ResponseWriter, r *http.Request) {
 		}
 		panic(http.ErrAbortHandler)
 	}
+}
+
+func (h *Handler) ensureViewerLease(w http.ResponseWriter, r *http.Request, channelID string) (string, bool) {
+	channel, ok := h.deps.Catalog.Get(channelID)
+	if !ok {
+		writeAppError(w, session.ErrNotFound)
+		return "", false
+	}
+	if channel.MaxViewers <= 0 {
+		return "", true
+	}
+	if viewerID, ok := h.viewerID(channelID, r.URL.Query().Get(viewerQuery)); ok {
+		return viewerID, true
+	}
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		writeAppError(w, apperr.Internal(err))
+		return "", false
+	}
+	viewerID := hex.EncodeToString(nonce[:])
+	lease := viewerID + "." + h.viewerSignature(channelID, viewerID)
+	target := *r.URL
+	query := target.Query()
+	query.Set(viewerQuery, lease)
+	target.RawQuery = query.Encode()
+	w.Header().Set("Cache-Control", "no-store")
+	http.Redirect(w, r, target.String(), http.StatusTemporaryRedirect)
+	return "", false
+}
+
+func (h *Handler) admitViewer(w http.ResponseWriter, channelID, viewerID string) bool {
+	if err := h.deps.Sessions.AdmitViewer(channelID, viewerID); err != nil {
+		writeAppError(w, err)
+		return false
+	}
+	return true
+}
+
+func (h *Handler) refreshViewer(w http.ResponseWriter, r *http.Request, channelID string) bool {
+	channel, ok := h.deps.Catalog.Get(channelID)
+	if !ok {
+		writeAppError(w, session.ErrNotFound)
+		return false
+	}
+	if channel.MaxViewers <= 0 {
+		return true
+	}
+	viewerID, ok := h.viewerID(channelID, r.URL.Query().Get(viewerQuery))
+	if !ok {
+		writeAppError(w, apperr.New(apperr.CodeForbidden, http.StatusForbidden, "invalid viewer lease"))
+		return false
+	}
+	if err := h.deps.Sessions.RefreshViewer(channelID, viewerID); err != nil {
+		writeAppError(w, err)
+		return false
+	}
+	return true
+}
+
+func (h *Handler) viewerID(channelID, lease string) (string, bool) {
+	viewerID, encoded, ok := strings.Cut(lease, ".")
+	if !ok || len(viewerID) != 32 {
+		return "", false
+	}
+	if _, err := hex.DecodeString(viewerID); err != nil {
+		return "", false
+	}
+	signature, err := hex.DecodeString(encoded)
+	if err != nil {
+		return "", false
+	}
+	expected, _ := hex.DecodeString(h.viewerSignature(channelID, viewerID))
+	return viewerID, hmac.Equal(signature, expected)
+}
+
+func (h *Handler) viewerSignature(channelID, viewerID string) string {
+	return h.signature("viewer", channelID, viewerID)
+}
+
+func (h *Handler) upstreamSignature(channelID, absolute string) string {
+	return h.signature("upstream", channelID, absolute)
+}
+
+func (h *Handler) signature(namespace, channelID, value string) string {
+	mac := hmac.New(sha256.New, h.signKey[:])
+	_, _ = mac.Write([]byte(namespace))
+	_, _ = mac.Write([]byte{0})
+	_, _ = mac.Write([]byte(channelID))
+	_, _ = mac.Write([]byte{0})
+	_, _ = mac.Write([]byte(value))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func (h *Handler) signUpstream(channelID string) egress.UpstreamSigner {
+	return func(absolute string) string {
+		return h.upstreamSignature(channelID, absolute)
+	}
+}
+
+func (h *Handler) validUpstreamSignature(channelID, absolute, encoded string) bool {
+	signature, err := hex.DecodeString(encoded)
+	if err != nil {
+		return false
+	}
+	expected, _ := hex.DecodeString(h.upstreamSignature(channelID, absolute))
+	return hmac.Equal(signature, expected)
 }
 
 func RewriteLocalPlaylist(body []byte, prefix, token, generation string) []byte {
@@ -507,6 +660,17 @@ func contentTypeFor(name string) string {
 }
 
 func appendTokenToPlaylistURLs(playlist, token string) string {
+	return appendQueryToPlaylistURLs(playlist, "token", token, false)
+}
+
+func appendViewerToPlaylistURLs(playlist, viewer string) string {
+	if viewer == "" {
+		return playlist
+	}
+	return appendQueryToPlaylistURLs(playlist, viewerQuery, viewer, true)
+}
+
+func appendQueryToPlaylistURLs(playlist, key, value string, localOnly bool) string {
 	lines := strings.Split(playlist, "\n")
 	for index, line := range lines {
 		trimmed := strings.TrimSpace(line)
@@ -515,31 +679,33 @@ func appendTokenToPlaylistURLs(playlist, token string) string {
 		}
 		if strings.HasPrefix(trimmed, "#") {
 			if strings.Contains(trimmed, `URI="`) {
-				lines[index] = injectTokenInURITag(trimmed, token)
+				lines[index] = injectQueryInURITag(trimmed, key, value, localOnly)
 			}
 			continue
 		}
-		if strings.HasPrefix(trimmed, "http://") || strings.HasPrefix(trimmed, "https://") || strings.HasPrefix(trimmed, "/") {
-			lines[index] = appendQuery(trimmed, "token", token)
+		if strings.HasPrefix(trimmed, "/") ||
+			!localOnly && (strings.HasPrefix(trimmed, "http://") || strings.HasPrefix(trimmed, "https://")) {
+			lines[index] = appendQuery(trimmed, key, value)
 		}
 	}
 	return strings.Join(lines, "\n")
 }
 
-func injectTokenInURITag(tag, token string) string {
-	const key = `URI="`
-	index := strings.Index(tag, key)
+func injectQueryInURITag(tag, key, value string, localOnly bool) string {
+	const marker = `URI="`
+	index := strings.Index(tag, marker)
 	if index < 0 {
 		return tag
 	}
-	start := index + len(key)
+	start := index + len(marker)
 	end := strings.Index(tag[start:], `"`)
 	if end < 0 {
 		return tag
 	}
 	uri := tag[start : start+end]
-	if strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://") || strings.HasPrefix(uri, "/") {
-		uri = appendQuery(uri, "token", token)
+	if strings.HasPrefix(uri, "/") ||
+		!localOnly && (strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://")) {
+		uri = appendQuery(uri, key, value)
 	}
 	return tag[:start] + uri + tag[start+end:]
 }

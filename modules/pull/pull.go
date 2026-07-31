@@ -96,10 +96,11 @@ type Result struct {
 }
 
 type Request struct {
-	URL       string
-	UserAgent string
-	Headers   map[string]string
-	ChannelID string
+	URL            string
+	UserAgent      string
+	Headers        map[string]string
+	ChannelID      string
+	PinDestination bool
 }
 
 func (c *Client) Get(ctx context.Context, req Request) (Result, error) {
@@ -156,6 +157,9 @@ func (c *Client) Do(ctx context.Context, method string, req Request) (result Res
 			return nil
 		}
 		client = &hc2
+	}
+	if req.PinDestination {
+		client = c.pinnedClient(req.ChannelID)
 	}
 
 	resp, err := client.Do(httpReq)
@@ -297,6 +301,21 @@ func confirmBodyEnd(body io.Reader, overflowMessage string) (bool, error) {
 }
 
 func (c *Client) Router() *proxyegress.Router { return c.router }
+
+func (c *Client) pinnedClient(channelID string) *http.Client {
+	return &http.Client{
+		Timeout: c.timeout,
+		Transport: proxyegress.NewPinnedTransport(
+			c.fallback.Transport.(*http.Transport), c.router, channelID, c.allowed,
+		),
+		CheckRedirect: func(_ *http.Request, via []*http.Request) error {
+			if len(via) >= 8 {
+				return fmt.Errorf("too many redirects")
+			}
+			return nil
+		},
+	}
+}
 
 type countingReadCloser struct {
 	rc  io.ReadCloser

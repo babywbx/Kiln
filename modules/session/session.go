@@ -22,7 +22,11 @@ import (
 	"github.com/babywbx/kiln/modules/pull"
 )
 
-var ErrNotFound = apperr.New(apperr.CodeNotFound, 404, "channel not found")
+var (
+	ErrNotFound    = apperr.New(apperr.CodeNotFound, 404, "channel not found")
+	ErrViewerLease = apperr.New(apperr.CodeForbidden, 403, "viewer lease expired")
+	ErrViewerLimit = apperr.New(apperr.CodeTooMany, 429, "channel viewer limit reached")
+)
 
 const (
 	maxDashRestarts   = 8
@@ -30,6 +34,8 @@ const (
 	restartMaxDelay   = 30 * time.Second
 	restartResetAfter = 90 * time.Second
 	shutdownTimeout   = 15 * time.Second
+	// ponytail: fixed TTL; make it configurable if segment gaps exceed a minute.
+	viewerLeaseTTL = time.Minute
 )
 
 type RestartPolicy struct {
@@ -95,6 +101,7 @@ type Manager struct {
 	inflight        map[string]*startWait
 	reloading       map[string]struct{}
 	reloadPending   map[string]struct{}
+	viewers         map[string]map[string]time.Time
 	closing         bool
 	restart         RestartPolicy
 	watchers        sync.WaitGroup
@@ -196,6 +203,7 @@ func newManager(cat Catalog, pullClient *pull.Client, obs *observe.Service, data
 		inflight:        map[string]*startWait{},
 		reloading:       map[string]struct{}{},
 		reloadPending:   map[string]struct{}{},
+		viewers:         map[string]map[string]time.Time{},
 		restart:         defaultRestartPolicy(),
 		lifecycleCtx:    lifecycleCtx,
 		lifecycleCancel: lifecycleCancel,
@@ -471,6 +479,61 @@ func (m *Manager) Acquire(channelID string) (*Session, error) {
 		m.mu.Unlock()
 		return m.finishStart(channelID, w, s)
 	}
+}
+
+func (m *Manager) AdmitViewer(channelID, viewerID string) error {
+	ch, ok := m.cat.Get(channelID)
+	if !ok {
+		return ErrNotFound
+	}
+	if ch.MaxViewers <= 0 {
+		return nil
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now()
+	active := m.activeViewersLocked(channelID, now)
+	if active == nil {
+		active = map[string]time.Time{}
+		m.viewers[channelID] = active
+	}
+	if _, ok := active[viewerID]; !ok && len(active) >= ch.MaxViewers {
+		return ErrViewerLimit
+	}
+	active[viewerID] = now
+	return nil
+}
+
+func (m *Manager) RefreshViewer(channelID, viewerID string) error {
+	ch, ok := m.cat.Get(channelID)
+	if !ok {
+		return ErrNotFound
+	}
+	if ch.MaxViewers <= 0 {
+		return nil
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now()
+	active := m.activeViewersLocked(channelID, now)
+	if _, ok := active[viewerID]; !ok {
+		return ErrViewerLease
+	}
+	active[viewerID] = now
+	return nil
+}
+
+func (m *Manager) activeViewersLocked(channelID string, now time.Time) map[string]time.Time {
+	active := m.viewers[channelID]
+	cutoff := now.Add(-viewerLeaseTTL)
+	for id, touchedAt := range active {
+		if touchedAt.Before(cutoff) {
+			delete(active, id)
+		}
+	}
+	return active
 }
 
 func (m *Manager) resolve(channelID string) (config.Channel, string, config.Upstream, error) {
@@ -854,6 +917,7 @@ func (m *Manager) detachLocked(channelID string, s *Session, removeObservation b
 	if m.sessions[channelID] == s {
 		delete(m.sessions, channelID)
 	}
+	delete(m.viewers, channelID)
 	s.cancel()
 	s.mu.Lock()
 	cleanup := sessionCleanup{job: s.job, workDir: s.workDir}
@@ -1122,6 +1186,7 @@ func (m *Manager) beginShutdown() {
 
 func (m *Manager) StopChannel(channelID string) bool {
 	m.mu.Lock()
+	delete(m.viewers, channelID)
 	s, ok := m.sessions[channelID]
 	if ok {
 		cleanup := m.detachLocked(channelID, s, true)

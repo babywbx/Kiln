@@ -1,6 +1,7 @@
 package egress
 
 import (
+	"encoding/base64"
 	"net/url"
 	"strings"
 
@@ -10,7 +11,14 @@ import (
 
 type RewriteDecision func(absURL string) bool
 
-func RewritePlaylist(playlist, playlistURL, proxyPrefix string, allowedPrivate map[string]struct{}, shouldRewrite RewriteDecision) (string, error) {
+type UpstreamSigner func(absURL string) string
+
+func RewritePlaylist(
+	playlist, playlistURL, proxyPrefix string,
+	allowedPrivate map[string]struct{},
+	shouldRewrite RewriteDecision,
+	sign UpstreamSigner,
+) (string, error) {
 	if shouldRewrite == nil {
 		shouldRewrite = func(string) bool { return true }
 	}
@@ -24,7 +32,7 @@ func RewritePlaylist(playlist, playlistURL, proxyPrefix string, allowedPrivate m
 		}
 		if strings.HasPrefix(trim, "#") {
 			if strings.Contains(trim, `URI="`) {
-				rewritten, err := rewriteTagURI(trim, playlistURL, proxyPrefix, allowedPrivate, shouldRewrite)
+				rewritten, err := rewriteTagURI(trim, playlistURL, proxyPrefix, allowedPrivate, shouldRewrite, sign)
 				if err != nil {
 					return "", err
 				}
@@ -38,12 +46,17 @@ func RewritePlaylist(playlist, playlistURL, proxyPrefix string, allowedPrivate m
 		if err != nil {
 			return "", err
 		}
-		out = append(out, mapURL(abs, proxyPrefix, allowedPrivate, shouldRewrite))
+		out = append(out, mapURL(abs, proxyPrefix, allowedPrivate, shouldRewrite, sign))
 	}
 	return strings.Join(out, "\n"), nil
 }
 
-func rewriteTagURI(tag, playlistURL, proxyPrefix string, allowedPrivate map[string]struct{}, shouldRewrite RewriteDecision) (string, error) {
+func rewriteTagURI(
+	tag, playlistURL, proxyPrefix string,
+	allowedPrivate map[string]struct{},
+	shouldRewrite RewriteDecision,
+	sign UpstreamSigner,
+) (string, error) {
 	const key = `URI="`
 	idx := strings.Index(tag, key)
 	if idx < 0 {
@@ -59,10 +72,15 @@ func rewriteTagURI(tag, playlistURL, proxyPrefix string, allowedPrivate map[stri
 	if err != nil {
 		return "", err
 	}
-	return tag[:start] + mapURL(abs, proxyPrefix, allowedPrivate, shouldRewrite) + tag[start+end:], nil
+	return tag[:start] + mapURL(abs, proxyPrefix, allowedPrivate, shouldRewrite, sign) + tag[start+end:], nil
 }
 
-func mapURL(abs, proxyPrefix string, allowedPrivate map[string]struct{}, shouldRewrite RewriteDecision) string {
+func mapURL(
+	abs, proxyPrefix string,
+	allowedPrivate map[string]struct{},
+	shouldRewrite RewriteDecision,
+	sign UpstreamSigner,
+) string {
 	if err := security.MediaHostOK(abs, allowedPrivate); err != nil {
 		if err2 := security.HostAllowed(abs, allowedPrivate); err2 != nil {
 			return abs
@@ -71,9 +89,21 @@ func mapURL(abs, proxyPrefix string, allowedPrivate map[string]struct{}, shouldR
 	if shouldRewrite != nil && !shouldRewrite(abs) {
 		return abs
 	}
-	return proxyPrefix + url.PathEscape(abs)
+	if sign == nil {
+		return abs
+	}
+	signature := sign(abs)
+	if signature == "" {
+		return abs
+	}
+	return proxyPrefix + EncodeUpstream(abs) + "?sig=" + url.QueryEscape(signature)
 }
 
-func DecodeUpstream(escaped string) (string, error) {
-	return url.PathUnescape(escaped)
+func EncodeUpstream(absolute string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(absolute))
+}
+
+func DecodeUpstream(encoded string) (string, error) {
+	absolute, err := base64.RawURLEncoding.DecodeString(encoded)
+	return string(absolute), err
 }
