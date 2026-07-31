@@ -924,5 +924,15 @@ func (c File) AllowedHostSet() map[string]struct{} {
 			out[host] = struct{}{}
 		}
 	}
+	for _, channel := range c.Channels {
+		source, err := url.Parse(channel.SourceURL)
+		if err != nil {
+			continue
+		}
+		host := strings.ToLower(source.Hostname())
+		if host != "" {
+			out[host] = struct{}{}
+		}
+	}
 	return out
 }

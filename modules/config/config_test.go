@@ -419,6 +419,24 @@ func TestDebugPprofRequiresExplicitLoopbackListener(t *testing.T) {
 	}
 }
 
+func TestAllowedHostSetIncludesConfiguredChannelSources(t *testing.T) {
+	cfg := File{
+		Security:  Security{AllowedHosts: []string{"explicit.example"}},
+		Upstreams: []Upstream{{BaseURL: "https://upstream.example/live"}},
+		Channels:  []Channel{{SourceURL: "http://channel-origin:8000/index.m3u8"}},
+	}
+
+	allowed := cfg.AllowedHostSet()
+	for _, host := range []string{"explicit.example", "upstream.example", "channel-origin"} {
+		if _, ok := allowed[host]; !ok {
+			t.Errorf("configured host %q is not allowed", host)
+		}
+	}
+	if _, ok := allowed["playlist-only.example"]; ok {
+		t.Fatal("unconfigured playlist host was allowed")
+	}
+}
+
 func TestValidateChannelID(t *testing.T) {
 	for _, id := range []string{"channel1", "news-hd", "channel_2", "sports.us", "频道", "news hd", "~new", " news", strings.Repeat("a", 300)} {
 		if err := ValidateChannelID(id); err != nil {
