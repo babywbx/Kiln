@@ -362,7 +362,7 @@ run_variant() {
   KILN_SMOKE_EXPECTED_GC_PERCENT="$gc" \
     sh deploy/docker/native-media-runtime-smoke.sh \
       "$image" \
-      busybox:1.37.0@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028
+      busybox:1.38.0@sha256:fd8d9aa63ba2f0982b5304e1ee8d3b90a210bc1ffb5314d980eb6962f1a9715d
 }
 
 run_variant lite kiln:lite-local
