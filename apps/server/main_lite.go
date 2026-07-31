@@ -5,7 +5,6 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -29,33 +28,22 @@ func main() {
 }
 
 func run(args []string) int {
-	flags := flag.NewFlagSet("kiln", flag.ContinueOnError)
-	configPath := flags.String("config", "configs/examples/kiln.toml", "path to kiln.toml or kiln.jsonc")
-	showVersion := flags.Bool("version", false, "print version information")
-	healthcheck := flags.String("healthcheck", "", "check an HTTP health endpoint and exit")
-	if err := flags.Parse(args); err != nil {
-		return 2
-	}
-	if *showVersion {
-		fmt.Printf("kiln version=%s commit=%s built_at=%s variant=lite\n",
-			version.Version, version.Commit, version.BuiltAt)
-		return 0
-	}
-	if *healthcheck != "" {
-		return runHealthcheck(*healthcheck)
-	}
+	return runCLI(args, "lite", runLiteServer)
+}
+
+func runLiteServer(configPath string) int {
 	if os.Getenv("KILN_DEFAULT_PACKAGER_ENGINE") == "" {
 		_ = os.Setenv("KILN_DEFAULT_PACKAGER_ENGINE", config.EngineNative)
 	}
 	boot := logging.Bootstrap()
 	slog.SetDefault(boot)
-	cfg, err := config.Load(*configPath)
+	cfg, err := config.Load(configPath)
 	if err != nil {
-		boot.Error("config load failed", "err", err, "config", *configPath)
+		boot.Error("config load failed", "err", err, "config", configPath)
 		return 1
 	}
 	if err := validateLiteConfig(cfg); err != nil {
-		boot.Error("lite config rejected", "err", err, "config", *configPath)
+		boot.Error("lite config rejected", "err", err, "config", configPath)
 		return 1
 	}
 	resourceLimits := resources.Detect()
@@ -150,19 +138,4 @@ func validateLiteConfig(cfg config.File) error {
 		return fmt.Errorf("pprof is not available in lite")
 	}
 	return nil
-}
-
-func runHealthcheck(url string) int {
-	client := &http.Client{Timeout: 3 * time.Second}
-	response, err := client.Get(url)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		fmt.Fprintln(os.Stderr, response.Status)
-		return 1
-	}
-	return 0
 }

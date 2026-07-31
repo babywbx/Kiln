@@ -5,7 +5,6 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"log/slog"
 	"net/http"
 	"os"
@@ -36,16 +35,21 @@ import (
 )
 
 func main() {
-	cfgPath := flag.String("config", "configs/examples/kiln.toml", "path to kiln.toml or kiln.jsonc")
-	flag.Parse()
+	os.Exit(run(os.Args[1:]))
+}
 
+func run(args []string) int {
+	return runCLI(args, "full", runServer)
+}
+
+func runServer(cfgPath string) int {
 	boot := logging.Bootstrap()
 	slog.SetDefault(boot)
 
-	cfg, err := config.Load(*cfgPath)
+	cfg, err := config.Load(cfgPath)
 	if err != nil {
-		boot.Error("config load failed", "err", err, "config", *cfgPath)
-		os.Exit(1)
+		boot.Error("config load failed", "err", err, "config", cfgPath)
+		return 1
 	}
 	runtimeVariant, validRuntimeVariant := distribution.DetectRuntimeVariant()
 	resourceLimits := resources.Detect()
@@ -75,7 +79,7 @@ func main() {
 	debugServer, err := debugserver.New(cfg.Debug.Pprof, log)
 	if err != nil {
 		log.Error("pprof setup failed", "err", err)
-		os.Exit(1)
+		return 1
 	}
 	shutdownTelemetry, err := telemetry.Setup(context.Background(), cfg.Observe, version.Version)
 	tracingReady := err == nil && cfg.Observe.Enabled && cfg.Observe.OTLPEndpoint != ""
@@ -93,40 +97,40 @@ func main() {
 
 	if err := os.MkdirAll(cfg.Server.DataDir, 0o750); err != nil {
 		log.Error("create data dir failed", "err", err, "path", cfg.Server.DataDir)
-		os.Exit(1)
+		return 1
 	}
 
 	db, err := store.Open(cfg.Server.DataDir)
 	if err != nil {
 		log.Error("sqlite open failed", "err", err)
-		os.Exit(1)
+		return 1
 	}
 	defer db.Close()
 	if err := db.SeedFromConfig(cfg); err != nil {
 		log.Error("sqlite seed failed", "err", err)
-		os.Exit(1)
+		return 1
 	}
 	users, err := db.ApplyAuthOverrides(cfg.Auth.Users)
 	if err != nil {
 		log.Error("auth users load failed", "err", err)
-		os.Exit(1)
+		return 1
 	}
 	cfg.Auth.Users = users
 
 	egCfg, err := proxyegress.ConfigFromStore(db, cfg)
 	if err != nil {
 		log.Error("egress config failed", "err", err)
-		os.Exit(1)
+		return 1
 	}
 	egressRouter, err := proxyegress.NewRouter(egCfg)
 	if err != nil {
 		log.Error("egress router failed", "err", err)
-		os.Exit(1)
+		return 1
 	}
 	epgSvc, err := buildEPGService(cfg, db, egressRouter, log)
 	if err != nil {
 		log.Error("EPG init failed", "err", err)
-		os.Exit(1)
+		return 1
 	}
 
 	obs := observe.New()
@@ -134,7 +138,7 @@ func main() {
 	authSvc, err := auth.New(cfg.Auth, cfg.TokenTTL(), auth.Options{DataDir: cfg.Server.DataDir})
 	if err != nil {
 		log.Error("auth init failed", "err", err)
-		os.Exit(1)
+		return 1
 	}
 	cat := catalog.New(cfg, db)
 	puller := pull.New(pull.Options{
@@ -200,7 +204,7 @@ func main() {
 	log.Info("kiln starting",
 		"version", version.Version,
 		"runtime_variant", runtimeVariant,
-		"config", abs(*cfgPath),
+		"config", abs(cfgPath),
 		"listen", cfg.Server.Listen,
 		"channels", len(chs),
 		"resource_mode", resourcePlan.Mode,
@@ -249,6 +253,7 @@ func main() {
 	cancel()
 	sessions.Shutdown()
 	log.Info("shutting down")
+	return 0
 }
 
 func effectiveGoMemoryLimitMB() uint64 {
