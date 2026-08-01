@@ -120,12 +120,13 @@ serve_timezone = "keep"
 
 # Optional outbound proxies
 # [[proxies]]
-# id = "local-http"
+# id = "proxy-http"
 # name = "HTTP Proxy"
 # url = "http://127.0.0.1:7890"
 
 # [[proxies]]
 # id = "proxy-socks"
+# name = "SOCKS5 Proxy"
 # url = "socks5h://127.0.0.1:7891"
 
 [egress]
@@ -138,7 +139,7 @@ playlist_policy = "rewrite"
 # priority = 10
 # kind = "host_suffix"
 # pattern = "example-cdn.com"
-# proxy = "local-http"
+# proxy = "proxy-http"
 
 [[upstreams]]
 id = "origin"
