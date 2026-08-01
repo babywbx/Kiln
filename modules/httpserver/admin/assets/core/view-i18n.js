@@ -181,8 +181,8 @@ const zhHans = {
 
   "preview.loadFailed": "无法加载播放器", "preview.connecting": "正在连接…", "preview.description": "播放预览 · 临时凭证将在 {time} 过期",
   "preview.failed": "播放失败：{detail}", "preview.browserRejected": "浏览器拒绝了这个流",
-  "preview.unsupported": "当前浏览器不支持 Media Source，无法预览。请改用 Safari。",
-  "preview.network": "无法拉取播放列表：{detail}", "preview.decode": "解码失败：{detail}。该编码可能不被此浏览器支持，可改用 Safari。",
+  "preview.unsupported": "当前浏览器既不支持原生 HLS，也不支持 Media Source，无法预览。",
+  "preview.network": "无法拉取播放列表：{detail}", "preview.decode": "解码失败：{detail}。当前浏览器可能不支持该编码。",
   "preview.openFailed": "无法打开预览", "overlay.confirmInput": "输入确认内容", "overlay.confirmLabel": "输入 {value} 以确认",
 };
 
@@ -331,8 +331,8 @@ Object.assign(zhHant, {
   "access.revokedToast": "存取金鑰已撤銷", "access.revokeFailed": "撤銷失敗", "access.removeTitle": "要刪除存取金鑰記錄嗎？",
   "access.removeDesc": "金鑰會立即失效，名稱、範圍與使用時間等記錄將永久刪除。", "access.removeWarning": "如需保留稽核記錄，請改為撤銷金鑰。", "access.removed": "記錄已刪除",
   "access.removeFailed": "刪除失敗", "preview.loadFailed": "無法載入播放器", "preview.connecting": "正在連線…", "preview.description": "播放預覽 · 暫時憑證將於 {time} 到期",
-  "preview.failed": "播放失敗：{detail}", "preview.browserRejected": "瀏覽器拒絕播放此串流", "preview.unsupported": "目前的瀏覽器不支援 Media Source，無法預覽。請改用 Safari。",
-  "preview.network": "無法擷取播放清單：{detail}", "preview.decode": "解碼失敗：{detail}。此編碼可能不受瀏覽器支援，可改用 Safari。", "preview.openFailed": "無法開啟預覽",
+  "preview.failed": "播放失敗：{detail}", "preview.browserRejected": "瀏覽器拒絕播放此串流", "preview.unsupported": "目前的瀏覽器既不支援原生 HLS，也不支援 Media Source，無法預覽。",
+  "preview.network": "無法擷取播放清單：{detail}", "preview.decode": "解碼失敗：{detail}。目前的瀏覽器可能不支援此編碼。", "preview.openFailed": "無法開啟預覽",
   "overlay.confirmInput": "輸入確認內容", "overlay.confirmLabel": "輸入 {value} 以確認",
 });
 
@@ -493,8 +493,8 @@ Object.assign(en, {
   "access.revokeFailed": "Could Not Revoke Key", "access.removeTitle": "Delete this access key record?", "access.removeDesc": "The key will stop working immediately. Its name, scope, and usage history will be permanently deleted.",
   "access.removeWarning": "Revoke the key instead if you need to retain its audit record.", "access.removed": "Record deleted", "access.removeFailed": "Could Not Delete Record",
   "preview.loadFailed": "Could Not Load Player", "preview.connecting": "Connecting…", "preview.description": "Playback preview · Temporary credentials expire at {time}",
-  "preview.failed": "Playback failed: {detail}", "preview.browserRejected": "The browser rejected this stream", "preview.unsupported": "This browser cannot preview Media Source streams. Try Safari.",
-  "preview.network": "Could not load the playlist: {detail}", "preview.decode": "Decoding failed: {detail}. This codec may not be supported by this browser; try Safari.",
+  "preview.failed": "Playback failed: {detail}", "preview.browserRejected": "The browser rejected this stream", "preview.unsupported": "This browser supports neither native HLS nor Media Source, so it cannot preview this stream.",
+  "preview.network": "Could not load the playlist: {detail}", "preview.decode": "Decoding failed: {detail}. This browser may not support the codec.",
   "preview.openFailed": "Could Not Open Preview", "overlay.confirmInput": "Enter confirmation text", "overlay.confirmLabel": "Enter {value} to confirm",
 });
 
