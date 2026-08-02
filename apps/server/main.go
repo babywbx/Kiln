@@ -237,6 +237,8 @@ func runServer(cfgPath string) int {
 	select {
 	case sig := <-sigCh:
 		log.Info("signal received", "signal", sig.String())
+	case <-platformShutdown():
+		log.Info("service stop requested")
 	case <-ctx.Done():
 	}
 

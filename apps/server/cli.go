@@ -13,6 +13,12 @@ import (
 )
 
 func runCLI(args []string, variant string, start func(string) int) int {
+	if len(args) > 0 && args[0] == "service" {
+		return runServiceCommand(args[1:])
+	}
+	if code, handled := runAsServiceIfNeeded(args, start); handled {
+		return code
+	}
 	flags := flag.NewFlagSet("kiln", flag.ContinueOnError)
 	configPath := flags.String("config", "", "path to kiln.toml or kiln.jsonc")
 	showVersion := flags.Bool("version", false, "print version information")
