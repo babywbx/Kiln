@@ -55,8 +55,6 @@ export async function renderEgress(ctx) {
   const dockerInput = input("docker_proxy_host", draft.docker_proxy_host);
   const policyHint = h("p", { class: "field-hint", text: i18n.t(POLICY_HINTS[draft.playlist_policy]) });
 
-  // Any edit invalidates the last successful route test: applying an untested
-  // draft is how you lock yourself out of every upstream at once.
   const touch = () => {
     tested = false;
     ctx.markDirty(true);

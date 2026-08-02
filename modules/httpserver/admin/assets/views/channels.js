@@ -61,7 +61,6 @@ export async function renderChannels(ctx) {
     return session ? session.state || "unknown" : "idle";
   };
 
-  // Rows build once per layout; filtering and polling only touch what changed.
   const entries = store.channels.map((channel, index) => ({
     channel,
     index,

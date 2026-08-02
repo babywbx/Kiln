@@ -19,9 +19,6 @@ let onError = () => {};
 let onUnauthenticated = () => {};
 let isAuthenticated = () => true;
 
-// Every navigation gets a fresh epoch. Async work started by a previous view
-// checks ctx.alive() before touching the DOM, so a late poll or fetch can never
-// paint over the page the user is actually looking on.
 let epoch = 0;
 let disposers = [];
 let currentURL = location.pathname + location.search;
@@ -113,8 +110,6 @@ export async function renderRoute() {
   await mount(render, ctx, localEpoch);
 }
 
-// The outgoing view stays on screen until the next one is ready, so navigation
-// never flashes an empty page; the progress bar carries the "working" signal.
 async function mount(render, ctx, localEpoch) {
   onLoading(true);
   try {

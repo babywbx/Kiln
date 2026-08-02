@@ -59,7 +59,6 @@ export async function refreshStatus() {
   }
 }
 
-// Poll only while the tab is visible; a hidden tab must not keep the upstream busy.
 function schedule() {
   clearTimeout(timer);
   if (!hasSession() || document.hidden) return;

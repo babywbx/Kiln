@@ -113,7 +113,6 @@ function isActive(token) {
   return token.enabled && !token.revoked_at && (!token.expires_at || token.expires_at > Date.now() / 1000);
 }
 
-// The server encodes scope as the literal "all", or a JSON array of channel ids.
 function scopeLabel(raw) {
   const value = String(raw || "").trim();
   if (!value || value === "all") return vt("access.allChannels");

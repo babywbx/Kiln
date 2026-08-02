@@ -52,7 +52,6 @@ export function openModal({ title, description, body, actions = [], onClose }) {
   if (description) el.setAttribute("aria-describedby", "modal-desc");
   else el.removeAttribute("aria-describedby");
   el.returnValue = "";
-  // Escape closes natively without routing through closeModal.
   el.addEventListener("close", () => content.replaceChildren(), { once: true });
   if (onClose) el.addEventListener("close", onClose, { once: true });
   if (!el.open) el.showModal();
@@ -120,9 +119,6 @@ export function confirmDialog({ title, description, confirmLabel, tone = "danger
 
 let menuSeq = 0;
 
-// Native popover gives light-dismiss (outside click + Escape) for free — the
-// old hand-rolled menu leaked open state on every stray click. popovertarget
-// establishes the invoker link; arrow-key navigation is ours to own.
 export function attachMenu(anchor, items) {
   const id = `menu-${++menuSeq}`;
   const menu = h(
@@ -195,11 +191,9 @@ export function attachMenu(anchor, items) {
     else if (event.key === "ArrowUp") move(at - 1);
     else if (event.key === "Home") move(0);
     else if (event.key === "End") move(all.length - 1);
-    // Tab must not preventDefault — the browser resumes the tab order from the anchor.
     else if (event.key === "Escape" || event.key === "Tab") dismiss();
   });
 
-  // Removing an open popover auto-hides it.
   return { close: () => menu.hidePopover(), dispose: () => menu.remove() };
 }
 

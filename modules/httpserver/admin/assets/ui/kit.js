@@ -154,7 +154,6 @@ export function table(headers, rows) {
 
 const DIGIT_RE = /^[0-9]$/;
 
-// Reels are decorative; the sr-only label carries the value.
 export function numberRoll() {
   const label = h("span", { class: "sr-only" });
   const track = h("span", { class: "roll-track", "aria-hidden": "true" });

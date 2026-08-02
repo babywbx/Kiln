@@ -19,8 +19,6 @@ const SESSION_STATES = {
   failed: ["overview.session.failed", "danger"],
 };
 
-// A channel that fell back to ffmpeg should say so, and say why: an engine
-// label alone hides the fact that the native path declined the source.
 function engineLabel(session) {
   const name = ENGINE_LABELS[session.engine] ? i18n.t(ENGINE_LABELS[session.engine]) : session.engine || "—";
   if (!session.fallback_reason) return name;

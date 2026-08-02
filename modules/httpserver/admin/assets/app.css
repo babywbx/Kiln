@@ -131,8 +131,6 @@ h1, h2, h3, p { margin: 0; }
 }
 .skip-link:focus { transform: none; }
 
-/* Lucide glyphs live on a 24px grid: keep them on whole-pixel box sizes and let
-   the SVG own its own stroke, or the strokes land on half pixels and look bent. */
 .icon { display: block; flex: 0 0 auto; }
 
 .mono {
@@ -851,8 +849,6 @@ td .empty-state { min-height: 200px; }
   font-weight: 700;
 }
 
-/* auto-fit, not a fixed 2-column grid: fixed columns are what pushed the right
-   column off-screen in narrow windows. */
 .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 16px; align-items: start; }
 .span-all { grid-column: 1 / -1; }
 
