@@ -53,3 +53,34 @@ func indexOf(s, sub string) int {
 	}
 	return -1
 }
+
+func TestUpstreamRoundTripKeepsMediaExtension(t *testing.T) {
+	tests := []struct {
+		absolute string
+		suffix   string
+	}{
+		{"https://cdn.example/live/seg0.ts", ".ts"},
+		{"https://cdn.example/live/seg0.m4s?token=abc", ".m4s"},
+		{"https://cdn.example/live/master.M3U8", ".m3u8"},
+		{"https://cdn.example/live/stream", ""},
+		{"https://cdn.example/live.dir/segment", ""},
+		{"https://cdn.example/live/seg0.bin", ""},
+	}
+	for _, test := range tests {
+		encoded := EncodeUpstream(test.absolute)
+		if test.suffix != "" && !hasSuffix(encoded, test.suffix) {
+			t.Fatalf("EncodeUpstream(%q) = %q, want suffix %q", test.absolute, encoded, test.suffix)
+		}
+		decoded, err := DecodeUpstream(encoded)
+		if err != nil {
+			t.Fatalf("DecodeUpstream(%q) error: %v", encoded, err)
+		}
+		if decoded != test.absolute {
+			t.Fatalf("round trip = %q, want %q", decoded, test.absolute)
+		}
+	}
+}
+
+func hasSuffix(s, suffix string) bool {
+	return len(s) >= len(suffix) && s[len(s)-len(suffix):] == suffix
+}

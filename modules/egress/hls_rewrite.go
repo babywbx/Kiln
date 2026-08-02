@@ -100,10 +100,30 @@ func mapURL(
 }
 
 func EncodeUpstream(absolute string) string {
-	return base64.RawURLEncoding.EncodeToString([]byte(absolute))
+	return base64.RawURLEncoding.EncodeToString([]byte(absolute)) + mediaExtension(absolute)
 }
 
 func DecodeUpstream(encoded string) (string, error) {
+	if dot := strings.LastIndexByte(encoded, '.'); dot >= 0 {
+		encoded = encoded[:dot]
+	}
 	absolute, err := base64.RawURLEncoding.DecodeString(encoded)
 	return string(absolute), err
+}
+
+func mediaExtension(absolute string) string {
+	path := absolute
+	if cut := strings.IndexAny(path, "?#"); cut >= 0 {
+		path = path[:cut]
+	}
+	dot := strings.LastIndexByte(path, '.')
+	if dot < 0 || strings.IndexByte(path[dot:], '/') >= 0 {
+		return ""
+	}
+	switch ext := strings.ToLower(path[dot:]); ext {
+	case ".m3u8", ".ts", ".m4s", ".mp4", ".m4a", ".m4v", ".aac", ".vtt", ".webvtt", ".key", ".cmfv", ".cmfa":
+		return ext
+	default:
+		return ""
+	}
 }
