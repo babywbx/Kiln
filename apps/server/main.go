@@ -15,6 +15,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	_ "time/tzdata"
 
 	"github.com/babywbx/kiln/modules/auth"
 	"github.com/babywbx/kiln/modules/catalog"
