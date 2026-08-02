@@ -521,7 +521,7 @@ func (c *File) applyDefaults() {
 		c.EPG.MaxSourceBytes = 64 << 20
 	}
 	if c.EPG.DefaultTimezone == "" {
-		c.EPG.DefaultTimezone = "Asia/Hong_Kong"
+		c.EPG.DefaultTimezone = "UTC"
 	}
 	if c.EPG.ServeTimezone == "" {
 		c.EPG.ServeTimezone = "keep"

@@ -76,7 +76,7 @@ refresh_interval_min = 360
 # 0 is unlimited normally and becomes a CPU/memory-derived ceiling in auto.
 max_refresh_concurrency = 0
 max_source_bytes = 67108864
-default_timezone = "Asia/Hong_Kong"
+default_timezone = "UTC"
 serve_timezone = "keep"
 
 [[upstreams]]

@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const DefaultTimezone = "Asia/Hong_Kong"
+const DefaultTimezone = "UTC"
 
 type Text struct {
 	Lang  string `json:"lang,omitempty"`

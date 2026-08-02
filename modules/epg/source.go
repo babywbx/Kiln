@@ -59,7 +59,7 @@ var presetSources = []Source{
 	},
 	{
 		ID: "global-1", Name: "全球源 1", URL: "https://epg.pw/xmltv/epg.xml.gz",
-		Region: "global", IDKind: IDKindNumeric, Timezone: "Asia/Hong_Kong", ApproxBytes: 45_600_000,
+		Region: "global", IDKind: IDKindNumeric, Timezone: "UTC", ApproxBytes: 45_600_000,
 		Description: "全球 XMLTV 节目单，文件较大",
 	},
 	{
