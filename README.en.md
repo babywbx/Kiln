@@ -74,7 +74,7 @@ DASH decryption and repackaging are implemented natively in Go, so FFmpeg is not
 | Distribution and audit | Playback keys scoped to a channel subset, bulk M3U import and export, playback access logs and API token audit trails |
 | Playlist and EPG | Scoped M3U generation with automatically linked XMLTV, plus built-in logo source candidates |
 | Outbound proxying | Route HTTP / SOCKS by host or channel; the channel editor can create and test a route inline |
-| Admin console | Responsive web UI, channel pre-warming and preview, Pinyin / Jyutping search that bridges simplified and traditional forms |
+| Admin console | Responsive web UI, channel pre-warming and preview, Pinyin / Jyutping search that bridges simplified and traditional forms, compressed static assets |
 | Resource adaptation | Tightens memory budgets and concurrency from the container's real memory and CPU — scales down only, never up |
 | Observability | `/v1/status`, Prometheus `/metrics`, optional OTLP traces, `/healthz` and `/readyz` |
 
