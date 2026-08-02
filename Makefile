@@ -3,7 +3,7 @@
 		docker-verify docker-verify-images docker-verify-lite docker-smoke docker-smoke-lite docker-reap fixtures \
         media-oracle test-safety test-resource-docker-basic test-resource-docker-extended test-resource-docker-core-media test-resource-docker-full benchmark-performance performance-live soak
 
-VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//' || echo dev)
 COMMIT   ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 BUILT_AT ?= $(shell date -u +%FT%TZ)
 IMAGE    ?= kiln:local
