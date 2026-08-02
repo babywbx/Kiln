@@ -26,8 +26,6 @@ func FuzzCMAF(f *testing.F) {
 		if err != nil {
 			return
 		}
-		// SplitParts is also an untrusted-media boundary and must never panic,
-		// even when handed encrypted, truncated, or otherwise arbitrary bytes.
 		_, _ = init.SplitParts(segmentRaw, 200*time.Millisecond)
 		segment, err := init.Decrypt(segmentRaw, testKeys(t))
 		if err != nil {

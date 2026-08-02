@@ -259,13 +259,10 @@ INSERT OR IGNORE INTO settings(key, value, revision, updated_at)
 VALUES ('runtime_settings_revision', '1', 1, unixepoch());
 `
 
-// An empty packager means "use the global default", so existing rows keep
-// behaving exactly as they did.
 const schemaV5 = `
 ALTER TABLE channels ADD COLUMN packager TEXT NOT NULL DEFAULT '';
 `
 
-// Historical migration retained so existing databases keep their version chain.
 const schemaV6 = `
 ALTER TABLE channels ADD COLUMN keys TEXT NOT NULL DEFAULT '';
 `
@@ -347,7 +344,6 @@ const schemaV12 = `
 ALTER TABLE epg_sources ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0;
 `
 
-// Channel-level DRM settings were replaced by the global key catalog.
 const schemaV13 = `
 UPDATE channels SET keys_file = '', keys = '';
 `
@@ -579,9 +575,6 @@ func ManagedChannelRuleID(channelID string) string {
 	return managedChannelRulePrefix + channelID
 }
 
-// UpsertChannelWithEgress applies the channel, optional new profile, and its
-// managed routing rule in one transaction. Advanced hand-written rules are
-// never removed when a channel returns to automatic routing.
 func (db *DB) UpsertChannelWithEgress(ch config.Channel, expectedRevision int64, binding ChannelEgressBinding) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
@@ -966,7 +959,6 @@ func (db *DB) ReplaceAllProxyRules(rules []ProxyRuleRow) error {
 	return tx.Commit()
 }
 
-// ReplaceEgressConfiguration persists a validated egress draft as one transaction.
 func (db *DB) ReplaceEgressConfiguration(defaultID, playlistPolicy, dockerProxyHost string, profiles []ProxyProfileRow, rules []ProxyRuleRow, expectedRevision int64) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
@@ -2038,7 +2030,6 @@ func (db *DB) setSetting(key, value string, expectedRevision int64) error {
 	return err
 }
 
-// ReplaceRuntimeSettings updates the safe hot-reload settings atomically.
 func (db *DB) ReplaceRuntimeSettings(publicBaseURL, retentionDays string, expectedRevision int64) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()

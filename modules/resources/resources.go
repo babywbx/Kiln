@@ -1,5 +1,3 @@
-// Package resources derives conservative runtime budgets from effective host
-// limits while leaving unconstrained systems on the existing fast path.
 package resources
 
 import "github.com/babywbx/kiln/modules/config"
@@ -182,9 +180,6 @@ func applyCPUCaps(plan Plan, limits Limits) Plan {
 	return plan
 }
 
-// ResolveLite applies a stable low-memory ceiling even on large hosts. The
-// performance mode remains an explicit escape hatch for operators who prefer
-// throughput over the Lite runtime contract.
 func ResolveLite(limits Limits, input Inputs) Plan {
 	plan := Resolve(limits, input)
 	if plan.Mode == ModePerformance {

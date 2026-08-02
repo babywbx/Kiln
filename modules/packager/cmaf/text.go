@@ -8,7 +8,6 @@ import (
 	"github.com/Eyevinn/mp4ff/mp4"
 )
 
-// TextSample is one decoded stpp sample in the track timescale.
 type TextSample struct {
 	DecodeTime       uint64
 	PresentationTime int64
@@ -16,7 +15,6 @@ type TextSample struct {
 	Payload          []byte
 }
 
-// TextSegment contains clear stpp samples and aggregate fragment timing.
 type TextSegment struct {
 	Timescale uint32
 	BaseTime  uint64
@@ -25,8 +23,6 @@ type TextSegment struct {
 	Events    []EventMessage
 }
 
-// DecodeText decrypts, when necessary, and extracts stpp samples from a media
-// segment without mutating or retaining the caller-owned input.
 func (i *Init) DecodeText(raw []byte, keys KeySet) (decoded *TextSegment, err error) {
 	if i.Track.Kind != KindText {
 		return nil, unsupportedf(ReasonHandler, "track kind %s is not text", i.Track.Kind)

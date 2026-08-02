@@ -222,8 +222,6 @@ func normalizeChannel(ch config.Channel) config.Channel {
 		ch.Ingress = "hls"
 	}
 	ch.Ingress = strings.ToLower(ch.Ingress)
-	// An unrecognized engine falls back to the global default rather than
-	// being persisted and rejected later at startup.
 	ch.Packager = strings.ToLower(strings.TrimSpace(ch.Packager))
 	if !config.ValidEngine(ch.Packager) {
 		ch.Packager = ""

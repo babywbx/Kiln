@@ -52,7 +52,6 @@ type Plan struct {
 
 func (p Plan) Native() bool { return p.Engine == EngineNativeRewrite }
 
-// A rendition we cannot honour, not one we merely do not understand.
 var blockedEssential = map[string]struct{}{
 	"urn:mpeg:dash:srd:2014": {},
 }
@@ -211,9 +210,6 @@ func VerifyTracks(plan *Plan, video cmaf.Track, audios []cmaf.Track, keys cmaf.K
 	return VerifyTrackSet(plan, []cmaf.Track{video}, audios, nil, keys)
 }
 
-// VerifyTrackSet checks the init segments for every rendition selected by the
-// planner. All variants share one key policy so a multi-KID ladder cannot
-// silently fall back through a single-key engine.
 func VerifyTrackSet(plan *Plan, videos, audios, texts []cmaf.Track, keys cmaf.KeySet) error {
 	if len(videos) != len(plan.Videos) {
 		return fmt.Errorf("planned %d video tracks but read %d init segments", len(plan.Videos), len(videos))

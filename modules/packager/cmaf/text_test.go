@@ -323,7 +323,6 @@ func makeEncryptedSTPP(t *testing.T, payload []byte) ([]byte, []byte) {
 		t.Fatalf("decode fixture key: %v", err)
 	}
 	iv := []byte{0, 1, 2, 3, 4, 5, 6, 7}
-	// Reuse mp4ff's public full-sample protector for the encrypted text fixture.
 	protectionInit := mp4.CreateEmptyInit()
 	protectionTrack := protectionInit.AddEmptyTrack(1000, "audio", "und")
 	if err := protectionTrack.SetAACDescriptor(aac.AAClc, 1000); err != nil {

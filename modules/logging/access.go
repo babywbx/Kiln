@@ -5,8 +5,6 @@ import (
 	"strings"
 )
 
-// AccessLevel chooses the log level for an HTTP access line.
-// High-frequency media/health traffic stays quiet at Info; errors always surface.
 func AccessLevel(path string, status int) slog.Level {
 	if status >= 400 {
 		if status >= 500 {
@@ -25,7 +23,6 @@ func isQuietPath(path string) bool {
 	case "/healthz", "/readyz", "/":
 		return true
 	}
-	// HLS media segments / upstream proxy bytes — very chatty
 	if strings.Contains(path, "/live/") {
 		return true
 	}

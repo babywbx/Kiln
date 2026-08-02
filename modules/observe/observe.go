@@ -18,28 +18,19 @@ type Service struct {
 }
 
 type SessionStat struct {
-	ChannelID string `json:"channel_id"`
-	Mode      string `json:"mode"`
-	// Engine is the resolved engine (native_rewrite, ffmpeg_copy, ...).
-	// PackMode stays the engine's internal mode and keeps its existing ffmpeg
-	// values (remote_live, local_filtered), so existing consumers do not
-	// silently start seeing a different value domain.
-	Engine         string    `json:"engine,omitempty"`
-	PackMode       string    `json:"pack_mode,omitempty"`
-	FallbackReason string    `json:"fallback_reason,omitempty"`
-	StartedAt      time.Time `json:"started_at"`
-	LastTouch      time.Time `json:"last_touch"`
-	State          string    `json:"state"`
-	Errors         int       `json:"errors"`
-	LastError      string    `json:"last_error,omitempty"`
-	// Packager holds the engine's own counters. It is absent for engines that
-	// report none, rather than filled with zeros that would read as facts.
-	Packager *PackagerStat `json:"packager,omitempty"`
+	ChannelID      string        `json:"channel_id"`
+	Mode           string        `json:"mode"`
+	Engine         string        `json:"engine,omitempty"`
+	PackMode       string        `json:"pack_mode,omitempty"`
+	FallbackReason string        `json:"fallback_reason,omitempty"`
+	StartedAt      time.Time     `json:"started_at"`
+	LastTouch      time.Time     `json:"last_touch"`
+	State          string        `json:"state"`
+	Errors         int           `json:"errors"`
+	LastError      string        `json:"last_error,omitempty"`
+	Packager       *PackagerStat `json:"packager,omitempty"`
 }
 
-// PackagerStat mirrors what a packager reports. It lives here rather than being
-// imported from the packager, which already depends on this module through the
-// pull client.
 type PackagerStat struct {
 	SegmentsPublished  uint64  `json:"segments_published,omitempty"`
 	PartsPublished     uint64  `json:"parts_published,omitempty"`

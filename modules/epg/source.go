@@ -2,7 +2,6 @@ package epg
 
 import "sort"
 
-// IDKind describes the stable identifier format used by a source.
 type IDKind string
 
 const (
@@ -11,8 +10,6 @@ const (
 	IDKindMixed   IDKind = "mixed"
 )
 
-// Source is an XMLTV endpoint. Proxy is an opaque routing hint interpreted by
-// the caller when it constructs the HTTP client used by Fetcher.
 type Source struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
@@ -82,12 +79,10 @@ var presetSources = []Source{
 	},
 }
 
-// Presets returns a copy of the built-in, verified source catalog.
 func Presets() []Source {
 	return append([]Source(nil), presetSources...)
 }
 
-// Preset returns a built-in source by ID.
 func Preset(id string) (Source, bool) {
 	for _, source := range presetSources {
 		if source.ID == id {
@@ -97,8 +92,6 @@ func Preset(id string) (Source, bool) {
 	return Source{}, false
 }
 
-// ConfigureSources merges persisted overrides with all built-in presets.
-// Presets keep catalog order; custom sources follow in stable ID order.
 func ConfigureSources(overrides []SourceOverride) []ConfiguredSource {
 	byID := make(map[string]SourceOverride, len(overrides))
 	for _, override := range overrides {

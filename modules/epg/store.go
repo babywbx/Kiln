@@ -56,7 +56,7 @@ func (s *DiskStore) Load(sourceID string) (CacheEntry, bool, error) {
 	return cloneCacheEntry(entry), found, err
 }
 
-// loadImmutable returns data owned by the store. Callers must not mutate it.
+// Returned data is shared; callers must not mutate it.
 func (s *DiskStore) loadImmutable(sourceID string) (CacheEntry, bool, error) {
 	if sourceID == "" {
 		return CacheEntry{}, false, fmt.Errorf("EPG cache source ID is empty")
@@ -179,7 +179,7 @@ func (s *MemoryStore) Load(sourceID string) (CacheEntry, bool, error) {
 	return cloneCacheEntry(entry), found, err
 }
 
-// loadImmutable returns data owned by the store. Callers must not mutate it.
+// Returned data is shared; callers must not mutate it.
 func (s *MemoryStore) loadImmutable(sourceID string) (CacheEntry, bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

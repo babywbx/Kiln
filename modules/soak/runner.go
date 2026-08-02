@@ -1,5 +1,3 @@
-// Package soak exercises live HLS channels for an extended period and emits
-// machine-readable progress reports.
 package soak
 
 import (

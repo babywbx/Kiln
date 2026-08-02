@@ -39,8 +39,6 @@ func TestResolveHostAndChannel(t *testing.T) {
 	}
 }
 
-// Upstream URLs must reach the proxy byte-for-byte. Rewriting http→https for
-// a CDN broke DASH: the edge served the manifest but 403'd every segment.
 func TestRoutingTransportDoesNotRewriteUpstreamURL(t *testing.T) {
 	var seen []string
 	proxySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -101,7 +99,6 @@ func TestProxyTLSCompat(t *testing.T) {
 	if tr.TLSClientConfig.MinVersion != tls.VersionTLS12 {
 		t.Fatalf("MinVersion want TLS1.2 got %x", tr.TLSClientConfig.MinVersion)
 	}
-	// Pinning MaxVersion or ALPN caused handshake failures against some edges.
 	if tr.TLSClientConfig.MaxVersion != 0 {
 		t.Fatalf("MaxVersion must stay unpinned, got %x", tr.TLSClientConfig.MaxVersion)
 	}
@@ -151,8 +148,6 @@ func TestClientForProxyForcesDirectOrNamedProfile(t *testing.T) {
 	}
 }
 
-// ffmpeg cannot use a SOCKS proxy. Handing it one used to emit an http_proxy it
-// silently ignored, fetching the media direct — report the misroute instead.
 func TestEnvForFFmpegRejectsSocksRoute(t *testing.T) {
 	r, _ := NewRouter(Config{
 		Default:  "p1",
@@ -181,12 +176,10 @@ func TestEnvForFFmpegUsesCDNHostNotLANOrigin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// LAN origin alone must not inject a proxy (would miss CDN host rules).
 	env, err := r.EnvForFFmpeg("http://origin.example.com:8000/live/uhd", "channel-uhd", true)
 	if err != nil || len(env) != 0 {
 		t.Fatalf("lan origin env=%v err=%v", env, err)
 	}
-	// Resolved MPD / BaseURL host must inject docker-rewritten proxy for segment pulls.
 	env, err = r.EnvForFFmpeg("https://primary.edge.media.example/session/x/index.mpd", "channel-uhd", true)
 	if err != nil {
 		t.Fatal(err)

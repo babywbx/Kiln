@@ -5,7 +5,6 @@ import (
 	"fmt"
 )
 
-// Reason values are stable identifiers surfaced as fallback_reason.
 const (
 	ReasonNotFragmented    = "not_fragmented_mp4"
 	ReasonMultiTrackInit   = "multi_track_init"
@@ -21,8 +20,6 @@ const (
 	ReasonMalformed        = "malformed_media"
 )
 
-// UnsupportedError marks input the native path cannot handle. Whether it may
-// fall back to ffmpeg is decided by the planner, not here.
 type UnsupportedError struct {
 	Reason string
 	Detail string
@@ -39,8 +36,6 @@ func unsupportedf(reason, format string, args ...any) error {
 	return &UnsupportedError{Reason: reason, Detail: fmt.Sprintf(format, args...)}
 }
 
-// Unsupported reports whether err means "native cannot handle this input",
-// as opposed to a malformed or corrupt stream.
 func Unsupported(err error) (*UnsupportedError, bool) {
 	var u *UnsupportedError
 	if errors.As(err, &u) {

@@ -1,5 +1,3 @@
-// Package distribution identifies the runtime packaging around the shared
-// Kiln server binary without changing its feature or engine configuration.
 package distribution
 
 import (

@@ -6,8 +6,6 @@ import (
 	"github.com/Eyevinn/mp4ff/mp4"
 )
 
-// EventMessage is a container-neutral representation of a DASH emsg box.
-// Version-specific presentation fields are preserved without interpretation.
 type EventMessage struct {
 	Version               uint8
 	Timescale             uint32

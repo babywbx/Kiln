@@ -11,8 +11,6 @@ import (
 	"github.com/Eyevinn/mp4ff/mp4"
 )
 
-// RewritePartSequence updates the mfhd sequence number of one staged CMAF
-// fragment without decoding or copying its media payload.
 func RewritePartSequence(file io.ReadWriteSeeker, sequence uint32) error {
 	if file == nil {
 		return unsupportedf(ReasonMalformed, "nil part file")
@@ -86,8 +84,6 @@ func readPartBox(file io.ReadSeeker, offset, limit int64) (string, int64, int64,
 	return string(header[4:8]), offset + headerSize, offset + int64(size), nil
 }
 
-// Part is one independently parseable fMP4 fragment. BaseTime and Duration
-// use the track timescale from Init.
 type Part struct {
 	Data        []byte
 	BaseTime    uint64
@@ -101,8 +97,6 @@ type queuedPartSample struct {
 	events []EventMessage
 }
 
-// SplitParts divides a clear single-track CMAF media segment at sample
-// boundaries. A positive target is required; the final part may be shorter.
 func (i *Init) SplitParts(clearSegment []byte, target time.Duration) (parts []Part, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -113,8 +107,6 @@ func (i *Init) SplitParts(clearSegment []byte, target time.Duration) (parts []Pa
 	return i.splitParts(clearSegment, target, nil)
 }
 
-// SplitPartsFromSequence divides a clear single-track CMAF media segment and
-// assigns consecutive mfhd sequence numbers beginning at firstSequence.
 func (i *Init) SplitPartsFromSequence(
 	clearSegment []byte,
 	target time.Duration,
@@ -333,8 +325,6 @@ func eventsByFragment(segment *mp4.MediaSegment) [][]EventMessage {
 				seenMdat = true
 			case *mp4.EmsgBox:
 				target := fragmentIndex
-				// mp4ff associates an emsg between fragments with the preceding
-				// fragment. Its box order still shows that it precedes the next moof.
 				if seenMdat && fragmentIndex+1 < len(segment.Fragments) {
 					target++
 				}

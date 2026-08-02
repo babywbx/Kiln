@@ -13,7 +13,6 @@ const (
 	MatchUnmatched MatchStatus = "unmatched"
 )
 
-// ChannelRef is the EPG-facing projection of a Kiln channel.
 type ChannelRef struct {
 	ID        string `json:"id"`
 	Title     string `json:"title,omitempty"`
@@ -43,8 +42,6 @@ type MatchResult struct {
 	Logos      []LogoCandidate  `json:"logo_candidates,omitempty"`
 }
 
-// knownBroadcastNameFold is intentionally a small domain dictionary, not a
-// general Traditional-to-Simplified Chinese converter.
 var knownBroadcastNameFold = map[rune]rune{
 	'綫': '线', '線': '线', '臺': '台', '檯': '台',
 	'無': '无', '聞': '闻', '視': '视', '頻': '频',
@@ -62,7 +59,6 @@ var removableBroadcastSuffixes = []string{
 	"超高清", "ultrahd", "fullhd", "高清", "uhd", "fhd", "hd", "8k", "4k",
 }
 
-// NormalizeName applies only deterministic rules used by TV channel names.
 func NormalizeName(value string) string {
 	var folded strings.Builder
 	for _, current := range value {
@@ -95,8 +91,6 @@ func NormalizeName(value string) string {
 	}
 }
 
-// MatchChannel matches an explicit XMLTV ID, or returns name candidates for
-// operator confirmation. A name match is never silently promoted to matched.
 func MatchChannel(channel ChannelRef, documents []SourceDocument) MatchResult {
 	result := MatchResult{
 		ChannelID: channel.ID,

@@ -32,7 +32,6 @@ func isTerminal(f *os.File) bool {
 	if f == nil {
 		return false
 	}
-	// NO_COLOR: https://no-color.org/
 	if os.Getenv("NO_COLOR") != "" {
 		return false
 	}

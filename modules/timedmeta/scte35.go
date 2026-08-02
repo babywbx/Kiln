@@ -12,9 +12,6 @@ const (
 	CommandTimeSignal   Command = 0x06
 )
 
-// SCTE35 is the actionable subset of a splice_info_section. PTS and duration
-// values use the SCTE-35 90 kHz clock and remain explicit until playlist time
-// conversion.
 type SCTE35 struct {
 	Command            Command
 	EventID            uint32

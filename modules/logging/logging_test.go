@@ -135,11 +135,9 @@ func TestWithAttrsChannel(t *testing.T) {
 	var buf bytes.Buffer
 	base := newConsoleHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}, false)
 	log := slog.New(base.WithAttrs([]slog.Attr{slog.String("channel", "news")}))
-	// fix time via direct handle
 	ts := time.Date(2026, 7, 11, 0, 0, 0, 0, time.Local)
 	rec := slog.NewRecord(ts, slog.LevelInfo, "dash packager ready", 0)
 	rec.Add("mode", "cenc")
-	// need handler that already has channel — use WithAttrs handler
 	h := base.WithAttrs([]slog.Attr{slog.String("channel", "news")})
 	_ = h.Handle(context.TODO(), rec)
 	got := strings.TrimSpace(buf.String())

@@ -272,7 +272,6 @@ func advanceSegmentNumber(number, count uint64, hasFollowing bool) (uint64, erro
 	if err == nil {
 		return advanced, nil
 	}
-	// A finite timeline never uses the increment after its final segment.
 	if !hasFollowing && number > 0 && count == math.MaxUint64-number+1 {
 		return 0, nil
 	}

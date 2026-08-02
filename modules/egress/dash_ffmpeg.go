@@ -22,12 +22,11 @@ import (
 )
 
 const (
-	minReadySegBytes   = 32 * 1024
-	minReadySegments   = 2
-	minReadyEXTINF     = 0.4
-	readyTimeoutLocal  = 45 * time.Second
-	readyTimeoutRemote = 55 * time.Second
-	// 4K / high ladders often need longer first-segment pull through egress.
+	minReadySegBytes     = 32 * 1024
+	minReadySegments     = 2
+	minReadyEXTINF       = 0.4
+	readyTimeoutLocal    = 45 * time.Second
+	readyTimeoutRemote   = 55 * time.Second
 	readyTimeoutLocal4K  = 75 * time.Second
 	readyTimeoutRemote4K = 90 * time.Second
 )
@@ -47,9 +46,6 @@ type DashJob struct {
 	container   string
 }
 
-// SpawnGate bounds how many packagers may be launched at once. It must only
-// cover the launch itself: holding it across the readiness wait serializes
-// every channel's cold start behind the slowest source.
 type SpawnGate interface {
 	Acquire(ctx context.Context) (release func(), err error)
 }
@@ -149,9 +145,6 @@ func StartDashHLS(parent context.Context, opt DashOptions) (*DashJob, error) {
 		if pick.AudioIndex >= 0 {
 			aMap = fmt.Sprintf("0:a:%d", pick.AudioIndex)
 		}
-		// Live first: a file: MPD is a snapshot ffmpeg can never refresh, so it
-		// starves once the snapshot's timeline runs out. Pin the ladder with -map
-		// instead and let ffmpeg poll the manifest itself.
 		attempts = append(attempts, packAttempt{
 			mode:  "remote_live",
 			input: resolvedURL,
@@ -236,7 +229,6 @@ func startPackager(parent context.Context, opt DashOptions, log *slog.Logger, ab
 	var stderrBuf bytes.Buffer
 	proxyEnv := []string{}
 	if opt.Egress != nil {
-		// Segment fetches hit the CDN host from the resolved MPD, not the LAN origin.
 		proxyTarget := resolvedURL
 		if proxyTarget == "" {
 			proxyTarget = opt.SourceURL
@@ -362,7 +354,6 @@ func buildPackagerArgs(opt DashOptions, att packAttempt, key, indexPath, segPatt
 	return args
 }
 
-// spawn holds the gate for the launch only, never for the readiness wait.
 func spawn(ctx context.Context, gate SpawnGate, cmd *exec.Cmd) error {
 	if gate != nil {
 		release, err := gate.Acquire(ctx)
@@ -449,9 +440,6 @@ func waitPlaylistReady(ctx context.Context, job *DashJob, workDir string, timeou
 	return fmt.Errorf("timeout waiting for hls playlist")
 }
 
-// A single segment only proves ffmpeg started, not that it is still fed: a
-// packager reading a stale manifest emits one segment and then starves. Require
-// a second one, which only a packager that is actually keeping up can produce.
 func readyPlaylist(index, workDir string) bool {
 	st, err := os.Stat(index)
 	if err != nil || st.Size() == 0 {
@@ -597,7 +585,6 @@ func (j *DashJob) fail(err error) {
 }
 
 func resolveMPD(ctx context.Context, opt DashOptions) (string, string, error) {
-	// Phase 1: hit origin without following (LAN o11 style → 302 to CDN).
 	cdnURL, directBody, err := resolveOriginToCDN(ctx, opt)
 	if err != nil {
 		return "", "", err
@@ -606,7 +593,6 @@ func resolveMPD(ctx context.Context, opt DashOptions) (string, string, error) {
 		return cdnURL, directBody, nil
 	}
 
-	// Phase 2: fetch CDN MPD with egress; proxied TLS can be flaky so retry.
 	var lastErr error
 	for attempt := 1; attempt <= 6; attempt++ {
 		final, body, err := fetchMPD(ctx, opt, cdnURL)
@@ -638,7 +624,6 @@ func resolveOriginToCDN(ctx context.Context, opt DashOptions) (cdnURL string, bo
 	if opt.Egress != nil {
 		d := opt.Egress.Resolve(opt.SourceURL, opt.ChannelID)
 		if hc, e := opt.Egress.ClientForChannel(d.ProxyID, opt.ChannelID, 15*time.Second); e == nil {
-			// Keep no-follow redirect policy.
 			hc.CheckRedirect = client.CheckRedirect
 			hc.Timeout = 15 * time.Second
 			client = hc
@@ -686,7 +671,6 @@ func resolveOriginToCDN(ctx context.Context, opt DashOptions) (cdnURL string, bo
 	return "", "", fmt.Errorf("origin did not return redirect or MPD")
 }
 
-// Some CDNs 403 plain http and expect the caller to upgrade the scheme.
 func fetchMPD(ctx context.Context, opt DashOptions, mpdURL string) (string, string, error) {
 	final, body, err := fetchMPDOnce(ctx, opt, mpdURL)
 	if err == nil {

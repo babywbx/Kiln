@@ -9,8 +9,6 @@ import (
 	"github.com/Eyevinn/mp4ff/mp4"
 )
 
-// DecodeSTPPSamples reads TTML samples from a fragmented ISO BMFF media
-// segment. Returned payloads are owned by the caller and do not alias raw.
 func DecodeSTPPSamples(raw []byte, track STPPTrack) (samples []STPPSample, err error) {
 	if track.ID == 0 {
 		return nil, fmt.Errorf("stpp track ID must be non-zero")
@@ -58,8 +56,6 @@ func DecodeSTPPSamples(raw []byte, track STPPTrack) (samples []STPPSample, err e
 	return samples, nil
 }
 
-// ParseSTPPSample parses standard stpp timing, where TTML times are relative to
-// the track origin and the sample presentation interval is a clipping window.
 func ParseSTPPSample(sample STPPSample, timing TimingParameters) ([]Cue, error) {
 	if sample.End <= sample.Start {
 		return nil, fmt.Errorf("invalid stpp sample window [%v, %v)", sample.Start, sample.End)

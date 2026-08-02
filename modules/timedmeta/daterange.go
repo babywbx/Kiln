@@ -11,9 +11,6 @@ import (
 
 const dateRangeTimeLayout = "2006-01-02T15:04:05.000Z07:00"
 
-// DateRange is the deterministic subset of EXT-X-DATERANGE used for SCTE-35.
-// An IN event is intentionally represented as its own observation; a stateful
-// playlist publisher may merge it with an earlier OUT event sharing the ID.
 type DateRange struct {
 	ID              string
 	Class           string
@@ -52,8 +49,6 @@ func equalDurationPointer(left, right *time.Duration) bool {
 	return *left == *right
 }
 
-// MergeDateRange combines observations for the same SCTE-35 event. OUT owns
-// the start time; IN closes that range at its observation time.
 func MergeDateRange(previous, observation DateRange) DateRange {
 	if previous.ID == "" || previous.ID != observation.ID {
 		return observation

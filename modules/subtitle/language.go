@@ -2,9 +2,6 @@ package subtitle
 
 import "strings"
 
-// NormalizeLanguage maps the language labels used by the upstream subtitle
-// tracks to unambiguous HLS-compatible BCP 47 tags. In this source, bare zh is
-// the traditional track while chs is the simplified track.
 func NormalizeLanguage(raw string) Language {
 	tag := canonicalLanguageTag(strings.TrimSpace(raw))
 	switch strings.ToLower(tag) {

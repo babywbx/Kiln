@@ -254,9 +254,6 @@ type routingTransport struct {
 	channelID string
 }
 
-// Each hop is routed on its own host, so redirects to a CDN pick up that
-// host's rule. The request is forwarded verbatim: rewriting an upstream URL
-// (scheme, port, host) invalidates session-bound CDN links.
 func (t *routingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	d := t.router.Resolve(req.URL.String(), t.channelID)
 	c, err := t.router.fixedClient(d)
@@ -328,24 +325,17 @@ func buildClient(proxyURL *url.URL, _ time.Duration) (*http.Client, error) {
 	return &http.Client{Transport: tr}, nil
 }
 
-// HTTP/1.1 over the CONNECT tunnel: HTTP/2 through a proxy is poorly supported
-// by consumer proxies. TLS version negotiation is left to the peer.
 func compatTLSForProxy(tr *http.Transport) {
 	tr.ForceAttemptHTTP2 = false
 	tr.TLSNextProto = map[string]func(authority string, c *tls.Conn) http.RoundTripper{}
 	tr.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 }
 
-// EnvForFFmpeg returns the proxy environment ffmpeg needs to fetch targetURL,
-// or nil when the route is direct. It errors when the route cannot be honored.
 func (r *Router) EnvForFFmpeg(targetURL, channelID string, forDocker bool) ([]string, error) {
 	d := r.Resolve(targetURL, channelID)
 	if d.ProxyID == Direct || d.ProxyURL == nil {
 		return nil, nil
 	}
-	// ffmpeg only speaks HTTP CONNECT and only reads http_proxy/https_proxy.
-	// A SOCKS route cannot be expressed, and ffmpeg would silently ignore it
-	// and fetch the media direct — say so instead of leaking the request.
 	if s := strings.ToLower(d.ProxyURL.Scheme); s != "http" && s != "https" {
 		return nil, fmt.Errorf("proxy %q uses %s, which ffmpeg cannot use; route %s through an http proxy or direct",
 			d.ProxyID, s, targetURL)

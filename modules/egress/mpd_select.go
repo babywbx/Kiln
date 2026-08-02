@@ -230,9 +230,6 @@ func FilterMPDForPackWithSelection(mpd, mpdURL string, preferHeight int, videoID
 		}
 		out = strings.Replace(out, r, "", 1)
 	}
-	// Dropping every Representation of an AdaptationSet leaves an empty one
-	// behind. That is invalid DASH and stalls the ffmpeg demuxer, so the whole
-	// set has to go with it.
 	out = dropEmptyAdaptationSets(out)
 
 	base := resolveBaseURL(mpd, mpdURL)
@@ -246,9 +243,6 @@ func FilterMPDForPackWithSelection(mpd, mpdURL string, preferHeight int, videoID
 			}
 		}
 	}
-	// Live MPDs: do not trim SegmentTimeline. Keeping only the last few S
-	// entries freezes a short availability window that expires (HTTP 410)
-	// before a dockerized packager can pull the first 4K segment.
 	if !isDynamicMPD(mpd) {
 		var trimmed int
 		out, trimmed = trimSegmentTimelines(out, defaultTimelineKeep)

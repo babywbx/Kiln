@@ -9,9 +9,6 @@ import (
 	"github.com/babywbx/kiln/modules/playback"
 )
 
-// A master playlist references its renditions through URI="..." attributes, and
-// EXT-X-MAP does too. Rewriting only bare lines would leave the audio playlist
-// and the init segment pointing at names this server never serves.
 func TestRewriteLocalPlaylistCoversTagURIs(t *testing.T) {
 	in := `#EXTM3U
 #EXT-X-VERSION:7
@@ -51,8 +48,6 @@ video-main-000001.m4s
 	}
 }
 
-// A path token already authenticates the URL; repeating it as a query parameter
-// would only widen where the token appears.
 func TestRewriteLocalPlaylistOmitsQueryTokenForPathTokens(t *testing.T) {
 	in := "#EXT-X-MAP:URI=\"video-main-init.mp4\"\nvideo-main-000001.m4s\n"
 	out := string(playback.RewriteLocalPlaylist([]byte(in), "/p/abc/play/demo/live/", "t0k", "gen1"))
@@ -65,8 +60,6 @@ func TestRewriteLocalPlaylistOmitsQueryTokenForPathTokens(t *testing.T) {
 	}
 }
 
-// A published playlist should only ever name plain files. Anything else is left
-// alone rather than turned into a URL on this server.
 func TestRewriteLocalPlaylistRejectsTraversal(t *testing.T) {
 	in := "../../etc/passwd\nhttps://evil.example.com/seg.m4s\n"
 	out := string(playback.RewriteLocalPlaylist([]byte(in), "/v1/play/demo/live/", "", "gen1"))

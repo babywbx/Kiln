@@ -76,17 +76,12 @@ func MediaHostOK(rawURL string, allowedPrivate map[string]struct{}) error {
 	return nil
 }
 
-// PublicProbeURL rejects private and special-use destinations before a custom
-// connectivity probe is sent. Fixed public probe presets do not accept a URL
-// from the client and therefore do not need this path.
 func PublicProbeURL(ctx context.Context, rawURL string, allowedPrivate map[string]struct{}) error {
 	_, err := PinPublicProbeURL(ctx, rawURL, allowedPrivate)
 	return err
 }
 
-// PinPublicProbeURL validates every resolved address and returns a URL whose
-// host is the selected IP. Callers must preserve the original HTTP Host header
-// and TLS server name when sending the pinned request.
+// Host is pinned to an IP; callers must keep the original Host header.
 func PinPublicProbeURL(ctx context.Context, rawURL string, allowedPrivate map[string]struct{}) (*url.URL, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {

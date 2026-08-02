@@ -471,10 +471,6 @@ func (s *Server) handlePlayIndex(w http.ResponseWriter, r *http.Request) {
 	s.play.HandleIndex(w, r)
 }
 
-// handlePlayLiveFile serves published playlists and media assets. It never
-// starts a session: a late segment request used to be able to bring a whole
-// channel back up, which meant an idle-stopped channel could be revived by a
-// player that had not even re-read the playlist. Only the playlist acquires.
 func (s *Server) handlePlayLiveFile(w http.ResponseWriter, r *http.Request) {
 	s.play.HandleLiveFile(w, r)
 }
@@ -564,20 +560,18 @@ var adminTokenRouteScopes = map[string]admintoken.Scope{
 	"DELETE /v1/admin/sessions/{id}":           admintoken.ScopeRefresh,
 	"PUT /v1/admin/channels/reorder":           admintoken.ScopeWrite,
 	"POST /v1/admin/import/m3u":                admintoken.ScopeWrite,
-	// Exporting an M3U creates a new playback credential, so this is a write
-	// even though the response itself is a read-only playlist.
-	"POST /v1/admin/exports/m3u":           admintoken.ScopeWrite,
-	"GET /v1/admin/access-logs":            admintoken.ScopeRead,
-	"DELETE /v1/admin/access-logs":         admintoken.ScopeDelete,
-	"GET /v1/admin/egress":                 admintoken.ScopeRead,
-	"PUT /v1/admin/egress":                 admintoken.ScopeWrite,
-	"POST /v1/admin/egress/proxies":        admintoken.ScopeWrite,
-	"PUT /v1/admin/egress/proxies/{id}":    admintoken.ScopeWrite,
-	"DELETE /v1/admin/egress/proxies/{id}": admintoken.ScopeDelete,
-	"POST /v1/admin/egress/rules":          admintoken.ScopeWrite,
-	"PUT /v1/admin/egress/rules/{id}":      admintoken.ScopeWrite,
-	"DELETE /v1/admin/egress/rules/{id}":   admintoken.ScopeDelete,
-	"POST /v1/admin/egress/test":           admintoken.ScopeRefresh,
+	"POST /v1/admin/exports/m3u":               admintoken.ScopeWrite,
+	"GET /v1/admin/access-logs":                admintoken.ScopeRead,
+	"DELETE /v1/admin/access-logs":             admintoken.ScopeDelete,
+	"GET /v1/admin/egress":                     admintoken.ScopeRead,
+	"PUT /v1/admin/egress":                     admintoken.ScopeWrite,
+	"POST /v1/admin/egress/proxies":            admintoken.ScopeWrite,
+	"PUT /v1/admin/egress/proxies/{id}":        admintoken.ScopeWrite,
+	"DELETE /v1/admin/egress/proxies/{id}":     admintoken.ScopeDelete,
+	"POST /v1/admin/egress/rules":              admintoken.ScopeWrite,
+	"PUT /v1/admin/egress/rules/{id}":          admintoken.ScopeWrite,
+	"DELETE /v1/admin/egress/rules/{id}":       admintoken.ScopeDelete,
+	"POST /v1/admin/egress/test":               admintoken.ScopeRefresh,
 }
 
 var sessionOnlyAdminRoutes = map[string]struct{}{

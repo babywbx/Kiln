@@ -14,8 +14,6 @@ import (
 	"github.com/babywbx/kiln/modules/config"
 )
 
-// readyDelay is how long the fake packager takes to produce a playable
-// playlist. It stands in for the 45-90 s readiness wait of a real source.
 const (
 	readyDelay      = 400 * time.Millisecond
 	readyDelayShell = "0.4"
@@ -59,8 +57,6 @@ func (g *recordingGate) longestHold() time.Duration {
 	return max
 }
 
-// fakePackager stands in for ffmpeg: it takes readyDelay to write a playable
-// playlist, then idles until it is killed.
 func fakePackager(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "fake-ffmpeg")
@@ -87,8 +83,6 @@ sleep 60
 	return path
 }
 
-// The gate must cover the launch only. If it also covered the readiness wait,
-// N cold starts through a capacity-1 gate would serialize into N*readyDelay.
 func TestSpawnGateDoesNotCoverReadinessWait(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fake packager is a shell script")
@@ -132,14 +126,10 @@ func TestSpawnGateDoesNotCoverReadinessWait(t *testing.T) {
 		defer func() { _ = jobs[i].Stop() }()
 	}
 
-	// The launch itself is milliseconds; the readiness wait is not.
 	if hold := gate.longestHold(); hold >= readyDelay {
 		t.Errorf("gate was held for %v, which covers the readiness wait (%v)", hold, readyDelay)
 	}
 
-	// Compare against the work actually done rather than a wall-clock constant:
-	// on a loaded machine every start is slow, but serialized starts still sum
-	// while overlapping ones do not.
 	var total time.Duration
 	for _, d := range took {
 		total += d
@@ -150,7 +140,6 @@ func TestSpawnGateDoesNotCoverReadinessWait(t *testing.T) {
 	}
 }
 
-// The gate still bounds launches: with capacity 1 no two spawns overlap.
 func TestSpawnGateBoundsConcurrentLaunches(t *testing.T) {
 	gate := newSpawnGate(t, 1)
 	var live, peak int

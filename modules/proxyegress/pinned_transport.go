@@ -58,7 +58,6 @@ func (t *pinnedTransport) RoundTrip(request *http.Request) (*http.Response, erro
 		return nil, fmt.Errorf("pinned transport requires a base transport or router")
 	}
 	transport := base.Clone()
-	// ponytail: one connection per request; cache by verified IP if this gets hot.
 	transport.DisableKeepAlives = true
 	var proxyURL *url.URL
 	if transport.Proxy != nil {

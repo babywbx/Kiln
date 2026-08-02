@@ -1,5 +1,3 @@
-// Package mpd is a structured DASH manifest model. It replaces regex trimming
-// so the native path can reason about inheritance, timelines and live edges.
 package mpd
 
 import (
@@ -137,15 +135,10 @@ type xmlSegmentBase struct {
 	IndexRange     string   `xml:"indexRange,attr"`
 }
 
-// Parse decodes a manifest. baseURL must be the final URL the manifest was
-// fetched from, after redirects, so relative references resolve correctly.
 func Parse(data []byte, baseURL string) (*Presentation, error) {
 	return parse(data, baseURL, false)
 }
 
-// ParseForInspection decodes enough of a manifest to describe every track,
-// including tracks whose addressing is not supported by the native engine.
-// Playback continues to use Parse so unsupported manifests still fail closed.
 func ParseForInspection(data []byte, baseURL string) (*Presentation, error) {
 	return parse(data, baseURL, true)
 }
@@ -227,8 +220,6 @@ func parse(data []byte, baseURL string, tolerant bool) (*Presentation, error) {
 	return p, nil
 }
 
-// resolveAll folds a chain of BaseURL elements onto a parent URL. Only the
-// first BaseURL of each level is used; multi-origin selection is not in scope.
 func resolveAll(parent *url.URL, bases []string) *url.URL {
 	out := parent
 	for _, b := range bases {
@@ -282,8 +273,6 @@ func optTime(s string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("bad xs:dateTime %q", s)
 }
 
-// ParseDuration reads an xs:duration such as PT1H2M3.5S. Years and months are
-// rejected: they have no fixed length and no DASH manifest needs them here.
 func ParseDuration(s string) (time.Duration, error) {
 	in := strings.TrimSpace(s)
 	neg := strings.HasPrefix(in, "-")

@@ -31,7 +31,6 @@ type activeInterval struct {
 	hasEnd bool
 }
 
-// ParseTTML parses a TTML sample and returns cues on the media timeline.
 func ParseTTML(document []byte, options TTMLParseOptions) ([]Cue, error) {
 	root, err := parseTTMLTree(document)
 	if err != nil {

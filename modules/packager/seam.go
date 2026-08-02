@@ -100,8 +100,6 @@ type PlaylistView struct {
 	Revision uint64
 }
 
-// ContextPublication is implemented by native LL-HLS publications. Keeping it
-// optional preserves the same HTTP seam for ffmpeg and passthrough engines.
 type ContextPublication interface {
 	PlaylistContext(context.Context, string, PlaylistRequest) (PlaylistView, bool, error)
 	AssetContext(context.Context, string) (Asset, bool, error)

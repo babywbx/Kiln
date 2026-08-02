@@ -192,8 +192,6 @@ func (c *Client) GetBytesReserve(ctx context.Context, req Request, reserve func(
 	return c.GetBytesLimitReserve(ctx, req, c.maxPlaylist, reserve)
 }
 
-// GetBytesLimit reads at most max bytes. Media segments are far larger than
-// playlists, so they need their own ceiling rather than the playlist one.
 func (c *Client) GetBytesLimit(ctx context.Context, req Request, max int64) ([]byte, string, error) {
 	return c.GetBytesLimitReserve(ctx, req, max, nil)
 }

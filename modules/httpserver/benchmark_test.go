@@ -38,9 +38,6 @@ func TestBusinessHandlerDoesNotExposePprof(t *testing.T) {
 	}
 }
 
-// BenchmarkDistributionMediaHotPath measures successful requests against an
-// already-running publication. Requests and response writers are reused so the
-// handler result is not dominated by httptest fixture construction.
 func BenchmarkDistributionMediaHotPath(b *testing.B) {
 	fixture := newDistributionBenchmarkServer(b)
 
@@ -63,8 +60,6 @@ func BenchmarkDistributionMediaHotPath(b *testing.B) {
 	}
 }
 
-// BenchmarkDistributionMediaLoopback includes net/http connection handling and
-// runs parallel clients against one immutable media segment.
 func BenchmarkDistributionMediaLoopback(b *testing.B) {
 	fixture := newDistributionBenchmarkServer(b)
 	testServer := httptest.NewServer(fixture.server.Handler())
@@ -111,7 +106,6 @@ func benchmarkHandler(b *testing.B, handler http.Handler, path, bearer string, p
 	}
 	response := newBenchmarkResponseWriter()
 
-	// Warm the route matcher, token lookup, and filesystem metadata cache.
 	handler.ServeHTTP(response, request)
 	if response.status != http.StatusOK || response.written == 0 {
 		b.Fatalf("warmup status = %d, bytes = %d", response.status, response.written)

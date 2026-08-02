@@ -34,8 +34,7 @@ const (
 	restartMaxDelay   = 30 * time.Second
 	restartResetAfter = 90 * time.Second
 	shutdownTimeout   = 15 * time.Second
-	// ponytail: fixed TTL; make it configurable if segment gaps exceed a minute.
-	viewerLeaseTTL = time.Minute
+	viewerLeaseTTL    = time.Minute
 )
 
 type RestartPolicy struct {
@@ -61,10 +60,6 @@ func defaultRestartPolicy() RestartPolicy {
 	}
 }
 
-// spawnGate bounds concurrent packager launches. It is deliberately scoped to
-// the launch itself: the previous global semaphore was held across the whole
-// readiness wait, so one slow source blocked every other channel's cold start
-// for minutes.
 type spawnGate chan struct{}
 
 func newSpawnGate(n int) spawnGate {
@@ -145,15 +140,11 @@ type Session struct {
 	ctx    context.Context
 }
 
-// Publication exposes the published media. The HTTP layer goes through this
-// and never guesses the on-disk layout.
 func (s *Session) Publication() packager.Publication {
 	publication, _ := s.PublicationSnapshot()
 	return publication
 }
 
-// PublicationSnapshot returns one atomic view of the active publication and
-// its cache-safe generation.
 func (s *Session) PublicationSnapshot() (packager.Publication, string) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -251,15 +242,12 @@ func (m *Manager) FFmpegAvailable() bool {
 	return m.ffmpegAvailable
 }
 
-// SetPackager replaces the engine before sessions are started.
 func (m *Manager) SetPackager(p packager.Packager) {
 	m.mu.Lock()
 	m.pack = p
 	m.mu.Unlock()
 }
 
-// SetRestartPolicy configures the restart state machine. Zero values retain
-// production defaults, which keeps partial configuration safe.
 func (m *Manager) SetRestartPolicy(policy RestartPolicy) {
 	defaults := defaultRestartPolicy()
 	if policy.MaxAttempts <= 0 {
@@ -302,7 +290,6 @@ func (m *Manager) Start(ctx context.Context) {
 
 func (m *Manager) Pull() *pull.Client { return m.pull }
 
-// Warmup starts a channel asynchronously and is idempotent while it is active.
 func (m *Manager) Warmup(channelID string) error {
 	ch, src, up, err := m.resolve(channelID)
 	if err != nil {
@@ -334,9 +321,6 @@ func (m *Manager) Warmup(channelID string) error {
 	return nil
 }
 
-// ReloadChannel applies HLS changes atomically and prepares replacement DASH
-// publications in the background. Viewers keep using the old DASH generation
-// while changed source, key, engine, and track-selection settings are checked.
 func (m *Manager) ReloadChannel(channelID string) bool {
 	ch, src, up, err := m.resolve(channelID)
 	if err != nil || ch.Disabled {
@@ -737,9 +721,6 @@ func (m *Manager) startWatcherLocked(channelID string, s *Session, job packager.
 	}()
 }
 
-// watchJob owns restart policy for both engines. A watcher is bound to both
-// the Session and Job identities so a stopped generation cannot affect a new
-// session that happens to use the same channel ID.
 func (m *Manager) watchJob(channelID string, s *Session, failedJob packager.Job) {
 	select {
 	case <-failedJob.Done():
@@ -1130,8 +1111,6 @@ func (m *Manager) Shutdown() {
 	}
 }
 
-// ShutdownContext cancels all session work and waits for packagers and manager
-// goroutines up to the caller's deadline.
 func (m *Manager) ShutdownContext(ctx context.Context) error {
 	m.shutdownOnce.Do(m.beginShutdown)
 	select {
@@ -1235,8 +1214,6 @@ func sessionStat(s *Session) observe.SessionStat {
 	return stat
 }
 
-// packagerStat copies the engine's counters into the status snapshot. An engine
-// that reports nothing stays absent instead of showing a row of zeros.
 func packagerStat(job packager.Job) *observe.PackagerStat {
 	if job == nil {
 		return nil

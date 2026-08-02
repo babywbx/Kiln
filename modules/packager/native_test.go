@@ -200,7 +200,6 @@ func TestNativeProducesPlayableHLS(t *testing.T) {
 		}
 	}
 
-	// Every asset the playlist references must already be readable.
 	for line := range strings.SplitSeq(string(video), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -236,8 +235,6 @@ func TestPublishedInitBytesAreReleasedFromTrackState(t *testing.T) {
 	}
 }
 
-// The whole point of the native path: no MPEG-TS, no external process, and no
-// stray copies of the media on disk.
 func TestNativeWritesOnlyFinalAssets(t *testing.T) {
 	job, out := runNative(t, "hevc")
 	waitForStaticCompletion(t, job)
@@ -258,8 +255,6 @@ func TestNativeWritesOnlyFinalAssets(t *testing.T) {
 	}
 }
 
-// A running publication never re-fetches or re-decrypts the same segment,
-// however many players are watching.
 func TestNativeFetchesEachSegmentOnce(t *testing.T) {
 	origin := startOrigin(t, "hevc")
 	fetcher := &httpFetcher{client: origin.Client(), hits: map[string]int{}}
@@ -315,9 +310,6 @@ func TestNativeRejectsMissingKey(t *testing.T) {
 	}
 }
 
-// The end-to-end anchor: each published track must decode to exactly the frames
-// ffmpeg gets by decrypting the original DASH segments itself. Timestamps and
-// container metadata are allowed to differ; the decoded frames are not.
 func TestNativeOutputMatchesFFmpegDecodeOfSource(t *testing.T) {
 	requireFFmpeg(t)
 	type sourceTrack struct {
@@ -401,9 +393,6 @@ func writePlaylists(t *testing.T, job *Native, dir string) {
 	}
 }
 
-// frameCRCs returns the decoded-frame checksums only. Container timing headers
-// legitimately differ between the DASH source and the HLS output; the frames
-// must not.
 func frameCRCs(t *testing.T, path, key string) []string {
 	t.Helper()
 	args := []string{"-v", "error", "-nostdin"}

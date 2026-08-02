@@ -26,7 +26,6 @@ import (
 )
 
 type Fetcher interface {
-	// Fetch transfers ownership of data to the caller.
 	Fetch(ctx context.Context, url string) (data []byte, finalURL string, err error)
 }
 
@@ -1598,10 +1597,6 @@ func safeLogError(err error) string {
 	return logURLPattern.ReplaceAllStringFunc(err.Error(), safeLogURL)
 }
 
-// checkStalled ends a publication that cannot explain itself: the manifest is
-// being served and parsed, yet nothing reaches the playlist. Failing lets the
-// session restart and re-plan. An unreachable upstream is not this case, and
-// must keep retrying instead of burning the restart budget.
 func (n *Native) checkStalled() error {
 	if n.opts.StallTimeout <= 0 {
 		return nil

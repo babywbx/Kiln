@@ -101,8 +101,6 @@ func TestParseLiveAttributes(t *testing.T) {
 	}
 }
 
-// BaseURL is relative to the final manifest URL, and template inheritance must
-// leave each Representation self-contained.
 func TestNormalizationResolvesInheritance(t *testing.T) {
 	p := parseLive(t)
 	reps := p.Periods[0].Representations
@@ -139,13 +137,10 @@ func TestNormalizationResolvesInheritance(t *testing.T) {
 	}
 }
 
-// @r=-1 must expand to the live edge. It is a normal, extremely common form,
-// not an exotic feature.
 func TestTimelineRepeatMinusOneExpandsToLiveEdge(t *testing.T) {
 	p := parseLive(t)
 	rep := p.Periods[0].Representations[0]
 
-	// 2 s segments, 21 s of stream: 10 whole segments are published.
 	now := p.AvailabilityStartTime.Add(21 * time.Second)
 	segs, err := p.AvailableSegments(0, rep, now)
 	if err != nil {
@@ -172,7 +167,6 @@ func TestTimelineRepeatMinusOneExpandsToLiveEdge(t *testing.T) {
 	}
 }
 
-// A partially published segment must never be offered.
 func TestLiveEdgeExcludesIncompleteSegment(t *testing.T) {
 	p := parseLive(t)
 	rep := p.Periods[0].Representations[0]
@@ -189,7 +183,6 @@ func TestLiveEdgeExcludesIncompleteSegment(t *testing.T) {
 func TestTimeShiftBufferTrimsExpiredSegments(t *testing.T) {
 	p := parseLive(t)
 	rep := p.Periods[0].Representations[0]
-	// 120 s in, 30 s buffer: only the last 15 two-second segments survive.
 	now := p.AvailabilityStartTime.Add(120 * time.Second)
 	segs, err := p.AvailableSegments(0, rep, now)
 	if err != nil {
@@ -227,7 +220,6 @@ func TestTimeShiftBufferRetainsSegmentCrossingCutoff(t *testing.T) {
 	}
 }
 
-// $Time$ addressing numbers by media time, not by segment index.
 func TestDurationAddressingUsesTimeIdentifier(t *testing.T) {
 	p := parseLive(t)
 	rep := p.Periods[0].Representations[1]
@@ -247,8 +239,6 @@ func TestDurationAddressingUsesTimeIdentifier(t *testing.T) {
 	}
 }
 
-// The shipped fixtures are static SegmentList with no default_KID, which is
-// exactly the shape that proves the KID must come from the init segment.
 func TestParseStaticFixtures(t *testing.T) {
 	wantSegments := map[string]int{"h264": 2, "hevc": 3}
 	for _, dir := range []string{"h264", "hevc"} {

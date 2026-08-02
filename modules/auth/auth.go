@@ -153,7 +153,6 @@ func (s *Service) Login(username, password string) (LoginResult, error) {
 	}, nil
 }
 
-// IssuePreview creates a short-lived token scoped to one channel.
 func (s *Service) IssuePreview(channelID string, ttl time.Duration) (string, time.Time, error) {
 	channelID = strings.TrimSpace(channelID)
 	if channelID == "" {
@@ -202,8 +201,6 @@ func (s *Service) Parse(token string) (Claims, error) {
 	return claims, nil
 }
 
-// ChangeCredentials verifies the current password, persists the replacement,
-// invalidates older tokens, and returns a fresh session for the renamed user.
 func (s *Service) ChangeCredentials(
 	username, currentPassword, newUsername, newPassword string,
 	persist func(string, config.User, int64) error,

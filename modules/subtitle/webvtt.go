@@ -15,7 +15,6 @@ var webVTTEscaper = strings.NewReplacer(
 	">", "&gt;",
 )
 
-// ClipCues intersects cues with the half-open media window [start, end).
 func ClipCues(cues []Cue, start, end time.Duration) []Cue {
 	if end <= start {
 		return nil
@@ -36,7 +35,6 @@ func ClipCues(cues []Cue, start, end time.Duration) []Cue {
 	return clipped
 }
 
-// NewWebVTTSegment clips absolute cues to a media segment window.
 func NewWebVTTSegment(cues []Cue, start, end time.Duration, mpegTS uint64) (WebVTTSegment, error) {
 	if end <= start {
 		return WebVTTSegment{}, fmt.Errorf("invalid WebVTT segment window [%v, %v)", start, end)
@@ -49,8 +47,6 @@ func NewWebVTTSegment(cues []Cue, start, end time.Duration, mpegTS uint64) (WebV
 	}, nil
 }
 
-// MarshalWebVTT serializes a standalone HLS WebVTT segment. Cue times are
-// rebased to LOCAL zero and mapped to the caller-provided MPEG-TS timestamp.
 func MarshalWebVTT(segment WebVTTSegment) ([]byte, error) {
 	if segment.End <= segment.Start {
 		return nil, fmt.Errorf("invalid WebVTT segment window [%v, %v)", segment.Start, segment.End)

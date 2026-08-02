@@ -6,9 +6,6 @@ import (
 	"strings"
 )
 
-// Emsg contains the already-decoded fields of a DASH Event Message box.
-// SegmentPresentationTime is the earliest presentation time of the containing
-// segment, in TimeScale units, and is required to resolve a version 0 delta.
 type Emsg struct {
 	Version                 uint8
 	TimeScale               uint32

@@ -45,8 +45,6 @@ video-main-000001.m4s
 `
 )
 
-// fakePublication stands in for a real engine so the HTTP layer can be tested
-// without launching ffmpeg or reaching upstream.
 type fakePublication struct {
 	dir                   string
 	assets                map[string]string
@@ -225,8 +223,6 @@ func body(t *testing.T, resp *http.Response) string {
 	return string(b)
 }
 
-// A player must be able to walk master -> media playlist -> init + segment
-// entirely through this server, with no reference escaping the publication.
 func TestLivePublicationServesFullChain(t *testing.T) {
 	ts, _ := newLiveServer(t)
 
@@ -262,12 +258,8 @@ func TestLivePublicationServesFullChain(t *testing.T) {
 	}
 }
 
-// Published segments are immutable, so they must escape the global no-store.
-// Without this the shared upstream fetch buys nothing: every player re-reads
-// every byte from us.
 func TestImmutableAssetsAreCacheable(t *testing.T) {
 	ts, _ := newLiveServer(t)
-	// Segments no longer start a session, so the playlist has to come first.
 	pl0 := get(t, ts.URL+"/v1/play/dash1/index.m3u8")
 	pl0.Body.Close()
 
@@ -280,7 +272,6 @@ func TestImmutableAssetsAreCacheable(t *testing.T) {
 	if !strings.Contains(cc, "immutable") || !strings.Contains(cc, "max-age=") {
 		t.Errorf("segment Cache-Control = %q, want an immutable max-age", cc)
 	}
-	// The URL can carry an access token, so a shared cache must not hold it.
 	if strings.Contains(cc, "public") {
 		t.Errorf("segment Cache-Control = %q, must not be public", cc)
 	}
@@ -352,8 +343,6 @@ func TestPublishedFMP4AssetsSupportSingleAndMultipleRanges(t *testing.T) {
 	}
 }
 
-// The cache exemption is per route. Widening the global default instead would
-// have quietly relaxed admin and status responses too.
 func TestAdminResponsesStayUncacheable(t *testing.T) {
 	ts, _ := newLiveServer(t)
 
@@ -364,9 +353,6 @@ func TestAdminResponsesStayUncacheable(t *testing.T) {
 	}
 }
 
-// A late segment request must not resurrect an idle-stopped channel. The player
-// is told the session is gone and goes back to the playlist, which is what
-// legitimately restarts it.
 func TestSegmentRequestDoesNotStartSession(t *testing.T) {
 	ts, sessions := newLiveServer(t)
 
@@ -379,7 +365,6 @@ func TestSegmentRequestDoesNotStartSession(t *testing.T) {
 		t.Fatal("a segment request started a session")
 	}
 
-	// The playlist is what acquires.
 	pl := get(t, ts.URL+"/v1/play/dash1/index.m3u8")
 	defer pl.Body.Close()
 	if pl.StatusCode != http.StatusOK {
@@ -459,11 +444,8 @@ func TestOldPublicationGenerationReanchorsPlaylistsAndRejectsSegments(t *testing
 	}
 }
 
-// Only registered assets are reachable. The work directory is not a document
-// root, whatever path a request asks for.
 func TestUnpublishedAssetIsNotServed(t *testing.T) {
 	ts, _ := newLiveServer(t)
-	// Start the session first, so a 404 here means the whitelist rejected it.
 	pl := get(t, ts.URL+"/v1/play/dash1/index.m3u8")
 	pl.Body.Close()
 

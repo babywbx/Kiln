@@ -1,4 +1,3 @@
-// Package cmaf turns encrypted DASH CMAF tracks into clear HLS-compatible fMP4.
 package cmaf
 
 import (
@@ -72,8 +71,6 @@ type Init struct {
 	di mp4.DecryptInfo
 }
 
-// ParseInit reads bytes an upstream gave us, so a defect in the box parser must
-// not be able to take the process down with it.
 func ParseInit(raw []byte) (init *Init, err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -271,8 +268,6 @@ func (i *Init) DecryptOwnedReserved(raw []byte, keys KeySet, reserve func(int64)
 	return i.decryptOwnedReserved(raw, keys, reserve)
 }
 
-// DecryptOwnedTo decrypts caller-owned media and writes the clear segment
-// directly to dst without allocating another segment-sized byte slice.
 func (i *Init) DecryptOwnedTo(raw []byte, keys KeySet, dst io.Writer) (segment *Segment, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {

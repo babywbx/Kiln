@@ -12,13 +12,6 @@ import (
 	"time"
 )
 
-// Modern compact console format:
-//
-//	2026-07-11 15:04:05  INFO   kiln starting  version=0.1.0 channels=3
-//	2026-07-11 15:04:05  INFO   [channel-1] session started  ingress=hls
-//	2026-07-11 15:04:05  ERROR  [channel-1] session restart failed  err="connection refused"
-//
-// Time is local wall clock. Levels are 3 letters. Fields are logfmt key=value.
 type consoleHandler struct {
 	mu    *sync.Mutex
 	w     io.Writer
@@ -74,11 +67,9 @@ func (h *consoleHandler) Handle(_ context.Context, r slog.Record) error {
 	if ts.IsZero() {
 		ts = time.Now()
 	}
-	// time
 	b.WriteString(ts.Format("2006-01-02 15:04:05"))
 	b.WriteString("  ")
 
-	// level
 	lvl := levelTag(r.Level)
 	if h.color {
 		b.WriteString(levelColor(r.Level))
@@ -89,7 +80,6 @@ func (h *consoleHandler) Handle(_ context.Context, r slog.Record) error {
 	}
 	b.WriteString("  ")
 
-	// collect attrs
 	attrs := make([]slog.Attr, 0, len(h.attrs)+8)
 	attrs = append(attrs, h.attrs...)
 	r.Attrs(func(a slog.Attr) bool {
@@ -99,7 +89,6 @@ func (h *consoleHandler) Handle(_ context.Context, r slog.Record) error {
 	kv := flatten(attrs, h.group)
 	delete(kv, "service")
 
-	// optional [channel] scope — scannable in media gateways
 	if ch := take(kv, "channel"); ch != "" {
 		if h.color {
 			b.WriteString(ansiDim)
@@ -113,7 +102,6 @@ func (h *consoleHandler) Handle(_ context.Context, r slog.Record) error {
 		b.WriteByte(' ')
 	}
 
-	// message
 	if h.color {
 		b.WriteString(ansiBold)
 	}
@@ -122,7 +110,6 @@ func (h *consoleHandler) Handle(_ context.Context, r slog.Record) error {
 		b.WriteString(ansiReset)
 	}
 
-	// fields in stable preferred order
 	writeFields(&b, kv, h.color)
 
 	if h.opts.AddSource && r.PC != 0 {
@@ -150,7 +137,6 @@ func (h *consoleHandler) Handle(_ context.Context, r slog.Record) error {
 	return err
 }
 
-// Fixed width 5 so INFO/WARN align with ERROR/DEBUG.
 func levelTag(l slog.Level) string {
 	switch {
 	case l >= slog.LevelError:
@@ -164,7 +150,6 @@ func levelTag(l slog.Level) string {
 	}
 }
 
-// Preferred field order for common keys; remaining keys sorted alphabetically.
 var fieldOrder = []string{
 	"remote", "method", "path", "status", "dur_ms", "request_id",
 	"ingress", "engine", "pack_mode", "fallback_reason", "mode", "attempt", "restarts", "delay", "reason",
@@ -178,7 +163,6 @@ func writeFields(b *strings.Builder, kv map[string]string, color bool) {
 	if len(kv) == 0 {
 		return
 	}
-	// two spaces between message and first field (visual column)
 	b.WriteString("  ")
 	first := true
 	emit := func(k, v string) {
@@ -312,7 +296,6 @@ func sortedKeys(kv map[string]string) []string {
 }
 
 func shortSource(file string) string {
-	// keep last two path segments
 	n := 0
 	for i := len(file) - 1; i >= 0; i-- {
 		if file[i] == '/' {

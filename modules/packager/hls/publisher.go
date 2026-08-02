@@ -1,4 +1,3 @@
-// Package hls publishes decrypted CMAF tracks as HLS fMP4.
 package hls
 
 import (
@@ -200,7 +199,6 @@ type assetRemoval struct {
 }
 
 type assetRemovals struct {
-	// Inline common removals so grace cleanup adds no per-segment allocation.
 	inline   [4]assetRemoval
 	overflow []assetRemoval
 	count    int

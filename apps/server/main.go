@@ -88,8 +88,6 @@ func runServer(cfgPath string) int {
 		shutdownTelemetry = func(context.Context) error { return nil }
 	}
 
-	// GOMEMLIMIT set by the environment wins, so an operator can always override
-	// the file without editing it.
 	if cfg.Server.MemoryLimitMB > 0 && os.Getenv("GOMEMLIMIT") == "" {
 		debug.SetMemoryLimit(int64(cfg.Server.MemoryLimitMB) << 20)
 	}

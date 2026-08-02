@@ -18,8 +18,6 @@ type LogoResult struct {
 	Data        []byte
 }
 
-// FetchLogo tries verified candidates in caller-provided priority order. It is
-// intentionally transport-only; matching and cache policy remain with callers.
 func FetchLogo(ctx context.Context, client *http.Client, candidates []LogoCandidate, maxBytes int64) (LogoResult, error) {
 	if client == nil {
 		return LogoResult{}, errors.New("EPG logo HTTP client is nil")

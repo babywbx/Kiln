@@ -141,8 +141,6 @@ func normalizeRepresentation(xr xmlRepresation, as xmlAdaptationSet, parentTmpl 
 	return rep, nil
 }
 
-// stableTrackKey is deliberately independent of URLs, timelines and KIDs so
-// a user's choice survives normal live-manifest refreshes and token rotation.
 func stableTrackKey(rep Representation) string {
 	identity := strings.Join([]string{
 		"v1", rep.PeriodID, rep.AdaptationSetID, rep.Group, rep.ID,

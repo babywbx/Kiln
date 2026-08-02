@@ -14,14 +14,11 @@ func TestParseKeysAcceptsWhatPeopleActuallyPaste(t *testing.T) {
 	if len(keys) != 2 {
 		t.Fatalf("got %d keys, want 2", len(keys))
 	}
-	// A dashed KID is what the MPD shows, so it has to be accepted, but it is
-	// stored as it was typed; the packager normalizes it.
 	if keys[1].KID != "90a0bd01-d9f6-cbb3-9839-cd9b68fc26bc" {
 		t.Errorf("kid = %q", keys[1].KID)
 	}
 }
 
-// The mistakes worth catching at the form, not at the first segment.
 func TestParseKeysRejectsTheUsualMistakes(t *testing.T) {
 	for name, in := range map[string]string{
 		"no separator": "ffeeddccbbaa99887766554433221100 00112233445566778899aabbccddeeff",

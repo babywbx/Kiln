@@ -861,8 +861,6 @@ func (s *Server) handleAdminImportM3U(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
-// handleAdminExportM3U creates a playback-only distribution credential. The
-// administrator bearer token must never be embedded in a downloaded playlist.
 func (s *Server) handleAdminExportM3U(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r) {
 		return
@@ -891,6 +889,7 @@ func (s *Server) handleAdminExportM3U(w http.ResponseWriter, r *http.Request) {
 	if s.epgActive() {
 		epgURL = epgPublicURL(base)
 	}
+	// Uses a scoped access token; never embed the admin token.
 	body := s.deps.Catalog.M3U(channels, base, "/p/"+plain+"/play/", "", epgURL)
 	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="kiln-playlist.m3u"`)
@@ -1315,8 +1314,6 @@ func (s *Server) handleAdminEgressTest(w http.ResponseWriter, r *http.Request) {
 			req.Target = "source"
 		}
 	case "bing":
-		// Presets always use server-owned URLs. Ignoring a client URL prevents a
-		// caller from smuggling a private destination behind a trusted label.
 		req.URL = "http://bing.com/"
 	case "source", "custom":
 		if req.URL == "" {

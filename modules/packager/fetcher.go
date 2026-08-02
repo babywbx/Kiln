@@ -11,9 +11,6 @@ import (
 	"github.com/babywbx/kiln/modules/version"
 )
 
-// PullFetcher reaches upstream through the existing pull client, so the native
-// path inherits SSRF checks, the per-channel proxy route and the redirect
-// policy without knowing any of them exist.
 type PullFetcher struct {
 	Client    *pull.Client
 	ChannelID string

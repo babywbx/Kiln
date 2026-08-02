@@ -27,9 +27,6 @@ func CheckFFmpegDependency(cfg config.FFmpeg) error {
 	return nil
 }
 
-// FFmpegAdapter wraps the existing DASH-to-HLS ffmpeg job unchanged. Its
-// output, attempt fallback and restart semantics are exactly what they were
-// before the seam existed.
 type FFmpegAdapter struct {
 	cfg       config.FFmpeg
 	egress    *proxyegress.Router
@@ -90,14 +87,8 @@ func (j *ffmpegJob) Stop() error               { return j.job.Stop() }
 func (j *ffmpegJob) IntentionalStop() bool     { return j.job.IntentionalStop() }
 func (j *ffmpegJob) setFallback(reason string) { j.reason = reason }
 
-// Stats stays empty for ffmpeg: the counters describe work the native pipeline
-// does itself, and inventing numbers for an external process would be worse
-// than reporting none.
 func (j *ffmpegJob) Stats() Stats { return Stats{} }
 
-// ffmpegPublication exposes the ffmpeg work directory as a named playlist plus
-// a whitelist of media segments. It does not let a request path address the
-// directory directly.
 type ffmpegPublication struct {
 	dir string
 }
@@ -115,9 +106,6 @@ func (p *ffmpegPublication) Playlist(name string) ([]byte, bool) {
 	return b, true
 }
 
-// Asset only resolves the segment names ffmpeg is configured to produce.
-// Segment numbers increase monotonically and are never reused, so a published
-// segment is immutable.
 func (p *ffmpegPublication) Asset(name string) (Asset, bool) {
 	if !strings.HasPrefix(name, "seg_") || !strings.HasSuffix(name, ".ts") {
 		return Asset{}, false

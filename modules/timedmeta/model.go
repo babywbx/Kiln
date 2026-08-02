@@ -1,5 +1,3 @@
-// Package timedmeta maps timed metadata from DASH into a transport-neutral
-// event model and the attributes needed by HLS playlists.
 package timedmeta
 
 import "time"
@@ -20,9 +18,6 @@ const (
 	DirectionIn      Direction = "in"
 )
 
-// Event is independent of MP4 and HLS. PresentationTime and Duration are
-// expressed in TimeScale ticks; callers must provide an explicit clock anchor
-// before converting them to wall-clock time.
 type Event struct {
 	ID               uint32
 	Kind             Kind
@@ -35,8 +30,6 @@ type Event struct {
 	SCTE35           *SCTE35
 }
 
-// ClockAnchor states which presentation timestamp corresponds to a wall-clock
-// instant. Its timescale may differ from the event timescale.
 type ClockAnchor struct {
 	WallClock        time.Time
 	PresentationTime uint64

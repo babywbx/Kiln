@@ -7,24 +7,17 @@ import (
 	"strings"
 )
 
-// Options configure the process logger.
-//
-//	format: text (default, human console) | json (machines / collectors)
-//	color:  auto (default, TTY only) | always | never — text only
 type Options struct {
 	Level  string
 	Format string
 	Color  string
-	// Output defaults to os.Stdout.
 	Output io.Writer
 }
 
-// New builds the process logger from level/format strings.
 func New(level, format string) *slog.Logger {
 	return NewWith(Options{Level: level, Format: format, Color: "auto"})
 }
 
-// NewWith builds the process logger from Options.
 func NewWith(opt Options) *slog.Logger {
 	out := opt.Output
 	if out == nil {
@@ -44,12 +37,10 @@ func NewWith(opt Options) *slog.Logger {
 	}
 }
 
-// Bootstrap returns a minimal logger for use before config is loaded.
 func Bootstrap() *slog.Logger {
 	return NewWith(Options{Level: "info", Format: "text", Color: "auto"})
 }
 
-// ParseLevel maps config/env strings to slog levels.
 func ParseLevel(level string) slog.Level {
 	switch strings.ToLower(strings.TrimSpace(level)) {
 	case "debug", "dbg", "trace":
@@ -63,18 +54,15 @@ func ParseLevel(level string) slog.Level {
 	}
 }
 
-// NormalizeFormat returns "text" or "json".
 func NormalizeFormat(format string) string {
 	switch strings.ToLower(strings.TrimSpace(format)) {
 	case "json", "structured":
 		return "json"
 	default:
-		// text | console | human | pretty | ""
 		return "text"
 	}
 }
 
-// NormalizeColor returns auto | always | never.
 func NormalizeColor(color string) string {
 	switch strings.ToLower(strings.TrimSpace(color)) {
 	case "always", "on", "true", "1", "yes":

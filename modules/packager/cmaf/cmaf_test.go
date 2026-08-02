@@ -106,8 +106,6 @@ func testKeys(t *testing.T) KeySet {
 	return ks
 }
 
-// The fixture MPDs carry no default_KID, so a KID that only comes from the
-// init segment's tenc box is the whole point.
 func TestParseInitTakesKIDFromTenc(t *testing.T) {
 	for _, f := range fixtures {
 		t.Run(f.name, func(t *testing.T) {
@@ -390,8 +388,6 @@ func TestOwnedDecodeAliasesTheCiphertextMdat(t *testing.T) {
 	}
 }
 
-// A KID with no key must fail. The ffmpeg path silently falls back to the
-// first key here, which is exactly the behaviour the native path must not have.
 func TestDecryptStrictKIDRefusesWrongKey(t *testing.T) {
 	init, err := ParseInit(readFixture(t, "hevc", "init-stream0.m4s"))
 	if err != nil {
@@ -413,8 +409,6 @@ func TestDecryptStrictKIDRefusesWrongKey(t *testing.T) {
 	}
 }
 
-// The hev1 fixture is a real hev1-tagged source. Safari and AVPlayer reject
-// hev1 in fMP4, so it has to come out of the rewrite as hvc1.
 func TestHev1BecomesHvc1(t *testing.T) {
 	init, err := ParseInit(readFixture(t, "hev1", "init-stream0.m4s"))
 	if err != nil {
@@ -432,9 +426,6 @@ func TestHev1BecomesHvc1(t *testing.T) {
 	}
 }
 
-// hev1 carrying its parameter sets inband only cannot be rewritten without
-// touching samples, so it must be reported as unsupported, not mangled. ffmpeg
-// always writes them into hvcC, so this one input has to be synthesized.
 func TestHev1WithInbandParameterSetsIsUnsupported(t *testing.T) {
 	raw := stripParameterSets(t, readFixture(t, "hev1", "init-stream0.m4s"))
 	_, err := ParseInit(raw)
@@ -466,8 +457,6 @@ func stripParameterSets(t *testing.T, raw []byte) []byte {
 	return buf.Bytes()
 }
 
-// A stream whose tracks carry different KIDs is the case only the native path
-// can serve: each track has to be decrypted with its own key.
 func TestMultiKIDDecryptsEachTrackWithItsOwnKey(t *testing.T) {
 	keys, err := NewKeySet(map[string]string{
 		multiVideoKID: multiVideoKey,
@@ -495,8 +484,6 @@ func TestMultiKIDDecryptsEachTrackWithItsOwnKey(t *testing.T) {
 	}
 }
 
-// Handing only one of the two keys must fail loudly. This is precisely where
-// ffmpeg would quietly use the key it has and emit garbage.
 func TestMultiKIDRefusesAPartialKeySet(t *testing.T) {
 	keys, err := NewKeySet(map[string]string{multiVideoKID: multiVideoKey})
 	if err != nil {
@@ -513,9 +500,6 @@ func TestMultiKIDRefusesAPartialKeySet(t *testing.T) {
 	}
 }
 
-// TestDecryptMatchesFFmpeg is the correctness anchor: our decrypted output and
-// ffmpeg's decryption of the same fixture must decode to identical frames.
-// Structural checks cannot prove this, since CENC leaves NAL headers in clear.
 func TestDecryptMatchesFFmpeg(t *testing.T) {
 	requireFFmpeg(t)
 	keys := testKeys(t)

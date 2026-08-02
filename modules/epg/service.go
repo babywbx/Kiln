@@ -14,16 +14,13 @@ import (
 
 const DefaultRefreshInterval = 6 * time.Hour
 
-// Keep only one bounded compressed output; XML and filtered documents stay transient.
 const maxGzipOutputCacheBytes = 8 << 20
 
 type ServiceConfig struct {
-	Sources           []Source
-	DefaultTimezone   string
-	RefreshInterval   time.Duration
-	GeneratorInfoName string
-	// MaxRefreshConcurrency limits simultaneous source fetch and parse work.
-	// Zero or less preserves the default of refreshing every source in parallel.
+	Sources               []Source
+	DefaultTimezone       string
+	RefreshInterval       time.Duration
+	GeneratorInfoName     string
 	MaxRefreshConcurrency int
 	MaxSourceBytes        int64
 	OnError               func(error)
@@ -92,16 +89,12 @@ func NewService(config ServiceConfig, fetcher SourceFetcher, store CacheStore) *
 	}
 }
 
-// Sources returns an independent copy of the active source configuration.
 func (s *Service) Sources() []Source {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return cloneSources(s.config.Sources)
 }
 
-// SetSources atomically replaces the active source list. It is serialized with
-// Refresh, retains snapshots and status for IDs that remain configured, and
-// immediately removes state for deleted IDs.
 func (s *Service) SetSources(sources []Source) {
 	sources = cloneSources(sources)
 	s.refreshMu.Lock()
@@ -149,8 +142,6 @@ type sourceDocumentState struct {
 	version  documentVersion
 }
 
-// Refresh updates sources concurrently and publishes a complete new snapshot
-// atomically. Overlapping Refresh calls are serialized.
 func (s *Service) Refresh(ctx context.Context) error {
 	s.refreshMu.Lock()
 	defer s.refreshMu.Unlock()
@@ -383,9 +374,6 @@ func (s *Service) timezoneFor(source Source) string {
 	return s.config.DefaultTimezone
 }
 
-// Run refreshes immediately and then at the configured interval until ctx is
-// cancelled. Refresh failures are reported through OnError while stale data
-// remains available.
 func (s *Service) Run(ctx context.Context) {
 	s.reportRefreshError(s.Refresh(ctx))
 	ticker := time.NewTicker(s.config.RefreshInterval)
@@ -410,8 +398,6 @@ func (s *Service) reportRefreshError(err error) {
 	}
 }
 
-// Snapshot returns the currently usable source documents in configured order.
-// Documents are immutable after publication.
 func (s *Service) Snapshot() []SourceDocument {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -445,8 +431,6 @@ func (s *Service) Matches(channels []ChannelRef) []MatchResult {
 	return results
 }
 
-// Document filters the current snapshot to explicitly matched Kiln channels
-// and rewrites every XMLTV channel reference to the Kiln channel ID.
 func (s *Service) Document(channels []ChannelRef) *Document {
 	documents := s.Snapshot()
 	output := &Document{GeneratorInfoName: s.config.GeneratorInfoName}
@@ -494,8 +478,6 @@ func (s *Service) GzipXML(channels []ChannelRef) ([]byte, error) {
 		return payload, nil
 	}
 
-	// Serialize cache misses so a refresh followed by many player requests does
-	// not build several large XML and gzip buffers at once on constrained hosts.
 	s.gzipMu.Lock()
 	defer s.gzipMu.Unlock()
 	cachedPayload, generation, ok := s.cachedGzipOutput(channels)

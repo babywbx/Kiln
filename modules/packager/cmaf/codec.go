@@ -9,10 +9,6 @@ import (
 	"github.com/Eyevinn/mp4ff/mp4"
 )
 
-// forceHLSVideoEntry rewrites the sample entry to the fourcc Apple platforms
-// accept in HLS (hvc1/avc1), which requires parameter sets in the config box.
-// Sources that keep them inband only are rejected: moving them would mean
-// touching compressed samples, which is Native Remux, not Rewrite.
 func forceHLSVideoEntry(b *mp4.VisualSampleEntryBox) error {
 	switch b.Type() {
 	case "hvc1", "avc1":

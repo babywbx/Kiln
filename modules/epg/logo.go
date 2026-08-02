@@ -52,8 +52,6 @@ var knownLogoFiles = map[string][]knownLogoFile{
 	},
 }
 
-// LogoCandidates returns stable, pre-verified URL candidates without network
-// probing. Known aliases use the same normalization as EPG name matching.
 func LogoCandidates(name string) []LogoCandidate {
 	key, ok := knownLogoAliases[NormalizeName(name)]
 	if !ok {

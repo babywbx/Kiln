@@ -6,8 +6,6 @@ import (
 	"strings"
 )
 
-// expandStatic fills in the identifiers that do not vary per segment, so the
-// per-segment path stays cheap.
 func expandStatic(tmpl, repID string, bandwidth int) string {
 	return expandWith(tmpl, func(name, format string) (string, bool) {
 		switch name {
@@ -38,8 +36,6 @@ func expandIdentifiers(tmpl, repID string, bandwidth int, number, time uint64) s
 	})
 }
 
-// expandWith walks $Identifier$ and $Identifier%0Nd$ forms. $$ is a literal $.
-// Unknown identifiers are left untouched rather than silently dropped.
 func expandWith(tmpl string, lookup func(name, format string) (string, bool)) string {
 	var b strings.Builder
 	for i := 0; i < len(tmpl); {
@@ -73,8 +69,6 @@ func expandWith(tmpl string, lookup func(name, format string) (string, bool)) st
 	return b.String()
 }
 
-// formatIdentifier applies a printf-style width such as %05d. Anything the
-// spec does not allow degrades to plain decimal instead of producing junk.
 func formatIdentifier(v uint64, format string) string {
 	if format == "" {
 		return strconv.FormatUint(v, 10)

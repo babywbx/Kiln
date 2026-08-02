@@ -87,12 +87,7 @@ type Server struct {
 	ReadTimeout   int    `json:"read_timeout_sec" toml:"read_timeout_sec"`
 	WriteTimeout  int    `json:"write_timeout_sec" toml:"write_timeout_sec"`
 	IdleTimeout   int    `json:"idle_timeout_sec" toml:"idle_timeout_sec"`
-	// MemoryLimitMB is Go's soft memory limit. Without it the runtime keeps
-	// freed pages mapped, so resident memory tracks the peak rather than what is
-	// actually live, which for a 4K channel is a large difference. It is soft:
-	// the process is never killed for exceeding it, the collector just works
-	// harder. 0 leaves the runtime default.
-	MemoryLimitMB int `json:"memory_limit_mb" toml:"memory_limit_mb"`
+	MemoryLimitMB int    `json:"memory_limit_mb" toml:"memory_limit_mb"`
 }
 
 const (
@@ -161,8 +156,7 @@ type Channel struct {
 	PreferHeight            int               `json:"prefer_height" toml:"prefer_height"`
 	PreferredAudioLanguages []string          `json:"preferred_audio_languages,omitempty" toml:"preferred_audio_languages,omitempty"`
 	Selection               TrackSelection    `json:"selection,omitempty" toml:"selection,omitempty"`
-	// Packager overrides the global engine strategy for this channel.
-	Packager string `json:"packager" toml:"packager"`
+	Packager                string            `json:"packager" toml:"packager"`
 }
 
 type TrackSelector struct {
@@ -241,40 +235,22 @@ type FFmpeg struct {
 	LogLevel     string     `json:"log_level" toml:"log_level"`
 	PreferHeight int        `json:"prefer_height" toml:"prefer_height"`
 	LowLatency   bool       `json:"low_latency" toml:"low_latency"`
-	// MaxStarts bounds concurrent ffmpeg launches only, not readiness waits.
-	MaxStarts int `json:"max_starts" toml:"max_starts"`
+	MaxStarts    int        `json:"max_starts" toml:"max_starts"`
 }
 
-// Packager configures the DASH execution engine. Engine, output container and
-// codec targets are separate axes on purpose: a single use_ffmpeg flag cannot
-// express "copy natively but transcode HEVC".
 type Packager struct {
-	// Engine is the default strategy: auto | native | ffmpeg.
-	Engine string `json:"engine" toml:"engine"`
-	// KeysFile is the shared KID:key catalog for DASH channels.
-	KeysFile         string `json:"keys_file" toml:"keys_file"`
-	PlaylistSize     int    `json:"playlist_size" toml:"playlist_size"`
-	LLHLS            bool   `json:"ll_hls" toml:"ll_hls"`
-	PartTargetMS     int    `json:"part_target_ms" toml:"part_target_ms"`
-	StartSegments    int    `json:"start_segments" toml:"start_segments"`
-	PrefetchSegments int    `json:"prefetch_segments" toml:"prefetch_segments"`
-	MaxSegmentBytes  int64  `json:"max_segment_bytes" toml:"max_segment_bytes"`
-	// GraceSec keeps a segment readable after it leaves the playlist, so a
-	// player holding the previous playlist does not get a hard 404.
-	GraceSec int `json:"grace_sec" toml:"grace_sec"`
-	// PrimaryTrackHoldSec bounds how far, in media time, audio may run ahead of
-	// video. It is not an A/V sync knob: the tracks keep their own segment
-	// boundaries. It stops audio from sliding its playlist window past what a
-	// player stalled on video still needs.
-	PrimaryTrackHoldSec int `json:"primary_track_hold_sec" toml:"primary_track_hold_sec"`
-	// StallTimeoutSec fails a publication whose manifest keeps updating while
-	// nothing reaches the playlist. -1 disables it.
-	StallTimeoutSec int `json:"stall_timeout_sec" toml:"stall_timeout_sec"`
-	// InflightBytes bounds the segment bytes held in memory across every channel
-	// at once. This is what decides peak RSS: a 4K segment is tens of megabytes,
-	// so limiting prefetch by segment count instead would make memory a function
-	// of the source's bitrate.
-	InflightBytes int64 `json:"inflight_bytes" toml:"inflight_bytes"`
+	Engine              string `json:"engine" toml:"engine"`
+	KeysFile            string `json:"keys_file" toml:"keys_file"`
+	PlaylistSize        int    `json:"playlist_size" toml:"playlist_size"`
+	LLHLS               bool   `json:"ll_hls" toml:"ll_hls"`
+	PartTargetMS        int    `json:"part_target_ms" toml:"part_target_ms"`
+	StartSegments       int    `json:"start_segments" toml:"start_segments"`
+	PrefetchSegments    int    `json:"prefetch_segments" toml:"prefetch_segments"`
+	MaxSegmentBytes     int64  `json:"max_segment_bytes" toml:"max_segment_bytes"`
+	GraceSec            int    `json:"grace_sec" toml:"grace_sec"`
+	PrimaryTrackHoldSec int    `json:"primary_track_hold_sec" toml:"primary_track_hold_sec"`
+	StallTimeoutSec     int    `json:"stall_timeout_sec" toml:"stall_timeout_sec"`
+	InflightBytes       int64  `json:"inflight_bytes" toml:"inflight_bytes"`
 }
 
 const (
@@ -312,8 +288,6 @@ func (c File) TokenTTL() time.Duration {
 	return time.Duration(h) * time.Hour
 }
 
-// EngineFor resolves the engine strategy for a channel, falling back to the
-// global default.
 func (c File) EngineFor(ch Channel) string {
 	if ValidEngine(ch.Packager) {
 		return ch.Packager
@@ -324,13 +298,10 @@ func (c File) EngineFor(ch Channel) string {
 	return EngineAuto
 }
 
-// GlobalKeys returns a copy of the shared key catalog loaded at startup.
 func (c File) GlobalKeys() []KeyPair {
 	return append([]KeyPair(nil), c.globalKeys...)
 }
 
-// HasGlobalKeys reports whether packager.keys_file was loaded successfully.
-// It deliberately exposes no key material.
 func (c File) HasGlobalKeys() bool {
 	return len(c.globalKeys) > 0
 }
@@ -781,7 +752,6 @@ func (c File) validate() error {
 	return nil
 }
 
-// ValidateChannelID keeps IDs safe for URL segments and on-disk session paths.
 func ValidateChannelID(id string) error {
 	if id == "" {
 		return fmt.Errorf("is required")
@@ -848,9 +818,6 @@ func ValidateTrackSelection(selection TrackSelection) error {
 	return nil
 }
 
-// ValidateEngineSelection rejects combinations that an explicitly selected
-// execution engine cannot honor. Auto mode is intentionally allowed to make
-// the native/compatibility decision after inspecting the manifest.
 func ValidateEngineSelection(engine string, selection TrackSelection) error {
 	if !strings.EqualFold(strings.TrimSpace(engine), EngineFFmpeg) {
 		return nil

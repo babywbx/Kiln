@@ -8,8 +8,6 @@ import (
 	"github.com/Eyevinn/mp4ff/mp4"
 )
 
-// decryptProtectedWithKey mirrors mp4ff's strict segment rewrite while
-// reusing one AES block across all samples in the segment.
 func decryptProtectedWithKey(seg *mp4.MediaSegment, di mp4.DecryptInfo, key []byte, scheme string) error {
 	for _, frag := range seg.Fragments {
 		for _, traf := range frag.Moof.Trafs {

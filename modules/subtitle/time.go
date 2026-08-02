@@ -20,8 +20,6 @@ var (
 	offsetTimePattern = regexp.MustCompile(`^([0-9]+(?:\.[0-9]+)?)(h|m|s|ms|f|t)$`)
 )
 
-// TimingParameters contains the TTML timing rates used by frame and tick
-// expressions. Zero fields use the TTML defaults.
 type TimingParameters struct {
 	FrameRate    float64
 	SubFrameRate uint32
@@ -41,8 +39,6 @@ func (p TimingParameters) withDefaults() TimingParameters {
 	return p
 }
 
-// ParseTimeExpression parses the clock-time and offset-time forms commonly
-// used by TTML subtitle streams.
 func ParseTimeExpression(expression string, timing TimingParameters) (time.Duration, error) {
 	expression = strings.TrimSpace(expression)
 	if expression == "" {

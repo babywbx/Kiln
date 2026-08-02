@@ -1,7 +1,5 @@
 //go:build linux
 
-// Package filecache keeps constrained media workloads from filling a cgroup
-// with reclaimable page cache.
 package filecache
 
 import (

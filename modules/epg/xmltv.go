@@ -23,9 +23,6 @@ type Icon struct {
 	Height string `json:"height,omitempty"`
 }
 
-// Timestamp keeps the absolute instant and the source offset independently.
-// Offset is always formatted as ±HHMM, including when it came from the source
-// timezone fallback.
 type Timestamp struct {
 	Time   time.Time `json:"time"`
 	Offset string    `json:"offset"`
@@ -46,9 +43,7 @@ type Channel struct {
 	DisplayNames []Text   `json:"display_names,omitempty"`
 	Icons        []Icon   `json:"icons,omitempty"`
 	URLs         []string `json:"urls,omitempty"`
-	// InnerXML preserves source extensions. Clear it before Marshal when the
-	// structured channel fields have been changed.
-	InnerXML string `json:"-"`
+	InnerXML     string   `json:"-"`
 }
 
 type Programme struct {
@@ -64,8 +59,7 @@ type Programme struct {
 	ShowView     string     `json:"showview,omitempty"`
 	VideoPlus    string     `json:"videoplus,omitempty"`
 	ClumpIndex   string     `json:"clump_index,omitempty"`
-	// InnerXML preserves all programme children, including XMLTV extensions.
-	InnerXML string `json:"-"`
+	InnerXML     string     `json:"-"`
 }
 
 type Document struct {
@@ -132,7 +126,6 @@ type xmlIcon struct {
 	Height string `xml:"height,attr,omitempty"`
 }
 
-// Parse decodes XMLTV using sourceTimezone when a timestamp omits its offset.
 func Parse(r io.Reader, sourceTimezone string) (*Document, error) {
 	if strings.TrimSpace(sourceTimezone) == "" {
 		sourceTimezone = DefaultTimezone
@@ -205,9 +198,6 @@ func Parse(r io.Reader, sourceTimezone string) (*Document, error) {
 }
 
 func ParseBytes(data []byte, sourceTimezone string) (*Document, error) {
-	// The service already owns the source bytes. Offset-aware decoding avoids
-	// copying every inner XML fragment through rawDocument; the parity test
-	// intentionally keeps this optimized path aligned with Parse.
 	if strings.TrimSpace(sourceTimezone) == "" {
 		sourceTimezone = DefaultTimezone
 	}
@@ -397,7 +387,6 @@ func xmlAttribute(element xml.StartElement, name string) string {
 	return ""
 }
 
-// Marshal encodes a complete XMLTV document with explicit timestamp offsets.
 func Marshal(doc *Document) ([]byte, error) {
 	if doc == nil {
 		return nil, fmt.Errorf("marshal XMLTV: nil document")

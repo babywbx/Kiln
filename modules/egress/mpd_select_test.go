@@ -39,8 +39,6 @@ func TestFilterMPDForPackPrefer1080(t *testing.T) {
 	}
 }
 
-// An AdaptationSet whose Representations were all dropped must go too: ffmpeg's
-// DASH demuxer stalls on an empty one and never emits a segment.
 func TestFilterMPDForPackDropsEmptyAdaptationSets(t *testing.T) {
 	mpd := `<?xml version="1.0"?>
 <MPD type="dynamic">
@@ -172,7 +170,6 @@ func TestReadyPlaylistRequiresPlayableSegment(t *testing.T) {
 		t.Fatal("tiny partial should not be ready")
 	}
 
-	// One full segment still means the packager may have starved right after.
 	write(t, index, []byte("#EXTM3U\n#EXTINF:2.0,\nseg_00000.ts\n"))
 	write(t, seg0, make([]byte, 64*1024))
 	if readyPlaylist(index, dir) {
