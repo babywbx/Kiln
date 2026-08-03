@@ -27,6 +27,7 @@ channels into one authenticated M3U playlist and on-demand HLS output.
 - [📋 Overview](#-overview)
 - [✨ Features](#-features)
 - [🚀 Quick Start](#-quick-start)
+- [📦 Install Script](#-install-script)
 - [🐳 Docker](#-docker)
 - [🪟 Windows Service](#-windows-service)
 - [⚙️ Configuration](#️-configuration)
@@ -126,6 +127,49 @@ For scripts and long-lived CLI access, create a dedicated token under **Settings
 curl -s http://127.0.0.1:8080/v1/admin/channels \
   -H "authorization: Bearer kiln_v1_..." | jq
 ```
+
+<div align="right">
+
+[![][back-to-top]](#readme-top)
+
+</div>
+
+## 📦 Install Script
+
+One command installs it on Linux and macOS; run it again to upgrade:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh | sh
+```
+
+The script does four things: detect your platform, pick a working download source, verify `SHA256SUMS`, and swap the binary atomically. No sudo needed by default, and it shows you the full plan before touching anything.
+
+<details>
+<summary><kbd>More options</kbd></summary>
+
+<br/>
+
+| Option | Description |
+| --- | --- |
+| `--yes` | silent install |
+| `--version <v>` | pin a version |
+| `--lite` | lite variant (Linux only) |
+| `--dir <path>` | custom install directory |
+| `--mirror <base>` | set a download mirror |
+| `--service` | register a systemd service with autostart (root) |
+| `--uninstall` | uninstall |
+| `--dry-run` | preview and simulate every step, write nothing |
+
+Install as a systemd service with autostart:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh -o /tmp/kiln-install.sh
+sudo sh /tmp/kiln-install.sh --yes --service
+```
+
+</details>
+
+On Windows, download the zip from [Releases][github-release-link] and follow the [Windows Service](#-windows-service) section.
 
 <div align="right">
 

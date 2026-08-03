@@ -94,6 +94,9 @@ jobs:
       - name: Run Docker Target Script Tests
         run: make test-docker-targets
 
+      - name: Run Installer Tests
+        run: make test-install
+
       - name: Run Tests with Media Oracle
         env:
           KILN_REQUIRE_MEDIA_ORACLE: "1"
@@ -211,6 +214,12 @@ jobs:
 
       - name: Smoke Test Constrained Lite Media Path
         run: make docker-smoke-lite LITE_IMAGE=kiln:ci-lite-amd64
+
+      - name: Run Installer Tests in BusyBox
+        run: >-
+          docker run --rm -v "$PWD:/src" -w /src
+          busybox:1.38.0@sha256:fd8d9aa63ba2f0982b5304e1ee8d3b90a210bc1ffb5314d980eb6962f1a9715d
+          sh scripts/install.test.sh
 
       - name: Build Core Image (arm64)
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0

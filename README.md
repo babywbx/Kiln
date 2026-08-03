@@ -27,6 +27,7 @@
 - [📋 概述](#-概述)
 - [✨ 特性](#-特性)
 - [🚀 快速开始](#-快速开始)
+- [📦 安装脚本](#-安装脚本)
 - [🐳 Docker](#-docker)
 - [🪟 Windows 服务](#-windows-服务)
 - [⚙️ 配置](#️-配置)
@@ -126,6 +127,55 @@ go run scripts/gen-jwt-keys.go ./secrets   # 写出 ed25519.pem / ed25519.pub.pe
 curl -s http://127.0.0.1:8080/v1/admin/channels \
   -H "authorization: Bearer kiln_v1_..." | jq
 ```
+
+<div align="right">
+
+[![][back-to-top]](#readme-top)
+
+</div>
+
+## 📦 安装脚本
+
+Linux 与 macOS 一条命令装好，重复运行即升级：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh | sh -s -- --lang zh
+```
+
+拉取超时或失败时，换镜像地址：
+
+```bash
+curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/babywbx/kiln/main/install.sh | sh -s -- --lang zh
+```
+
+脚本只做四件事：探测平台、选择可用的下载源、校验 `SHA256SUMS`、原子替换二进制。默认不需要 sudo，装到哪里、要做什么都会先展示、确认后才动手。
+
+<details>
+<summary><kbd>更多选项</kbd></summary>
+
+<br/>
+
+| 参数 | 说明 |
+| --- | --- |
+| `--yes` | 静默安装 |
+| `--version <v>` | 固定版本 |
+| `--lite` | lite 变体（仅 Linux） |
+| `--dir <path>` | 自定义安装目录 |
+| `--mirror <base>` | 手动指定下载镜像 |
+| `--service` | 注册 systemd 服务并开机自启（需 root） |
+| `--uninstall` | 卸载 |
+| `--dry-run` | 试运行：展示并模拟每一步，不写入任何文件 |
+
+设为开机自启的系统服务：
+
+```bash
+curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/babywbx/kiln/main/install.sh -o /tmp/kiln-install.sh
+sudo sh /tmp/kiln-install.sh --yes --service --lang zh
+```
+
+</details>
+
+Windows 从 [Releases][github-release-link] 下载 zip 包，参阅 [Windows 服务](#-windows-服务)。
 
 <div align="right">
 

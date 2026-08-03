@@ -1,4 +1,4 @@
-.PHONY: build build-debug build-release build-lite test test-lite test-extended test-admin-ui test-docker-targets test-lite-contract test-local-tools test-complete coverage run tidy hash keys fmt vet vet-cross lint vuln ci clean audit-admin-ui \
+.PHONY: build build-debug build-release build-lite test test-lite test-extended test-admin-ui test-docker-targets test-install test-lite-contract test-local-tools test-complete coverage run tidy hash keys fmt vet vet-cross lint vuln ci clean audit-admin-ui \
 		docker docker-full docker-core docker-lite docker-images docker-multiarch docker-core-multiarch docker-lite-multiarch \
 		docker-verify docker-verify-images docker-verify-lite docker-smoke docker-smoke-lite docker-reap fixtures \
         media-oracle test-safety test-resource-docker-basic test-resource-docker-extended test-resource-docker-core-media test-resource-docker-full benchmark-performance performance-live soak
@@ -49,6 +49,11 @@ test-admin-ui:
 test-docker-targets:
 	sh deploy/docker/go-target-env.test.sh
 	sh deploy/docker/resource-profile-smoke.test.sh basic
+
+test-install:
+	@command -v shellcheck >/dev/null 2>&1 || { echo "shellcheck not found: brew install shellcheck"; exit 1; }
+	shellcheck -s sh install.sh scripts/install.test.sh
+	scripts/install.test.sh
 
 test-lite-contract: build-lite
 	scripts/lite-contract.test.sh dist/kiln-lite
@@ -128,7 +133,7 @@ vuln:
 	@command -v govulncheck >/dev/null 2>&1 || { echo "govulncheck not found: go install golang.org/x/vuln/cmd/govulncheck@latest"; exit 1; }
 	govulncheck ./...
 
-ci: fmt vet vet-cross lint build test test-lite test-admin-ui test-docker-targets media-oracle vuln
+ci: fmt vet vet-cross lint build test test-lite test-admin-ui test-docker-targets test-install media-oracle vuln
 
 test-complete: ci test-extended test-local-tools test-safety benchmark-performance
 	$(MAKE) docker-lite
