@@ -1,0 +1,185 @@
+---
+title: 手动安装与 Windows 服务
+description: 从 Releases 下载发行包、校验并运行，以及在 Windows 上注册系统服务。
+sidebar:
+  order: 4
+---
+
+不想用[安装脚本](/start/install-script/)，或者要在 Windows 上部署时，直接从 GitHub Releases 取发行包。每个包都是一个静态二进制加上许可与说明文件，解压即用，不需要运行时依赖。
+
+## 发行产物
+
+产物命名遵循固定规则：`<name>_<version>_<os>_<arch>`，Linux 与 macOS 打 `.tar.gz`，Windows 打 `.zip`。
+
+| 系统 | 架构 | 文件名 |
+| --- | --- | --- |
+| Linux | amd64 | `kiln_<version>_linux_amd64.tar.gz` |
+| Linux | arm64 | `kiln_<version>_linux_arm64.tar.gz` |
+| Linux | armv7 | `kiln_<version>_linux_armv7.tar.gz` |
+| Linux | armv6 | `kiln_<version>_linux_armv6.tar.gz` |
+| macOS | amd64 | `kiln_<version>_darwin_amd64.tar.gz` |
+| macOS | arm64 | `kiln_<version>_darwin_arm64.tar.gz` |
+| Windows | amd64 | `kiln_<version>_windows_amd64.zip` |
+| Windows | arm64 | `kiln_<version>_windows_arm64.zip` |
+
+lite 变体只构建 Linux，文件名前缀换成 `kiln-lite`，覆盖 `amd64`、`arm64`、`armv7`、`armv6` 四种架构，包内的可执行文件名同样是 `kiln-lite`。变体差异见 [Lite、Core 与 Full](/guide/variants/)。
+
+每个包内含可执行文件（`kiln`，Windows 上为 `kiln.exe`）以及 `LICENSE`、`NOTICE`、`README.md`、`README.en.md`。同一个 Release 里还有一份 `SHA256SUMS`，覆盖当次发布的全部压缩包。
+
+<Aside type="tip" title="更强的来源核验">
+  发布流程为所有二进制签署了构建来源证明，除了比对校验和，还可以用 `gh attestation verify` 确认产物确实由本仓库的发布流水线构建。
+</Aside>
+
+## Linux 与 macOS
+
+<Steps>
+  <Step title="下载产物与校验和">
+    从 [Releases](https://github.com/babywbx/kiln) 页面取对应平台的压缩包，连同 `SHA256SUMS` 一起下载到同一目录。
+  </Step>
+  <Step title="核对校验和">
+    校验不通过就不要继续，重新下载或换个下载源。
+
+    <Tabs>
+      <TabItem label="Linux">
+        ```bash
+        sha256sum --ignore-missing -c SHA256SUMS
+        ```
+      </TabItem>
+      <TabItem label="macOS">
+        ```bash
+        grep 'kiln_1.0.0_darwin_arm64.tar.gz' SHA256SUMS | shasum -a 256 -c -
+        ```
+      </TabItem>
+    </Tabs>
+  </Step>
+  <Step title="解压并放进 PATH">
+    ```bash
+    tar -xzf kiln_1.0.0_linux_amd64.tar.gz
+    sudo install -m 0755 kiln /usr/local/bin/kiln
+    ```
+
+    没有 sudo 时改用用户目录：`install -m 0755 kiln ~/.local/bin/kiln`，并确认 `~/.local/bin` 在 `PATH` 中。
+  </Step>
+  <Step title="确认可执行">
+    ```bash
+    kiln -version
+    ```
+
+    输出包含版本号、提交号、构建时间与变体。启动不了通常是架构不匹配，或者目标目录挂了 `noexec`。
+  </Step>
+  <Step title="运行">
+    ```bash
+    kiln -config kiln.toml
+    ```
+
+    配置写法见[配置参考](/reference/config/)，命令行参数见 [CLI 参考](/reference/cli/)。
+  </Step>
+</Steps>
+
+在 macOS 上，Apple Silicon 机器请选 `darwin_arm64`。若终端跑在 Rosetta 下，`uname -m` 会返回 `x86_64`，据此选包会装成转译执行的版本。
+
+想让它开机自启并常驻，Linux 上用安装脚本的 [`--service`](/start/install-script/) 注册 systemd 服务最省事。
+
+## Windows
+
+Windows 版自带服务子命令，不需要额外的守护工具或包装器。
+
+<Steps>
+  <Step title="解压到固定目录">
+    下载 `kiln_<version>_windows_amd64.zip` 并解压，例如放到 `C:\kiln`。用 `Get-FileHash` 核对 `SHA256SUMS` 里对应的那一行。
+
+    ```powershell
+    Get-FileHash kiln_1.0.0_windows_amd64.zip -Algorithm SHA256
+    ```
+  </Step>
+  <Step title="准备配置">
+    在同一目录放好 `kiln.toml`，例如 `C:\kiln\kiln.toml`。
+  </Step>
+  <Step title="注册并启动服务">
+    在管理员终端里执行。
+
+    ```powershell
+    kiln.exe service install -config C:\kiln\kiln.toml
+    kiln.exe service start
+    kiln.exe service status
+    ```
+  </Step>
+</Steps>
+
+停止与移除同样是两条命令：
+
+```powershell
+kiln.exe service stop
+kiln.exe service uninstall
+```
+
+`uninstall` 也可以写作 `remove`，两者等价。
+
+### 子命令与参数
+
+| 参数 | 适用 | 说明 | 默认 |
+| --- | --- | --- | --- |
+| `-config` | 仅 `install` | 配置文件路径，必填；安装前会转成绝对路径并确认可读 | — |
+| `-name` | 全部子命令 | 服务名，同一台机器跑多个实例时用它区分 | `Kiln` |
+| `-display` | 仅 `install` | 服务在管理界面里的显示名 | `Kiln Streaming Gateway` |
+
+跑多个实例时，每个实例都要在所有子命令上带同一个 `-name`：
+
+```powershell
+kiln.exe service install -config C:\kiln\edge.toml -name KilnEdge -display "Kiln Edge"
+kiln.exe service start -name KilnEdge
+```
+
+同名服务已存在时 `install` 会直接报错退出，不会覆盖既有注册。`start` 与 `stop` 最多等待 30 秒确认状态到位；`uninstall` 遇到仍在运行的服务会先请求停止，最多等 20 秒再删除注册。`status` 输出 running、stopped、starting、stopping、paused 或 unknown。
+
+<Aside type="caution" title="需要管理员终端">
+  所有服务子命令都以完全访问权限连接服务管理器，普通终端会直接报无法连接。安装与卸载尤其必须在管理员终端执行。服务管理只在 Windows 版可用，其他平台执行 `service` 子命令会提示并以 2 退出。
+</Aside>
+
+### 自动启动与失败重启
+
+安装出来的服务启动类型是「自动」，随系统启动。同时注册了三级失败重启策略：第一次失败后 5 秒重启，第二次 15 秒，第三次 60 秒，失败计数在 24 小时后重置。
+
+服务接受标准的停止与关机请求，收到后走正常的优雅退出流程，不是被强杀。
+
+### 工作目录与相对路径
+
+服务控制管理器会在 `system32` 下启动进程。Kiln 检测到自己以服务身份运行时，会把 `-config` 转成绝对路径，并把工作目录切到配置文件所在目录。因此配置里的相对路径，例如 `data_dir = "./data"`，仍然相对配置文件解析，而不是相对 `system32`。
+
+安装时记录的是配置文件的绝对路径，之后移动二进制或配置文件都需要重新注册服务。服务模式下没有拿到 `-config` 时，进程会以 2 退出。
+
+### 日志
+
+服务模式下标准输出会被服务控制管理器丢弃，所以 Kiln 把标准输出与标准错误重定向到配置文件所在目录下的 `kiln.log`。
+
+每次启动时，若已存在的 `kiln.log` 超过 16 MB，会先重命名为 `kiln.log.1` 再写新文件。轮转只保留这一份历史，需要长期留存请自行归档。日志内容与格式见[运维](/guide/operations/)。
+
+### 防火墙
+
+对外提供服务要放行入站端口，Windows 防火墙默认拦截：
+
+```powershell
+New-NetFirewallRule -DisplayName "Kiln" -Direction Inbound -LocalPort 8080 -Protocol TCP -Action Allow
+```
+
+### 关于 ffmpeg
+
+Windows 发行版不含 ffmpeg。`[packager].engine` 为 `auto` 时会自动走原生引擎，日常使用没有影响；确实需要兼容回退时，自行安装 ffmpeg 并加入 `PATH`。详见[媒体引擎](/guide/media-engine/)。
+
+### 卸载
+
+`kiln.exe service uninstall` 只移除服务注册，`data_dir` 下的数据、`kiln.log` 与配置文件都会留在原地，需要清理请自行删除。
+
+## 下一步
+
+<CardGrid>
+  <Card title="创建第一个频道" icon="ph:arrow-right">
+    写一份最小配置并让它跑起来，见[第一个频道](/start/first-channel/)。
+  </Card>
+  <Card title="更省事的安装">
+    Linux 与 macOS 上一条命令完成安装与升级，见[安装脚本](/start/install-script/)。
+  </Card>
+  <Card title="运行不起来">
+    启动失败、端口占用与权限问题见[故障排查](/guide/troubleshooting/)。
+  </Card>
+</CardGrid>

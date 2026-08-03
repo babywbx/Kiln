@@ -1,0 +1,79 @@
+---
+title: 快速开始
+description: 三条部署路径与最短验证流程。
+sidebar:
+  order: 1
+---
+
+Kiln 把上游的 HLS 与 DASH 频道收成一个入口，对外只暴露一份带鉴权的 M3U 播放列表和随取随用的 HLS 输出。整套服务是单个二进制，DASH 的解密与重封装由 Go 原生实现，默认不需要 FFmpeg。
+
+## 三条部署路径
+
+<CardGrid>
+  <Card title="安装脚本" icon="ph:terminal">
+    Linux 与 macOS 一条命令装好，重复运行即升级，可直接注册为 systemd 服务。见 [安装脚本](/start/install-script/)。
+  </Card>
+  <Card title="Docker" icon="ph:cube">
+    core、full、lite 三个镜像变体，附 Compose 模板、健康检查与容器资源自适应。见 [Docker 部署](/start/docker/)。
+  </Card>
+  <Card title="手动二进制" icon="ph:hard-drives">
+    从 Releases 下载压缩包，校验 `SHA256SUMS` 后自行摆放；Windows 用内置服务命令挂到后台。见 [二进制部署](/start/binary/)。
+  </Card>
+</CardGrid>
+
+三条路径跑的是同一个二进制，配置模型完全一致，同一份 `kiln.toml` 换个部署方式不需要改写。
+
+## 先从源码跑一遍
+
+想在装任何东西之前先看效果，用仓库自带的示例配置直接跑。需要 Go 1.26 或更高版本，原生 DASH 不需要 ffmpeg，只有兼容回退才需要。
+
+```bash
+git clone https://github.com/babywbx/Kiln.git
+cd Kiln
+go run ./apps/server -config configs/examples/kiln.toml
+```
+
+`-config` 是必填参数，缺省时进程会直接退出。示例配置在 `configs/examples/kiln.toml`，同目录下还有一份等价的 `kiln.jsonc`，两种格式可以任选。
+
+服务默认监听 `0.0.0.0:8080`，示例账号是 `admin` / `admin`，管理界面在 `/admin`。
+
+<Aside type="caution" title="示例配置只适合本地试跑">
+  示例里的口令哈希和上游地址都是占位值，`configs/examples/kiln.toml` 指向的是 `http://127.0.0.1:5050`，本机没有对应上游时频道自然拉不起来。对外提供服务之前请先看下面的「生产前必改」。
+</Aside>
+
+## 三条命令验证
+
+登录拿到 token 之后，播放列表和播放地址都从它派生：
+
+```bash
+TOKEN=$(curl -s http://127.0.0.1:8080/v1/auth/login \
+  -H 'content-type: application/json' \
+  -d '{"username":"admin","password":"admin"}' | jq -r .token)
+
+curl -s http://127.0.0.1:8080/v1/channels -H "authorization: Bearer $TOKEN" | jq
+curl -s http://127.0.0.1:8080/v1/playlist.m3u -H "authorization: Bearer $TOKEN"
+curl -s "http://127.0.0.1:8080/v1/play/hls-demo/index.m3u8?token=$TOKEN"
+```
+
+`hls-demo` 是示例配置里的频道 id，换成自己的频道 id 即可。`/v1/playlist.m3u` 只认登录会话，`/v1/play/` 下的地址既接受 `?token=` 查询参数，也接受 `Authorization` 请求头。凭据的完整划分见 [接口参考](/reference/api/)。
+
+## 生产前必改
+
+只有两件事必须在对外之前改掉：登录口令的 bcrypt 哈希，以及会话 JWT 的签名密钥。
+
+```bash
+go run scripts/hash-password.go 'your-password'
+go run scripts/gen-jwt-keys.go ./secrets   # 写出 ed25519.pem / ed25519.pub.pem
+```
+
+把哈希填进 `[[auth.users]]` 的 `password_hash`，把密钥路径填进 `[auth]` 的 `token_private_key_file` 与 `token_public_key_file`，也可以用 `KILN_TOKEN_PRIVATE_KEY_FILE` 等环境变量注入。完整的鉴权模型见 [鉴权与凭据](/guide/auth/)，环境变量清单见 [环境变量](/reference/env/)。
+
+<Aside type="tip" title="不配密钥也能起">
+  留空时进程会在 `{data_dir}/auth/ed25519.pem` 自动生成 Ed25519 密钥对，私钥权限 `0600`。这适合单机试跑；希望多个实例共享同一套会话签名，或者希望重建数据目录后旧 token 仍然有效时，仍应显式提供密钥文件。
+</Aside>
+
+## 下一步
+
+- [第一个频道](/start/first-channel/)：从 upstream 到 HLS 与 DASH 频道的端到端配置。
+- [频道模型](/guide/channels/)：字段全表、分组、导入导出。
+- [配置参考](/reference/config/)：`kiln.toml` 的逐项说明。

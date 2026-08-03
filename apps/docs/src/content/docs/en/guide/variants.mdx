@@ -1,0 +1,132 @@
+---
+title: Core, Full & Lite
+description: Capability boundaries of the three distribution variants, how they are built and shipped, Lite's fixed resource budget, controlled benchmark results, and how to pick one.
+sidebar:
+  order: 6
+---
+
+Kiln ships three variants. They share one configuration model and the same native media modules; what differs is how complete the control plane is, whether ffmpeg is bundled, and how tight the resource budget is.
+
+## The three variants
+
+| Dimension | Core | Full | Lite |
+| --- | --- | --- | --- |
+| Default packager | `native` | `auto` | `native` |
+| Native HLS / DASH | Yes | Yes | Yes |
+| FFmpeg | Not included | Bundled, 8.1.2 | Not included |
+| Login, M3U, playback | Yes | Yes | Yes |
+| SQLite database | Yes | Yes | No |
+| Admin console and admin API | Yes | Yes | No |
+| EPG | Yes | Yes | No |
+| OTLP and pprof | Yes | Yes | No |
+| Base image | Alpine | Alpine plus FFmpeg | `scratch` |
+| Purpose | Complete, purely native deployment | Complete deployment with compatibility | Fixed-config, low-resource playback node |
+
+`kiln:latest` is an alias for the matching `kiln:full`, not a fourth runtime.
+
+<Aside type="note" title="Core's “no ffmpeg” is a dependency boundary">
+  Core does not strip the compatibility code at compile time; the official image simply does not contain an ffmpeg executable. Putting one into a Core container yourself moves that boundary. Lite is the variant that really is trimmed at compile time.
+</Aside>
+
+The default packager an image provides is injected through `KILN_DEFAULT_PACKAGER_ENGINE` and only applies when the config omits `[packager].engine`. The same config never changes behaviour just because the image tag changed — see [Media engine](/en/guide/media-engine/).
+
+## How they are built and shipped
+
+Core and Full use exactly the same build entry point and compiler flags, and produce application binaries of identical size. The only differences are whether ffmpeg is present in the image and which environment variables are injected. Lite is the one variant that differs at compile time:
+
+```bash
+# The standard build shared by Core and Full
+CGO_ENABLED=0 go build -trimpath -o kiln ./apps/server
+
+# Lite swaps the entry point and the control plane through a build tag
+CGO_ENABLED=0 go build -tags=lite -trimpath -o kiln ./apps/server
+```
+
+The `lite` tag selects a different `main`, so SQLite, the admin console, EPG, and telemetry export never enter the dependency closure. Lite is not a build with features switched off; those features are not compiled in at all.
+
+The three images map to three Dockerfile targets:
+
+```bash
+docker build --target core -f deploy/docker/Dockerfile -t kiln:core .
+docker build --target full -f deploy/docker/Dockerfile -t kiln:full .
+docker build --target lite -f deploy/docker/Dockerfile -t kiln:lite .
+```
+
+Core builds for `linux/amd64`, `linux/arm64`, `linux/arm/v7`, and `linux/arm/v6`. For binary distribution, the install script's `--lite` flag is Linux-only; every other platform installs the complete variant. See [Install script](/en/start/install-script/).
+
+## Lite's boundary
+
+Lite exposes only `/healthz`, `/readyz`, `/v1/auth/login`, `/v1/playlist.m3u`, and `/v1/play/*`. It creates no SQLite database — `data_dir` holds nothing but auto-generated login keys and transient media files — which is what makes a read-only root filesystem practical.
+
+Lite refuses to start, rather than silently ignoring the setting, when the config contains any of the following:
+
+- A packager engine other than `native`, globally or on any channel
+- EPG enabled
+- An OTLP export endpoint
+- pprof enabled
+
+## Lite's fixed resource budget
+
+Core and Full pick an internal profile from the container's real memory. Lite pins the same budget regardless of how large the host is, so its low-memory profile stays identical everywhere it runs:
+
+| Effective value | Lite | For comparison: constrained Core / Full |
+| --- | ---: | ---: |
+| Go soft memory limit | 24 MiB | 48 MiB |
+| Native inflight ceiling | 24 MiB | 32 MiB |
+| Max segment | 20 MiB | 20 MiB |
+| Start / prefetch pipeline | 1 / 1 | 1 / 1 |
+| GOGC | 50 | 75 |
+| Reclaim media page cache | Yes | Yes |
+
+These values hold under both `auto` and `constrained`; only `performance` opts Lite out of adaptation entirely and uses the configured values instead. They are soft budgets for the Go heap and the media working set, not a guarantee about total container RSS.
+
+## Measured comparison
+
+The numbers below come from a controlled in-repo benchmark run on 2026-07-23 against `linux/arm64`. All three variants ran on the same host, under the same container limits (1 CPU, 128 MiB), with the same config and the same media fixture, for 5 rounds each and 100 complete chains in total.
+
+Build size (MB uses decimal bytes):
+
+| Variant | Docker local image | Kiln binary | Additional FFmpeg |
+| --- | ---: | ---: | ---: |
+| Lite | 3.84 MB | 9.31 MB | none |
+| Core | 13.27 MB | 22.22 MB | none |
+| Full | 66.41 MB | 22.22 MB | 109.57 MB |
+
+Memory and chain stability:
+
+| Variant | Post-load RSS median (range) | Successful chains | OOM |
+| --- | ---: | ---: | ---: |
+| Lite | 13.01 MiB (11.48 to 13.33) | 100 / 100 | 0 |
+| Core | 25.17 MiB (25.11 to 25.27) | 100 / 100 | 0 |
+| Full | 25.21 MiB (21.03 to 25.35) | 100 / 100 | 0 |
+
+What the run supports:
+
+- Lite's image is 71.1% smaller than Core's and 94.2% smaller than Full's; its binary is 58.1% smaller than either.
+- Lite's post-load RSS median is 48.3% below Core and 48.4% below Full. That drop comes from the runtime structure and the budget changing together, not from a smaller binary alone.
+- Core and a Full that never launched an ffmpeg child process show no explainable memory difference on the native path — roughly 0.14% apart. Bundling ffmpeg mainly costs distribution and disk.
+- In the official acceptance run, Lite completed 10 chains in a 1 CPU, 64 MiB container with a post-load RSS of 12.80 MiB and no OOM.
+
+<Aside type="caution" title="What this data cannot support">
+  The experiment used small deterministic fixtures, not real bitrates. It cannot support 1080p or 4K throughput rankings, multi-channel concurrency limits, CPU efficiency, time to first frame, or long-run memory stability, and it does not cover the memory and CPU cost of Full actually launching an ffmpeg fallback. Real deployments should run their own end-to-end acceptance and soak tests against the target channels.
+</Aside>
+
+## Picking one
+
+<CardGrid>
+  <Card title="Pick Core">
+    You want the full admin console, database, EPG, and observability, and you have already confirmed every DASH channel can be handled natively. It is far smaller than Full, but do not expect meaningfully lower process memory on the same native path.
+  </Card>
+  <Card title="Pick Full">
+    Input compatibility comes first and you want the ffmpeg fallback available. On natively supported input its memory profile matches Core; when a fallback actually happens, size the container as "Kiln process plus ffmpeg child plus page cache".
+  </Card>
+  <Card title="Pick Lite">
+    The node only needs login, M3U, and playback, every channel is handled natively, configuration lives in a file with no runtime database or console, and resource budget, image pull speed, or attack surface is the priority.
+  </Card>
+</CardGrid>
+
+When in doubt, start with Full, get the channels playing, confirm the logs show the native path everywhere, and then move to Core. Deploy Lite separately when you need edge playback nodes. All three share the same configuration model, so migrating is a matter of swapping the image — see [Docker](/en/start/docker/).
+
+## Windows
+
+The Windows distribution ships without ffmpeg, and there is no Lite build for it. With `[packager].engine` set to `auto` the native engine is chosen automatically; install ffmpeg and add it to `PATH` if a compatibility fallback is genuinely required. Otherwise the Windows build matches the complete variant, admin console, database, EPG, and observability included. Installation and service registration are covered in [Binary install](/en/start/binary/).

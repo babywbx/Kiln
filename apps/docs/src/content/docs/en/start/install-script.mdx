@@ -1,0 +1,305 @@
+---
+title: Install script
+description: Install Kiln with one command, including mirrors, silent installs, systemd, and uninstall.
+sidebar:
+  order: 2
+---
+
+One command installs Kiln on Linux and macOS; run it again to upgrade. The script does four things: detect the platform, pick a working download source, verify `SHA256SUMS`, and swap the binary atomically. No sudo by default, and the full plan is printed before anything is written.
+
+## One-line install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh | sh
+```
+
+If the download stalls or fails, prefix a mirror:
+
+```bash
+curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/babywbx/kiln/main/install.sh | sh
+```
+
+<Aside type="note" title="Output language">
+  The script picks its output language from `LC_ALL` and `LANG`: anything starting with `zh` gets Chinese, everything else gets English. Force it with `--lang zh` or `--lang en`. Setting `NO_COLOR`, or piping the output elsewhere, turns off color and animation.
+</Aside>
+
+Windows is out of scope for the script; it exits with a pointer to the release archives. See [Manual install and Windows service](/en/start/binary/).
+
+## What it does
+
+<Steps>
+  <Step title="Detect platform and tooling">
+    Map `uname -s` and `uname -m` onto a release artifact, then confirm `curl` or `wget`, plus `tar`, `mktemp`, and `sha256sum` or `shasum`. Anything missing produces an install command for the local package manager and an early exit.
+  </Step>
+  <Step title="Choose an install directory">
+    `/usr/local/bin` when it is writable, otherwise `$HOME/.local/bin`.
+  </Step>
+  <Step title="Read the current state">
+    If an executable `kiln` is already there, the script runs `kiln -version` and parses `version=` and `variant=` to decide whether this run is an install, an upgrade, a downgrade, or a variant switch.
+  </Step>
+  <Step title="Resolve the version and the source">
+    Resolve the latest release unless `--version` pins one, then probe every candidate download source in parallel.
+  </Step>
+  <Step title="Print the plan and ask">
+    Version, variant, platform, location, source, and decoder status are shown as a table. Nothing is written before you confirm.
+  </Step>
+  <Step title="Download, verify, swap">
+    Fetch the archive, compare it against `SHA256SUMS`, unpack into a staged file next to the target, smoke-test it, and only then rename it into place.
+  </Step>
+</Steps>
+
+The plan looks like this:
+
+```text
+  About to run:
+     Version     v1.0.0 (latest)
+     Variant     full
+     Platform    linux/amd64
+     Location    /usr/local/bin/kiln
+     Source      github.com (direct)
+     Decoder     ffmpeg not found (native engine, nothing to install)
+```
+
+The decoder line is an environment check, not a dependency: the native engine needs no ffmpeg, and the result never changes what gets installed. See [Media engine](/en/guide/media-engine/).
+
+## State-aware by design
+
+The same command behaves differently depending on what is already installed, so there is no separate upgrade command to remember.
+
+| Current state | What happens |
+| --- | --- |
+| Nothing installed | Plain install, the confirmation defaults to `Y` |
+| Older version installed | Upgrade, the confirmation defaults to `Y` |
+| Same version, same variant | Reported as already current; the interactive menu defaults to cancel, and `--yes` exits 0 immediately |
+| Same version, different variant | Switches variants, for example full to lite |
+| Newer version installed | Downgrade, the confirmation defaults to `N` |
+
+When an existing install is found in an interactive session, the script offers three choices: upgrade or reinstall, uninstall, or cancel. Picking uninstall runs the same flow as `--uninstall`.
+
+<Aside type="caution" title="Prompts still work through a pipe">
+  Piping into `sh` takes over stdin, so the script falls back to `/dev/tty` for prompts. Where even that is unavailable, such as CI, it stops asking, so pass `--yes` explicitly.
+</Aside>
+
+## Options
+
+| Option | Description | Default |
+| --- | --- | --- |
+| `--yes`, `-y` | Non-interactive, accept every default | Interactive |
+| `--version <v>` | Pin a version, with or without the leading `v`; must be valid semver and may carry a prerelease suffix | Latest release |
+| `--lite` | Install the lite variant, built for Linux only | full |
+| `--dir <path>` | Explicit install directory, with no fallback once given | See [Install location](#install-location-and-path) |
+| `--mirror <base>` | Use a specific GitHub proxy and skip probing; must start with `https://`, contain no whitespace, and trailing slashes are stripped | Auto-probe |
+| `--no-mirror` | Direct connection only; mutually exclusive with `--mirror` | Off |
+| `--lang` | Force the output language, accepts `zh` or `en` only | From `LC_ALL`, `LANG` |
+| `--service` | Install the systemd unit and enable it once configured; needs Linux, systemd, and root | Off |
+| `--uninstall` | Remove the installed binary, and the service when present | — |
+| `--dry-run` | Show and simulate every step, write nothing | Off |
+| `--help`, `-h` | Print usage and exit | — |
+
+Unknown options, options missing their value, an invalid `--lang` value, and `--mirror` combined with `--no-mirror` all exit 1 before anything else runs.
+
+Every option has an environment variable; command-line flags win over them.
+
+| Variable | Equivalent option |
+| --- | --- |
+| `KILN_YES` | `--yes` |
+| `KILN_VERSION` | `--version` |
+| `KILN_VARIANT` | `--lite` (accepts `full` or `lite` only) |
+| `KILN_INSTALL_DIR` | `--dir` |
+| `KILN_MIRROR` | `--mirror` |
+| `KILN_NO_MIRROR` | `--no-mirror` |
+| `KILN_LANG` | `--lang` |
+| `KILN_DRY_RUN` | `--dry-run` |
+
+## Mirrors and download sources
+
+Three GitHub proxies are built in: `ghfast.top`, `ghproxy.net`, and `gh-proxy.com`.
+
+Without `--mirror`, the script sends HEAD probes to the direct URL and all three mirrors at once, each with a 3 second timeout, then takes the first reachable candidate in priority order. Direct comes first, mirrors follow in their built-in order. A reachable github.com therefore always wins, mirrors only come into play when the direct connection fails, and the output states plainly when a mirror is in use.
+
+`--mirror` skips probing entirely and uses the given base. `--no-mirror` shrinks the candidate set to the direct connection alone and fails outright rather than falling back.
+
+Version resolution follows the same idea: the release redirect first, the GitHub API second, and finally each built-in mirror in turn when mirrors are allowed.
+
+<Aside type="tip" title="Mirrors only carry bytes">
+  Checksums are always fetched from github.com first and only fall back to the active source when that fails. The script says so when they came from a mirror, and `gh attestation verify` gives you end-to-end proof, since the release pipeline signs build provenance for every binary.
+</Aside>
+
+## Install location and PATH
+
+Without `--dir`:
+
+- `/usr/local/bin` is used when it exists and is writable, which is where a root run normally lands;
+- otherwise the install falls back to `$HOME/.local/bin`, so an unprivileged user never needs sudo;
+- if `HOME` is unset too, the script stops with an error.
+
+`--dir` is an explicit choice and never falls back. The path must be a directory if it already exists, and the nearest existing parent must be writable.
+
+When the install directory is not on `PATH`, the script prints a ready-to-paste line for the current shell: `~/.zshrc` for zsh, `fish_add_path` for fish, `~/.bashrc` otherwise.
+
+## Versions and upgrades
+
+Re-running the script is the upgrade path. Comparison follows full semver rules, including per-identifier prerelease ordering, so `1.0.0-rc.1` correctly sorts before `1.0.0`.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh | sh -s -- --version 1.0.0
+```
+
+A malformed version string exits 1. A well-formed version with no matching release gets as far as source probing and exits 3.
+
+For unattended upgrades, add `--yes`: when the installed build is already current, the script prints one line and exits 0, which makes it safe to run from a timer.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh | sh -s -- --yes
+```
+
+The lite variant is built for Linux only, so `--lite` on macOS exits 2. See [Lite, Core and Full](/en/guide/variants/).
+
+## systemd service
+
+`--service` registers a system service that starts at boot, right after installing the binary. It needs root, and elevating a piped command is awkward, so download first and run second:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh -o /tmp/kiln-install.sh
+sudo sh /tmp/kiln-install.sh --yes --service
+```
+
+On a constrained network, swap the first line for a mirror URL and leave the second unchanged.
+
+Three preconditions are checked before anything is written:
+
+- Linux with `systemctl` available;
+- running as root;
+- an absolute install directory, free of whitespace, and not under `/home`, `/root`, `/tmp`, or `/var/tmp`. The default `/usr/local/bin` qualifies.
+
+Then the script:
+
+<Steps>
+  <Step title="Prepares the service account">
+    Creates a `kiln` system user and matching group with `useradd -r -U -d /var/lib/kiln` when the user does not exist, using the first available login shell among `/usr/sbin/nologin`, `/sbin/nologin`, and `/bin/false`.
+  </Step>
+  <Step title="Creates the directories">
+    Creates `/etc/kiln` and `/var/lib/kiln`, with the latter owned by the service account.
+  </Step>
+  <Step title="Writes and loads the unit">
+    Writes `/etc/systemd/system/kiln.service`, then runs `systemctl daemon-reload`.
+  </Step>
+  <Step title="Enables it only when configured">
+    Runs `systemctl enable --now kiln` when `/etc/kiln/kiln.toml` exists. Otherwise the unit stays disabled and the script tells you to write the config first.
+  </Step>
+</Steps>
+
+The unit ships hardened:
+
+```ini title="/etc/systemd/system/kiln.service"
+[Unit]
+Description=Kiln
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=kiln
+Group=kiln
+ExecStart=/usr/local/bin/kiln -config /etc/kiln/kiln.toml
+WorkingDirectory=/var/lib/kiln
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/kiln
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`ProtectSystem=strict` makes the whole filesystem read-only for the service, and `ReadWritePaths` carves out `/var/lib/kiln` as the single writable location. Pointing `data_dir` somewhere else means adding that path here as well. See [Configuration](/en/reference/config/).
+
+A first install usually continues like this: write `/etc/kiln/kiln.toml`, enable the service, then watch it.
+
+```bash
+sudo systemctl enable --now kiln
+systemctl status kiln
+journalctl -u kiln -f
+```
+
+## Uninstall
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh | sh -s -- --uninstall
+```
+
+Discovery order: with `--dir`, only that directory is checked; otherwise `/usr/local/bin/kiln` then `$HOME/.local/bin/kiln`, and only regular files count, so symlinks are skipped. A custom install directory therefore has to be named with `--dir`.
+
+If neither is found and no systemd unit exists, the script reports nothing to remove and exits 0. Otherwise it confirms first, defaulting to `N` unless `--yes` is passed.
+
+When the systemd service is present, uninstalling requires root: the script runs `systemctl disable --now kiln`, deletes the unit, reloads the daemon, and only then removes the binary. Without root it removes nothing and prints the manual command:
+
+```bash
+sudo systemctl disable --now kiln && sudo rm /etc/systemd/system/kiln.service
+```
+
+<Aside type="caution" title="Config and data survive">
+  Uninstalling only removes the binary and the service registration. Everything under `/etc/kiln` and `/var/lib/kiln` is left untouched and has to be deleted by hand.
+</Aside>
+
+## Dry run
+
+`--dry-run` walks the full decision path and prints every step marked as simulated, but creates no temporary directory, downloads nothing, writes nothing, and skips the dependency check.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh | sh -s -- --dry-run --service
+```
+
+It is the fastest way to confirm the chosen location, the selected source, and whether the systemd preconditions hold. Note that a dry run stays offline: without `--version`, the version shown in the plan is a placeholder rather than the real latest release.
+
+## Checksums and the atomic swap
+
+After the download, the script fetches `SHA256SUMS` (direct with a 5 second timeout, falling back to the active source with a 10 second one) and compares the line matching this artifact. A mismatch discards the downloaded file and exits 4 without touching the existing install.
+
+Only then is the archive unpacked, and the target file is never written in place:
+
+1. a `.kiln.new.XXXXXX` staging file is created in the target directory, written, and `chmod 0755`;
+2. it is smoke-tested by running `-version`;
+3. it is renamed over the final path atomically.
+
+Any failure deletes the staging file and leaves the previous install working. A failing smoke test usually means the target directory is mounted `noexec`, or the wrong architecture was downloaded. Interrupting the script cleans up the staging file and the temporary directory as well.
+
+## Supported platforms
+
+| System | Architectures | Variants |
+| --- | --- | --- |
+| Linux | `amd64`, `arm64`, `armv7`, `armv6` | full, lite |
+| macOS | `amd64`, `arm64` | full |
+
+`uname -m` is mapped as follows: `x86_64` and `amd64` become `amd64`, `aarch64` and `arm64` become `arm64`, `armv7l` and `armv8l` become `armv7`, and `armv6l` becomes `armv6`. Anything else exits 2.
+
+macOS gets one extra check. When `uname -m` reports `x86_64`, the script reads `sysctl hw.optional.arm64`; a value of 1 means the shell is merely running under Rosetta on Apple Silicon, so the `arm64` artifact is installed instead of a translated x86 build.
+
+Windows and every other system exit 2 with a pointer to the release archives.
+
+## Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Success, including a deliberate cancel, `--help`, an already current install, and nothing found to uninstall |
+| `1` | Bad arguments, missing tools, a directory that is unwritable or not a directory, unset `HOME`, a malformed version, a failed write, a binary that will not execute, or a systemd setup or removal failure |
+| `2` | Unsupported platform or architecture, including Windows, and `--lite` outside Linux |
+| `3` | Network trouble: the version could not be resolved, or no download source was reachable |
+| `4` | SHA256 mismatch; the downloaded file was discarded |
+| `130` | Interrupted |
+
+## Next steps
+
+<CardGrid>
+  <Card title="Create your first channel" icon="ph:arrow-right">
+    Write a minimal config and get it serving: [First channel](/en/start/first-channel/).
+  </Card>
+  <Card title="Containers">
+    Prefer containers? The three image boundaries are covered in [Docker](/en/start/docker/).
+  </Card>
+  <Card title="It will not install">
+    Network, permission, and architecture failures are covered in [Troubleshooting](/en/guide/troubleshooting/).
+  </Card>
+</CardGrid>

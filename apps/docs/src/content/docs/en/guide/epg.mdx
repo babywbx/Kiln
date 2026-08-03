@@ -1,0 +1,130 @@
+---
+title: EPG
+description: Enable guide sources, pick a cache mode, tune refresh, size limits and time zones, and serve one merged XMLTV to players.
+sidebar:
+  order: 7
+---
+
+Kiln fetches the XMLTV sources you enable, matches them against your channels, and merges the hits into a single guide. Players only ever need `/v1/epg.xml.gz`; how many upstream sources sit behind it is Kiln's problem, not theirs.
+
+## How it works
+
+- Sources are managed on the **EPG** page of the admin console and stored in SQLite. No config file edit is required.
+- Every built-in preset source ships **disabled**. Enable at least one, or add a custom source, before you expect any data.
+- `[[epg.sources]]` in the config file seeds the database once, and only while no source rows exist. After that the database wins.
+- In the full build, `[epg].enabled` is a statement of intent: what actually decides whether a guide is served is whether any source is enabled. The lite build has no EPG at all, and refuses to start when `enabled = true`.
+
+```toml title="kiln.toml"
+[epg]
+enabled = true
+cache = true
+cache_dir = "./data/epg"
+refresh_interval_min = 360
+max_refresh_concurrency = 0
+max_source_bytes = 67108864
+default_timezone = "UTC"
+serve_timezone = "keep"
+```
+
+<Steps>
+  <Step title="Enable a source">
+    Turn on a preset, or add a custom source pointing at a reachable XMLTV URL. Both `.xml` and `.xml.gz` are supported.
+  </Step>
+  <Step title="Run the first refresh">
+    Click **Refresh now**. Kiln fetches every enabled source immediately and reports per-source channel counts, programme counts, and failures.
+  </Step>
+  <Step title="Confirm the matches">
+    On the channel pages, pick the guide channel for anything listed as suggested or unmatched. Only matched channels reach the published guide, see [Channels](/en/guide/channels/).
+  </Step>
+</Steps>
+
+## Cache modes
+
+`cache` and `cache_dir` together select one of three behaviours for the raw XMLTV payloads.
+
+<Tabs>
+  <TabItem label="Disk (default)">
+    `cache = true` with `cache_dir` pointing at a directory, `{data_dir}/epg` by default.
+
+    Each source is stored as a JSON header plus the raw body, with a length and SHA-256 checksum, written to a temporary file and atomically renamed into place. The cache survives restarts, feeds `If-None-Match` and `If-Modified-Since` on the next fetch so an unchanged source costs a 304, and provides the fallback body when a fetch or parse fails.
+  </TabItem>
+  <TabItem label="Memory">
+    `cache = true` with `cache_dir = "memory"` (`:memory:` is equivalent).
+
+    Conditional requests and failure fallback behave exactly as on disk, but nothing is written to the filesystem and every source is downloaded in full again after a restart. Use it on read-only root filesystems, or wherever you do not want large files accumulating in the data directory.
+  </TabItem>
+  <TabItem label="Off">
+    `cache = false`.
+
+    Raw payloads are not retained, so there are no conditional requests and no fallback. On top of that, every request to `/v1/epg.xml` or `/v1/epg.xml.gz` synchronously refreshes all sources before rendering the response.
+  </TabItem>
+</Tabs>
+
+<Aside type="caution" title="What turning the cache off costs">
+  With no cache, a full fetch round lands directly in the response time of a public endpoint, and repeats on every request. Keep the disk cache by default; when you genuinely cannot write to disk, switch to the memory cache rather than turning caching off.
+</Aside>
+
+## Refreshing
+
+- `refresh_interval_min` defaults to 360. Kiln refreshes once at startup, then on that interval.
+- `max_refresh_concurrency = 0` refreshes every source in parallel. A positive value caps how many sources are in flight at once.
+- Under `server.resource_mode = "auto"` (the default), both `0` and oversized values are clamped from the detected CPU and memory limits, and any constrained profile pins it to 1. `constrained` also pins it to 1; `performance` applies no adaptation at all. See the [configuration reference](/en/reference/config/).
+
+For a manual run, call `POST /v1/admin/epg/refresh` with the `refresh` scope. It returns 409 when no source is enabled. Sources refresh independently, so one failing source does not block the others, and the response carries the latest per-source status.
+
+## Size limit
+
+`max_source_bytes` defaults to 64 MiB (`67108864`) and applies to the **decompressed** XMLTV body.
+
+- An oversized download fails the round. Existing data stays available and is flagged as stale rather than being replaced by a truncated body.
+- A cached entry that already exceeds the limit is discarded and never used as a fallback.
+- Under `auto` the limit is lowered with memory: below 256 MiB of memory it drops to 4 MiB, and other constrained profiles land somewhere between 4 MiB and 64 MiB depending on available memory.
+
+## Time zones
+
+- Every source carries its own IANA time zone, used when parsing timestamps that lack an explicit offset. Custom sources created in the console default to `UTC`.
+- `default_timezone` is the fallback for sources that declare no zone. It must be a valid IANA name; an invalid value fails config validation at startup.
+- `serve_timezone` currently accepts only `keep`: the published guide preserves each programme's original UTC offset instead of converting everything to one serving zone. Any other value fails validation.
+
+## Per-source egress
+
+Each source has its own egress setting that plugs into the global outbound routing.
+
+| Value | Meaning |
+| --- | --- |
+| `direct` | Default. Connect directly, ignoring outbound routing rules |
+| `auto` | Follow the global outbound routing and let the rules decide |
+| A proxy id | Always use that proxy, ignoring the rules |
+
+<Aside type="note" title="Guide fetches do not use proxies by default">
+  Configuring outbound rules does not put EPG traffic behind a proxy. Set the source to `auto`, or name a proxy explicitly, see [Outbound proxies](/en/guide/proxy/).
+</Aside>
+
+## What gets published
+
+| Path | Auth | Notes |
+| --- | --- | --- |
+| `GET /v1/epg.xml` | None | The merged XMLTV document |
+| `GET /v1/epg.xml.gz` | None | The same document, gzipped |
+| `GET /v1/logo/{id}` | None | Channel logo, fetched upstream when the built-in logo table matches |
+
+- Only matched channels are published. Their channel ids are rewritten to Kiln's own channel ids, and the programmes follow, so `tvg-id` from the M3U lines up with the guide out of the box.
+- `/v1/playlist.m3u` and the playlist behind an access token carry `x-tvg-url` on the `#EXTM3U` line, pointing at `/v1/epg.xml.gz`.
+- With no source enabled, both endpoints return a valid but empty XMLTV document rather than a 404.
+- The gzipped output is cached in memory and invalidated whenever source data or the channel list changes. Payloads larger than a quarter of `max_source_bytes` (capped at 8 MiB) are returned without being cached.
+- The logo endpoint normalises the channel's `epg_name` (falling back to its title), looks it up in the built-in logo table, and tries the candidate URLs in order. Images are capped at 2 MiB, served with a one-hour public cache and an `X-Kiln-Logo-Source` header naming the candidate that answered, and a miss is a 404. That fetch also follows the channel's outbound route.
+
+<Aside type="caution" title="These three endpoints are public">
+  The guide and logo endpoints are unauthenticated and unaffected by `security.play_require_auth`. They expose channel names, logos and programme data, never playback URLs. If even that is too much, gate them at your reverse proxy.
+</Aside>
+
+## Admin endpoints
+
+| Method and path | Scope |
+| --- | --- |
+| `GET /v1/admin/epg/presets`, `/v1/admin/epg/sources`, `/v1/admin/epg/matches` | `read` |
+| `POST /v1/admin/epg/sources`, `PUT /v1/admin/epg/sources/{id}` | `write` |
+| `DELETE /v1/admin/epg/sources/{id}` | `delete` |
+| `POST /v1/admin/epg/refresh` | `refresh` |
+
+Updates and deletes require an `If-Match` revision and return 409 on conflict. Deleting a preset source hides it rather than removing it permanently. Full details are in the [API reference](/en/reference/api/).

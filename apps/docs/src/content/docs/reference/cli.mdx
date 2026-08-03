@@ -1,0 +1,204 @@
+---
+title: 命令行
+description: kiln 二进制的全部启动参数、Windows 服务子命令、Lite 差异与辅助脚本用法。
+sidebar:
+  order: 5
+---
+
+Kiln 是单个可执行文件，没有守护进程包装层，没有隐藏的子进程管理器。命令行只有四个参数和一个平台相关的子命令。
+
+## 启动参数
+
+完整版（`kiln`）与 Lite 版（`kiln-lite`）共用同一套参数。
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `-config <path>` | 空 | 配置文件路径，接受 `kiln.toml` 或 `kiln.jsonc` |
+| `-version` | `false` | 打印版本信息后退出 |
+| `-healthcheck <url>` | 空 | 请求指定的健康检查地址后退出 |
+| `-h`、`-help` | 无 | 打印用法后退出 |
+
+参数解析使用 Go 标准库的 flag 包，单横线与双横线等价，`-config path` 与 `-config=path` 也等价。
+
+```bash
+kiln -config /etc/kiln/kiln.toml
+```
+
+未指定 `-version` 与 `-healthcheck` 时，`-config` 必填。缺失会向标准错误输出 `kiln: -config is required` 并以状态码 2 退出。
+
+<Aside type="note" title="从源码运行">
+开发时可以直接 `go run ./apps/server -config configs/examples/kiln.toml`，参数完全一致。
+</Aside>
+
+### 退出码
+
+| 退出码 | 含义 |
+| --- | --- |
+| `0` | 正常退出，包括 `-version`、`-help` 与健康检查通过 |
+| `1` | 运行期失败，如配置加载失败、数据目录创建失败、健康检查未通过 |
+| `2` | 用法错误，如缺少 `-config`、参数无法解析、服务子命令不可用 |
+
+### `-version`
+
+```bash
+kiln -version
+```
+
+输出单行，字段之间用空格分隔：
+
+```text
+kiln version=1.0.0 commit=dev built_at=unknown variant=full
+```
+
+`variant` 区分构建变体，完整版为 `full`，Lite 版为 `lite`。`version`、`commit` 与 `built_at` 由构建时的链接参数注入，从源码直接运行时是占位值。
+
+运行中的实例也可以在不带凭据的情况下查询版本，`GET /` 会返回 `name`、`version`、`commit` 与管理控制台路径，详见 [API 参考](/reference/api/)。
+
+### `-healthcheck`
+
+以 3 秒超时向给定地址发起一次 GET 请求，响应状态码在 2xx 区间时退出码为 0，否则把错误或状态行写入标准错误并以 1 退出。它不读取配置文件，也不会启动服务。
+
+```bash
+kiln -healthcheck http://127.0.0.1:8080/healthz
+```
+
+这个参数专为容器健康检查设计，让镜像不必额外安装 curl 或 wget。官方镜像的 `HEALTHCHECK` 指令就是这条命令。
+
+## Windows 服务
+
+`service` 子命令用 Windows 服务控制管理器把 Kiln 挂到后台，不需要额外的守护工具。
+
+```powershell
+kiln.exe service install -config C:\kiln\kiln.toml
+kiln.exe service start
+kiln.exe service status
+kiln.exe service stop
+kiln.exe service uninstall
+```
+
+| 子命令 | 说明 |
+| --- | --- |
+| `install` | 注册服务，必须提供 `-config` |
+| `uninstall`、`remove` | 注销服务，两个名称等价 |
+| `start` | 启动服务并等待进入运行状态 |
+| `stop` | 停止服务并等待进入停止状态 |
+| `status` | 打印当前状态 |
+
+| 参数 | 默认值 | 适用范围 |
+| --- | --- | --- |
+| `-name` | `Kiln` | 全部子命令 |
+| `-config` | 空 | 仅 `install` |
+| `-display` | `Kiln Streaming Gateway` | 仅 `install` |
+
+`-name` 用于在同一台机器上区分多个实例，除 `install` 外的子命令也要带上同一个名称才能命中目标服务。
+
+不带子命令或子命令无法识别时，用法会写入标准错误并以状态码 2 退出。安装与卸载需要管理员权限的终端。
+
+### 各子命令的行为
+
+<Steps>
+  <Step title="install">
+    先把 `-config` 解析为绝对路径并确认可读，再检查同名服务是否已存在，存在则拒绝。创建的服务为自动启动，并带三级失败重启策略（5 秒、15 秒、60 秒，重置窗口 24 小时）。成功后打印服务名、二进制路径、配置路径与启动提示。
+  </Step>
+  <Step title="start">
+    发出启动指令后最多等待 30 秒，确认进入运行状态才返回 0。
+  </Step>
+  <Step title="stop">
+    发出停止指令后最多等待 30 秒，确认进入停止状态才返回 0。
+  </Step>
+  <Step title="status">
+    打印 `stopped`、`starting`、`stopping`、`running`、`paused` 或 `unknown` 之一。
+  </Step>
+  <Step title="uninstall">
+    服务处于非停止状态时先尝试停止并等待最多 20 秒，然后删除服务注册。只移除注册项，数据目录、日志与配置文件都不动。
+  </Step>
+</Steps>
+
+任一子命令在服务未安装、无法连接服务控制管理器或操作失败时，都会把原因写入标准错误并以状态码 1 退出。
+
+### 服务模式下的运行时行为
+
+服务控制管理器会在 `system32` 下启动进程，因此 Kiln 会把 `-config` 转为绝对路径，再把工作目录切到配置文件所在目录。配置中的相对路径（例如 `data_dir = "./data"`）仍然相对配置文件解析。
+
+服务模式下标准输出会被丢弃，Kiln 把标准输出与标准错误重定向到配置目录下的 `kiln.log`。启动时若该文件超过 16 MB，会先轮转为 `kiln.log.1`。
+
+进程接受服务控制管理器的停止与关机指令，收到后走与信号相同的优雅关闭流程；服务的退出码就是进程的退出码。
+
+安装时记录的是配置文件的绝对路径，之后移动二进制或配置文件需要重新安装服务。
+
+<Aside type="caution" title="其它平台">
+`service` 子命令只在 Windows 的完整版中可用。在 Linux、macOS 或任何平台的 Lite 版上执行会输出 `kiln: service management is only available on Windows` 并以状态码 2 退出。这些平台请用 systemd、launchd 或容器编排来托管进程。
+</Aside>
+
+## Lite 变体的差异
+
+Lite 二进制的命令行与完整版完全一致，差异在启动后的行为。
+
+- `-version` 输出的 `variant` 为 `lite`。
+- 没有 `service` 子命令，即使在 Windows 上也不可用。
+- 未设置环境变量 `KILN_DEFAULT_PACKAGER_ENGINE` 时，Lite 会把它设为 `native`。
+- 启动前会校验配置，不满足以下任一条件即拒绝启动，以状态码 1 退出并记录 `lite config rejected`：
+  - `packager.engine` 必须是 `native`；
+  - 每个频道解析出的引擎都必须是 `native`；
+  - `epg.enabled` 必须为 `false`；
+  - `observe.otlp_endpoint` 必须为空；
+  - `debug.pprof.enabled` 必须为 `false`。
+- 资源自适应使用固定的低内存档位，不随宿主机内存浮动。
+
+路由面的差异见 [API 参考](/reference/api/)。
+
+## 辅助脚本
+
+仓库的 `scripts/` 目录下有三个独立工具，都带 `//go:build ignore` 标记，用 `go run` 直接执行，不参与主程序构建。
+
+### 生成口令哈希
+
+```bash
+go run scripts/hash-password.go 'your-password'
+```
+
+输出一行 bcrypt 哈希，写进配置文件的 `auth.users[].password_hash`。参数数量不是 1 时打印用法并以状态码 2 退出。
+
+<Aside type="caution" title="避免留下痕迹">
+口令会出现在进程参数与 shell 历史中。在共享主机上建议先临时关闭历史记录，或改用管理控制台修改凭据。
+</Aside>
+
+### 生成会话签名密钥
+
+```bash
+go run scripts/gen-jwt-keys.go ./secrets
+```
+
+在指定目录写出 Ed25519 密钥对 `ed25519.pem` 与 `ed25519.pub.pem`，并打印两个文件的路径。省略目录参数时写入当前目录。生成的路径填进 `auth.token_private_key_file` 与 `auth.token_public_key_file`。
+
+不生成也能跑：进程首次启动时会在 `{data_dir}/auth/` 下自动生成密钥对，私钥权限为 `0600`。这个脚本适用于需要把密钥纳入统一管理，或多实例共享同一套签名密钥的场景。
+
+### 生成拼音检索数据
+
+```bash
+go run scripts/gen-romanize-data.go
+go run scripts/gen-romanize-data.go -unihan ./Unihan.zip -out modules/httpserver/admin/assets/data/romanize.js
+```
+
+从 Unicode 官方的 Unihan 数据集生成管理控制台频道搜索所用的注音与简繁映射表。
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `-unihan` | 空 | 本地 Unihan.zip 路径，留空时从 unicode.org 下载 |
+| `-out` | `modules/httpserver/admin/assets/data/romanize.js` | 生成文件路径 |
+
+生成的模块导出 `PINYIN`、`JYUTPING` 与 `SIMPLIFY` 三张表。这是构建期的一次性操作，只有在需要跟进上游 Unicode 数据更新时才需要重跑，跑完记得重新构建管理控制台资源。
+
+## 相关阅读
+
+<CardGrid>
+  <Card title="部署方式" icon="ph:download">
+    二进制、容器与安装脚本三种方式，见 [入门](/start/)。
+  </Card>
+  <Card title="配置参考" icon="ph:sliders">
+    配置文件的全部段落与取值，见 [配置参考](/reference/config/)。
+  </Card>
+  <Card title="运维" icon="ph:gear">
+    进程托管、日志与升级流程，见 [运维](/guide/operations/)。
+  </Card>
+</CardGrid>

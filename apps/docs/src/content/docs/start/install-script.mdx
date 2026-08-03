@@ -1,0 +1,305 @@
+---
+title: 安装脚本
+description: 一行命令安装 Kiln：镜像加速、静默安装、systemd 服务与卸载。
+sidebar:
+  order: 2
+---
+
+Linux 与 macOS 用一条命令装好，重复运行即升级。脚本只做四件事：探测平台、选择可用的下载源、校验 `SHA256SUMS`、原子替换二进制。默认不需要 sudo，装到哪里、要做什么都会先展示，确认后才动手。
+
+## 一行安装
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh | sh -s -- --lang zh
+```
+
+拉取超时或失败时，换镜像地址：
+
+```bash
+curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/babywbx/kiln/main/install.sh | sh -s -- --lang zh
+```
+
+<Aside type="note" title="关于 --lang">
+  `--lang` 只影响脚本自身的输出语言，与 Kiln 运行时无关。不带该参数时，脚本按 `LC_ALL`、`LANG` 判断：以 `zh` 开头用中文，其余一律英文。设置 `NO_COLOR` 或输出被重定向时，脚本会关闭颜色与动画。
+</Aside>
+
+Windows 不在脚本支持范围内，脚本检测到 Windows 环境会直接退出并提示改用发行包，见[手动安装与 Windows 服务](/start/binary/)。
+
+## 脚本做了什么
+
+<Steps>
+  <Step title="探测平台与依赖">
+    识别 `uname -s` 与 `uname -m`，映射到发行产物的平台与架构；确认 `curl` 或 `wget`、`tar`、`mktemp`，以及 `sha256sum` 或 `shasum` 都在。缺哪个就按当前系统的包管理器给出安装命令并退出。
+  </Step>
+  <Step title="选择安装目录">
+    未显式指定时优先 `/usr/local/bin`，不可写则回退到 `$HOME/.local/bin`。
+  </Step>
+  <Step title="读取已安装状态">
+    目标目录已有可执行的 `kiln` 时，运行 `kiln -version` 解析出 `version=` 与 `variant=`，据此判断这次是安装、升级、降级还是切换变体。
+  </Step>
+  <Step title="解析版本与下载源">
+    未指定 `--version` 时解析最新 Release，再并行探测所有候选下载源。
+  </Step>
+  <Step title="展示计划并确认">
+    把版本、变体、平台、安装位置、下载源、解码器状态列成一张表，确认后才开始写入。
+  </Step>
+  <Step title="下载、校验、原子替换">
+    下载压缩包，比对 `SHA256SUMS`，解包后先写入同目录下的暂存文件并做一次启动冒烟，通过后才原子替换。
+  </Step>
+</Steps>
+
+确认前展示的计划形如：
+
+```text
+  即将执行：
+     版本      v1.0.0（最新）
+     变体      full
+     平台      linux/amd64
+     位置      /usr/local/bin/kiln
+     下载源    github.com（直连）
+     解码器    未检测到 ffmpeg（使用原生引擎，无需安装）
+```
+
+「解码器」一行只是环境体检：Kiln 的原生引擎不依赖 ffmpeg，检测结果不会改变安装内容，详见[媒体引擎](/guide/media-engine/)。
+
+## 状态感知
+
+同一条命令在不同状态下行为不同，不需要记两套参数。
+
+| 当前状态 | 脚本行为 |
+| --- | --- |
+| 未安装 | 直接安装，确认提示默认为 `Y` |
+| 已装旧版本 | 升级，确认提示默认为 `Y` |
+| 已装同版本同变体 | 提示已是最新；交互模式下菜单默认选「取消」，带 `--yes` 时直接以 0 退出 |
+| 已装同版本不同变体 | 切换变体（例如 full 换 lite） |
+| 已装更新版本 | 降级，确认提示默认为 `N` |
+
+检测到已有安装且处于交互模式时，脚本给出三选一菜单：升级或重装、卸载、取消。选「卸载」会直接进入卸载流程，等价于 `--uninstall`。
+
+<Aside type="caution" title="管道运行仍然可以交互">
+  通过管道运行时标准输入被脚本占用，脚本会退回到 `/dev/tty` 读取按键。若连 `/dev/tty` 都不可用（例如 CI），脚本不再询问，请显式加 `--yes`。
+</Aside>
+
+## 命令行选项
+
+| 选项 | 说明 | 默认 |
+| --- | --- | --- |
+| `--yes`、`-y` | 非交互模式，所有提示取默认值 | 交互确认 |
+| `--version <v>` | 固定版本，写不写前导 `v` 都行；必须是合法 semver，可带预发布标识符 | 最新 Release |
+| `--lite` | 安装 lite 变体，仅 Linux 提供构建 | full |
+| `--dir <path>` | 指定安装目录；显式给出后不再回退到别处 | 见[安装位置](#安装位置与-path) |
+| `--mirror <base>` | 手动指定 GitHub 代理镜像，跳过探测；必须是 `https://` 开头且不含空白字符，结尾多余的斜杠会被去掉 | 自动探测 |
+| `--no-mirror` | 只走直连，不使用任何镜像；与 `--mirror` 互斥 | 关闭 |
+| `--lang` | 强制输出语言，只接受 `zh` 或 `en` | 跟随 `LC_ALL`、`LANG` |
+| `--service` | 安装 systemd unit，配置就绪时启用并启动；需要 Linux、systemd 与 root | 关闭 |
+| `--uninstall` | 卸载已安装的二进制，存在服务时一并移除 | — |
+| `--dry-run` | 演练：展示并模拟每一步，不写入任何文件 | 关闭 |
+| `--help`、`-h` | 打印用法后退出 | — |
+
+未知选项、缺少取值的选项、非法的 `--lang` 取值，以及 `--mirror` 与 `--no-mirror` 同时出现，都会立刻以 1 退出，不会执行任何后续动作。
+
+每个选项都有对应的环境变量，命令行参数优先级更高：
+
+| 环境变量 | 等价选项 |
+| --- | --- |
+| `KILN_YES` | `--yes` |
+| `KILN_VERSION` | `--version` |
+| `KILN_VARIANT` | `--lite`（取值只接受 `full` 或 `lite`） |
+| `KILN_INSTALL_DIR` | `--dir` |
+| `KILN_MIRROR` | `--mirror` |
+| `KILN_NO_MIRROR` | `--no-mirror` |
+| `KILN_LANG` | `--lang` |
+| `KILN_DRY_RUN` | `--dry-run` |
+
+## 镜像与下载源
+
+脚本内置三个 GitHub 代理镜像：`ghfast.top`、`ghproxy.net`、`gh-proxy.com`。
+
+未指定 `--mirror` 时，脚本对「直连 + 三个镜像」同时发出 HEAD 探测，单个探测超时 3 秒，然后按优先级取第一个可用的：直连排在最前，镜像按内置顺序排在其后。也就是说直连能用就一定走直连，只有直连不通才会落到镜像，并在输出里明确标注当前用的是镜像。
+
+`--mirror` 会跳过整个探测过程，直接使用给定地址；`--no-mirror` 则把候选集合缩减为只有直连，探测不通就报错退出，不做任何回退。
+
+解析最新版本走同一套逻辑：先试直连的 Release 跳转地址，再退到 GitHub API；仍拿不到且允许镜像时，按顺序逐个试内置镜像。
+
+<Aside type="tip" title="镜像只影响传输">
+  校验和始终优先从 GitHub 直连获取，只有直连拿不到才退回当前下载源。校验和来自镜像时脚本会明确提示，此时可以用 `gh attestation verify` 对产物做端到端核验，发布流程为所有二进制签署了构建来源证明。
+</Aside>
+
+## 安装位置与 PATH
+
+未指定 `--dir` 时：
+
+- `/usr/local/bin` 存在且可写就装在那里，root 运行通常落在这里；
+- 否则回退到 `$HOME/.local/bin`，普通用户无需 sudo 即可完成安装；
+- `HOME` 也没有设置时直接报错退出。
+
+`--dir` 是显式选择，不会回退。给出的路径若已存在必须是目录，且最近的一层已存在的父目录必须可写，否则报错退出。
+
+安装目录不在 `PATH` 中时，脚本会按当前 shell 打印一行可直接粘贴的命令：zsh 追加到 `~/.zshrc`，fish 用 `fish_add_path`，其余写入 `~/.bashrc`。
+
+## 版本选择与升级
+
+重复运行脚本就是升级。版本比较走完整 semver 规则，包含预发布标识符的逐段比较，因此 `1.0.0-rc.1` 会被正确判定为早于 `1.0.0`。
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh | sh -s -- --lang zh --version 1.0.0
+```
+
+版本号格式非法时以 1 退出；格式合法但没有对应 Release 时，探测阶段找不到产物，以 3 退出。
+
+想要静默升级，加 `--yes`：已经是最新版本时脚本打印一行提示并以 0 退出，适合放进定时任务。
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh | sh -s -- --lang zh --yes
+```
+
+lite 变体只有 Linux 构建，在 macOS 上加 `--lite` 会以 2 退出。变体差异见 [Lite、Core 与 Full](/guide/variants/)。
+
+## systemd 服务
+
+`--service` 会在安装二进制之后注册一个开机自启的系统服务。它需要 root，而管道运行时不便于提权，所以推荐先下载再执行：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh -o /tmp/kiln-install.sh
+sudo sh /tmp/kiln-install.sh --yes --service --lang zh
+```
+
+网络受限时把第一行换成镜像地址即可，第二行不变。
+
+前置条件有三条，任何一条不满足都会在写入前退出：
+
+- 系统是 Linux 且 `systemctl` 可用；
+- 以 root 身份运行；
+- 安装目录是绝对路径，不含空白字符，且不在 `/home`、`/root`、`/tmp`、`/var/tmp` 之下。默认的 `/usr/local/bin` 满足要求。
+
+满足后脚本会：
+
+<Steps>
+  <Step title="准备服务账户">
+    系统中没有 `kiln` 用户时，用 `useradd -r -U -d /var/lib/kiln` 创建同名系统用户与用户组，登录 shell 取 `/usr/sbin/nologin`、`/sbin/nologin`、`/bin/false` 中第一个可用的。
+  </Step>
+  <Step title="创建目录">
+    建立 `/etc/kiln` 与 `/var/lib/kiln`，后者的属主设为服务账户。
+  </Step>
+  <Step title="写入 unit 并加载">
+    写入 `/etc/systemd/system/kiln.service`，随后 `systemctl daemon-reload`。
+  </Step>
+  <Step title="按配置状态决定是否启用">
+    `/etc/kiln/kiln.toml` 存在则 `systemctl enable --now kiln`；不存在则保持 unit 未启用，并提示先写配置再手动启用。
+  </Step>
+</Steps>
+
+写入的 unit 是加固过的：
+
+```ini title="/etc/systemd/system/kiln.service"
+[Unit]
+Description=Kiln
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=kiln
+Group=kiln
+ExecStart=/usr/local/bin/kiln -config /etc/kiln/kiln.toml
+WorkingDirectory=/var/lib/kiln
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/kiln
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`ProtectSystem=strict` 意味着整个文件系统对服务只读，唯一可写的是 `ReadWritePaths` 列出的 `/var/lib/kiln`。把 `data_dir` 指到别处就要同步补充这一项。配置写法见[配置参考](/reference/config/)。
+
+首次安装后的典型顺序是：写好 `/etc/kiln/kiln.toml`，启用服务，然后看状态与日志。
+
+```bash
+sudo systemctl enable --now kiln
+systemctl status kiln
+journalctl -u kiln -f
+```
+
+## 卸载
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh | sh -s -- --lang zh --uninstall
+```
+
+查找顺序是：给了 `--dir` 就只看该目录下的 `kiln`；否则依次看 `/usr/local/bin/kiln` 与 `$HOME/.local/bin/kiln`，且只认普通文件，符号链接会被跳过。装在自定义目录时必须显式带上 `--dir`。
+
+两者都没有、也没有 systemd unit 时，脚本提示未检测到安装并以 0 退出。找到后会先确认，确认提示默认为 `N`，带 `--yes` 才默认 `Y`。
+
+存在 systemd 服务时，卸载必须以 root 执行，脚本会先 `systemctl disable --now kiln`、删除 unit、`systemctl daemon-reload`，再删二进制。权限不足时不会删除任何东西，只提示手动执行：
+
+```bash
+sudo systemctl disable --now kiln && sudo rm /etc/systemd/system/kiln.service
+```
+
+<Aside type="caution" title="配置与数据会保留">
+  卸载只移除二进制与服务注册，`/etc/kiln` 下的配置和 `/var/lib/kiln` 下的数据都原样保留，需要清理请自行删除。
+</Aside>
+
+## 试运行
+
+`--dry-run` 会完整走一遍决策与展示，但不创建临时目录、不下载、不写入任何文件，也不检查依赖工具，每一步结尾都标注「（试运行）」。
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh | sh -s -- --lang zh --dry-run --service
+```
+
+它适合确认安装位置、下载源和 systemd 前置条件的判断结果。注意演练不联网：没有配合 `--version` 时，计划里的版本号是占位值而非真实的最新版本。
+
+## 校验和与原子替换
+
+下载完成后，脚本先取 `SHA256SUMS`（直连超时 5 秒，失败则改用当前下载源，超时 10 秒），从中取出本次产物对应的那一行做比对。不匹配就立即丢弃下载的文件并以 4 退出，不触碰已有安装。
+
+校验通过后才解包，并且不直接覆盖目标文件：
+
+1. 在目标目录下创建 `.kiln.new.XXXXXX` 暂存文件，写入二进制并 `chmod 0755`；
+2. 执行一次 `-version` 作为冒烟测试，能跑起来才算数；
+3. 用 `mv` 原子替换到最终路径。
+
+任一步失败都会删掉暂存文件，原有安装保持可用。冒烟失败通常意味着目标目录挂了 `noexec`，或者下载到了架构不匹配的构建。脚本被中断时同样会清理暂存文件与临时目录。
+
+## 支持的平台与架构
+
+| 系统 | 架构 | 变体 |
+| --- | --- | --- |
+| Linux | `amd64`、`arm64`、`armv7`、`armv6` | full、lite |
+| macOS | `amd64`、`arm64` | full |
+
+`uname -m` 的取值按下表映射：`x86_64` 与 `amd64` 归入 `amd64`，`aarch64` 与 `arm64` 归入 `arm64`，`armv7l` 与 `armv8l` 归入 `armv7`，`armv6l` 归入 `armv6`。其余架构以 2 退出。
+
+macOS 上还有一层额外判断：`uname -m` 返回 `x86_64` 时，脚本会读 `sysctl hw.optional.arm64`，为 1 说明当前只是跑在 Rosetta 下的终端，实际是 Apple Silicon，于是改装 `arm64` 产物，避免装成转译执行的 x86 版本。
+
+Windows 与其他系统直接以 2 退出，并提示改用发行包。
+
+## 退出码
+
+| 退出码 | 含义 |
+| --- | --- |
+| `0` | 成功；也包括主动取消、`--help`、已是最新版本、以及未检测到可卸载的安装 |
+| `1` | 参数错误、缺少依赖工具、目录不可写或不是目录、`HOME` 未设置、版本号格式非法、写入失败、安装后二进制无法执行、systemd 配置或移除失败 |
+| `2` | 平台或架构不受支持，包括 Windows，以及在非 Linux 上请求 lite |
+| `3` | 网络问题：无法解析版本，或所有候选下载源都不可用 |
+| `4` | SHA256 校验不匹配，下载的文件已丢弃 |
+| `130` | 收到中断信号 |
+
+## 下一步
+
+<CardGrid>
+  <Card title="创建第一个频道" icon="ph:arrow-right">
+    装好之后写一份最小配置并跑起来，见[第一个频道](/start/first-channel/)。
+  </Card>
+  <Card title="容器部署">
+    更偏好容器的话，三个镜像的边界见 [Docker](/start/docker/)。
+  </Card>
+  <Card title="装不上">
+    网络、权限与架构相关的常见故障见[故障排查](/guide/troubleshooting/)。
+  </Card>
+</CardGrid>

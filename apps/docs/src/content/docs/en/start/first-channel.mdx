@@ -1,0 +1,125 @@
+---
+title: Your first channel
+description: From origin definition to verified playback, end to end.
+sidebar:
+  order: 5
+---
+
+A playable channel is two things: an `[[upstreams]]` entry saying where the origin is, and a `[[channels]]` entry saying which path to pull from it and in what format. Here is the whole flow.
+
+## From config to playback
+
+<Steps>
+  <Step title="Define the origin">
+    An origin needs an id and a base URL. Channels reference it with `upstream` and append `path`, so moving the origin to another host or port is a one-line change.
+
+    ```toml title="kiln.toml"
+    [[upstreams]]
+    id = "origin"
+    base_url = "https://origin.example.com:8000"
+
+    [upstreams.headers]
+    X-Custom = "value"
+    ```
+
+    `[upstreams.headers]` is optional and applies to every outbound request for that origin, which covers origins that require a fixed header.
+  </Step>
+
+  <Step title="Define an HLS channel">
+    The shortest useful channel looks like this. `id` appears in the playback URL, while `title` and `group` drive the display name and grouping in the playlist.
+
+    ```toml title="kiln.toml"
+    [[channels]]
+    id = "demo-hls"
+    title = "Demo HLS"
+    group = "Demo"
+    upstream = "origin"
+    path = "/live/demo-hls"
+    ingress = "hls"
+    on_demand = true
+    ```
+
+    `ingress` accepts only `hls` and `dash`, and defaults to `hls` when omitted. `path` is required whenever `upstream` is used; leaving it out fails at startup. The full field list is in [Channels](/en/guide/channels/).
+  </Step>
+
+  <Step title="Add a DASH channel">
+    A DASH channel has the same shape. The differences are `ingress` and the keys.
+
+    ```toml title="kiln.toml"
+    [packager]
+    keys_file = "kiln.keys"
+
+    [[channels]]
+    id = "demo-dash"
+    title = "Demo DASH"
+    group = "Demo"
+    upstream = "origin"
+    path = "/live/demo-dash"
+    ingress = "dash"
+    on_demand = true
+    ```
+
+    `keys_file` is a single global `kid:key` catalog shared by every DASH channel. One enabled DASH channel without it is enough to fail startup outright. Track and rendition selection is covered in [Variants and ABR](/en/guide/variants/).
+  </Step>
+
+  <Step title="Write the key file">
+    One `kid:key` pair per line, in hex. Blank lines and lines starting with `#` are ignored.
+
+    ```text title="kiln.keys"
+    # kid:key (hex). Replace with real pairs; never commit production secrets.
+    000102030405060708090a0b0c0d0e0f:0f0e0d0c0b0a09080706050403020100
+    ```
+
+    Both halves must be 32 hex characters. The kid may be written in dashed UUID form, since dashes are stripped during parsing; the key may not contain dashes. A repeated kid with a different key is an error, while an exact duplicate is collapsed. A file with no usable pair is an error too.
+  </Step>
+
+  <Step title="Restart and verify">
+    The key file is fully validated once at startup, so any edit needs a restart, and keys never appear in the admin API. After restarting, confirm the playlist and one playback URL:
+
+    ```bash
+    TOKEN=$(curl -s http://127.0.0.1:8080/v1/auth/login \
+      -H 'content-type: application/json' \
+      -d '{"username":"admin","password":"admin"}' | jq -r .token)
+
+    curl -s http://127.0.0.1:8080/v1/playlist.m3u -H "authorization: Bearer $TOKEN"
+    curl -s "http://127.0.0.1:8080/v1/play/demo-hls/index.m3u8?token=$TOKEN"
+    ```
+
+    Both channels should appear in the playlist. Paste a playback URL into any HLS-capable player, or hand the whole playlist to an IPTV client, and you have video. Distribution and playback keys are covered in [Playback](/en/guide/playback/).
+  </Step>
+</Steps>
+
+<Aside type="note" title="Relative paths resolve against the config file">
+  A relative `keys_file` resolves against the directory holding `kiln.toml`, not the process working directory. Keeping `kiln.keys` next to the config is the least surprising layout, and it keeps working under the Windows service and inside containers, where the working directory differs.
+</Aside>
+
+## on_demand and autostart
+
+These two switches decide when the upstream connection is opened and when it is released. Either can be used alone, or both together.
+
+| Switch | Behavior |
+| --- | --- |
+| `on_demand` | Pulls upstream only when something asks for the channel, then stops the session and releases the connection after `idle_timeout_sec` of inactivity |
+| `autostart` | Starts the channel as soon as the process comes up, retrying with exponential backoff until it succeeds or the process exits |
+
+With neither set, `on_demand` is turned on automatically, so on-demand pulling is the default.
+
+Reclamation is handled by a reaper that runs every 5 seconds: a channel untouched for longer than its `idle_timeout_sec` (90 seconds by default) is stopped, and the next request cold-starts it again. A cold start has to pull enough segments from the origin before the first playlist can be published, so an on-demand channel takes noticeably longer to produce its first frames than a resident one. That latency is governed by `start_segments` and `inflight_bytes` under `[packager]`; the trade-off is explained in [Media engine](/en/guide/media-engine/).
+
+A channel without `on_demand` is never reclaimed for idleness and stays connected once started. The switch also shapes restart behavior after an upstream failure: an on-demand channel that has already passed its idle window ends the session instead of restarting it.
+
+<Aside type="tip" title="Turn both on for channels you actually watch">
+  `autostart = true` and `on_demand = true` do not conflict. The channel is pre-warmed at boot and still releases the upstream connection when nobody watches it for a while, which is the right combination for frequently used channels. To take a channel out of service entirely, set `disabled = true`: it is neither pre-warmed nor listed in the playlist.
+</Aside>
+
+## The console does all of this too
+
+Every field above has a form in the admin console, which also offers channel pre-warming, preview, connectivity probing, and bulk M3U import and export. Changes take effect immediately, with no file editing. See [Admin console](/en/guide/admin/).
+
+The key file is the one exception: it is read from disk only, and editing it requires a restart.
+
+## Next
+
+- [Channels](/en/guide/channels/): the full field reference, grouping, import and export.
+- [Playback](/en/guide/playback/): playback keys, access logs, and client setup.
+- [Troubleshooting](/en/guide/troubleshooting/): where to look when a channel will not start.

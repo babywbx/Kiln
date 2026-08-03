@@ -1,0 +1,142 @@
+---
+title: 出站代理
+description: 用可复用的代理线路与按域名的路由规则，控制 Kiln 回源、抓取节目单与取台标时走哪条出口。
+sidebar:
+  order: 8
+---
+
+Kiln 的出站路由分两层：`[[proxies]]` 定义可复用的线路，`[egress]` 决定什么流量走哪条线路。频道、节目单源和台标抓取共用同一套路由，不需要各自配置代理。
+
+## 模型总览
+
+每个待请求的地址都会独立走一次判定：
+
+<Steps>
+  <Step title="按优先级匹配规则">
+    规则按 `priority` 升序遍历，命中的第一条决定出口，后面的规则不再参与。
+  </Step>
+  <Step title="回落到默认出口">
+    没有任何规则命中时使用 `egress.default`。
+  </Step>
+  <Step title="解析线路">
+    出口是 `direct` 就直连；是某条线路的 id 就走该线路；引用的线路不存在或已停用时退回直连。
+  </Step>
+</Steps>
+
+```toml title="kiln.toml"
+[[proxies]]
+id = "proxy-http"
+name = "HTTP 线路"
+url = "http://127.0.0.1:7890"
+
+[[proxies]]
+id = "proxy-socks"
+name = "SOCKS5 线路"
+url = "socks5h://127.0.0.1:7891"
+
+[egress]
+default = "direct"
+playlist_policy = "rewrite"
+# docker_proxy_host = "host.docker.internal"
+
+[[egress.rules]]
+id = "example-cdn"
+priority = 10
+kind = "host_suffix"
+pattern = "example-cdn.com"
+proxy = "proxy-http"
+```
+
+<Aside type="note" title="控制台是权威来源">
+  出站配置和频道一样保存在 SQLite 中。配置文件里的 `[[proxies]]` 与 `[[egress.rules]]` 只在数据库还没有任何线路记录时播种一次，`default`、`playlist_policy`、`docker_proxy_host` 也只在对应设置项尚不存在时写入。首次启动之后，请在 [管理控制台](/guide/admin/) 里修改。
+</Aside>
+
+## 定义线路
+
+- `id` 唯一，被 `egress.default`、路由规则和节目单源引用；`name` 只用于界面显示。
+- `url` 支持 `http`、`https`、`socks5`、`socks5h` 四种 scheme，例如 `http://127.0.0.1:7890` 或 `socks5h://127.0.0.1:7891`。
+- 需要认证时把凭据放进 URL，例如 `http://user:password@127.0.0.1:7890`，控制台会显示该线路已配置凭据而不回显密码。
+- `socks5h` 由代理侧解析域名，`socks5` 先在本机解析再连接。回源地址依赖境外 DNS 时优先选 `socks5h`。
+- 线路可以停用而不删除。被 `egress.default` 或启用中的规则引用的线路不允许处于停用状态。
+
+<Aside type="caution" title="ffmpeg 只认 HTTP 代理">
+  ffmpeg 引擎只能通过环境变量接收 `http` 或 `https` 代理。如果某个频道最终由 ffmpeg 处理，而它的地址被路由到 SOCKS 线路，这次发布会直接失败并提示改用 HTTP 代理或直连。原生引擎没有这个限制，参见 [媒体引擎](/guide/media-engine/)。
+</Aside>
+
+## 默认出口与规则
+
+`egress.default` 取 `direct` 或某条线路的 id，所有未命中规则的请求都走它。
+
+规则由 `id`、`priority`、`kind`、`pattern`、`proxy` 组成，可以单独停用。`priority` 数字越小越优先，`proxy` 也可以填 `direct`，用来在默认走代理的部署里为个别域名开一个直连口子。
+
+| `kind` | 匹配对象 |
+| --- | --- |
+| `host_suffix` | 主机名后缀。`example.com` 同时命中 `example.com` 与 `cdn.example.com`，不会命中 `notexample.com` |
+| `host_exact` | 完整主机名，需要完全相等 |
+| `host_regex` | 对主机名做正则匹配 |
+| `channel_id` | 频道 ID 完全相等 |
+| `url_regex` | 对完整地址做正则匹配 |
+
+省略 `kind` 时按 `host_suffix` 处理。正则类规则在保存前会做编译校验，编译失败的规则不会生效。
+
+## 播放列表处理
+
+`playlist_policy` 决定 Kiln 转发上游 HLS 播放列表时，里面的源站绝对地址如何呈现给播放器。
+
+| 取值 | 行为 |
+| --- | --- |
+| `rewrite`（默认） | 全部改写回 Kiln，播放器只与 Kiln 通信 |
+| `passthrough` | 原样保留源站地址，播放器直连源站 |
+| `auto` | 只改写需要走代理的地址，其余保留源站地址 |
+
+`rewrite` 的具体行为是：Kiln 把播放列表里的每条媒体地址，以及标签中的 `URI="..."`，先解析成绝对地址，再替换成自身的 `/v1/play/<频道 ID>/u/<编码后的地址>?sig=...`；通过播放密钥分发时，前缀相应变成 `/p/<密钥>/play/<频道 ID>/u/`。地址用 URL-safe Base64 编码并保留可识别的扩展名，签名是按频道 ID 与目标地址计算的 HMAC，密钥在进程启动时随机生成，因此重启后旧地址立即失效。播放器取到这些地址后仍然只连 Kiln，回源由 Kiln 按出站路由完成。嵌套的变体播放列表在被取回时会再走一次同样的改写。
+
+`passthrough` 让播放器直接访问源站，这些请求不会经过 Kiln 的代理线路，也不会带上频道自定义的请求头，只有在播放器自身能够直连源站时才适用。`auto` 是折中：需要走代理的地址改写回 Kiln，其余保持源站地址，让能直连的流量少绕一跳。
+
+<Aside type="note" title="并发上限优先">
+  设置了 `max_viewers` 的频道无论采用哪种策略都会被改写，否则 Kiln 无法统计并发观看数。
+</Aside>
+
+## 容器内访问宿主代理
+
+`docker_proxy_host` 默认 `host.docker.internal`，只在 `ffmpeg.mode = "docker"` 时生效。Kiln 给 ffmpeg 容器注入代理环境变量时，会把代理地址中的 `127.0.0.1`、`localhost`、`::1` 替换成这个主机名并保留端口，因为容器里的回环地址指向的是容器自己。线路本身仍然按原样填写宿主机上的地址。
+
+## 受路由控制的流量
+
+| 流量 | 说明 |
+| --- | --- |
+| 频道回源 | 播放列表与分片的拉取，原生引擎与 ffmpeg 引擎都会应用路由结果 |
+| 节目单抓取 | 仅当该源的出口设为 `auto` 时按规则路由，设为 `direct` 或具体线路时按源的设置执行，详见 [EPG 节目单](/guide/epg/) |
+| 频道台标 | `/v1/logo/{id}` 的回源抓取，按频道 ID 参与规则匹配 |
+| 管理端探测 | 频道探测、预览与出站连通性测试 |
+
+规则里的 `channel_id` 匹配只在请求带有频道上下文时才可能命中，节目单抓取没有频道上下文，因此不会被这类规则选中。
+
+## 控制台与连通性测试
+
+「出站代理」页采用草稿式编辑：新增或修改线路与规则只会改动草稿，必须先运行一次通过的连通性测试，「应用」按钮才会可用；任何后续改动都会重置这个状态，需要重新测试。这样可以避免把一条填错的代理地址直接推送到运行中的服务。
+
+测试对应 `POST /v1/admin/egress/test`，需要 `refresh` 权限，可选参数包括：
+
+- `target`：省略时使用内置的公共探测目标；填 `source` 或 `custom` 时必须给出 `url`，且目标必须是公网地址。
+- `channel_id`：带上频道后按该频道解析路由，用于验证 `channel_id` 类规则。
+- `proxy_id` 或 `proxy_url`：只测某条线路或某个尚未保存的代理地址。
+- `draft`：直接用草稿配置解析路由，不影响正在运行的配置。
+
+响应会给出实际选中的出口 `proxy_id`、命中原因 `reason`、是否会改写播放列表 `rewrite`、耗时 `dur_ms`，以及是否可达、HTTP 状态与最终地址。代理要求认证时会单独标记出来。
+
+## 常见拓扑
+
+<CardGrid>
+  <Card title="默认直连，个别域走代理" icon="ph:arrow-right">
+    `default = "direct"`，为需要代理的域名加一条 `host_suffix` 规则指向线路。适合大部分源可直连、只有个别源需要绕行的部署。
+  </Card>
+  <Card title="默认代理，个别域直连">
+    `default = "proxy-http"`，再为内网或本地源加一条 `proxy = "direct"` 的规则。局域网上游不必绕出去，也避免代理看到内网地址。
+  </Card>
+  <Card title="容器内 ffmpeg 走宿主代理">
+    线路填宿主机上的 `http://127.0.0.1:7890`，保持 `docker_proxy_host` 为默认值，Kiln 会在注入容器时自动换成可达的主机名。
+  </Card>
+</CardGrid>
+
+配置改动的排查思路与日志字段见 [故障排查](/guide/troubleshooting/)。

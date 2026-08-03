@@ -1,0 +1,189 @@
+---
+title: 媒体引擎
+description: engine 的三种取值、原生 DASH 解密重封装的能力边界、密钥文件、LL-HLS 参数、内存与延迟权衡，以及 ffmpeg 兼容路径。
+sidebar:
+  order: 5
+---
+
+媒体引擎负责把 DASH 上游变成播放器可以直接消费的 HLS。原生引擎在 Kiln 进程内完成解密与重封装，不需要外部进程；ffmpeg 只作为兼容回退存在。
+
+<Aside type="note" title="只作用于 DASH">
+  `[packager].engine` 只决定 DASH 入站的处理方式。`ingress = "hls"` 的频道走播放列表改写与同源分片代理，不经过媒体引擎，参见 [播放](/guide/playback/)。
+</Aside>
+
+## 引擎选择
+
+`[packager].engine` 有三个取值，语义互不重叠：
+
+| 取值 | 行为 |
+| --- | --- |
+| `auto` | 源能被原生引擎处理时走原生；不能处理且允许回退时改用 ffmpeg |
+| `native` | 只用原生引擎。源不被支持时直接失败，不会回退 |
+| `ffmpeg` | 跳过原生规划，始终交给 ffmpeg |
+
+频道级的 `packager` 字段优先于全局 `[packager].engine`，两者都缺省时按 `auto` 处理。镜像通过 `KILN_DEFAULT_PACKAGER_ENGINE` 提供的默认值只在配置里没有写 `[packager].engine` 时生效，显式写出的取值永远优先。
+
+### auto 并不总是回退
+
+`auto` 会在原生规划失败时评估这次失败能否安全交给 ffmpeg，答案是否定时宁可报错也不换引擎：
+
+- 一个源里出现多个 KID 时禁止回退。ffmpeg 路径只接受单个 CENC 密钥，交给它会解出错误的画面，此时返回 `502`。
+- 频道显式选择了字幕轨（`subtitles.mode` 为 `prefer` 或 `only`）时，兼容引擎无法履行这个选择，请求被拒为 `400`。
+- 需要回退但运行环境里没有 ffmpeg 时返回 `503`。Core 与 Lite 镜像不含 ffmpeg，详见 [Core、Full 与 Lite](/guide/variants/)。
+
+`/readyz` 会把这条边界前移：只要存在 `engine` 为 `ffmpeg` 的 DASH 频道而 ffmpeg 不可用，就返回 `503`，避免编排系统把流量导到一个注定失败的实例上。
+
+## 原生引擎
+
+原生引擎读取 MPD，规划轨道，逐段下载、解密并重封装成 CMAF 分片，最后写出 HLS 播放列表。整条链路都在 Go 里完成，不落 ffmpeg，也不依赖任何外部二进制。
+
+### 支持的源形态
+
+| 维度 | 原生引擎支持的范围 |
+| --- | --- |
+| Period | 仅单 Period |
+| 分片寻址 | `SegmentTemplate` 配 `SegmentTimeline`、`SegmentTemplate` 配 `duration`、`SegmentList` |
+| 视频编码 | `avc1`、`avc3`、`hvc1`、`hev1` |
+| 音频编码 | `mp4a` |
+| 字幕编码 | `stpp`（TTML） |
+| 加密方案 | `cenc`、`cbcs`；未加密的源同样可以走原生 |
+| 轨道数量 | 视频最多 8 条，音频最多 16 条，字幕最多 16 条 |
+
+`avc3` 与 `hev1` 需要参数集写在 `avcC` 或 `hvcC` 里；参数集只存在于码流内时这条轨道被判为不支持。ABR 阶梯先按分辨率与帧率去重、每组保留码率最高的一条，超过 8 条时保留最高的 8 条。
+
+### 处理流程
+
+<Steps>
+  <Step title="规划">
+    拉取并规范化 MPD，按 `prefer_height` 与频道的轨道选择生成 ABR 阶梯、音轨列表与字幕轨列表。
+  </Step>
+  <Step title="校验">
+    读取每条轨道的 init 段，比对 manifest 声明的 `default_KID` 与 `tenc` 中的 KID，并确认密钥表里有对应的 key。
+  </Step>
+  <Step title="重封装">
+    逐段下载、在内存中解密、重写为 CMAF 分片；开启 LL-HLS 时同时切出 part。
+  </Step>
+  <Step title="发布">
+    写出多变体播放列表与各轨道的媒体播放列表，附带 `EXT-X-MAP` 与 `EXT-X-PROGRAM-DATE-TIME`。
+  </Step>
+</Steps>
+
+### 不支持时的原因码
+
+规划或校验失败时，日志与频道的 `probe` 结果里会带上一个原因码：
+
+| 原因码 | 含义 | `auto` 是否回退 |
+| --- | --- | --- |
+| `multi_period` | manifest 有多个 Period | 是 |
+| `no_video_representation` | 没有可用的视频表示 | 是 |
+| `no_audio_representation` | 没有可用的音频表示 | 是 |
+| `addressing_unsupported` | 分片寻址方式不在支持范围内 | 是 |
+| `manifest_codec_unsupported` | 编码或轨道形态不被原生支持 | 是 |
+| `manifest_kid_conflicts_with_tenc` | manifest 的 `default_KID` 与 init 段的 `tenc` 不一致 | 是 |
+| `missing_key_for_kid` | 密钥表里没有这个 KID 对应的 key | 是 |
+| `multi_kid_cannot_fall_back` | 源使用多个 KID，交给单密钥的 ffmpeg 会解错 | 否 |
+| `native_start_failed` | 原生启动过程中出现其它错误 | 是 |
+
+init 段本身不合规时还有一组更细的原因码，例如 `not_fragmented_mp4`、`multi_track_init`、`encryption_scheme_unsupported`、`missing_track_kid`、`inband_parameter_sets`、`malformed_media`，含义与名字一致。排查方法见 [故障排查](/guide/troubleshooting/)。
+
+## 密钥文件
+
+所有 DASH 频道共用一份全局密钥目录，由 `[packager].keys_file` 指定：
+
+```text title="kiln.keys"
+# 每行一对，允许用 # 写注释
+0123456789abcdef0123456789abcdef:fedcba9876543210fedcba9876543210
+01234567-89ab-cdef-0123-456789abcdef:00112233445566778899aabbccddeeff
+```
+
+格式规则由解析器强制执行：
+
+- 每行是一个 `kid:key` 对，空行与以 `#` 开头的行被忽略。
+- KID 是 32 位十六进制字符，可以带连字符；key 是 32 位十六进制字符，不允许带连字符。
+- 同一个 KID 重复出现且 key 不同时报错，key 相同则视为重复项忽略。
+- 文件里一个有效条目都没有时报错。
+
+相对路径按 `kiln.toml` 所在目录解析，不是按进程工作目录，因此 Windows 服务模式下把配置和密钥放在同一目录仍然成立。
+
+<Aside type="caution" title="启动时一次性校验">
+  密钥文件在进程启动时被完整读取并逐行校验，任何一行不合法都会让进程拒绝启动，而不是等到某个频道被播放时才失败。修改密钥文件后需要重启才能生效。DASH 频道在没有配置全局密钥文件时会直接判为配置错误。
+</Aside>
+
+key 不会出现在任何管理 API 的响应里，频道级的 `keys` 字段也已经移除，密钥只有一个来源。
+
+## LL-HLS
+
+`[packager].ll_hls` 打开后，原生引擎按低延迟 HLS 发布：播放列表版本升到 9，写出 `EXT-X-PART-INF` 与 `EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES`，并同时启用三种机制。
+
+**CMAF part**：每个分片被切成若干 part，通过 `EXT-X-PART` 暴露，可独立解码的 part 会带上 `INDEPENDENT=YES`；正在生成的下一个 part 通过 `EXT-X-PRELOAD-HINT` 预告。part 时长由 `part_target_ms` 决定，取值范围 100 到 5000，默认 500。
+
+**delta playlist**：播放器带 `_HLS_skip=YES` 或 `_HLS_skip=v2` 请求时，只返回播放列表尾部，前面被省略的段用 `EXT-X-SKIP:SKIPPED-SEGMENTS` 计数。可跳过的边界是目标时长的 6 倍，也就是 `CAN-SKIP-UNTIL` 公告的值。
+
+**blocking reload**：播放器带 `_HLS_msn` 与可选的 `_HLS_part` 请求时，服务端挂起直到对应的媒体序列号或 part 就绪再返回。`_HLS_part` 必须与 `_HLS_msn` 同时出现，超前太多的序列号会被拒绝而不是无限等待。`PART-HOLD-BACK` 公告为 `part_target_ms` 的 2 倍。
+
+相关的播放列表参数：
+
+| 键 | 默认值 | 作用 |
+| --- | ---: | --- |
+| `playlist_size` | `8` | 媒体播放列表保留的分片数 |
+| `part_target_ms` | `500` | 单个 CMAF part 的目标时长，毫秒 |
+| `start_segments` | `3` | 冷启动时先发布的分片数，直播取窗口末尾，点播取开头 |
+| `prefetch_segments` | `3` | 流水线上并发准备的分片数 |
+
+关闭 `ll_hls` 时播放列表回到版本 7，不写 part 相关标签，`part_target_ms` 不再有意义。
+
+## 内存与延迟权衡
+
+原生引擎的峰值内存主要由一个键决定：`inflight_bytes`。它是跨全部频道的分片字节总预算，按字节而不是按分片计数，因为一个 4K 分片可以有几十兆，按分片限制会让内存变成上游码率的函数。
+
+这个预算买到的只有冷启动速度，稳态下每条轨道每次刷新只取一个分片，远远碰不到上限。示例配置里记录了一组实测数据，测试对象是同时运行的一个 4K 频道和一个 1080p 频道，两者都带多条音轨：
+
+| `inflight_bytes` | 常驻内存 | 4K 首个播放列表 |
+| --- | --- | --- |
+| 96 MiB（默认，`100663296`） | 140 到 170 MB | 约 8.6 s |
+| 32 MiB（`33554432`） | 106 到 112 MB | 约 11 s |
+
+常驻内存比首个 4K 播放列表的等待时间更重要时，把它调低。
+
+其余几个键各自守住一条边界：
+
+- `max_segment_bytes`，默认 `33554432`（32 MiB），单个分片的字节上限。它同时和 `inflight_bytes` 一起推导出下载与解密的并发槽数，所以调低它会同时收紧并发。
+- `primary_track_hold_sec`，默认 `12`，音频最多可以领先视频多少媒体秒。这不是 A/V 同步旋钮，它的作用是阻止音轨把播放列表窗口推过一个还卡在视频上的播放器仍然需要的位置。
+- `stall_timeout_sec`，默认 `180`。manifest 一直在更新、却始终没有分片进入播放列表时，判定为自身故障并让这次发布失败，由重启重新规划。上游不可达不算这种情况，会继续重试。设为 `-1` 关闭。
+- `grace_sec`，默认 `30`，分片被移出播放列表之后仍然可以被取用的宽限时间，覆盖播放器读到旧播放列表的窗口。
+
+<Aside type="tip" title="资源自适应会下压这些值">
+  `server.resource_mode` 为 `auto` 或 `constrained` 时，运行时会按实际可用内存与 CPU 收紧 `inflight_bytes`、`max_segment_bytes`、`start_segments` 与 `prefetch_segments`，只下压、不上调。生效值会打印在启动日志里，参见 [运维](/guide/operations/)。
+</Aside>
+
+## ffmpeg 兼容路径
+
+只有原生引擎处理不了、并且这次失败允许回退时才会走到这里。
+
+`[ffmpeg].mode` 决定 ffmpeg 怎么被执行：
+
+- `native`：直接执行本机的 `[ffmpeg].binary`（默认 `ffmpeg`，从 `PATH` 查找）。
+- `docker`：由 Kiln 自己发起 `docker run --rm`，使用 `[ffmpeg].docker_image` 指定的镜像，把工作目录以 bind mount 挂进容器，以非 root 运行，并把出站代理环境变量透传进去。不需要额外写 wrapper 脚本。
+
+其余参数：
+
+| 键 | 默认值 | 作用 |
+| --- | ---: | --- |
+| `hls_time` | `2` | 输出分片的目标时长，秒 |
+| `hls_list_size` | `8` | 输出播放列表保留的分片数 |
+| `prefer_height` | 未设 | 目标分辨率上限，频道级 `prefer_height` 优先 |
+| `low_latency` | `false` | 只在 `hls_list_size` 未给出时决定其默认值，实际部署里通常由 `hls_list_size` 直接决定 |
+| `max_starts` | `1` | 并发启动 ffmpeg 的上限。它不覆盖就绪等待，所以一个慢源不会阻塞其它频道的冷启动 |
+| `log_level` | `error` | 传给 ffmpeg 的日志级别 |
+
+兼容路径的能力明显窄于原生路径：它挑一路视频和一路音频，用 `-c copy` 流复制，输出 MPEG-TS 分片，只使用一个 CENC 密钥，不产出字幕、不做 ABR、也没有 LL-HLS 的 part。把它当作让频道先能播的兜底，而不是等价实现。
+
+<Aside type="caution" title="ffmpeg 的内存不在 Go 预算内">
+  资源自适应给出的是 Go 堆与媒体工作集的软预算。ffmpeg 是独立进程或独立容器，它的内存完全在预算之外。运行在受限档位、同时又可能启动 ffmpeg 时，启动日志会给出一条 advisory 警告。
+</Aside>
+
+## 字幕与时间元数据
+
+**字幕**：原生引擎接收 DASH 的 `stpp` 轨道，也就是分片化的 TTML。每个分片被解析成 cue，裁剪到该分片的时间窗，再输出为带 `X-TIMESTAMP-MAP` 的 WebVTT 分片，播放器侧看到的是标准的 HLS 字幕轨。语言标签会被规范化后写入 `EXT-X-MEDIA`。编码不是 `stpp`、或寻址方式不被支持的文本轨会被跳过，不影响音视频；单个频道最多带 16 条字幕轨。`subtitles.mode` 设为 `off` 可以完全关闭字幕，设为 `prefer` 或 `only` 时只有原生引擎能履行。
+
+**时间元数据**：分片里的 `emsg` 盒会被解析，v0 与 v1 两种版本都支持，v0 的相对时间按分片起始时间换算成绝对呈现时间。scheme 会被分类为 SCTE-35、ID3 或普通 emsg。其中 SCTE-35 的拼接信息被转写成 HLS 的 `EXT-X-DATERANGE`：`CLASS` 固定为 `com.apple.hls.scte35`，按方向写出 `SCTE35-OUT`、`SCTE35-IN` 或 `SCTE35-CMD`，并带上 `PLANNED-DURATION`、`DURATION` 与 `END-DATE`。同一个事件 ID 跨多次刷新观察到的信息会被合并，先看到 out、后看到 in 时自动补出结束时间。ID3 与其它 scheme 目前只做识别，不写成播放列表标签。

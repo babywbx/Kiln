@@ -1,0 +1,651 @@
+---
+title: API 参考
+description: Kiln HTTP API 的凭据模型、错误约定、限流规则与全部已注册路由。
+sidebar:
+  order: 4
+---
+
+Kiln 的完整版二进制共注册 69 条路由，按凭据划分为四类：公开端点、会话或 API Token 端点、仅会话端点、播放端点。本页逐条列出全部路由，包括管理控制台专用、README 概览表未展开的接口。
+
+<Aside type="note" title="版本">
+本页描述完整版（`kiln`）的路由面。Lite 变体（`kiln-lite`）只暴露其中 7 条，详见本页末尾的「Lite 变体」一节。
+</Aside>
+
+## 凭据模型
+
+四种凭据各管一段职责，互不越权。
+
+| 凭据 | 形态 | 传递方式 | 用途 |
+| --- | --- | --- | --- |
+| 无 | 无 | 无 | 健康探针、指标、EPG、台标、登录 |
+| 会话 JWT | Ed25519（EdDSA）签名的 JWT | `Authorization: Bearer <jwt>`；播放端点也接受 `?token=` | 管理控制台与交互式操作 |
+| 管理员 API Token | `kiln_v1_` 前缀加 48 位 base62 字符 | `Authorization: Bearer kiln_v1_...` | 脚本与自动化 |
+| 播放密钥 | `v1` 前缀加 126 位 base62 字符 | 路径式 `/p/{token}/...` | 面向播放器的分发链接 |
+
+### 传递方式
+
+`Authorization: Bearer` 头同时承载会话 JWT 和管理员 API Token。服务端先按 `kiln_v1_` 的形状判定是否为 API Token，形状不匹配时再按会话 JWT 解析，因此不需要额外的头部或参数来区分。
+
+播放端点额外接受两种传递方式：
+
+- 查询参数 `?token=<jwt>`，优先级高于 `Authorization` 头。
+- 路径式 `/p/{token}/`，其中 `{token}` 是播放密钥。此形态不读取任何请求头，链接本身即凭据。
+
+### 会话 JWT
+
+`POST /v1/auth/login` 用用户名和口令换取 JWT。令牌用 Ed25519 签名，带 issuer、audience、`exp`、`iat`、`nbf`、`jti` 与 30 秒时钟容差；有效期由 `auth.token_ttl` 决定，默认 24 小时。令牌中携带 `role` 与 `channels`，并绑定账号的 `auth_revision`：修改登录凭据会使已签发的旧令牌全部失效。
+
+管理端点在鉴权之后还会检查 `role` 必须为 `admin`，非管理员会话访问会得到 403 `forbidden`。
+
+### 管理员 API Token
+
+明文只在创建和轮换时返回一次，服务端仅保存 SHA-256 摘要与显示前缀。Token 有四种权限：
+
+| 权限 | 覆盖动作 |
+| --- | --- |
+| `read` | 读取列表、详情、状态、日志 |
+| `write` | 创建与更新 |
+| `delete` | 删除与撤销 |
+| `refresh` | 探测、预热、预览、刷新、连接测试、结束会话 |
+
+API Token 只能访问**已登记**的路由。登记表共 43 条，就是本页「会话或 API Token 端点」和「管理端点」两节中标注了权限的全部条目。未登记的路由一律拒绝，拒绝原因分为：
+
+| 原因 | 状态码 | 含义 |
+| --- | --- | --- |
+| `revoked` | 401 | Token 已停用或已撤销 |
+| `expired` | 401 | Token 已过期 |
+| `session_required` | 403 | 该路由只认登录会话 |
+| `route_not_available` | 403 | 该路由未登记给 API Token |
+| `missing_scope` | 403 | Token 缺少该路由所需权限 |
+
+无论放行还是拒绝，每次 API Token 请求都会写入审计日志，可通过 `GET /v1/admin/api-token-logs` 查看。
+
+### 播放密钥
+
+播放密钥在管理控制台的「播放访问控制」中创建，可限定频道范围（`all` 或指定频道 ID 列表），可设置有效期、随时撤销。每次通过 `/p/{token}/` 取用都会写入播放访问日志。密钥前 10 个字符作为显示前缀，日志与请求日志中的路径只保留该前缀。
+
+## 通用约定
+
+### 错误响应
+
+所有错误使用统一的 JSON 形态：
+
+```json
+{
+  "error": {
+    "code": "invalid_request",
+    "message": "invalid json body"
+  }
+}
+```
+
+`code` 是稳定的机器可读标识，`message` 面向人。内部错误不会泄露原因，`message` 一律为 `internal server error`。
+
+| `code` | 典型状态码 | 场景 |
+| --- | --- | --- |
+| `invalid_request` | 400 | 请求体、参数或字段校验失败 |
+| `unauthorized` | 401 | 缺少、无效或过期的凭据 |
+| `forbidden` | 403 | 凭据有效但无权访问 |
+| `not_found` | 404 / 410 | 资源不存在或会话已消失 |
+| `conflict` | 409 | 乐观并发冲突或状态冲突 |
+| `upstream_error` | 502 | 上游拉取或探测失败 |
+| `unavailable` | 503 | 媒体分片暂未就绪 |
+| `not_ready` | 502 / 503 | 播放列表或兼容引擎尚未就绪 |
+| `too_many_requests` | 429 | 触发限流 |
+| `internal` | 500 | 服务端内部错误 |
+| `current_password_invalid` | 422 | 修改凭据时当前口令不正确 |
+| `username_taken` | 409 | 目标用户名已被占用 |
+
+### 请求与响应头
+
+每个响应都带 `X-Request-ID`。请求携带该头时原样回显，否则由服务端生成。此外统一附加 `X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`、`X-Frame-Options: DENY`、`Content-Security-Policy` 与 `Cache-Control: no-store, no-cache, must-revalidate`。
+
+`OPTIONS` 请求直接返回 204。跨域头按 `security.cors_origins` 配置附加，未配置时不下发任何 CORS 头。配置了 `security.public_hosts` 时，`Host` 不在白名单内的请求返回 403 `forbidden`；来自回环地址的 `/healthz` 与 `/readyz` 不受此限制。
+
+### 乐观并发
+
+需要并发安全的资源使用修订号加 `If-Match` 头。`GET /v1/admin/channels/{id}` 会在 `ETag` 中返回当前修订号，其余资源的修订号包含在响应体的 `revision` 字段中。修订号不匹配时返回 409 `conflict`。
+
+| 端点 | `If-Match` |
+| --- | --- |
+| `PUT`、`DELETE /v1/admin/settings`、`/v1/admin/egress` 及其 `proxies`、`rules` 子资源 | 必填，缺失即 409 |
+| `PUT`、`DELETE /v1/admin/epg/sources/{id}` | 必填，缺失返回 428（预设源的删除除外） |
+| `/v1/admin/api-tokens/{id}` 的更新、轮换、撤销、删除 | 必填，缺失即 409 |
+| `POST`、`PUT`、`DELETE /v1/admin/channels` 系列 | 可选，提供则校验 |
+| `/v1/admin/access-tokens/{id}` 的撤销与删除 | 可选，提供则校验 |
+| `PUT /v1/admin/channels/reorder` | 用请求体中的 `revisions` 映射代替，缺失即 409 |
+
+### 限流
+
+`POST /v1/auth/login` 按客户端 IP 限流，窗口为 1 分钟，配额由 `auth.login_rate_per_min` 决定，默认每分钟 20 次。超出返回 429 `too_many_requests`。
+
+`PUT /v1/me/credentials` 共用同一限流器，配额按「用户名加客户端 IP」独立计算。
+
+## 公开端点
+
+无需任何凭据。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/` | 服务信息，同时是未匹配 GET 路径的兜底 |
+| `GET` | `/healthz` | 存活探针 |
+| `GET` | `/readyz` | 就绪探针 |
+| `GET` | `/metrics` | Prometheus 指标 |
+| `GET` | `/admin`、`/admin/` | 管理控制台静态资源 |
+| `POST` | `/v1/auth/login` | 登录换取会话 JWT（限流） |
+| `GET` | `/v1/epg.xml` | XMLTV 节目单 |
+| `GET` | `/v1/epg.xml.gz` | gzip 压缩的 XMLTV 节目单 |
+| `GET` | `/v1/logo/{id}` | 频道台标 |
+
+### `GET /`
+
+`Accept` 含 `text/html` 时 302 跳转到 `/admin`，否则返回 JSON：
+
+```json
+{ "name": "kiln", "version": "1.0.0", "commit": "dev", "admin": "/admin" }
+```
+
+该模式同时兜底所有未匹配的 GET 路径，此时返回 404 `not_found`。
+
+### `GET /healthz`
+
+始终返回 `{"status":"ok"}`。
+
+### `GET /readyz`
+
+存在 DASH 入流且该频道解析到 FFmpeg 兼容引擎时，会检查 ffmpeg 是否可用；不可用返回 503 `not_ready`。其余情况返回 `{"status":"ready"}`。
+
+### `GET /metrics`
+
+`observe.enabled` 为 `false` 时返回 404。启用时返回 `text/plain; version=0.0.4` 的 Prometheus 文本。
+
+### `GET /admin`、`GET /admin/`
+
+返回内嵌的管理控制台。`/admin/assets/` 下的静态资源支持 gzip 协商与 `ETag` 条件请求。
+
+### `POST /v1/auth/login`
+
+请求体，多余字段会被拒绝：
+
+```json
+{ "username": "admin", "password": "..." }
+```
+
+成功返回 200：
+
+```json
+{
+  "token": "...",
+  "expires_at": "2026-01-01T00:00:00Z",
+  "username": "admin",
+  "role": "admin"
+}
+```
+
+用户名或口令错误返回 401 `unauthorized`。
+
+### `GET /v1/epg.xml`、`GET /v1/epg.xml.gz`
+
+返回全部频道的 XMLTV 节目单，压缩变体的 `Content-Type` 为 `application/gzip`。未配置任何 EPG 源时返回结构完整但内容为空的文档。关闭 EPG 缓存时，每次请求会先触发一次按需刷新。
+
+### `GET /v1/logo/{id}`
+
+按频道的 EPG 名称（缺失时用标题）依次尝试内置候选源获取台标，成功返回图片字节，并带 `Cache-Control: public, max-age=3600, stale-if-error=86400` 与 `X-Kiln-Logo-Source`。全部候选源失败返回 502 `upstream_error`。
+
+## 会话或 API Token 端点
+
+登录会话或带相应权限的管理员 API Token 均可访问，不要求管理员角色。
+
+| 方法 | 路径 | 权限 | 说明 |
+| --- | --- | --- | --- |
+| `GET` | `/v1/me` | `read` | 当前凭据信息 |
+| `GET` | `/v1/channels` | `read` | 可见频道列表 |
+| `GET` | `/v1/status` | `read` | 运行状态快照 |
+
+### `GET /v1/me`
+
+```json
+{
+  "username": "admin",
+  "role": "admin",
+  "channel_ids": [],
+  "credential": "session",
+  "scopes": null
+}
+```
+
+`credential` 取值为 `session` 或 `api_token`。使用 API Token 时，`username` 是 Token 名称，`scopes` 是该 Token 的权限列表。
+
+### `GET /v1/channels`
+
+返回 `{"channels": [...]}`。每个元素包含 `id`、`title`、`group`、`logo_url`、`epg_id`、`epg_name`、`epg_source`、`ingress`、`on_demand`、`autostart`、`source_url`、`upstream`、`path`、`disabled`、`prefer_height`、`preferred_audio_languages`、`sort_order`、`revision`、`play_url`。
+
+非管理员会话且带频道范围限制时，结果按 `channels` 声明过滤。
+
+### `GET /v1/status`
+
+返回 `uptime_sec`、`bytes_in`、`bytes_out`、`requests`、`errors`、`goroutines`、`session_count` 与 `sessions` 数组。每个会话含 `channel_id`、`mode`、`engine`、`pack_mode`、`fallback_reason`、`started_at`、`last_touch`、`state`、`errors`、`last_error`，以及可选的 `packager` 计数块。
+
+非管理员会话且带频道范围限制时，`sessions` 与 `session_count` 按范围过滤。
+
+## 仅会话端点
+
+只接受登录会话。管理员 API Token 访问这些路由会被拒绝，其中 `/v1/me/credentials`、`/v1/admin/api-tokens/*` 与 `/v1/admin/api-token-logs` 的拒绝原因为 `session_required`，`/v1/playlist.m3u` 的拒绝原因为 `route_not_available`。这道边界保证 Token 无法自我提权。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/v1/playlist.m3u` | 带会话令牌的播放列表 |
+| `PUT` | `/v1/me/credentials` | 修改登录凭据 |
+| `GET` | `/v1/admin/api-tokens` | 列出管理员 API Token |
+| `POST` | `/v1/admin/api-tokens` | 创建管理员 API Token |
+| `PUT` | `/v1/admin/api-tokens/{id}` | 更新名称、备注、权限、启用状态、有效期 |
+| `POST` | `/v1/admin/api-tokens/{id}/rotate` | 轮换明文 |
+| `POST` | `/v1/admin/api-tokens/{id}/revoke` | 撤销 |
+| `DELETE` | `/v1/admin/api-tokens/{id}` | 删除 |
+| `GET` | `/v1/admin/api-token-logs` | Token 审计日志 |
+
+### `GET /v1/playlist.m3u`
+
+返回 `application/vnd.apple.mpegurl`，播放地址前缀为 `/v1/play/`，并把请求所用的会话令牌拼进每条播放地址。配置了 EPG 源时，播放列表头部带 `x-tvg-url` 指向 `/v1/epg.xml.gz`。
+
+### `PUT /v1/me/credentials`
+
+要求管理员会话。请求体，多余字段会被拒绝：
+
+```json
+{
+  "current_password": "...",
+  "username": "newname",
+  "new_password": "..."
+}
+```
+
+`username` 与 `new_password` 至少提供一个，新口令长度为 8 至 72 字节，用户名不超过 64 个字符且不含控制字符。成功返回与登录相同的结构，即一枚全新的会话令牌；旧令牌立即失效。当前口令错误返回 422 `current_password_invalid`，用户名被占用返回 409 `username_taken`。
+
+### `GET /v1/admin/api-tokens`
+
+```json
+{
+  "tokens": [
+    {
+      "id": "...",
+      "name": "ci",
+      "token_prefix": "kiln_v1_ab12cd34",
+      "scopes": ["read", "write"],
+      "enabled": true,
+      "created_by": "admin",
+      "created_at": 0,
+      "expires_at": 0,
+      "last_used_at": 0,
+      "revision": 1,
+      "updated_at": 0
+    }
+  ],
+  "available_scopes": ["read", "write", "delete", "refresh"]
+}
+```
+
+### `POST /v1/admin/api-tokens`
+
+请求体 `{ "name": "ci", "note": "", "scopes": ["read"], "expires_in_sec": 0 }`。`name` 必填，`expires_in_sec` 为 0 表示永不过期，上限 10 年，至少要授予一项权限。返回 201：
+
+```json
+{
+  "token": "kiln_v1_...",
+  "credential": { "id": "...", "token_prefix": "kiln_v1_ab12cd34" },
+  "warning": "store this token now; it will not be shown again"
+}
+```
+
+### `PUT /v1/admin/api-tokens/{id}`
+
+请求体字段均可选：`name`、`note`、`scopes`、`enabled`、`expires_at`。返回 `{"credential": {...}}`。
+
+### `POST /v1/admin/api-tokens/{id}/rotate`
+
+生成新明文并作废旧明文，返回结构与创建一致。
+
+### `POST /v1/admin/api-tokens/{id}/revoke`
+
+返回 `{"ok": true}`。
+
+### `DELETE /v1/admin/api-tokens/{id}`
+
+返回 204，无响应体。
+
+### `GET /v1/admin/api-token-logs`
+
+返回最近 100 条审计记录：
+
+```json
+{
+  "logs": [
+    {
+      "id": 1,
+      "token_id": "...",
+      "token_prefix": "kiln_v1_ab12cd34",
+      "method": "GET",
+      "path": "/v1/admin/channels",
+      "required_scope": "read",
+      "decision": "allow",
+      "status": 200,
+      "remote": "127.0.0.1",
+      "user_agent": "curl/8",
+      "request_id": "...",
+      "created_at": 0
+    }
+  ]
+}
+```
+
+被拒绝的记录额外带 `reason` 字段。
+
+## 播放端点
+
+播放端点有两条并行的路径族：面向会话与预览令牌的 `/v1/play/`，以及面向播放密钥的 `/p/{token}/`。两者的三种文件形态一一对应。
+
+| 方法 | 路径 | 凭据 | 说明 |
+| --- | --- | --- | --- |
+| `GET` | `/v1/play/{id}/index.m3u8` | 会话或预览令牌 | 频道主播放列表 |
+| `GET` | `/v1/play/{id}/live/{file}` | 会话或预览令牌 | 本地封装产物：媒体播放列表、分片、CMAF part |
+| `GET` | `/v1/play/{id}/u/{upstream}` | 会话或预览令牌 | 已签名的上游回源代理 |
+| `GET` | `/p/{token}/playlist.m3u` | 路径内的播放密钥 | 该密钥范围内的播放列表 |
+| `GET` | `/p/{token}/play/{id}/index.m3u8` | 路径内的播放密钥 | 频道主播放列表 |
+| `GET` | `/p/{token}/play/{id}/live/{file}` | 路径内的播放密钥 | 本地封装产物 |
+| `GET` | `/p/{token}/play/{id}/u/{upstream}` | 路径内的播放密钥 | 已签名的上游回源代理 |
+
+### 三种文件形态
+
+- `index.m3u8` 是入口。HLS 入流会拉取上游播放列表并改写地址；DASH 入流返回本地封装出的主播放列表。
+- `live/{file}` 提供本地封装产物，文件名不允许包含路径分隔符。发布代次变化时会带 `g` 查询参数做 307 跳转，代次已失效返回 410 并带 `Retry-After`。低延迟场景下 `_HLS_msn`、`_HLS_part`、`_HLS_skip` 指令会被解析并阻塞等待，最长 15 秒。不可变分片带 `Cache-Control: private, max-age=31536000, immutable`。
+- `u/{upstream}` 是上游回源代理。目标地址经过编码并附带 HMAC 签名 `sig`，签名不匹配返回 403；目标主机还要通过出站白名单校验。返回内容为播放列表时会继续改写，否则原样透传。
+
+### 鉴权行为
+
+`/v1/play/` 系列是否要求凭据由 `security.play_require_auth` 决定，默认要求。凭据可以是 `?token=` 查询参数或 `Authorization: Bearer` 头，两者都接受会话 JWT 与预览令牌。预览令牌只在 `POST /v1/admin/channels/{id}/preview` 签发，有效期 5 分钟，仅限单个频道，且不能用于任何非播放端点。
+
+`/p/{token}/` 系列始终校验路径内的播放密钥，与 `security.play_require_auth` 无关。密钥无效、停用、已撤销或已过期返回 401 `unauthorized`；密钥有效但频道不在范围内返回 403 `forbidden`。
+
+### 观众数限制
+
+频道设置了 `max_viewers` 时，首次访问 `index.m3u8` 会签发一枚带签名的观众租约，并 307 跳转到带 `viewer` 查询参数的同一地址。后续请求携带该参数续租，租约签名不匹配返回 403，超出上限由会话层拒绝。
+
+## 管理端点
+
+以下路由全部位于 `/v1/admin` 之下，要求管理员角色。会话与管理员 API Token 均可访问，Token 需要表中标注的权限。
+
+### 频道
+
+| 方法 | 路径 | 权限 | 说明 |
+| --- | --- | --- | --- |
+| `GET` | `/v1/admin/channels` | `read` | 列出全部频道，含已停用 |
+| `GET` | `/v1/admin/channels/{id}` | `read` | 频道详情，响应带 `ETag` |
+| `POST` | `/v1/admin/channels` | `write` | 新建频道 |
+| `PUT` | `/v1/admin/channels/{id}` | `write` | 更新频道 |
+| `DELETE` | `/v1/admin/channels/{id}` | `delete` | 删除频道 |
+| `POST` | `/v1/admin/channels/enable-all` | `write` | 批量启用 |
+| `POST` | `/v1/admin/channels/disable-all` | `write` | 批量停用 |
+| `PUT` | `/v1/admin/channels/reorder` | `write` | 调整排序 |
+
+`GET /v1/admin/channels` 返回 `{"channels": [...]}`，字段与 `GET /v1/channels` 相同。
+
+`GET /v1/admin/channels/{id}` 返回：
+
+```json
+{
+  "channel": { "id": "demo-hls", "title": "Demo HLS" },
+  "egress_binding": { "mode": "auto" },
+  "effective_user_agent": "Kiln/1.0.0",
+  "revision": 3,
+  "updated_at": 0
+}
+```
+
+敏感请求头（`authorization`、`proxy-authorization`、`cookie`，以及名称含 `token`、`secret`、`api-key` 的头）在响应中被置空。写回时留空即保留原值。`egress_binding.mode` 取值为 `auto`、`direct` 或 `profile`，后者附带 `profile_id`。
+
+`POST`、`PUT` 的请求体是频道对象，可附加 `egress` 子对象：
+
+```json
+{
+  "id": "demo-hls",
+  "title": "Demo HLS",
+  "ingress": "hls",
+  "source_url": "https://example.com/live/index.m3u8",
+  "egress": { "mode": "profile", "profile_id": "eu-1" }
+}
+```
+
+`egress.new_proxy` 可以在同一次请求中快速新建代理线路，但不能与既有 `profile_id` 同时使用。返回 `{"ok": true, "id": "demo-hls", "egress_profile_id": "..."}`。修订号不匹配返回 409，校验失败返回 400。
+
+`enable-all` 与 `disable-all` 返回 `{"ok": true, "changed": 12, "channel_ids": [...]}`。
+
+`reorder` 的请求体是 `{"ids": [...], "revisions": {"demo-hls": 3}}`，两者都必填。
+
+### 会话、探测与预览
+
+| 方法 | 路径 | 权限 | 说明 |
+| --- | --- | --- | --- |
+| `POST` | `/v1/admin/channels/{id}/probe` | `refresh` | 探测已保存频道的源 |
+| `POST` | `/v1/admin/source-probes` | `refresh` | 探测尚未保存的频道草稿 |
+| `POST` | `/v1/admin/channels/{id}/warmup` | `refresh` | 预热频道会话 |
+| `POST` | `/v1/admin/channels/{id}/preview` | `refresh` | 签发预览播放地址 |
+| `DELETE` | `/v1/admin/sessions/{id}` | `refresh` | 结束频道会话 |
+
+非 DASH 频道的探测返回 `{"ok": true, "status": 200, "content_type": "...", "final_url": "...", "dur_ms": 42}`，`source-probes` 额外返回 `proxy_id`。返回的 URL 会去掉用户名、口令与查询串。
+
+DASH 频道的探测返回 `{"ok": true, "dur_ms": 1200, "inspection": {...}}`，`inspection` 是清单检查结果，包含原生引擎是否支持、建议引擎与兼容性原因。未配置全局媒体密钥时返回 400。
+
+`source-probes` 的请求体与频道写入相同，可带 `egress` 指定本次探测走的线路，用于保存前验证连通性。
+
+`warmup` 返回 202 `{"state": "starting"}`。
+
+`preview` 返回 201：
+
+```json
+{
+  "play_url": "https://kiln.example.com/v1/play/demo-hls/index.m3u8?token=...",
+  "expires_at": "2026-01-01T00:05:00Z"
+}
+```
+
+`DELETE /v1/admin/sessions/{id}` 返回 204。
+
+### EPG
+
+| 方法 | 路径 | 权限 | 说明 |
+| --- | --- | --- | --- |
+| `GET` | `/v1/admin/epg/presets` | `read` | 内置源预设 |
+| `GET` | `/v1/admin/epg/sources` | `read` | 已配置的源与运行状态 |
+| `POST` | `/v1/admin/epg/sources` | `write` | 新增源 |
+| `PUT` | `/v1/admin/epg/sources/{id}` | `write` | 更新源 |
+| `DELETE` | `/v1/admin/epg/sources/{id}` | `delete` | 删除源，预设源改为隐藏 |
+| `GET` | `/v1/admin/epg/matches` | `read` | 频道与节目单的匹配结果 |
+| `POST` | `/v1/admin/epg/refresh` | `refresh` | 立即刷新全部启用的源 |
+
+`GET /v1/admin/epg/sources` 返回 `{"sources": [...], "statuses": [...]}`。`sources` 中每项为 `{"source": {...}, "enabled": true, "revision": 1, "updated_at": 0}`；`statuses` 每项含 `source_id`、`last_attempt`、`last_success`、`stale`、`error`、`channel_count`、`programme_count`、`available` 与 `metadata`。
+
+源的写入体为 `{"id": "...", "name": "...", "url": "...", "timezone": "...", "proxy": "direct", "enabled": true}`，多余字段会被拒绝。`id` 必填；URL 必须是 http 或 https；`timezone` 必须是有效的 IANA 时区；`proxy` 为 `auto` 或某条已配置线路的 ID，缺省为 `direct`。预设源可只提交覆盖字段，其余回落到预设值。创建返回 201、更新返回 200，都带 `{"ok": true, "source": {...}}`。
+
+`GET /v1/admin/epg/matches` 返回 `{"matches": [...]}`，每项含 `channel_id`、`status`，以及可选的 `match`、`candidates`、`logo_candidates`。
+
+`POST /v1/admin/epg/refresh` 在没有任何启用源时返回 409，否则返回 `{"ok": true, "statuses": [...]}`。部分源失败时 `ok` 为 `false`，逐源结果见 `statuses`。
+
+### 上游
+
+| 方法 | 路径 | 权限 | 说明 |
+| --- | --- | --- | --- |
+| `GET` | `/v1/admin/upstreams` | `read` | 列出配置文件中定义的上游 |
+
+返回 `{"upstreams": [{"id": "main", "base_url": "https://example.com/live"}]}`。
+
+### 播放密钥
+
+| 方法 | 路径 | 权限 | 说明 |
+| --- | --- | --- | --- |
+| `GET` | `/v1/admin/access-tokens` | `read` | 列出播放密钥 |
+| `POST` | `/v1/admin/access-tokens` | `write` | 创建播放密钥 |
+| `POST` | `/v1/admin/access-tokens/{id}/revoke` | `delete` | 撤销 |
+| `DELETE` | `/v1/admin/access-tokens/{id}` | `delete` | 删除 |
+
+列表返回 `{"access_tokens": [...]}`，每项含 `id`、`name`、`token_prefix`、`scope`、`enabled`、`note`、`created_at`、`last_used_at`、`revoked_at`、`expires_at`、`revision`，不含明文。
+
+创建的请求体为 `{"name": "...", "note": "...", "channel_ids": ["demo-hls"], "expires_in_sec": 0}`。`channel_ids` 为空表示全部频道，`expires_in_sec` 为 0 表示永不过期，上限 10 年。返回 201：
+
+```json
+{
+  "id": "...",
+  "name": "living-room",
+  "token": "v1...",
+  "token_prefix": "v1AbCdEfGh",
+  "scope": "...",
+  "playlist_url": "https://kiln.example.com/p/v1.../playlist.m3u",
+  "created_at": 0,
+  "expires_at": 0,
+  "warning": "store this token now; it will not be shown again"
+}
+```
+
+撤销与删除均返回 `{"ok": true}`。
+
+### 播放访问日志
+
+| 方法 | 路径 | 权限 | 说明 |
+| --- | --- | --- | --- |
+| `GET` | `/v1/admin/access-logs` | `read` | 查询播放访问日志 |
+| `DELETE` | `/v1/admin/access-logs` | `delete` | 清空播放访问日志 |
+
+查询支持 `limit` 与 `token_id` 两个参数，返回 `{"access_logs": [...]}`，每条含 `id`、`token_id`、`token_prefix`、`path`、`channel_id`、`status`、`remote`、`created_at`。路径中的密钥已被截断为显示前缀。清空返回 `{"deleted": 128}`。
+
+日志按 `access_log_retention_days` 设置自动清理，缺省保留 30 天。
+
+### 设置
+
+| 方法 | 路径 | 权限 | 说明 |
+| --- | --- | --- | --- |
+| `GET` | `/v1/admin/settings` | `read` | 读取运行时设置 |
+| `PUT` | `/v1/admin/settings` | `write` | 写入运行时设置 |
+
+读取返回配置文件中的 `listen`、`cors_origins`、`public_hosts`、`play_require_auth`，加上可在运行时修改的 `public_base_url`、`access_log_retention_days` 与当前 `revision`。
+
+写入的请求体为 `{"public_base_url": "https://kiln.example.com", "access_log_retention_days": "30"}`，两个字段都是字符串，保留天数取值范围为 1 至 3650。必须携带 `If-Match`，缺失返回 409。
+
+### 导入与导出
+
+| 方法 | 路径 | 权限 | 说明 |
+| --- | --- | --- | --- |
+| `POST` | `/v1/admin/import/m3u` | `write` | 预览或应用 M3U 导入 |
+| `POST` | `/v1/admin/exports/m3u` | `write` | 导出播放列表文件 |
+
+导入的请求体为 `{"content": "#EXTM3U...", "apply": false, "revisions": {}}`。`apply` 为 `false` 时只做解析预览，为 `true` 时写入，此时需要在 `revisions` 中带上预览阶段拿到的频道修订号。返回 `{"preview": true, "count": 30, "created": 12, "updated": 3, "skipped": 15, "entries": [...]}`。任一频道在预览之后被改动过则返回 409。
+
+导出返回 201，`Content-Type` 为 `application/vnd.apple.mpegurl`，`Content-Disposition` 为 `attachment; filename="kiln-playlist.m3u"`。导出会自动创建一枚名为 `M3U export` 的播放密钥并写进播放地址，不会泄露会话令牌或管理员 Token。
+
+### 出站网络
+
+| 方法 | 路径 | 权限 | 说明 |
+| --- | --- | --- | --- |
+| `GET` | `/v1/admin/egress` | `read` | 读取出站配置 |
+| `PUT` | `/v1/admin/egress` | `write` | 整体替换出站配置 |
+| `POST` | `/v1/admin/egress/proxies` | `write` | 新建代理线路 |
+| `PUT` | `/v1/admin/egress/proxies/{id}` | `write` | 更新代理线路 |
+| `DELETE` | `/v1/admin/egress/proxies/{id}` | `delete` | 删除代理线路 |
+| `POST` | `/v1/admin/egress/rules` | `write` | 新建路由规则 |
+| `PUT` | `/v1/admin/egress/rules/{id}` | `write` | 更新路由规则 |
+| `DELETE` | `/v1/admin/egress/rules/{id}` | `delete` | 删除路由规则 |
+| `POST` | `/v1/admin/egress/test` | `refresh` | 连通性测试 |
+
+读取返回：
+
+```json
+{
+  "default": "direct",
+  "playlist_policy": "rewrite",
+  "docker_proxy_host": "host.docker.internal",
+  "proxies": [
+    {
+      "id": "eu-1",
+      "name": "eu-1",
+      "url": "http://proxy.example.com",
+      "disabled": false,
+      "credential_configured": true,
+      "revision": 2
+    }
+  ],
+  "rules": [],
+  "source": "sqlite",
+  "revision": 5
+}
+```
+
+代理地址在响应中只保留协议与主机，凭据是否配置由 `credential_configured` 表示。写入时若地址的协议与主机未变且未带凭据，已保存的凭据会被保留。
+
+代理线路要求 `id` 与 `url`，协议限 `http`、`https`、`socks5`、`socks5h`，`id` 不能是保留值 `direct`。路由规则的 `kind` 取值为 `host_suffix`、`host_exact`、`channel`、`host_regex`、`url_regex`，正则类会在写入前编译校验；规则不能引用不存在或已停用的线路。`playlist_policy` 取值为 `rewrite`、`passthrough`、`auto`。删除线路时引用它的规则一并移除，默认线路回落为 `direct`。
+
+单条增删改在服务端读取当前配置、套用改动、整体校验后写回，因此同样受 `If-Match` 保护。
+
+连通性测试的请求体：
+
+```json
+{
+  "target": "custom",
+  "url": "https://example.com/live/index.m3u8",
+  "channel_id": "demo-hls",
+  "proxy_id": "eu-1"
+}
+```
+
+`target` 取 `bing` 时使用内置公网探测地址，取 `source` 或 `custom` 时必须提供 `url` 且目标必须是公网地址，缺省在没有 `url` 时按内置地址处理。`proxy_url` 可以直接测试一条尚未保存的线路，`draft` 可以整体测试一份尚未保存的配置草稿。响应始终是 200，结果在字段里：
+
+```json
+{
+  "ok": true,
+  "reachable": true,
+  "outcome": "success",
+  "status": 200,
+  "proxy_id": "eu-1",
+  "via_proxy": "eu-1",
+  "reason": "rule:eu",
+  "rewrite": true,
+  "final_url": "https://example.com/live/index.m3u8",
+  "dur_ms": 180,
+  "target": "custom"
+}
+```
+
+失败时 `ok` 为 `false`，`outcome` 取值为 `blocked`、`dns`、`timeout`、`tls`、`proxy`、`proxy_auth`、`http_error` 或 `network`，并附 `error` 描述。
+
+## Lite 变体
+
+Lite 二进制只注册 7 条路由，没有管理控制台、管理 API、EPG、指标与路径式播放密钥。频道来自配置文件的静态目录，不使用 SQLite。
+
+| 方法 | 路径 | 凭据 |
+| --- | --- | --- |
+| `GET` | `/healthz` | 无 |
+| `GET` | `/readyz` | 无 |
+| `POST` | `/v1/auth/login` | 无（限流） |
+| `GET` | `/v1/playlist.m3u` | 会话令牌 |
+| `GET` | `/v1/play/{id}/index.m3u8` | 会话令牌 |
+| `GET` | `/v1/play/{id}/live/{file}` | 会话令牌 |
+| `GET` | `/v1/play/{id}/u/{upstream}` | 会话令牌 |
+
+差异要点：
+
+- `/readyz` 恒定返回就绪，不做兼容引擎检查。
+- `/v1/playlist.m3u` 走播放鉴权而非会话鉴权，因此受 `security.play_require_auth` 控制，凭据可用 `Authorization: Bearer` 头或 `?token=` 查询参数。
+- 错误响应格式与完整版一致。
+- 响应头只设置 `X-Content-Type-Options`、`Referrer-Policy`、`Cache-Control` 与 CORS，没有 `X-Request-ID`、CSP 与 `X-Frame-Options`。
+- 主机白名单校验与 `OPTIONS` 处理与完整版相同。
+
+## 相关阅读
+
+<CardGrid>
+  <Card title="鉴权与凭据" icon="ph:key">
+    凭据模型的完整说明与运维建议，见 [鉴权](/guide/auth/)。
+  </Card>
+  <Card title="配置项" icon="ph:sliders">
+    `auth`、`security`、`egress` 等段落的取值，见 [配置参考](/reference/config/)。
+  </Card>
+  <Card title="命令行" icon="ph:terminal">
+    二进制的启动参数与辅助脚本，见 [命令行](/reference/cli/)。
+  </Card>
+</CardGrid>

@@ -1,0 +1,356 @@
+---
+title: Operations
+description: Running Kiln for the long haul, covering systemd and Windows services, the data directory and backups, upgrades, logging, health checks, metrics, OTLP tracing, pprof, and resource adaptation.
+sidebar:
+  order: 10
+---
+
+This page covers everything that happens after Kiln is up: wiring it into the init system, knowing what lives in the data directory and how to back it up, upgrading safely, and configuring logs, health checks, metrics, traces, and the resource adaptation layer.
+
+## Running as a service
+
+### systemd
+
+Passing `--service` to the install script registers a systemd unit and enables it at boot. This step needs root and only works on Linux with systemd available.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh -o /tmp/kiln-install.sh
+sudo sh /tmp/kiln-install.sh --yes --service
+```
+
+The script provisions a dedicated system account first. If the `kiln` user does not exist, it creates one with `useradd -r -U` using a non-login shell (`nologin` or `/bin/false`) and `/var/lib/kiln` as its home, then creates `/etc/kiln` and `/var/lib/kiln` and chowns the latter to that account. The generated unit:
+
+```ini title="/etc/systemd/system/kiln.service"
+[Unit]
+Description=Kiln
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=kiln
+Group=kiln
+ExecStart=/usr/local/bin/kiln -config /etc/kiln/kiln.toml
+WorkingDirectory=/var/lib/kiln
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/kiln
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Four directives carry the hardening. `NoNewPrivileges=true` closes off privilege escalation. `ProtectSystem=strict` makes the entire filesystem read-only to the process, with `ReadWritePaths=/var/lib/kiln` carving out the single writable directory. `ProtectHome=true` hides every home directory. `PrivateTmp=true` gives the process its own temp namespace. Because of `ProtectSystem=strict`, `data_dir` has to live under `/var/lib/kiln`. Pointing it anywhere else fails at startup.
+
+<Aside type="note" title="Install directory restrictions">
+  `--service` refuses relative install paths, paths containing spaces, and anything under `/home`, `/root`, `/tmp`, or `/var/tmp`. The default target is `/usr/local/bin`.
+</Aside>
+
+`ExecStart` hardcodes the absolute path to the config file. As its last step the script enables and starts the unit if `/etc/kiln/kiln.toml` already exists; otherwise it installs the unit, leaves it disabled, and tells you to create the config first. If you configured Kiln after installing, one command closes the gap:
+
+```bash
+sudo systemctl enable --now kiln
+sudo systemctl status kiln
+sudo journalctl -u kiln -f
+```
+
+To remove the service:
+
+```bash
+sudo systemctl disable --now kiln
+sudo rm /etc/systemd/system/kiln.service
+sudo systemctl daemon-reload
+```
+
+The install script's `--uninstall` also stops and removes the service, but it deliberately keeps the config under `/etc/kiln` and the data under `/var/lib/kiln`.
+
+### Windows service
+
+On Windows the built-in `kiln.exe service` subcommands register the service, so no external supervisor is needed. Installation, removal, and log locations are covered in [Binary deployment](/en/start/binary/).
+
+## Data directory and backups
+
+`server.data_dir` defaults to `./data` and relative paths resolve against the process working directory. The systemd unit sets `WorkingDirectory=/var/lib/kiln`, and the Windows service switches its working directory to the config file's directory, so `./data` lands somewhere predictable in both cases. The directory itself is created with mode `0750`.
+
+| Path | Contents | Back up |
+| --- | --- | --- |
+| `kiln.db` | SQLite main database: channels, user overrides, EPG sources, proxy profiles, access tokens, audit logs. Mode `0600` | Yes |
+| `kiln.db-wal`, `kiln.db-shm` | WAL and shared-memory sidecars, also restricted to `0600` | With the main file |
+| `auth/ed25519.pem` | Ed25519 private key for session JWTs. Generated automatically when no key is injected via config or environment | Yes |
+| `auth/ed25519.pub.pem` | Matching public key, written alongside the private key | Yes |
+| `epg/` | EPG disk cache, used when `epg.cache_dir` is empty | No, refetchable |
+| `sessions/<channel-id>/<generation>/` | Per-session media working directory, further split into `native/` and `ffmpeg/` | No, rebuilt on start |
+
+The simplest backup is to stop the process and copy the whole directory. For an online copy, always include `kiln.db-wal`, because grabbing only the main file loses everything not yet checkpointed. You can skip `sessions/` entirely; it is wiped and rebuilt whenever a session starts.
+
+<Aside type="caution" title="Losing the signing key">
+  If `auth/ed25519.pem` is lost or regenerated, every issued session JWT becomes invalid immediately and both the admin UI and player clients have to log in again. To share one credential set across instances, inject the key explicitly with `auth.token_private_key_file` or `KILN_TOKEN_PRIVATE_KEY_FILE` instead of relying on auto-generation.
+</Aside>
+
+The media decryption keys in `packager.keys_file` live outside `data_dir`. Relative paths there resolve against the directory containing `kiln.toml`, so back that file up separately.
+
+## Upgrading
+
+<Tabs>
+  <TabItem label="Install script">
+    Re-running the install script is the upgrade. It detects the platform, picks a reachable download source, verifies `SHA256SUMS`, and atomically replaces the binary.
+
+    ```bash
+    curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh | sh
+    ```
+
+    If Kiln runs as a systemd service, restart it once the binary is swapped:
+
+    ```bash
+    sudo systemctl restart kiln
+    ```
+  </TabItem>
+  <TabItem label="Binary">
+    Download the archive for your platform from Releases, stop the service, swap the file, start it again. Record the current version with `kiln -version` first so rolling back is a known quantity.
+
+    ```bash
+    kiln -version
+    ```
+  </TabItem>
+  <TabItem label="Docker">
+    Pull the new image and recreate the container. The data volume is untouched.
+
+    ```bash
+    docker pull ghcr.io/babywbx/kiln:latest
+    docker compose up -d
+    ```
+  </TabItem>
+</Tabs>
+
+Database migrations run automatically at startup, with no manual step. Kiln keeps a `schema_version` table in the database, reads the current version on boot, and applies every missing migration in order until it catches up with the version the binary supports. The whole sequence runs inside one transaction, so a failure rolls back completely and the process exits with `sqlite open failed`.
+
+Upgrading across several releases uses the same migration chain. You do not need to step through intermediate versions; drop in the newest binary and go.
+
+<Aside type="danger" title="Downgrades are not supported">
+  If the database schema is newer than the binary supports, startup fails with `database schema version N is newer than supported version M`. Restore the matching backup before rolling back to an older release.
+</Aside>
+
+## Logging
+
+Logging is driven by three fields under `[logging]`. The environment variables take precedence, which makes them convenient for one-off changes in containers.
+
+| Config key | Environment variable | Values |
+| --- | --- | --- |
+| `level` | `KILN_LOG_LEVEL` | `debug`, `info`, `warn`, `error`; defaults to `info` |
+| `format` | `KILN_LOG_FORMAT` | `text` (default) or `json` |
+| `color` | `KILN_LOG_COLOR` | `auto` (default), `always`, `never` |
+
+Level parsing accepts a few aliases: `dbg` and `trace` map to `debug`, `warning` and `wrn` map to `warn`, and `err`, `erro`, and `fatal` map to `error`. Anything unrecognized falls back to `info`. Format only has two outcomes: `structured` is an alias for `json`, and everything else is treated as `text`.
+
+Coloring applies to `text` only. `auto` emits ANSI sequences solely when the output is a character device, so redirecting to a file or pipe disables it automatically. On top of that, a non-empty `NO_COLOR` environment variable turns `auto` off unconditionally. To disable color while still attached to a terminal, set `KILN_LOG_COLOR=never`.
+
+Under `json`, every record carries a `service=kiln` field, which makes filtering straightforward in a central log system.
+
+Access-log severity is derived from the response: 5xx logs at `error`, 4xx at `warn`, everything else at `info`. High-frequency paths (`/healthz`, `/readyz`, `/`, and anything containing `/live/` or `/u/`) are demoted to `debug` so they do not flood the default level. Raise the level to `debug` when you need the full segment-request trail.
+
+Play tokens never reach the log verbatim. Paths shaped like `/p/<token>/...` are rewritten to `/p/<prefix>…/<suffix>` before being logged or written to the access audit table, keeping just enough of the token to correlate requests.
+
+Where the logs land depends on the deployment:
+
+- **systemd**: stdout, read with `journalctl -u kiln`.
+- **Docker**: `docker logs kiln`.
+- **Windows service**: the SCM discards stdout, so the process writes `kiln.log` in the config file's directory. Once it exceeds 16 MB it is renamed to `kiln.log.1` on the next start, keeping one generation.
+- **Foreground**: straight to the terminal.
+
+## Health checks
+
+Neither endpoint requires credentials, and they mean different things. Do not use them interchangeably.
+
+<CardGrid>
+  <Card title="/healthz" icon="ph:heartbeat">
+    Liveness. Returns `200` and `{"status":"ok"}` as long as the HTTP server is running; it checks no dependencies. Use it for process supervision and container restart policies.
+  </Card>
+  <Card title="/readyz" icon="ph:check-circle">
+    Readiness. Adds a compatibility-engine check: if the catalog contains a channel with `ingress = "dash"` whose effective engine is `ffmpeg` and ffmpeg is unavailable, it returns `503` with code `not_ready` and the message `ffmpeg compatibility engine is not available`. Use it to gate traffic.
+  </Card>
+</CardGrid>
+
+When `security.public_hosts` is set, requests whose `Host` header is not on the list are rejected with `403 host not allowed`. So that probes are not caught by this rule, `/healthz` and `/readyz` requests originating from a loopback address are explicitly exempt. If you probe from another machine, add that hostname or IP to `public_hosts`.
+
+The binary ships a health-check subcommand with a 3 second timeout. Exit code 0 on 2xx, 1 otherwise:
+
+```bash
+kiln -healthcheck http://127.0.0.1:8080/healthz
+```
+
+The images already declare `HEALTHCHECK`. `core` and `full` are Alpine-based and probe `/healthz` with `wget`; `lite` is built `FROM scratch` and has neither a shell nor wget, so it uses the subcommand above.
+
+## Metrics
+
+`GET /metrics` emits Prometheus text format (`text/plain; version=0.0.4`). Process-level series are `kiln_uptime_seconds`, `kiln_bytes_in_total`, `kiln_bytes_out_total`, `kiln_http_requests_total`, `kiln_errors_total`, `kiln_goroutines`, and `kiln_sessions`.
+
+Each active session adds a `kiln_session_info` sample labeled with `channel`, `engine`, and `state`. Packager statistics are labeled by `channel` and cover counters such as `kiln_packager_segments_published_total`, `kiln_packager_segment_fetch_errors_total`, `kiln_packager_manifest_errors_total`, and `kiln_packager_key_mismatches_total`, plus gauges like `kiln_packager_cache_bytes` and `kiln_packager_clock_offset_seconds`. When chasing upstream flakiness, look at the rate of `segment_fetch_errors` and `manifest_errors` first.
+
+The endpoint is gated on `[observe].enabled`, which config loading turns on, so `core` and `full` always serve `/metrics`. `lite` does not register the route at all.
+
+<Aside type="caution" title="The metrics endpoint is unauthenticated">
+  `/metrics` exposes channel IDs and session state. Before putting it on a public interface, restrict access at the reverse proxy or narrow the service to internal hostnames with `security.public_hosts`.
+</Aside>
+
+## OTLP tracing
+
+The exporter is only initialized when `[observe].otlp_endpoint` is set. Leave it empty and tracing costs nothing.
+
+```toml title="kiln.toml"
+[observe]
+otlp_endpoint = "https://collector.example.com/v1/traces"
+otlp_insecure = false
+trace_sample_ratio = 0.1
+service_name = "kiln"
+```
+
+Export is OTLP over HTTP with batching. Set `otlp_insecure = true` for a plaintext collector on a trusted network. The sampler is `ParentBased(TraceIDRatioBased)`: an upstream sampling decision is honored when present, otherwise `trace_sample_ratio` applies. A ratio at or below 0, or above 1, is treated as `1`, meaning sample everything. An empty `service_name` becomes `kiln`, and the resource attributes also carry the build version.
+
+Context propagation uses W3C `traceparent` plus `baggage`, and inbound headers are extracted so traces continue across the hop.
+
+<Aside type="tip" title="No sensitive values in spans">
+  The HTTP server span is always named `http.server` and carries only `http.request.method`, `http.response.status_code`, and `http.route`. `http.route` is the route pattern (for example `GET /v1/play/{id}/index.m3u8`), not the request line, so raw URLs, play tokens, and query strings never enter a trace.
+</Aside>
+
+A failed exporter setup does not take the process down: it logs a single `OpenTelemetry setup failed` warning and continues without tracing. The `lite` variant refuses to start when `otlp_endpoint` appears in its config rather than ignoring it silently.
+
+## pprof diagnostics
+
+pprof is off by default. Turn it on only while investigating a memory or CPU problem, and turn it back off when you are done.
+
+```toml title="kiln.toml"
+[debug.pprof]
+enabled = true
+listen = "127.0.0.1:6060"
+```
+
+<Steps>
+  <Step title="Enable and restart">
+    Restart after editing the config. `listen` must resolve to a loopback IP; `0.0.0.0:6060` or any routable address fails validation at startup with `debug.pprof.listen must use a loopback IP`. An empty value defaults to `127.0.0.1:6060`.
+  </Step>
+  <Step title="Confirm it is listening">
+    Startup logs gain a `pprof listening` record with an `addr` field. pprof runs on its own port and its own mux, so the profiling handlers never join the application router.
+  </Step>
+  <Step title="Collect">
+    Run locally, or forward the port first with `ssh -L 6060:127.0.0.1:6060 host`.
+
+    ```bash
+    go tool pprof http://127.0.0.1:6060/debug/pprof/profile?seconds=30
+    go tool pprof http://127.0.0.1:6060/debug/pprof/heap
+    go tool pprof http://127.0.0.1:6060/debug/pprof/block
+    go tool pprof http://127.0.0.1:6060/debug/pprof/mutex
+    ```
+
+    `allocs`, `goroutine`, `threadcreate`, and `trace` are available too. The CPU profile blocks for its duration, so take the heap snapshot first.
+  </Step>
+  <Step title="Disable">
+    Set `enabled` back to `false` and restart. A diagnostic port left open is one more internal attack surface.
+  </Step>
+</Steps>
+
+`lite` does not include pprof; `[debug.pprof].enabled = true` makes it refuse to start.
+
+## Resource adaptation
+
+At startup Kiln detects the memory and CPU available to it and scales the memory-related budgets down accordingly, so one config file works on a 256 MB box and a many-core server alike.
+
+### Three modes
+
+`server.resource_mode` accepts exactly three values:
+
+| Value | Behavior |
+| --- | --- |
+| `auto` | Default. Picks a profile from the effective memory, then applies CPU caps independently |
+| `constrained` | Forces the tightest `compact` profile regardless of what was detected |
+| `performance` | Opts out entirely. Your configured values stand; detection results are logged but not applied |
+
+### Memory profiles
+
+Under `auto`, effective memory selects one of four profiles. The `resource_profile` field in the startup log is the profile name:
+
+| Profile | Effective memory | Go soft target | Native inflight | Max segment | Pipeline cap | GOGC | EPG per-source cap |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `compact` | `< 256 MiB` | 48 MiB | 32 MiB | 20 MiB | 1 | 75 | 4 MiB |
+| `balanced` | `256–511 MiB` | 96 MiB | 48 MiB | 32 MiB | 2 | 100 | derived |
+| `standard` | `512–1023 MiB` | 192 MiB | 64 MiB | 32 MiB | 2 | 100 | derived |
+| `large` | `≥ 1 GiB` | as configured | as configured | as configured | as configured | runtime default | as configured |
+
+For `balanced` and `standard` the EPG per-source cap is derived as one 128th of effective memory, clamped between 4 MiB and 64 MiB. A 768 MB container works out to 6 MiB, which is exactly the `epg_max_source_mb=6` you see in the startup log.
+
+The first three profiles also flip one extra switch: after writing and reading media files, Kiln advises the kernel to drop the corresponding page cache (`drop_file_cache=true` in the startup log), so the container's memory accounting is not inflated by cache. `large` leaves this off.
+
+### CPU caps
+
+CPU is evaluated separately from memory and only affects pipeline depth and EPG refresh concurrency:
+
+- Below 4000 effective milli-CPU, the pipeline cap is `ceil(milli / 1000)`. At 4 cores and above no CPU cap is applied.
+- EPG refresh concurrency is the smaller of `ceil(milli / 2000)` and the memory size in GiB rounded to nearest, with a floor of 1.
+- The memory profile and the CPU cap each produce an upper bound; the final value is the minimum of the configured value, the profile bound, and the CPU bound.
+
+Detection handles cgroup v1 and v2, nested cgroups, limits inherited from a parent cgroup, and fractional CPU quotas. A container given `--cpus=1.5` reports `effective_cpus=2` and `effective_cpu_milli=1500`.
+
+<Aside type="caution" title="It only lowers, never raises">
+  Every budget is combined with a minimum. If you set `packager.inflight_bytes` to 16 MiB, landing in `standard` will not raise it to 64 MiB. Use `resource_mode = "performance"` when you want your numbers preserved exactly.
+</Aside>
+
+### The Lite fixed budget
+
+The `lite` variant does not participate in profile selection. Under both `auto` and `constrained` it always uses a 24 MiB Go soft target, 24 MiB inflight, a 20 MiB max segment, a 1/1 pipeline, and `GOGC=50`, which keeps its memory footprint consistent across hosts. Only `performance` opts out.
+
+### Overrides and precedence
+
+| Variable | Effect |
+| --- | --- |
+| `KILN_RESOURCE_MODE` | Overrides `resource_mode`; same values as the config key |
+| `KILN_RESOURCE_MEMORY_MB` | Overrides detected memory, for hosts where detection is wrong or to reproduce a profile |
+| `KILN_RESOURCE_CPUS` | Overrides the detected CPU count |
+| `GOMEMLIMIT` | Always wins. When set, `server.memory_limit_mb` is not written to the Go soft target |
+| `GOGC` | When set, the profile's `GCPercent` is not applied |
+
+### Verifying from the startup log
+
+The `kiln starting` record prints both the detection results and every budget that took effect, which is the fastest way to confirm a profile:
+
+```text
+resource_mode=auto resource_profile=compact resource_constrained=true
+effective_cpus=1 effective_cpu_milli=1000 effective_memory_mb=192
+memory_limit_mb=48 effective_go_memory_limit_mb=48
+inflight_mb=32 max_segment_mb=20 gc_percent=75 drop_file_cache=true
+start_segments=1 prefetch_segments=1
+epg_refresh_concurrency=1 epg_max_source_mb=4
+```
+
+`effective_memory_mb` is what was detected, `memory_limit_mb` is the Go soft target that was written, and `effective_go_memory_limit_mb` is what the runtime actually applies. When the three disagree, check for `GOMEMLIMIT` first. A `resource_profile` of `configured` means memory detection returned nothing and profile selection was skipped entirely. Set `KILN_RESOURCE_MEMORY_MB` explicitly in that case.
+
+### Reproducing a profile locally
+
+`deploy/docker/resource-smoke.toml` is a minimal config; combined with Docker resource limits it reproduces any profile:
+
+```bash
+docker run --rm --cpus=1 --memory=192m --memory-swap=192m \
+  -v "$PWD/deploy/docker/resource-smoke.toml:/etc/kiln/kiln.toml:ro" \
+  kiln:core
+```
+
+`--cpus=2 --memory=384m` yields `balanced`, `--cpus=2 --memory=768m` yields `standard`, and `--cpus=4 --memory=1g` yields `large`. Adding `-e KILN_RESOURCE_MODE=constrained` exercises the forced low-resource path on a large machine.
+
+<Aside type="caution" title="These are soft budgets, not RSS guarantees">
+  The numbers above bound the Go heap and the media working set. SQLite, goroutine stacks, kernel page cache, and the FFmpeg subprocess the `full` image spawns all sit outside the budget. When you need a hard per-process memory boundary, run the native engine in `core` or `lite`.
+</Aside>
+
+## Next steps
+
+<CardGrid>
+  <Card title="Troubleshooting" icon="ph:first-aid-kit">
+    Symptom tables, real log keywords, and fixes in [Troubleshooting](/en/guide/troubleshooting/).
+  </Card>
+  <Card title="Configuration reference" icon="ph:sliders">
+    Every config section, field, and default in the [config reference](/en/reference/config/).
+  </Card>
+  <Card title="Environment variables" icon="ph:terminal-window">
+    All `KILN_` variables and their precedence in the [environment reference](/en/reference/env/).
+  </Card>
+</CardGrid>

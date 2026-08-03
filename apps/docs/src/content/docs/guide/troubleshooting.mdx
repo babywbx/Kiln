@@ -1,0 +1,396 @@
+---
+title: 故障排查
+description: 按症状定位 Kiln 的常见问题：启动失败、播放鉴权、频道起不来、播放停滞、内存偏高、EPG 不刷新、代理不生效与容器场景。
+sidebar:
+  order: 11
+---
+
+这一页按「症状 → 判断 → 处理」组织。每一节都给出可以直接 grep 的真实日志关键字和接口返回消息，照着对就行。运维相关的配置项说明在[运维](/guide/operations/)。
+
+<Aside type="tip" title="先看两条日志">
+  绝大多数问题都能从启动日志判断出来。`listening` 说明 HTTP 已经在监听，`kiln starting` 那一条把版本、配置路径、频道数、资源档位、`packager_engine`、`ffmpeg_available`、代理数量和数据库路径全打出来了。先确认这两条存在，再往下排查。
+</Aside>
+
+## 启动失败
+
+### 配置校验报错
+
+**症状**：进程立刻退出，日志只有一条 `config load failed`，带 `err` 与 `config` 两个字段。
+
+**判断**：配置在加载阶段做完整校验，任何一项不通过都直接拒绝启动，`err` 里就是具体原因。常见的几条：
+
+| 错误信息 | 原因 |
+| --- | --- |
+| `auth.users must not be empty` | 没有配置任何用户 |
+| `user "x" requires role` | 用户缺 `role` 字段 |
+| `duplicate channel id "x"` | 频道 ID 重复 |
+| `channel "x" references unknown upstream "y"` | 频道引用了不存在的 upstream |
+| `channel "x" ingress must be hls or dash` | `ingress` 只接受这两个值 |
+| `channel "x" dash ingress requires global packager.keys_file` | DASH 频道未被停用，但没有全局密钥文件 |
+| `egress.default unknown proxy "x"` | 默认出站线路指向了未定义的 `[[proxies]]` |
+| `egress.playlist_policy must be rewrite\|passthrough\|auto` | 播放列表策略取值错误 |
+| `debug.pprof.listen must use a loopback IP` | pprof 监听地址不是回环 |
+| `unsupported config extension "x"` | 配置文件后缀只接受 `.toml`、`.json`、`.jsonc` |
+
+**处理**：按提示改配置。注意 `auth requires token_private_key, token_private_key_file, or server.data_dir for auto-managed Ed25519 keys` 这一条，意思是三者至少要有一个：要么显式注入 Ed25519 私钥，要么留一个数据目录让 Kiln 自动生成。
+
+### 媒体密钥文件校验失败
+
+**症状**：`config load failed`，`err` 以 `packager.keys_file:` 开头。
+
+**判断**：密钥文件在启动时一次性完整校验，逐行解析，第一处错误就中止。错误消息带行号：
+
+- `line 3: expected kid:key`：这一行没有冒号。
+- `line 3: empty kid or key`：冒号一侧为空。
+- `line 3: key must be 32 hex characters, got 30`：KID 与 key 都必须是 32 位十六进制字符。
+- `line 3: key must not contain dashes`：KID 允许写连字符分组，key 不允许。
+- `line 3: kid is not hexadecimal`：出现了非十六进制字符。
+- `line 3: KID has a conflicting key`：同一个 KID 在文件里对应了两个不同的 key。
+- `no keys found`：文件里全是空行和注释。
+
+**处理**：修正后重启。密钥是启动时读入的，改文件不会热生效。相对路径按 `kiln.toml` 所在目录解析，不是按工作目录。
+
+### 端口被占用
+
+**症状**：`listening` 之后紧跟一条 `http server stopped`，`err` 为 `listen tcp :8080: bind: address already in use`，进程退出。
+
+**判断与处理**：
+
+```bash
+ss -ltnp | grep 8080
+```
+
+要么停掉占用者，要么改 `server.listen`，或者用 `KILN_LISTEN` 临时换端口。同一台机器跑多个实例时，除了监听端口，`data_dir` 也必须各自独立。
+
+### 数据目录不可写
+
+**症状**：`create data dir failed` 或 `sqlite open failed`。
+
+**判断**：systemd unit 带 `ProtectSystem=strict`，整个文件系统对进程只读，只有 `ReadWritePaths=/var/lib/kiln` 是可写的。把 `data_dir` 指到别处一定会失败。
+
+**处理**：把 `data_dir` 放回 `/var/lib/kiln` 下面，并确认属主是 `kiln` 用户。容器里以只读方式运行时，同样要给数据目录挂一个可写卷。
+
+### Lite 拒绝了配置
+
+**症状**：`lite` 变体启动即退出，错误明确说明某项能力不可用。
+
+**判断**：`lite` 对超出能力边界的配置采取直接拒绝而不是静默忽略的策略：
+
+- `packager.engine must be native in lite`
+- `channel "x" requires native packager engine`
+- `epg is not available in lite`
+- `OpenTelemetry export is not available in lite`
+- `pprof is not available in lite`
+
+**处理**：删掉对应配置段，或者换用 `core` 镜像。
+
+## 播放返回 401 或 403
+
+先确认用的是哪一类凭据。四种凭据各管一段，混用是最常见的原因：公开接口不需要凭据，会话 JWT 服务管理界面，管理员 API Token 服务脚本，路径式播放密钥服务播放器分发。详见[鉴权](/guide/auth/)。
+
+| 返回 | 消息 | 判断 |
+| --- | --- | --- |
+| `401` | `invalid token` | 会话 JWT 缺失、格式错误或签名不匹配 |
+| `401` | `token expired` | 会话 JWT 过期，按 `auth.token_ttl_hours` 重新登录 |
+| `401` | `invalid access token` | 路径式播放密钥无效、已停用、已吊销或已过期 |
+| `403` | `channel not allowed` | 凭据有效，但该用户没有这个频道的权限 |
+| `403` | `host not allowed` | 请求的 Host 头不在 `security.public_hosts` 里 |
+| `403` | `API token permission denied` | 管理员 API Token 缺少该路由要求的 scope，或者这条路由只允许会话登录访问 |
+
+### 凭据类型用错
+
+**症状**：拿管理员 API Token 去调 `/v1/play/...`，或者拿会话 JWT 去访问 `/p/<token>/...`。
+
+**处理**：播放接口只认会话 JWT（`/v1/play/...`）或路径式播放密钥（`/p/<token>/...`）。API Token 用于管理接口，且部分路由被标记为仅会话可用，用 Token 访问会返回 `403 API token permission denied`。
+
+### play_require_auth
+
+**症状**：明明关掉了播放鉴权，播放接口还是要凭据。
+
+**判断**：`security.play_require_auth` 的默认值是开启。只有设置了环境变量 `KILN_PLAY_OPEN` 时，配置文件里写的 `play_require_auth = false` 才会被保留；否则配置加载阶段会把它强制置回 `true`。
+
+**处理**：调试环境用 `KILN_PLAY_OPEN=1` 关闭播放鉴权。
+
+<Aside type="danger" title="不要在对外服务上关闭播放鉴权">
+  关掉之后任何人都能直接拉流。这是调试开关，不是部署选项。
+</Aside>
+
+### Host 不在允许列表
+
+**症状**：换了域名或者加了反向代理之后，所有接口统一返回 `403 host not allowed`。
+
+**判断**：配置了 `security.public_hosts` 时，中间件会拿请求的 Host 头（去掉端口和方括号后）逐项比对，不匹配就拒绝。列表里写 `*` 表示放行全部。来自回环地址的 `/healthz` 与 `/readyz` 被豁免，所以本机探针照常返回 200，外部请求却全是 403，这个反差本身就是判断依据。
+
+**处理**：把对外域名加进 `public_hosts`。反向代理必须原样透传 `Host`，改写成后端地址会导致同样的 403。
+
+<Aside type="note" title="allowed_hosts 是另一回事">
+  `security.public_hosts` 管的是别人怎么访问 Kiln，`security.allowed_hosts` 管的是 Kiln 能访问哪些上游。两者互不相干，报错也不同。
+</Aside>
+
+## 频道起不来
+
+### 上游不可达
+
+**症状**：播放接口返回 `502`，消息为 `upstream request failed` 或 `upstream status 403 Forbidden: ...`。日志里能看到 `session restarting`，带 `attempt`、`delay` 和 `err`；重试 8 次后变成 `session restart budget exceeded`，会话进入 `failed`。
+
+**判断**：重启退避从 2 秒起步，最长 30 秒，连续稳定 90 秒后计数清零。反复重启说明上游确实拿不到内容，而不是偶发抖动。
+
+**处理**：在服务器上直接验证上游可达性，注意带上频道配置的 `headers` 与 `user_agent`。需要走代理的上游见下面的[代理不生效](#代理不生效)。
+
+### 上游主机没有进允许列表
+
+**症状**：`403`，消息为 `upstream host not allowed`，`err` 里是 `private host not allowlisted: 192.168.1.10`。
+
+**判断**：出站请求会做 SSRF 校验。公网主机默认放行，但回环地址和私有网段必须出现在允许列表里；云元数据地址（例如 `169.254.169.254`）和链路本地地址一律拒绝。允许列表由 `security.allowed_hosts` 加上配置文件里 `upstreams` 与 `channels` 声明过的主机名共同组成。
+
+**处理**：把内网源站的主机名或 IP 写进 `security.allowed_hosts`，然后重启。通过管理界面新增的内网上游不会自动进入这个集合。
+
+### 引擎不支持这个源
+
+**症状**：`502`，消息为 `engine=native but the source cannot be served natively`。
+
+**判断**：`engine = "native"` 表示不允许回退。原生引擎判定自己处理不了时直接失败，不会去找 ffmpeg。常见的不支持原因会体现在 `fallback_reason` 上：`multi_period`（多 period 的 MPD）、`addressing_unsupported`、`manifest_codec_unsupported`、`no_video_representation`、`no_audio_representation`、`missing_key_for_kid`、`manifest_kid_conflicts_with_tenc`。
+
+**处理**：把该频道的 `packager` 改成 `auto`，让它在必要时回退到兼容引擎；这需要运行在带 ffmpeg 的 `full` 变体上。或者换一个原生引擎能处理的源。
+
+还有一种情况消息是 `native cannot handle this source and ffmpeg would decode it incorrectly`，此时即便设成 `auto` 也不会回退，因为兼容引擎的输出会是错的。这类源只能换源。
+
+### ffmpeg 不可用
+
+**症状**：`503`，消息为 `ffmpeg compatibility engine is not available`；或者需要回退时消息为 `source requires ffmpeg compatibility, but the ffmpeg engine is not available`。`/readyz` 同时返回 `503` 与 `not_ready`。
+
+**判断**：启动日志里有两个字段直接给出答案：
+
+```text
+packager_engine=auto ffmpeg_available=false
+```
+
+进程启动时会做一次依赖探测，找不到就打印 `ffmpeg compatibility engine unavailable`，带 `dependency` 和 `err` 字段，`err` 形如 `find ffmpeg dependency "ffmpeg": exec: "ffmpeg": executable file not found in $PATH`。
+
+**处理**：
+
+- `core` 与 `lite` 镜像不含 ffmpeg，需要兼容回退就换 `full`。
+- Windows 发行版不含 ffmpeg，自行安装并加入 `PATH`。
+- `[ffmpeg].binary` 指到了不存在的路径时，改成绝对路径或确保它在 `PATH` 里。
+- `[ffmpeg].mode = "docker"` 时，探测的是 `docker` 这个命令本身，宿主机上没有 docker 客户端一样会判定为不可用。
+
+### 缺少解密密钥
+
+**症状**：`400`，消息为 `no global keys configured`；或者启动阶段就报 `channel "x" dash ingress requires global packager.keys_file`。
+
+**处理**：配置 `[packager].keys_file`，每行一对 `kid:key`。频道级 `keys` 字段已经移除，密钥只能全局配置。
+
+## 播放中途停滞
+
+**症状**：频道能起来，播放几分钟后卡住。日志里出现会话重启，`err` 为 `no segment published for 3m0s while the manifest kept updating`。
+
+**判断**：这是 `packager.stall_timeout_sec`（默认 180 秒）的停滞检测。它的触发条件很具体：**上游清单还在正常刷新，但所有轨道都在超时窗口内没有产出过新分片**。两个条件必须同时成立。
+
+- 清单本身拉不动（上游不可达）不算停滞，走的是上面的上游错误路径。
+- 只要还有任意一条轨道在推进，就不算停滞。
+
+命中之后会话被判定为致命错误并重启重排，重新解析清单、重新选轨。
+
+**处理**：偶尔一次通常是上游侧的编码中断，重启重排就恢复了，不必调参。频繁触发说明上游长期只更新清单不产出分片，需要从上游查。确实需要更长的容忍窗口时调大 `stall_timeout_sec`，但这只会推迟恢复，不会修复根因。
+
+## 内存偏高
+
+**症状**：容器 RSS 超出预期，或者被 OOM Killer 杀掉。
+
+**判断**：先用启动日志确认实际生效的档位与预算：
+
+```text
+resource_profile=standard resource_constrained=true
+effective_memory_mb=768 memory_limit_mb=192 effective_go_memory_limit_mb=192
+inflight_mb=64 max_segment_mb=32 gc_percent=100 drop_file_cache=true
+```
+
+对照[运维](/guide/operations/)里的档位表检查是否落在预期档位。几个常见误解：
+
+- 这些数字是 Go 堆和媒体工作集的软预算，不是容器总 RSS 保证。SQLite、goroutine 栈、内核页缓存都在预算之外。
+- `full` 镜像回退到兼容引擎时会拉起 FFmpeg 子进程，它的内存完全在 Go 软目标之外。日志里的 `FFmpeg memory is outside the Go soft limit` 警告就是提醒这件事，带 `ffmpeg_scope` 字段区分是子进程还是外部容器。这条是提示（`advisory_only=true`），不影响运行。
+- 设了 `GOMEMLIMIT` 时，配置里的 `server.memory_limit_mb` 不再写入 Go 软目标。
+
+**处理**：
+
+- 调小 `packager.inflight_bytes`。这是跨频道共享的分片内存预算，调小能压低峰值内存，代价是高码率源的冷启动变慢。
+- 减少并发活跃频道数，或者降低 `start_segments` 与 `prefetch_segments`。
+- 需要一个可预测的单进程内存边界时，用 `core` 或 `lite` 的原生引擎，不引入 FFmpeg 子进程。
+- 想验证低资源行为，用 `KILN_RESOURCE_MODE=constrained` 强制进入最紧的档位。
+
+## EPG 不刷新
+
+**症状**：节目单为空或长期不更新。
+
+**判断**：按顺序核对四件事。
+
+<Steps>
+  <Step title="EPG 总开关">
+    `[epg].enabled` 必须为 `true`。`lite` 变体不支持 EPG，配置里开了会直接拒绝启动。
+  </Step>
+  <Step title="源是否启用">
+    内置源默认全部停用，需要在管理界面或配置里逐个启用。启动日志的 `epg_sources` 字段就是当前生效的源数量，为 `0` 说明一个都没启用。
+  </Step>
+  <Step title="体积超限">
+    日志里出现 `EPG refresh failed`，`err` 含 `EPG source exceeds decompressed size limit` 时，说明解压后的 XMLTV 超过了 `epg.max_source_bytes`。默认上限是 64 MiB，但在低资源档位下会被自动压到 4 MiB 到 64 MiB 之间的某个值，启动日志的 `epg_max_source_mb` 就是实际生效值。已缓存的内容超限时同样会被丢弃。
+  </Step>
+  <Step title="代理与网络">
+    `EPG refresh failed` 的 `err` 是连接超时或 TLS 错误时，说明源本身拉不通。每个 EPG 源可以单独指定 `proxy`，留空或写 `auto` 表示按全局出站规则路由。
+  </Step>
+</Steps>
+
+**处理**：磁盘缓存默认落在 `data_dir/epg`。缓存本身是可重建的，怀疑缓存损坏时可以直接删掉目录再重启。刷新间隔由 `epg.refresh_interval_min` 控制，默认 360 分钟，改小之后要注意源站的速率限制。详见 [EPG](/guide/epg/)。
+
+## 代理不生效
+
+**症状**：配置了代理，但出站流量仍然直连，或者报代理相关错误。
+
+### 规则没命中
+
+**判断**：路由决策是「按优先级升序遍历规则，第一条命中就采用，都不命中则回落到 `egress.default`」。也就是说 `priority` 数值越小越先被检查。规则种类有五种：`host_exact`、`host_suffix`（默认）、`host_regex`、`channel_id`、`url_regex`。
+
+`host_suffix` 匹配的是主机名本身或者以 `.pattern` 结尾的主机名，不是简单的字符串包含。写 `example.com` 能命中 `edge.example.com`，但命中不了 `notexample.com`。
+
+**处理**：把更具体的规则的 `priority` 调小。确认匹配的是主机名而不是完整 URL，后者要用 `url_regex`。
+
+### 线路不存在或已停用
+
+**判断**：命中的规则指向了一个不存在或已停用的线路时，决策会静默降级为直连，`reason` 变成 `host_suffix:example.com|missing-profile`。启动时如果 `egress.default` 指向未知线路，会直接报 `egress.default references unknown proxy "x"` 并退出。
+
+**处理**：检查 `[[proxies]]` 里的 `id` 是否拼写一致，以及该线路是否被停用。
+
+### ffmpeg 用不了 SOCKS 代理
+
+**症状**：保存频道的代理绑定时被拒绝，消息为 `FFmpeg cannot use a SOCKS proxy; choose HTTP, direct, or the native DASH engine`；或者会话启动时报 `proxy "x" uses socks5, which ffmpeg cannot use`。
+
+**判断**：兼容引擎是通过 `HTTP_PROXY` 系列环境变量把代理传给 ffmpeg 的，只支持 `http` 与 `https` 两种 scheme。原生引擎则四种都支持（`http`、`https`、`socks5`、`socks5h`）。
+
+**处理**：给该频道换成 HTTP 代理，或者改用原生引擎。
+
+### 容器里连不上宿主机代理
+
+**症状**：Kiln 跑在容器里、代理跑在宿主机上，兼容引擎报连接失败。
+
+**判断**：把代理写成 `http://127.0.0.1:7890` 时，容器内的 `127.0.0.1` 指向容器自己。`[ffmpeg].mode = "docker"` 下，Kiln 会自动把代理地址里的 `127.0.0.1`、`localhost`、`::1` 替换成 `egress.docker_proxy_host`（默认 `host.docker.internal`），端口保持不变。传给 ffmpeg 的环境变量里还会带上 `NO_PROXY=localhost,127.0.0.1`。
+
+**处理**：确认 `docker_proxy_host` 在当前环境下可解析。Linux 上的 Docker 需要显式加 `--add-host=host.docker.internal:host-gateway`，或者把它改成宿主机在 docker 网桥上的地址。
+
+更完整的路由模型见[出站代理](/guide/proxy/)。
+
+## 容器场景
+
+### 探测不到预期档位
+
+**症状**：启动日志的 `resource_profile` 不是预期档位，或者显示 `configured`。
+
+**判断**：`configured` 意味着内存探测没有拿到有效数值，档位判定被整个跳过了。探测顺序是 cgroup v2 的 `memory.max`、cgroup v1 的 `memory.limit_in_bytes`，最后是 `/proc/meminfo` 的 `MemTotal`，取其中最小的正值。嵌套 cgroup、非常规挂载布局或者没有设内存限制时，可能拿不到期望值。
+
+**处理**：用环境变量直接覆盖探测结果，跳过不确定的自动判定：
+
+```bash
+docker run --rm --cpus=1 --memory=192m --memory-swap=192m \
+  -e KILN_RESOURCE_MEMORY_MB=192 -e KILN_RESOURCE_CPUS=1 \
+  -v "$PWD/kiln.toml:/etc/kiln/kiln.toml:ro" \
+  ghcr.io/babywbx/kiln:core
+```
+
+覆盖之后 `effective_memory_mb` 与 `effective_cpu_milli` 会直接反映你给的值。核对方法见[运维](/guide/operations/)。
+
+### 只读挂载
+
+**症状**：以 `--read-only` 运行时启动失败，报 `create data dir failed`。
+
+**判断**：即便是 `lite`，也要写自动生成的登录密钥和临时媒体文件。只读根文件系统必须给数据目录单独挂一个可写卷。
+
+**处理**：
+
+```bash
+docker run --rm -p 8080:8080 --read-only \
+  --cap-drop=ALL --security-opt=no-new-privileges \
+  -v "$PWD/kiln.toml:/etc/kiln/kiln.toml:ro" \
+  -v kiln-lite-data:/var/lib/kiln \
+  ghcr.io/babywbx/kiln:lite
+```
+
+### 运行时变体不对
+
+**症状**：日志里出现 `unknown runtime variant; using standalone` 警告，带 `environment` 字段。
+
+**判断**：`core` 与 `full` 镜像内置了 `KILN_RUNTIME_VARIANT`，手工设成了无法识别的值才会看到这条警告。启动日志的 `runtime_variant` 字段是最终生效值。
+
+**处理**：不要手工设置这个变量，除非在自建镜像里。
+
+### 健康检查一直不通
+
+**判断**：`core` 与 `full` 的 `HEALTHCHECK` 用 `wget` 探 `/healthz`，`lite` 基于 `scratch`，没有 shell 与 wget，用的是二进制自带的子命令。手工验证：
+
+```bash
+docker exec kiln wget -q -O /dev/null http://127.0.0.1:8080/healthz
+docker exec kiln kiln -healthcheck http://127.0.0.1:8080/healthz
+```
+
+`/healthz` 通而 `/readyz` 不通，说明是兼容引擎缺失，回到上面的 [ffmpeg 不可用](#ffmpeg-不可用)。
+
+## 收集诊断信息
+
+### 日志在哪
+
+| 部署方式 | 命令 |
+| --- | --- |
+| systemd | `journalctl -u kiln -f`，历史用 `journalctl -u kiln --since "1 hour ago"` |
+| Docker | `docker logs -f kiln` |
+| Windows 服务 | 配置文件目录下的 `kiln.log`，上一代为 `kiln.log.1` |
+| 前台运行 | 直接看终端输出 |
+
+### 提高日志详细度
+
+默认级别是 `info`，此时 `/healthz`、`/readyz`、`/` 以及包含 `/live/` 或 `/u/` 的高频路径都被降到 `debug`，不会出现在日志里。要看完整的分片请求流水，临时提级：
+
+```bash
+KILN_LOG_LEVEL=debug KILN_LOG_FORMAT=json kiln -config /etc/kiln/kiln.toml
+```
+
+systemd 环境下用 `systemctl edit kiln` 加一行 `Environment=KILN_LOG_LEVEL=debug`，Docker 直接加 `-e KILN_LOG_LEVEL=debug`。排查完记得改回来，`debug` 在高并发下的日志量相当可观。
+
+日志重定向到文件时着色会自动关闭。想在保留终端的同时去掉 ANSI 序列，用 `KILN_LOG_COLOR=never` 或者设置 `NO_COLOR`。
+
+### 采集 pprof
+
+内存或 CPU 异常时，临时开一次 pprof。监听地址必须是回环 IP，采完立刻关掉。
+
+<Steps>
+  <Step title="开启">
+    配置里加上，然后重启。启动日志会多一条 `pprof listening`。
+
+    ```toml
+    [debug.pprof]
+    enabled = true
+    listen = "127.0.0.1:6060"
+    ```
+  </Step>
+  <Step title="采集">
+    远程机器先做端口转发：`ssh -L 6060:127.0.0.1:6060 host`。
+
+    ```bash
+    go tool pprof http://127.0.0.1:6060/debug/pprof/heap
+    go tool pprof http://127.0.0.1:6060/debug/pprof/profile?seconds=30
+    go tool pprof http://127.0.0.1:6060/debug/pprof/block
+    go tool pprof http://127.0.0.1:6060/debug/pprof/mutex
+    ```
+  </Step>
+  <Step title="关闭">
+    把 `enabled` 改回 `false` 并重启。
+  </Step>
+</Steps>
+
+### 指标里先看哪几个
+
+`/metrics` 里 `kiln_packager_segment_fetch_errors_total` 和 `kiln_packager_manifest_errors_total` 的增速最能说明上游状况，`kiln_packager_cache_bytes` 反映当前占用的分片缓存，`kiln_session_info` 的 `state` 标签能一眼看出哪些会话进了 `failed`。
+
+### 提交问题时带上什么
+
+- `kiln -version` 的完整输出。
+- 启动日志里 `kiln starting` 那一整行。
+- 复现步骤，以及对应时段的日志片段。请自行去掉播放令牌与上游凭据；Kiln 自己写日志时已经把 `/p/` 路径里的令牌截成前缀了，但你粘贴的配置和 URL 不会被自动处理。
+
+问题追踪在 [GitHub](https://github.com/babywbx/kiln)。

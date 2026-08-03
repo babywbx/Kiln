@@ -1,0 +1,79 @@
+---
+title: Guides
+description: How Kiln moves a channel from upstream to player, the four credential types, and where to go next.
+sidebar:
+  order: 1
+---
+
+This section explains what Kiln actually does at runtime: where upstreams come in, where media gets packaged, what the playback URLs look like, and which credential each route family accepts. If you just want the service running, start at [Getting started](/en/start/).
+
+## Data flow
+
+Every channel travels the same four stages, and each one is configured independently:
+
+```text
+Upstream (HLS / DASH)
+      │
+      ▼
+  Pull        starts on demand, reclaims the connection when nobody watches
+      │
+      ▼
+  Package     same-origin HLS segment proxy; DASH decrypted locally, repackaged to HLS
+      │
+      ▼
+  Serve       playback URLs, M3U playlist, EPG, admin console
+```
+
+The session manager owns both the pull and the packaging lifecycle, so a channel holds exactly one upstream connection and one set of packaged output no matter how many viewers it has.
+
+## Four credential types
+
+Each credential covers its own surface, and none of them can escalate into another.
+
+- **Public endpoints**: no credential at all, covering `/healthz`, `/readyz`, `/metrics`, `/v1/epg.xml`, `/v1/logo/{id}`, and the rate-limited `POST /v1/auth/login`.
+- **Session JWT**: an Ed25519-signed token obtained by logging in with a password. It backs the admin console and `/v1/playlist.m3u`, which accepts nothing else.
+- **Admin API token**: a long-lived credential for scripts and CLI use. Shown exactly once, split across `read`, `write`, `delete`, and `refresh`, and limited to the registered admin routes.
+- **Path-based playback key**: `/p/{token}/...`, carried in the URL path. Scopable to a subset of channels, revocable at any time, and meant for handing playlists to players.
+
+The full route and permission matrix lives in the [API reference](/en/reference/api/); issuing and rotating credentials is covered in [Authentication](/en/guide/auth/).
+
+## Engines and variants
+
+The packager has three engines. `native` is pure Go with no external dependency, `ffmpeg` shells out to the binary, and `auto` prefers native and falls back only when the source is not supported natively. A channel's `packager` field overrides the global setting for that channel alone.
+
+Separately, the runtime ships as `lite`, `core`, and `full` variants. They differ in capability but share one configuration model: an engine written explicitly in the config always wins, so the same config never changes behaviour just because you swapped the image tag.
+
+## Keep reading
+
+<CardGrid>
+  <Card title="Channels & upstreams">
+    The channel model field by field, upstream definitions, enable/disable, bulk import and export. [Open](/en/guide/channels/)
+  </Card>
+  <Card title="Playback & distribution">
+    URL shapes, authentication, playback keys, and how on-demand channels start and stop. [Open](/en/guide/playback/)
+  </Card>
+  <Card title="Authentication">
+    Passwords, session JWTs, admin API tokens, and playback keys, and how to issue and rotate each. [Open](/en/guide/auth/)
+  </Card>
+  <Card title="Media engine">
+    The native pipeline, the compatibility fallback, and every packaging budget. [Open](/en/guide/media-engine/)
+  </Card>
+  <Card title="Variants & tracks">
+    Capability boundaries per distribution variant, plus precise video, audio, and subtitle selection. [Open](/en/guide/variants/)
+  </Card>
+  <Card title="EPG">
+    XMLTV sources, refresh policy, channel matching, and logo candidates. [Open](/en/guide/epg/)
+  </Card>
+  <Card title="Outbound proxying">
+    Routing HTTP and SOCKS by host or channel, and the playlist rewrite policy. [Open](/en/guide/proxy/)
+  </Card>
+  <Card title="Admin console">
+    Day-to-day operations, search, and bulk maintenance in the web UI. [Open](/en/guide/admin/)
+  </Card>
+  <Card title="Operations">
+    Health checks, metrics, logging, and resource adaptation. [Open](/en/guide/operations/)
+  </Card>
+  <Card title="Troubleshooting">
+    Common symptoms and the order to investigate them in. [Open](/en/guide/troubleshooting/)
+  </Card>
+</CardGrid>

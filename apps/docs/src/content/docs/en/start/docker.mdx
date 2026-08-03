@@ -1,0 +1,137 @@
+---
+title: Docker
+description: The three image variants, how to pull them, and how Kiln behaves inside a container.
+sidebar:
+  order: 3
+---
+
+Kiln ships three image variants with explicit boundaries, sharing one configuration model and the same native media modules. Which one you want comes down to two questions: do you need the FFmpeg compatibility fallback, and do you need the database and admin console.
+
+## The three variants
+
+| Image | Capabilities | Default packager | FFmpeg | Purpose |
+| --- | --- | --- | --- | --- |
+| `lite` | Config, login, M3U, playback | `native` | Not included | Minimal scratch runtime, 3.8 MB, no database |
+| `core` | Full | `native` | Not included | Complete management and observability, natively only |
+| `full` | Full | `auto` | Bundled | Native first, falls back when needed |
+
+`latest` is an alias for `full`. All three run as the non-root uid/gid `999`, listen on `8080`, and hard-code `-config /etc/kiln/kiln.toml` as their command, so mounting the config at that path is all it takes to start with no arguments.
+
+Lite creates no SQLite database, and its public surface is limited to `/healthz`, `/readyz`, `/v1/auth/login`, `/v1/playlist.m3u`, and `/v1/play/*`. An `auto` or `ffmpeg` packager, EPG, OTLP, or pprof in the config is rejected at startup rather than silently ignored. See [Image variants](/en/guide/variants/) for the full comparison.
+
+<Aside type="note" title="Image defaults never override an explicit setting">
+  `KILN_DEFAULT_PACKAGER_ENGINE` applies only when `[packager].engine` is absent. An explicit `auto`, `native`, or `ffmpeg` always wins, so the same config never changes behavior because of an image tag.
+</Aside>
+
+## Pulling an image
+
+Images are published to the GitHub Container Registry:
+
+```bash
+docker pull ghcr.io/babywbx/kiln:latest   # full, includes ffmpeg
+docker pull ghcr.io/babywbx/kiln:core     # native packager, no ffmpeg
+docker pull ghcr.io/babywbx/kiln:lite     # stateless low-memory variant
+```
+
+A stable release publishes an exact version alongside moving tags:
+
+| Tag shape | Meaning |
+| --- | --- |
+| `:1.0.0`, `:1.0`, `:1`, `:latest` | Exact, minor, major, and newest release of the full variant |
+| `:1.0.0-core`, `:1.0-core`, `:1-core`, `:core` | The same set for core |
+| `:1.0.0-lite`, `:1.0-lite`, `:1-lite`, `:lite` | The same set for lite |
+
+A prerelease publishes only its exact version tag and never moves `latest`, `core`, `lite`, or the major and minor tags. Core builds for `linux/amd64`, `linux/arm64`, `linux/arm/v7`, and `linux/arm/v6`; full and lite build for `linux/amd64` and `linux/arm64`. All three get build provenance attestations pushed to the registry at release time.
+
+## Minimal run
+
+You need two files: a `kiln.toml` and a `kiln.keys`. The repository's `deploy/docker/kiln.docker.toml.example` already matches the image's path conventions, with `data_dir` at `/var/lib/kiln/data` and `keys_file` at `/etc/kiln/kiln.keys`, so copy it and change the origin and the account.
+
+```bash
+docker run --rm -p 8080:8080 \
+  -v "$PWD/kiln.toml:/etc/kiln/kiln.toml:ro" \
+  -v "$PWD/kiln.keys:/etc/kiln/kiln.keys:ro" \
+  -v kiln-data:/var/lib/kiln/data \
+  ghcr.io/babywbx/kiln:core
+```
+
+Lite targets fixed-configuration, low-resource playback nodes and runs fully read-only:
+
+```bash
+docker run --rm -p 8080:8080 --read-only \
+  --cap-drop=ALL --security-opt=no-new-privileges \
+  -v "$PWD/lite.toml:/etc/kiln/kiln.toml:ro" \
+  -v "$PWD/kiln.keys:/etc/kiln/kiln.keys:ro" \
+  -v kiln-lite-data:/var/lib/kiln \
+  ghcr.io/babywbx/kiln:lite
+```
+
+`deploy/docker/lite.docker.toml.example` is the matching minimal config.
+
+<Aside type="caution" title="Do not pin the ffmpeg engine on a native-only image">
+  Core and lite ship without ffmpeg. If a DASH channel resolves to the `ffmpeg` engine, `/readyz` returns 503 stating that the compatibility engine is unavailable, and the container never reaches a ready state. Switch the channel to `native`, or use the full image.
+</Aside>
+
+## Compose
+
+`deploy/docker/compose.example.yaml` is a starting point you can edit directly. It builds the `full` target from the repository by default; to use a published image instead, drop the `build` block and set `image` to `ghcr.io/babywbx/kiln:core`.
+
+```yaml title="compose.yaml"
+services:
+  kiln:
+    image: ghcr.io/babywbx/kiln:core
+    container_name: kiln
+    ports:
+      - "8080:8080"
+    environment:
+      KILN_PUBLIC_BASE_URL: "http://your-host:8080"
+      KILN_LOG_FORMAT: "text"
+      KILN_LOG_COLOR: "never"
+    volumes:
+      - ./kiln.toml:/etc/kiln/kiln.toml:ro
+      - ./kiln.keys:/etc/kiln/kiln.keys:ro
+      - kiln-data:/var/lib/kiln/data
+    restart: unless-stopped
+
+volumes:
+  kiln-data:
+```
+
+Three details worth noting. Setting the log color to `never` keeps ANSI escapes out of `docker logs`. `KILN_PUBLIC_BASE_URL` controls the addresses written into the playlist and is required whenever the published port or hostname differs from what players use. And if the origin is another service on the same Compose network, point `base_url` at `http://service-name:port` and attach both containers to that network.
+
+## Health checks
+
+Neither `/healthz` nor `/readyz` requires credentials. `/healthz` means the process is alive; `/readyz` additionally verifies the compatibility engine, returning 503 only when the config contains a DASH channel resolving to the ffmpeg engine while ffmpeg is unavailable.
+
+Every image carries a `HEALTHCHECK`: a 30 second interval, a 3 second timeout, a 10 second start period, and three consecutive failures before the container is marked unhealthy. Core and full probe `/healthz` with `wget`. Lite is built on scratch and has no external commands at all, so it uses the binary's own `-healthcheck` subcommand for the same probe. That subcommand is useful on its own:
+
+```bash
+docker exec kiln /usr/local/bin/kiln -healthcheck http://127.0.0.1:8080/healthz
+```
+
+## Resource adaptation inside a container
+
+`server.resource_mode` defaults to `auto`. At startup the process probes the real memory and CPU limits from cgroups and tightens the Go soft memory target, the segment memory budget, the maximum segment size, and pipeline concurrency accordingly. Detection covers cgroup v1 and v2, nested cgroups, limits inherited from a parent, and fractional CPU quotas, which means `docker run --cpus` and `--memory` are genuinely observed.
+
+Adaptation only scales down: a lower value you configured is never raised. The startup log prints the probed values, the selected profile, and every effective budget, so you can confirm a container landed where you expected.
+
+```bash
+# Reproduce the low-resource plan
+docker run --rm --cpus=1 --memory=192m --memory-swap=192m \
+  -v "$PWD/resource-smoke.toml:/etc/kiln/kiln.toml:ro" \
+  ghcr.io/babywbx/kiln:core
+```
+
+When host detection is wrong, override it with `KILN_RESOURCE_MEMORY_MB` and `KILN_RESOURCE_CPUS`; to opt out entirely, set `resource_mode = "performance"`. Profile tables and tuning advice live in [Operations](/en/guide/operations/).
+
+## Outbound proxies and docker_proxy_host
+
+`[egress].docker_proxy_host` defaults to `host.docker.internal` and applies only when `[ffmpeg].mode = "docker"`. In that mode Kiln injects proxy environment variables into the ffmpeg container, and if the proxy URL's host is `127.0.0.1`, `localhost`, or `::1`, it is rewritten to `docker_proxy_host` with the port preserved. Without that rewrite, the loopback address inside the child container would point at the child itself. Routes, host-based rules, and connectivity testing are covered in [Outbound proxies](/en/guide/proxy/).
+
+## Persistent data
+
+`data_dir` is the only directory that needs to persist; the images default it to `/var/lib/kiln/data`. Core and full keep the SQLite database `kiln.db` there, along with the auto-generated session key at `auth/ed25519.pem` and the EPG cache when caching is enabled. The mount must be writable by uid/gid `999`, or the first start fails.
+
+Lite creates no database: its `data_dir` holds only the auto-generated login key and transient media files. When running with `--read-only`, mount the writable volume at `/var/lib/kiln`.
+
+Mount `kiln.toml` and `kiln.keys` read-only. The key file is fully validated once at startup, so changing it requires restarting the container.

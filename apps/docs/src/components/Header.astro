@@ -5,7 +5,6 @@ import { LinkButton } from "./ui/link-button";
 import { ThemeToggle } from "./ui/theme-toggle";
 import { SearchTrigger } from "./ui/search";
 import { config } from "virtual:nimbus/config";
-import { getSidebarSections } from "@cloudflare/nimbus-docs";
 
 interface Props {
   /** Astro collection id for the current page, forwarded from DocsLayout. */
@@ -20,15 +19,42 @@ interface Props {
   showSidebar?: boolean;
 }
 
-// `entryId` is part of Props as a forward-compat hook (the version-switcher
-// recipe reads it) but the base Header doesn't use it — leave it off the
-// destructure to avoid an unused-var warning.
-const { collection, showSidebar = true } = Astro.props;
+// `entryId` and `collection` are part of Props as forward-compat hooks (the
+// version-switcher recipe reads them) but the base Header doesn't use them —
+// leave them off the destructure to avoid unused-var warnings.
+const { showSidebar = true } = Astro.props;
 
 // Normalize trailing slash so isActive matches sidebar hrefs.
 const currentSlug = Astro.url.pathname.replace(/\/$/, "") || "/";
-const sections = await getSidebarSections(currentSlug, { collection });
-const showSections = sections.length >= 2;
+
+// Chinese lives at the root, English mirrors it under /en with matching slugs.
+const isEnglish = currentSlug === "/en" || currentSlug.startsWith("/en/");
+const strippedSlug = currentSlug.slice(3);
+const langHref = isEnglish
+  ? (strippedSlug ? `${strippedSlug}/` : "/")
+  : currentSlug === "/"
+    ? "/en/"
+    : `/en${currentSlug}/`;
+const langLabel = isEnglish ? "中文" : "EN";
+const langAria = isEnglish ? "切换到中文" : "Switch to English";
+
+// The framework's section tab strip only covers non-primary collections, so
+// the language-aware tabs live here instead. Active state is prefix-based.
+const zhSections = [
+  { label: "入门", href: "/start/" },
+  { label: "指南", href: "/guide/" },
+  { label: "参考", href: "/reference/" },
+];
+const enSections = [
+  { label: "Getting started", href: "/en/start/" },
+  { label: "Guides", href: "/en/guide/" },
+  { label: "Reference", href: "/en/reference/" },
+];
+const sections = (isEnglish ? enSections : zhSections).map((s) => ({
+  ...s,
+  isActive: `${currentSlug}/`.startsWith(s.href),
+}));
+const showSections = true;
 ---
 
 <header class="sticky top-0 z-30 border-b border-border bg-card/80 backdrop-blur-lg">
@@ -76,6 +102,15 @@ const showSections = sections.length >= 2;
           <Icon name="ph:github-logo" class="w-4 h-4" />
         </LinkButton>
       )}
+      <LinkButton
+        href={langHref}
+        variant="minimal"
+        size="sm"
+        aria-label={langAria}
+        class="text-muted-foreground text-xs font-medium"
+      >
+        {langLabel}
+      </LinkButton>
       <ThemeToggle />
       {showSidebar && (
         <Button

@@ -1,0 +1,204 @@
+---
+title: Command line
+description: Every flag on the kiln binary, the Windows service subcommand, Lite differences, and the helper scripts.
+sidebar:
+  order: 5
+---
+
+Kiln is a single executable. There is no daemon wrapper and no hidden subprocess supervisor. The command line is four flags and one platform-specific subcommand.
+
+## Flags
+
+The full build (`kiln`) and the Lite build (`kiln-lite`) share the same flags.
+
+| Flag | Default | Purpose |
+| --- | --- | --- |
+| `-config <path>` | empty | Config file path; accepts `kiln.toml` or `kiln.jsonc` |
+| `-version` | `false` | Print version information and exit |
+| `-healthcheck <url>` | empty | Probe an HTTP health endpoint and exit |
+| `-h`, `-help` | none | Print usage and exit |
+
+Parsing uses the Go standard library flag package, so a single dash and a double dash are equivalent, as are `-config path` and `-config=path`.
+
+```bash
+kiln -config /etc/kiln/kiln.toml
+```
+
+Unless `-version` or `-healthcheck` is given, `-config` is required. Omitting it prints `kiln: -config is required` to stderr and exits with status 2.
+
+<Aside type="note" title="Running from source">
+During development, `go run ./apps/server -config configs/examples/kiln.toml` takes exactly the same flags.
+</Aside>
+
+### Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Clean exit, including `-version`, `-help`, and a passing health check |
+| `1` | Runtime failure: config load failed, data directory could not be created, health check failed |
+| `2` | Usage error: `-config` missing, flags unparseable, service subcommand unavailable |
+
+### `-version`
+
+```bash
+kiln -version
+```
+
+Prints one space-separated line:
+
+```text
+kiln version=1.0.0 commit=dev built_at=unknown variant=full
+```
+
+`variant` identifies the build: `full` or `lite`. The `version`, `commit`, and `built_at` values are injected by linker flags at build time and are placeholders when running straight from source.
+
+A running instance also reports its version without a credential: `GET /` returns `name`, `version`, `commit`, and the admin console path. See the [API reference](/en/reference/api/).
+
+### `-healthcheck`
+
+Issues a single GET with a 3 second timeout. A 2xx response exits 0; anything else writes the error or status line to stderr and exits 1. It reads no config file and starts no server.
+
+```bash
+kiln -healthcheck http://127.0.0.1:8080/healthz
+```
+
+The flag exists so container images do not have to ship curl or wget. The official image's `HEALTHCHECK` instruction is exactly this command.
+
+## Windows service
+
+The `service` subcommand registers Kiln with the Windows Service Control Manager, so no external supervisor is needed.
+
+```powershell
+kiln.exe service install -config C:\kiln\kiln.toml
+kiln.exe service start
+kiln.exe service status
+kiln.exe service stop
+kiln.exe service uninstall
+```
+
+| Subcommand | Purpose |
+| --- | --- |
+| `install` | Register the service; `-config` is required |
+| `uninstall`, `remove` | Deregister the service; the two names are equivalent |
+| `start` | Start the service and wait for it to run |
+| `stop` | Stop the service and wait for it to stop |
+| `status` | Print the current state |
+
+| Flag | Default | Applies to |
+| --- | --- | --- |
+| `-name` | `Kiln` | All subcommands |
+| `-config` | empty | `install` only |
+| `-display` | `Kiln Streaming Gateway` | `install` only |
+
+`-name` lets several instances coexist on one host. Every subcommand other than `install` needs the same name to target the right service.
+
+With no subcommand, or one that is not recognized, usage goes to stderr and the process exits with status 2. Install and uninstall need an elevated terminal.
+
+### What each subcommand does
+
+<Steps>
+  <Step title="install">
+    Resolves `-config` to an absolute path and confirms it is readable, then refuses if a service with the same name already exists. The service is created as automatic-start with a three-step restart policy (5s, 15s, 60s, with a 24 hour reset window). On success it prints the service name, binary path, config path, and the command to start it.
+  </Step>
+  <Step title="start">
+    Sends the start request and waits up to 30 seconds for the running state before returning 0.
+  </Step>
+  <Step title="stop">
+    Sends the stop request and waits up to 30 seconds for the stopped state before returning 0.
+  </Step>
+  <Step title="status">
+    Prints one of `stopped`, `starting`, `stopping`, `running`, `paused`, or `unknown`.
+  </Step>
+  <Step title="uninstall">
+    If the service is not stopped, requests a stop and waits up to 20 seconds, then deletes the registration. Only the registration is removed; the data directory, logs, and config file are left alone.
+  </Step>
+</Steps>
+
+If the service is not installed, the Service Control Manager is unreachable, or the operation fails, the reason goes to stderr and the process exits with status 1.
+
+### Runtime behaviour under the service manager
+
+The Service Control Manager starts processes in `system32`, so Kiln resolves `-config` to an absolute path and then switches the working directory to the folder holding the config. Relative paths such as `data_dir = "./data"` therefore still resolve against the config file.
+
+Standard output is discarded under the service manager, so Kiln redirects stdout and stderr to `kiln.log` next to the config. If that file exceeds 16 MB at startup, it is first rotated to `kiln.log.1`.
+
+The process accepts stop and shutdown controls and runs the same graceful shutdown path as a signal. The service exit code is the process exit code.
+
+Installation records the absolute config path, so moving the binary or the config file means reinstalling the service.
+
+<Aside type="caution" title="Other platforms">
+The `service` subcommand exists only in the Windows full build. On Linux, macOS, or any Lite build it prints `kiln: service management is only available on Windows` and exits with status 2. Use systemd, launchd, or your container orchestrator on those platforms.
+</Aside>
+
+## Lite differences
+
+The Lite binary takes the same command line. The differences show up after startup.
+
+- `-version` reports `variant=lite`.
+- There is no `service` subcommand, not even on Windows.
+- If `KILN_DEFAULT_PACKAGER_ENGINE` is unset, Lite sets it to `native`.
+- The config is validated before startup. Failing any of the following exits with status 1 and logs `lite config rejected`:
+  - `packager.engine` must be `native`;
+  - every channel must resolve to the `native` engine;
+  - `epg.enabled` must be `false`;
+  - `observe.otlp_endpoint` must be empty;
+  - `debug.pprof.enabled` must be `false`.
+- Resource adaptation uses a fixed low-memory profile instead of scaling with host memory.
+
+For route surface differences, see the [API reference](/en/reference/api/).
+
+## Helper scripts
+
+Three standalone tools live under `scripts/`. All carry a `//go:build ignore` tag, run directly with `go run`, and take no part in building the main binary.
+
+### Hash a password
+
+```bash
+go run scripts/hash-password.go 'your-password'
+```
+
+Prints a single bcrypt hash for `auth.users[].password_hash`. Passing anything other than exactly one argument prints usage and exits with status 2.
+
+<Aside type="caution" title="Leaves traces">
+The password appears in process arguments and shell history. On a shared host, disable history for the command first, or change credentials from the admin console instead.
+</Aside>
+
+### Generate session signing keys
+
+```bash
+go run scripts/gen-jwt-keys.go ./secrets
+```
+
+Writes the Ed25519 pair `ed25519.pem` and `ed25519.pub.pem` into the given directory and prints both paths. Omitting the directory writes to the current one. Point `auth.token_private_key_file` and `auth.token_public_key_file` at the results.
+
+Generating keys is optional: on first start the process creates a key pair under `{data_dir}/auth/` with the private key at mode `0600`. Use the script when keys need to be managed centrally, or when several instances must share one signing key.
+
+### Generate romanization data
+
+```bash
+go run scripts/gen-romanize-data.go
+go run scripts/gen-romanize-data.go -unihan ./Unihan.zip -out modules/httpserver/admin/assets/data/romanize.js
+```
+
+Builds the romanization and simplification tables the admin console uses for channel search, from the official Unicode Unihan data set.
+
+| Flag | Default | Purpose |
+| --- | --- | --- |
+| `-unihan` | empty | Path to a local Unihan.zip; downloaded from unicode.org when empty |
+| `-out` | `modules/httpserver/admin/assets/data/romanize.js` | Generated module path |
+
+The generated module exports the `PINYIN`, `JYUTPING`, and `SIMPLIFY` tables. This is a build-time, one-off step, only needed when tracking an upstream Unicode data update. Rebuild the admin console assets afterwards.
+
+## Related reading
+
+<CardGrid>
+  <Card title="Deployment" icon="ph:download">
+    Binary, container, and install-script paths in [Getting started](/en/start/).
+  </Card>
+  <Card title="Configuration" icon="ph:sliders">
+    Every config section and value in [Configuration](/en/reference/config/).
+  </Card>
+  <Card title="Operations" icon="ph:gear">
+    Process supervision, logging, and upgrades in [Operations](/en/guide/operations/).
+  </Card>
+</CardGrid>

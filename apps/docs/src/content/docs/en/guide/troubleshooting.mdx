@@ -1,0 +1,396 @@
+---
+title: Troubleshooting
+description: Diagnose Kiln by symptom, covering startup failures, playback auth, channels that will not start, stalled playback, high memory, stale EPG, proxies that do not apply, and container quirks.
+sidebar:
+  order: 11
+---
+
+Every section here follows the same shape: symptom, how to tell, what to do. Each one quotes the real log keywords and API messages so you can grep for them directly. Configuration details live in [Operations](/en/guide/operations/).
+
+<Aside type="tip" title="Start with two log lines">
+  Most problems are answered by the startup logs. `listening` means the HTTP server bound successfully, and the `kiln starting` record prints the version, config path, channel count, resource profile, `packager_engine`, `ffmpeg_available`, proxy count, and database path. Confirm both are present before digging further.
+</Aside>
+
+## Startup failures
+
+### Config validation rejected
+
+**Symptom**: the process exits immediately and the only log line is `config load failed`, with `err` and `config` fields.
+
+**How to tell**: the config is fully validated during load, and any failing check aborts startup. The `err` field is the reason. Common ones:
+
+| Message | Cause |
+| --- | --- |
+| `auth.users must not be empty` | No users configured |
+| `user "x" requires role` | A user is missing its `role` field |
+| `duplicate channel id "x"` | Two channels share an ID |
+| `channel "x" references unknown upstream "y"` | The channel points at an upstream that is not defined |
+| `channel "x" ingress must be hls or dash` | `ingress` accepts only those two values |
+| `channel "x" dash ingress requires global packager.keys_file` | An enabled DASH channel with no global key file |
+| `egress.default unknown proxy "x"` | The default egress route names an undefined `[[proxies]]` entry |
+| `egress.playlist_policy must be rewrite\|passthrough\|auto` | Invalid playlist policy |
+| `debug.pprof.listen must use a loopback IP` | The pprof listener is not on loopback |
+| `unsupported config extension "x"` | Only `.toml`, `.json`, and `.jsonc` are accepted |
+
+**Fix**: follow the message. One worth explaining is `auth requires token_private_key, token_private_key_file, or server.data_dir for auto-managed Ed25519 keys`, which means you need at least one of the three: inject an Ed25519 private key explicitly, or leave a data directory where Kiln can generate one.
+
+### Media key file rejected
+
+**Symptom**: `config load failed` with an `err` starting with `packager.keys_file:`.
+
+**How to tell**: the key file is validated in full at startup, line by line, and the first problem aborts the load. Messages carry the line number:
+
+- `line 3: expected kid:key`: the line has no colon.
+- `line 3: empty kid or key`: one side of the colon is blank.
+- `line 3: key must be 32 hex characters, got 30`: both the KID and the key must be 32 hex characters.
+- `line 3: key must not contain dashes`: dashes are allowed in the KID for grouping, but not in the key.
+- `line 3: kid is not hexadecimal`: a non-hex character crept in.
+- `line 3: KID has a conflicting key`: the same KID appears twice with different keys.
+- `no keys found`: the file contains only blank lines and comments.
+
+**Fix**: correct the file and restart. Keys are read once at startup, so edits do not take effect live. Relative paths resolve against the directory containing `kiln.toml`, not the working directory.
+
+### Port already in use
+
+**Symptom**: `listening` is immediately followed by `http server stopped` with `err` set to `listen tcp :8080: bind: address already in use`, and the process exits.
+
+**How to tell and fix**:
+
+```bash
+ss -ltnp | grep 8080
+```
+
+Either stop whatever holds the port or change `server.listen`, or override it temporarily with `KILN_LISTEN`. When running several instances on one host, remember that `data_dir` must be distinct as well, not just the port.
+
+### Data directory not writable
+
+**Symptom**: `create data dir failed` or `sqlite open failed`.
+
+**How to tell**: the systemd unit sets `ProtectSystem=strict`, which makes the whole filesystem read-only except for `ReadWritePaths=/var/lib/kiln`. Pointing `data_dir` anywhere else always fails.
+
+**Fix**: move `data_dir` back under `/var/lib/kiln` and make sure it is owned by the `kiln` user. In a read-only container, mount a writable volume at the data directory.
+
+### Lite refused the config
+
+**Symptom**: the `lite` variant exits at startup with a message naming an unavailable capability.
+
+**How to tell**: `lite` rejects out-of-scope configuration outright rather than ignoring it:
+
+- `packager.engine must be native in lite`
+- `channel "x" requires native packager engine`
+- `epg is not available in lite`
+- `OpenTelemetry export is not available in lite`
+- `pprof is not available in lite`
+
+**Fix**: remove the offending section, or switch to the `core` image.
+
+## Playback returns 401 or 403
+
+First confirm which credential you are using. Four credential types cover four surfaces, and mixing them up is the most common cause: public endpoints need none, session JWTs serve the admin UI, admin API tokens serve scripts, and path-style play keys serve player distribution. See [Authentication](/en/guide/auth/).
+
+| Status | Message | Meaning |
+| --- | --- | --- |
+| `401` | `invalid token` | Session JWT missing, malformed, or signed by a different key |
+| `401` | `token expired` | Session JWT aged out per `auth.token_ttl_hours`; log in again |
+| `401` | `invalid access token` | Path-style play key is unknown, disabled, revoked, or expired |
+| `403` | `channel not allowed` | Credential is valid but the user has no access to this channel |
+| `403` | `host not allowed` | The request `Host` header is not in `security.public_hosts` |
+| `403` | `API token permission denied` | The admin API token lacks the scope the route requires, or the route is session-only |
+
+### Wrong credential type
+
+**Symptom**: using an admin API token against `/v1/play/...`, or a session JWT against `/p/<token>/...`.
+
+**Fix**: playback accepts either a session JWT (on `/v1/play/...`) or a path-style play key (on `/p/<token>/...`). API tokens are for management endpoints, and some of those routes are marked session-only, which returns `403 API token permission denied` for a token.
+
+### play_require_auth
+
+**Symptom**: you disabled playback auth but the play endpoints still demand a credential.
+
+**How to tell**: `security.play_require_auth` defaults to on. A `play_require_auth = false` in the config file is only honored when the `KILN_PLAY_OPEN` environment variable is set; otherwise config loading forces the field back to `true`.
+
+**Fix**: set `KILN_PLAY_OPEN=1` in a debugging environment.
+
+<Aside type="danger" title="Never disable playback auth in production">
+  With it off, anyone can pull every stream. This is a debugging switch, not a deployment option.
+</Aside>
+
+### Host not on the allow list
+
+**Symptom**: after moving to a new domain or adding a reverse proxy, every endpoint returns `403 host not allowed`.
+
+**How to tell**: when `security.public_hosts` is set, middleware compares the request `Host` (port and brackets stripped) against each entry and rejects anything that does not match. A literal `*` allows everything. Loopback requests to `/healthz` and `/readyz` are exempt, so the telltale sign is a local probe returning 200 while every external request returns 403.
+
+**Fix**: add the public hostname to `public_hosts`. The reverse proxy must forward `Host` unchanged; rewriting it to the backend address produces the same 403.
+
+<Aside type="note" title="allowed_hosts is a different thing">
+  `security.public_hosts` governs how clients reach Kiln. `security.allowed_hosts` governs which upstreams Kiln may reach. They are unrelated and produce different errors.
+</Aside>
+
+## A channel will not start
+
+### Upstream unreachable
+
+**Symptom**: playback returns `502` with `upstream request failed` or `upstream status 403 Forbidden: ...`. The logs show `session restarting` with `attempt`, `delay`, and `err`; after 8 attempts it becomes `session restart budget exceeded` and the session goes to `failed`.
+
+**How to tell**: restart backoff starts at 2 seconds and caps at 30, and the counter resets after 90 seconds of stability. Repeated restarts mean the upstream really is not serving content, not that you hit a blip.
+
+**Fix**: verify reachability from the server itself, including the channel's configured `headers` and `user_agent`. If the upstream needs a proxy, see [Proxies do not apply](#proxies-do-not-apply) below.
+
+### Upstream host not allowlisted
+
+**Symptom**: `403` with `upstream host not allowed`, and an `err` like `private host not allowlisted: 192.168.1.10`.
+
+**How to tell**: outbound requests go through an SSRF check. Public hosts pass by default, but loopback and private-range addresses must be on the allow list, and cloud metadata addresses (`169.254.169.254`, for example) and link-local addresses are always rejected. The allow list is `security.allowed_hosts` plus every hostname declared under `upstreams` and `channels` in the config file.
+
+**Fix**: add the LAN origin's hostname or IP to `security.allowed_hosts` and restart. Private upstreams added later through the admin UI do not enter this set automatically.
+
+### The engine cannot handle this source
+
+**Symptom**: `502` with `engine=native but the source cannot be served natively`.
+
+**How to tell**: `engine = "native"` forbids fallback. When the native engine decides it cannot handle a source it fails outright instead of reaching for ffmpeg. The reason surfaces as `fallback_reason`: `multi_period` (multi-period MPD), `addressing_unsupported`, `manifest_codec_unsupported`, `no_video_representation`, `no_audio_representation`, `missing_key_for_kid`, or `manifest_kid_conflicts_with_tenc`.
+
+**Fix**: set that channel's `packager` to `auto` so it can fall back to the compatibility engine, which requires running the `full` variant with ffmpeg. Otherwise switch to a source the native engine handles.
+
+A related message is `native cannot handle this source and ffmpeg would decode it incorrectly`. In that case even `auto` will not fall back, because the compatibility engine's output would be wrong. Those sources have to be replaced.
+
+### ffmpeg unavailable
+
+**Symptom**: `503` with `ffmpeg compatibility engine is not available`, or, when a fallback was needed, `source requires ffmpeg compatibility, but the ffmpeg engine is not available`. `/readyz` returns `503` with code `not_ready` at the same time.
+
+**How to tell**: two startup-log fields answer this directly:
+
+```text
+packager_engine=auto ffmpeg_available=false
+```
+
+The dependency is probed once at startup. When it is missing, the log carries `ffmpeg compatibility engine unavailable` with `dependency` and `err` fields, where `err` reads like `find ffmpeg dependency "ffmpeg": exec: "ffmpeg": executable file not found in $PATH`.
+
+**Fix**:
+
+- The `core` and `lite` images do not ship ffmpeg. Use `full` if you need compatibility fallback.
+- Windows builds do not ship ffmpeg either. Install it and add it to `PATH`.
+- If `[ffmpeg].binary` points at a path that does not exist, use an absolute path or make sure the binary is on `PATH`.
+- With `[ffmpeg].mode = "docker"`, the probe targets the `docker` command itself. A host without a Docker client reports the engine as unavailable.
+
+### Missing decryption keys
+
+**Symptom**: `400` with `no global keys configured`, or a startup failure with `channel "x" dash ingress requires global packager.keys_file`.
+
+**Fix**: configure `[packager].keys_file` with one `kid:key` pair per line. The per-channel `keys` field has been removed; keys are global only.
+
+## Playback stalls mid-stream
+
+**Symptom**: the channel starts fine, then freezes after a few minutes. The logs show a session restart with `err` set to `no segment published for 3m0s while the manifest kept updating`.
+
+**How to tell**: this is the `packager.stall_timeout_sec` detector, 180 seconds by default. Its trigger is specific: the upstream manifest is still refreshing normally, **and** no track has produced a segment within the timeout window. Both conditions must hold.
+
+- A manifest that cannot be fetched at all (unreachable upstream) is not a stall. That path produces the upstream errors above.
+- As long as any single track is still advancing, it is not a stall.
+
+Once it fires, the session is treated as fatally failed and restarts, which re-resolves the manifest and re-selects tracks.
+
+**Fix**: an isolated occurrence usually means the upstream encoder hiccuped and the restart already recovered it, so no tuning is needed. Frequent hits mean the upstream keeps updating its manifest without publishing media, which has to be chased upstream. Raising `stall_timeout_sec` only delays recovery; it does not fix the cause.
+
+## Memory higher than expected
+
+**Symptom**: container RSS above what you budgeted, or the OOM killer stepping in.
+
+**How to tell**: confirm the profile and budgets that actually took effect from the startup log:
+
+```text
+resource_profile=standard resource_constrained=true
+effective_memory_mb=768 memory_limit_mb=192 effective_go_memory_limit_mb=192
+inflight_mb=64 max_segment_mb=32 gc_percent=100 drop_file_cache=true
+```
+
+Compare that against the profile table in [Operations](/en/guide/operations/). Three common misreadings:
+
+- These numbers bound the Go heap and the media working set. They are not a guarantee about total container RSS. SQLite, goroutine stacks, and kernel page cache all sit outside.
+- When the `full` image falls back to the compatibility engine it spawns an FFmpeg subprocess whose memory is entirely outside the Go soft limit. The `FFmpeg memory is outside the Go soft limit` warning exists to say so, with an `ffmpeg_scope` field distinguishing a subprocess from an external container. It is advisory only (`advisory_only=true`) and does not affect operation.
+- If `GOMEMLIMIT` is set, `server.memory_limit_mb` is no longer written to the Go soft target.
+
+**Fix**:
+
+- Lower `packager.inflight_bytes`. It is the shared cross-channel segment memory budget, so shrinking it lowers peak memory at the cost of slower cold starts on high-bitrate sources.
+- Run fewer concurrent channels, or reduce `start_segments` and `prefetch_segments`.
+- When you need a predictable per-process memory boundary, run the native engine in `core` or `lite` so no FFmpeg subprocess is involved.
+- To validate low-resource behavior, force the tightest profile with `KILN_RESOURCE_MODE=constrained`.
+
+## EPG will not refresh
+
+**Symptom**: the guide is empty or never updates.
+
+**How to tell**: check four things in order.
+
+<Steps>
+  <Step title="The master switch">
+    `[epg].enabled` must be `true`. The `lite` variant has no EPG at all and refuses to start when it is enabled.
+  </Step>
+  <Step title="Whether any source is enabled">
+    Built-in sources are all disabled by default and have to be enabled individually, in the admin UI or in the config. The `epg_sources` field in the startup log is the number of active sources; `0` means none are enabled.
+  </Step>
+  <Step title="Size limit">
+    An `EPG refresh failed` log whose `err` contains `EPG source exceeds decompressed size limit` means the decompressed XMLTV is larger than `epg.max_source_bytes`. The default cap is 64 MiB, but low-resource profiles pull it down to somewhere between 4 MiB and 64 MiB. The `epg_max_source_mb` field in the startup log is the value in force. Cached payloads over the limit are discarded the same way.
+  </Step>
+  <Step title="Proxy and network">
+    When the `err` on `EPG refresh failed` is a connection timeout or a TLS error, the source itself is unreachable. Each EPG source can name its own `proxy`; empty or `auto` means it follows the global egress rules.
+  </Step>
+</Steps>
+
+**Fix**: the disk cache defaults to `data_dir/epg`. It is fully rebuildable, so if you suspect corruption, delete the directory and restart. The refresh interval comes from `epg.refresh_interval_min`, 360 minutes by default; lowering it means watching out for upstream rate limits. See [EPG](/en/guide/epg/).
+
+## Proxies do not apply
+
+**Symptom**: a proxy is configured but traffic still goes direct, or a proxy-related error appears.
+
+### The rule never matched
+
+**How to tell**: routing walks the rules in ascending `priority` order, takes the first match, and falls back to `egress.default` when nothing matches. A lower `priority` number is evaluated first. Five rule kinds exist: `host_exact`, `host_suffix` (the default), `host_regex`, `channel_id`, and `url_regex`.
+
+`host_suffix` matches the hostname itself or any hostname ending in `.pattern`, not a plain substring. A pattern of `example.com` matches `edge.example.com` but not `notexample.com`.
+
+**Fix**: lower the `priority` of the more specific rule. Remember that host rules match the hostname, not the full URL; use `url_regex` for the latter.
+
+### The profile is missing or disabled
+
+**How to tell**: when a matched rule names a profile that does not exist or is disabled, the decision silently degrades to direct and `reason` becomes something like `host_suffix:example.com|missing-profile`. At startup, an `egress.default` pointing at an unknown profile fails hard with `egress.default references unknown proxy "x"`.
+
+**Fix**: check that the `id` under `[[proxies]]` matches exactly and that the profile is not disabled.
+
+### ffmpeg cannot use a SOCKS proxy
+
+**Symptom**: saving a channel's proxy binding is rejected with `FFmpeg cannot use a SOCKS proxy; choose HTTP, direct, or the native DASH engine`, or a session fails to start with `proxy "x" uses socks5, which ffmpeg cannot use`.
+
+**How to tell**: the compatibility engine passes the proxy to ffmpeg through the `HTTP_PROXY` family of environment variables, which only supports the `http` and `https` schemes. The native engine supports all four (`http`, `https`, `socks5`, `socks5h`).
+
+**Fix**: give that channel an HTTP proxy, or switch it to the native engine.
+
+### Container cannot reach a proxy on the host
+
+**Symptom**: Kiln runs in a container, the proxy runs on the host, and the compatibility engine cannot connect.
+
+**How to tell**: `http://127.0.0.1:7890` means the container's own loopback. Under `[ffmpeg].mode = "docker"`, Kiln rewrites `127.0.0.1`, `localhost`, and `::1` in the proxy URL to `egress.docker_proxy_host` (default `host.docker.internal`), preserving the port. The environment passed to ffmpeg also carries `NO_PROXY=localhost,127.0.0.1`.
+
+**Fix**: make sure `docker_proxy_host` resolves in your environment. Docker on Linux needs `--add-host=host.docker.internal:host-gateway`, or set the value to the host's address on the bridge network.
+
+The full routing model is documented in [Egress proxies](/en/guide/proxy/).
+
+## Container quirks
+
+### Detection picks the wrong profile
+
+**Symptom**: `resource_profile` in the startup log is not what you expected, or reads `configured`.
+
+**How to tell**: `configured` means memory detection returned nothing and profile selection was skipped entirely. Detection reads cgroup v2 `memory.max`, then cgroup v1 `memory.limit_in_bytes`, then `MemTotal` from `/proc/meminfo`, and takes the smallest positive value. Nested cgroups, unusual mount layouts, or simply not setting a memory limit can all leave it empty.
+
+**Fix**: override detection directly and skip the guesswork:
+
+```bash
+docker run --rm --cpus=1 --memory=192m --memory-swap=192m \
+  -e KILN_RESOURCE_MEMORY_MB=192 -e KILN_RESOURCE_CPUS=1 \
+  -v "$PWD/kiln.toml:/etc/kiln/kiln.toml:ro" \
+  ghcr.io/babywbx/kiln:core
+```
+
+After that, `effective_memory_mb` and `effective_cpu_milli` reflect exactly what you supplied. The verification procedure is in [Operations](/en/guide/operations/).
+
+### Read-only mounts
+
+**Symptom**: running with `--read-only` fails at startup with `create data dir failed`.
+
+**How to tell**: even `lite` writes an auto-generated login key and temporary media files. A read-only root filesystem needs a writable volume mounted at the data directory.
+
+**Fix**:
+
+```bash
+docker run --rm -p 8080:8080 --read-only \
+  --cap-drop=ALL --security-opt=no-new-privileges \
+  -v "$PWD/kiln.toml:/etc/kiln/kiln.toml:ro" \
+  -v kiln-lite-data:/var/lib/kiln \
+  ghcr.io/babywbx/kiln:lite
+```
+
+### Unknown runtime variant
+
+**Symptom**: an `unknown runtime variant; using standalone` warning with an `environment` field.
+
+**How to tell**: the `core` and `full` images set `KILN_RUNTIME_VARIANT` themselves, so this warning only appears when it was set manually to an unrecognized value. The `runtime_variant` field in the startup log is the value that took effect.
+
+**Fix**: do not set the variable by hand unless you are building your own image.
+
+### Health check never passes
+
+**How to tell**: `core` and `full` probe `/healthz` with `wget`. `lite` is built `FROM scratch` with no shell and no wget, so it uses the binary's own subcommand. Verify manually:
+
+```bash
+docker exec kiln wget -q -O /dev/null http://127.0.0.1:8080/healthz
+docker exec kiln kiln -healthcheck http://127.0.0.1:8080/healthz
+```
+
+If `/healthz` passes but `/readyz` does not, the compatibility engine is missing. Go back to [ffmpeg unavailable](#ffmpeg-unavailable).
+
+## Gathering diagnostics
+
+### Where the logs are
+
+| Deployment | Command |
+| --- | --- |
+| systemd | `journalctl -u kiln -f`, or `journalctl -u kiln --since "1 hour ago"` for history |
+| Docker | `docker logs -f kiln` |
+| Windows service | `kiln.log` in the config file's directory, previous generation in `kiln.log.1` |
+| Foreground | Straight to the terminal |
+
+### Raising verbosity
+
+The default level is `info`, which demotes `/healthz`, `/readyz`, `/`, and any path containing `/live/` or `/u/` to `debug` so they never appear. To see the full segment-request trail, raise the level temporarily:
+
+```bash
+KILN_LOG_LEVEL=debug KILN_LOG_FORMAT=json kiln -config /etc/kiln/kiln.toml
+```
+
+Under systemd use `systemctl edit kiln` and add `Environment=KILN_LOG_LEVEL=debug`; under Docker just pass `-e KILN_LOG_LEVEL=debug`. Turn it back down when you are done, because `debug` is very loud under load.
+
+Color is disabled automatically when output is redirected to a file. To strip ANSI sequences while still attached to a terminal, use `KILN_LOG_COLOR=never` or set `NO_COLOR`.
+
+### Collecting a pprof profile
+
+For memory or CPU anomalies, enable pprof briefly. The listener must be a loopback IP, and you should turn it off as soon as you have your profiles.
+
+<Steps>
+  <Step title="Enable">
+    Add the section and restart. Startup logs gain a `pprof listening` record.
+
+    ```toml
+    [debug.pprof]
+    enabled = true
+    listen = "127.0.0.1:6060"
+    ```
+  </Step>
+  <Step title="Collect">
+    For a remote host, forward the port first: `ssh -L 6060:127.0.0.1:6060 host`.
+
+    ```bash
+    go tool pprof http://127.0.0.1:6060/debug/pprof/heap
+    go tool pprof http://127.0.0.1:6060/debug/pprof/profile?seconds=30
+    go tool pprof http://127.0.0.1:6060/debug/pprof/block
+    go tool pprof http://127.0.0.1:6060/debug/pprof/mutex
+    ```
+  </Step>
+  <Step title="Disable">
+    Set `enabled` back to `false` and restart.
+  </Step>
+</Steps>
+
+### Which metrics to read first
+
+In `/metrics`, the rates of `kiln_packager_segment_fetch_errors_total` and `kiln_packager_manifest_errors_total` say the most about upstream health. `kiln_packager_cache_bytes` shows current segment cache usage, and the `state` label on `kiln_session_info` shows at a glance which sessions have gone to `failed`.
+
+### What to include in a bug report
+
+- The full output of `kiln -version`.
+- The entire `kiln starting` line from the startup logs.
+- Reproduction steps and the log excerpt covering that window. Strip play tokens and upstream credentials yourself. Kiln already truncates tokens in `/p/` paths to a prefix in its own logs, but config snippets and URLs you paste are not sanitized for you.
+
+Issues are tracked on [GitHub](https://github.com/babywbx/kiln).

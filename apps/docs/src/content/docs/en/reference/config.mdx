@@ -1,0 +1,322 @@
+---
+title: Configuration reference
+description: Every section and key in Kiln's configuration file, with types, defaults, constraints, and environment equivalents.
+sidebar:
+  order: 2
+---
+
+This page lists Kiln's configuration format section by section. The default column shows the value the code actually falls back to, which is not always the value the example files write out — the examples are a working starting point, not a list of defaults.
+
+## File format and loading
+
+Configuration comes in TOML or JSONC. The two formats carry identical keys and structure; the file extension picks the parser:
+
+- `.toml` is parsed as TOML.
+- `.json` and `.jsonc` are parsed as JSONC: `//` line comments, `/* */` block comments, and trailing commas in objects and arrays are stripped first, then the result is parsed as standard JSON. Those characters inside string literals are left alone.
+- Any other extension is rejected at startup, with the accepted extensions named in the error.
+
+`configs/examples/kiln.toml` and `configs/examples/kiln.jsonc` in the repository are the same configuration written both ways. Keep local, private configuration in `configs/local.toml`, which is already gitignored.
+
+The path is passed with `-config` and is mandatory; without it the process exits with code `2`:
+
+```bash
+kiln -config /etc/kiln/kiln.toml
+```
+
+<Aside type="note" title="Which relative paths get rewritten">
+  Only `packager.keys_file` resolves relative paths **against the directory holding the config file**. Every other path key (`server.data_dir`, `epg.cache_dir`, `auth.token_private_key_file`, and so on) is used as written, so relative values resolve **against the process working directory**. Under systemd or in a container the working directory is rarely what you assume, so prefer absolute paths for anything path-shaped.
+</Aside>
+
+### When configuration is read and validated
+
+Configuration is read once at startup and never reloaded; edits require a restart. Loading runs in a fixed order:
+
+<Steps>
+  <Step title="Parse">
+    Parse by extension. Syntax errors fail immediately.
+  </Step>
+  <Step title="Apply environment overrides">
+    Apply the `KILN_*` overrides, which at this stage outrank the matching keys in the file. See [/en/reference/env/](/en/reference/env/).
+  </Step>
+  <Step title="Fill defaults">
+    Fill in defaults for empty or non-positive values and normalize `[[channels]]`: lowercase `ingress`, force `restart_on_failure` for DASH channels, and set `on_demand` when neither `on_demand` nor `autostart` was set.
+  </Step>
+  <Step title="Resolve and load the key file">
+    Resolve `packager.keys_file` to an absolute path, then read and validate it in full. A failure here is a startup failure.
+  </Step>
+  <Step title="Validate">
+    Run every structural check. Any failure prints the reason and exits with code `1`.
+  </Step>
+</Steps>
+
+Resource adaptation runs after validation. Based on detected memory and CPU ceilings it overrides `server.memory_limit_mb`, `packager.inflight_bytes`, `packager.max_segment_bytes`, `packager.start_segments`, `packager.prefetch_segments`, `epg.max_refresh_concurrency`, and `epg.max_source_bytes` — **only downward, never upward**. The startup log prints the resulting values.
+
+### What lives in the config file and what lives in the database
+
+`[[channels]]`, `[[proxies]]`, and `[[egress.rules]]` seed the SQLite database under `server.data_dir` only while the corresponding table is empty. After that the admin surface owns them, and editing the config file no longer overwrites them. `egress.default`, `egress.playlist_policy`, `egress.docker_proxy_host`, and `server.public_base_url` are written with insert-if-absent semantics, so they too only apply on first run. `[[upstreams]]`, `[auth]`, and the remaining global keys are always taken from the file, though the username and password of an entry in `[[auth.users]]` can be changed from the admin surface and stored as a database override.
+
+## `[server]`
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `listen` | string | `"0.0.0.0:8080"` | HTTP listen address. Environment equivalent: `KILN_LISTEN`. |
+| `public_base_url` | string | `"http://127.0.0.1:8080"` | Externally reachable base URL used to build playback and other outward links. A trailing slash is trimmed. Environment equivalent: `KILN_PUBLIC_BASE_URL`. |
+| `data_dir` | string | `"./data"` | Data directory holding SQLite, auto-generated signing keys, and the default EPG cache. Created with mode `0750` at startup. Environment equivalent: `KILN_DATA_DIR`. |
+| `resource_mode` | string | `"auto"` | Resource adaptation mode; one of `auto`, `performance`, `constrained`. Anything else fails validation. Environment equivalent: `KILN_RESOURCE_MODE`. |
+| `read_timeout_sec` | int | `15` | HTTP read timeout in seconds. Non-positive values fall back to the default. |
+| `write_timeout_sec` | int | `0` | HTTP write timeout in seconds; `0` means no write timeout. A write timeout cuts long-lived streaming responses, so leave it at `0` unless you specifically need one. |
+| `idle_timeout_sec` | int | `120` | HTTP idle timeout in seconds. Non-positive values fall back to the default. |
+| `memory_limit_mb` | int | `0` | Go soft memory target in MiB; `0` leaves it unset. Negative or absurdly large values fail validation. Applied only when `GOMEMLIMIT` is unset. |
+
+### The three resource modes
+
+- `auto` first picks an internal profile from effective memory (compact below 256 MiB, balanced below 512 MiB, standard below 1 GiB, configured values kept at 1 GiB and above), then applies a CPU ceiling independently to pipeline depth and EPG concurrency.
+- `constrained` skips detection and applies the tightest compact budget outright.
+- `performance` opts out of adaptation entirely; configured values are used as written.
+
+In every mode the adjustment is one-way: adaptation lowers what you configured and never raises a smaller value. Per-profile budgets, the CPU ceiling rules, and the fixed Lite profile are covered in [/en/guide/variants/](/en/guide/variants/).
+
+## `[logging]`
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `level` | string | `"info"` | Log level. Recognizes `debug`, `info`, `warn`, `error` and common aliases; unrecognized values fall back to `info`. Environment equivalent: `KILN_LOG_LEVEL`. |
+| `format` | string | `"text"` | Output format. `json` selects the structured handler; anything else is treated as console text. Environment equivalent: `KILN_LOG_FORMAT`. |
+| `color` | string | `"auto"` | Coloring policy. `always` forces color, `never` disables it, anything else behaves as `auto`, which colors only when the output is a terminal and `NO_COLOR` is unset. Only meaningful for `text`. Environment equivalent: `KILN_LOG_COLOR`. |
+
+## `[auth]`
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `token_private_key` | string | `""` | Inline Ed25519 private key PEM. Environment equivalent: `KILN_TOKEN_PRIVATE_KEY`. |
+| `token_public_key` | string | `""` | Inline Ed25519 public key PEM, used only to cross-check the private key. A mismatch fails startup. Environment equivalent: `KILN_TOKEN_PUBLIC_KEY`. |
+| `token_private_key_file` | string | `""` | Path to a private key PEM, read when the inline private key is empty. Environment equivalent: `KILN_TOKEN_PRIVATE_KEY_FILE`. |
+| `token_public_key_file` | string | `""` | Path to a public key PEM, read when the inline public key is empty. Environment equivalent: `KILN_TOKEN_PUBLIC_KEY_FILE`. |
+| `token_issuer` | string | `"kiln"` | `iss` claim of the session JWT. |
+| `token_audience` | string | `"kiln"` | `aud` claim of the session JWT. |
+| `token_ttl_hours` | int | `24` | Session JWT lifetime in hours. Non-positive values fall back to the default. |
+| `login_rate_per_min` | int | `20` | Per-minute rate limit on the login endpoint. Non-positive values fall back to the default. |
+| `users` | array | Required | User table, see `[[auth.users]]` below. An empty table fails validation. |
+
+Signing keys are resolved in order: inline private key, private key file, `{data_dir}/auth/ed25519.pem`. In the last case, if the file does not exist Kiln generates a key pair and writes `{data_dir}/auth/ed25519.pem` and `{data_dir}/auth/ed25519.pub.pem`. At least one of `token_private_key`, `token_private_key_file`, or `server.data_dir` must therefore be set, or validation fails. Key material must be valid Ed25519 PEM; a wrong length or a public key that does not match the private key fails startup.
+
+## `[[auth.users]]`
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `username` | string | Required | Login name. Empty or duplicated names fail validation. |
+| `password_hash` | string | Required | bcrypt password hash. Empty fails validation. |
+| `role` | string | Required | Role; empty fails validation. `admin` is the only privileged role and reaches every admin endpoint. Every other value is treated as a restricted role. |
+| `channel_ids` | array of string | `[]` | Channel allowlist for a restricted role. Empty means all channels. `admin` is not constrained by it. |
+
+Changing a username or password from the admin surface writes an override row keyed by the original config username; the config file itself is never rewritten. The full authentication model is in [/en/guide/auth/](/en/guide/auth/).
+
+## `[security]`
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `play_require_auth` | bool | `true` | Whether playback endpoints require credentials. |
+| `allowed_hosts` | array of string | `[]` | Extra hosts allowed for outbound fetches. Hosts from upstream `base_url` and channel `source_url` are added automatically, so this only needs hosts the config does not already imply. |
+| `public_hosts` | array of string | `[]` | Inbound `Host` allowlist. Empty means no restriction; `*` allows everything. `/healthz` and `/readyz` from a loopback client are always exempt. |
+| `cors_origins` | array of string | `[]` | Allowed cross-origin origins. Empty means no CORS headers are emitted at all. `*` is echoed back literally only when it is the single entry; otherwise the matched origin is echoed with `Vary: Origin`. |
+| `max_playlist_bytes` | int64 | `8388608` | Byte ceiling for a fetched playlist. Non-positive values fall back to the default. |
+| `max_body_bytes` | int64 | `1048576` | Byte ceiling for admin request bodies. Non-positive values fall back to the default. A few bulk endpoints multiply it. |
+
+<Aside type="caution" title="play_require_auth can only be turned off from the environment">
+  While defaults are being filled in, `play_require_auth` is forced back to `true` whenever `KILN_PLAY_OPEN` is unset. Setting `play_require_auth = false` in the file alone therefore has no effect: disabling playback authentication requires `KILN_PLAY_OPEN=1`, and that switch belongs in debugging environments only.
+</Aside>
+
+The outbound allowlist sits on top of a fixed guard that no configuration relaxes: link-local, unspecified, multicast, and cloud metadata addresses are always refused, and loopback or private addresses must appear in the allowlist to be reachable.
+
+## `[packager]`
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `engine` | string | `"auto"` | Default packaging engine; one of `auto`, `native`, `ffmpeg`. Anything else fails validation. `auto` prefers native and falls back to ffmpeg for unsupported sources, `native` never falls back, `ffmpeg` always remuxes. When left empty, the value comes from `KILN_DEFAULT_PACKAGER_ENGINE`. |
+| `keys_file` | string | `""` | Path to the global `kid:key` catalog. Relative paths resolve against the config file's directory. |
+| `playlist_size` | int | `8` | Segments retained in the output playlist. Non-positive values fall back to the default. |
+| `ll_hls` | bool | `false` | Enables CMAF parts, delta playlists, and blocking reload. The example config turns it on, but the underlying default is off. |
+| `part_target_ms` | int | `500` | LL-HLS part target in milliseconds. Must be between `100` and `5000`, otherwise validation fails. |
+| `start_segments` | int | `3` | Segments prepared during cold start. Non-positive values fall back to the default. Resource adaptation may lower it. |
+| `prefetch_segments` | int | `3` | Segments prefetched in steady state. Non-positive values fall back to the default. Resource adaptation may lower it. |
+| `max_segment_bytes` | int64 | `33554432` | Byte ceiling for a single segment; anything larger is treated as a fault. Non-positive values fall back to the default. Resource adaptation may lower it. |
+| `grace_sec` | int | `30` | Grace period, in seconds, during which a segment remains fetchable after leaving the playlist. Non-positive values fall back to the default. |
+| `primary_track_hold_sec` | int | `12` | How far, in media seconds, audio may run ahead of video. Non-positive values fall back to the default. It bounds playlist window advancement, not A/V sync. |
+| `stall_timeout_sec` | int | `180` | Fails a publication whose manifest keeps updating while nothing reaches the playlist. `-1` disables it; `0` falls back to the default. An unreachable upstream is a different case and keeps retrying. |
+| `inflight_bytes` | int64 | `100663296` | Segment memory budget shared across all channels, in bytes. Non-positive values fall back to the default. Resource adaptation may lower it. |
+
+### The inflight_bytes trade-off
+
+This value is what decides peak memory. A single 4K segment is tens of megabytes, so the budget is counted in bytes rather than segments — otherwise memory would become a function of the source bitrate. What it buys is cold-start latency and nothing else: in steady state each track pulls one segment per refresh and never approaches the budget. Lowering it reduces resident memory at the cost of how quickly a 4K channel produces its first playlist.
+
+### How keys_file is loaded and validated
+
+`keys_file` is read and validated in full once at startup. A single bad line fails the boot:
+
+- One `kid:key` pair per line. Blank lines and lines starting with `#` are ignored.
+- A missing colon, an empty `kid`, or an empty `key` is reported with the line number.
+- `kid` must be 32 hexadecimal characters and may be written in dashed UUID form; dashes are removed before comparison.
+- `key` must be 32 hexadecimal characters and must not contain dashes.
+- A repeated `kid` is ignored when the key matches and rejected when it does not.
+- The file must yield at least one pair.
+
+Both `kid` and `key` are normalized by removing dashes and lowercasing. Keys never appear in the admin API, and edits require a restart. Any DASH channel that is not disabled requires a non-empty global catalog, or validation fails. Engine selection and media handling are covered in [/en/guide/media-engine/](/en/guide/media-engine/).
+
+## `[ffmpeg]`
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `mode` | string | `"native"` | Execution mode. `native` runs a local binary, `docker` lets Kiln launch a given image. Anything else fails validation. |
+| `binary` | string | `"ffmpeg"` | Executable name or path used in `native` mode. |
+| `docker_image` | string | `"kiln:local"` | Image used in `docker` mode; ignored otherwise. |
+| `hls_time` | int | `2` | Target segment duration in seconds for remuxed output. Non-positive values fall back to the default. |
+| `hls_list_size` | int | `8` | Segments retained in remuxed output playlists. Non-positive values fall back to the default. |
+| `log_level` | string | `"error"` | Log level passed to ffmpeg. |
+| `prefer_height` | int | `0` | Global preferred video height; `0` means no preference. A positive per-channel `prefer_height` overrides it. |
+| `low_latency` | bool | `false` | Enables the low-latency output arguments. |
+| `max_starts` | int | `0` | Ceiling on concurrent ffmpeg launches; non-positive values behave as `1`. It covers the launch only, not the readiness wait, so a slow source does not block other channels' cold start. |
+
+## `[observe]`
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `enabled` | bool | `true` | Whether `/metrics` is served. It is forced to `true` while defaults are filled in, so writing `false` in the config has no effect. |
+| `otlp_endpoint` | string | `""` | OTLP/HTTP trace export endpoint; empty disables export. When set it must be an absolute `http` or `https` URL with a host, otherwise validation fails. |
+| `otlp_insecure` | bool | `false` | Whether insecure transport is allowed for export. |
+| `trace_sample_ratio` | float | `1` | Sampling ratio, constrained to `0` through `1`. Non-positive values are rewritten to `1` while defaults are filled in. |
+| `service_name` | string | `"kiln"` | `service.name` reported to OTLP. |
+
+## `[debug.pprof]`
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `enabled` | bool | `false` | Whether the dedicated pprof server starts. When off, no listener is created at all. |
+| `listen` | string | `"127.0.0.1:6060"` | pprof listen address. When enabled it must parse as host and port, and the host must be a loopback IP, otherwise validation fails. |
+
+pprof uses its own listener and mux and is never mounted on the public server. Turn it on only while collecting CPU, heap, block, or mutex profiles. Diagnostic workflows live in [/en/guide/troubleshooting/](/en/guide/troubleshooting/).
+
+## `[epg]`
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `enabled` | bool | `false` | On the Lite variant, `true` refuses to start. The Full and Core variants do not read this key; whether EPG produces output depends on having at least one enabled source. |
+| `cache` | bool | `true` | Whether the guide cache is used. Omitting the key means enabled. |
+| `cache_dir` | string | `"{data_dir}/epg"` | Cache directory. `memory` or `:memory:` switches to an in-memory store; any other value is treated as a directory path. |
+| `refresh_interval_min` | int | `360` | Refresh interval in minutes. Non-positive values fall back to the default. |
+| `max_refresh_concurrency` | int | `0` | Ceiling on sources refreshed concurrently; `0` means unlimited (every source in one pass). Negative values fail validation. Resource adaptation may lower it, including tightening `0` into a concrete number. |
+| `max_source_bytes` | int64 | `67108864` | Byte ceiling per source; larger payloads are rejected. Non-positive values fall back to the default. Resource adaptation may lower it. |
+| `default_timezone` | string | `"UTC"` | Timezone used when a source declares none. Must be a loadable timezone name, otherwise validation fails. |
+| `serve_timezone` | string | `"keep"` | Output timezone policy. Only `keep` is accepted, meaning timestamps are served as-is. |
+| `sources` | array | `[]` | Guide sources, see `[[epg.sources]]` below. |
+
+## `[[epg.sources]]`
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `id` | string | Required | Source identifier. Empty or duplicated values fail validation. |
+| `name` | string | `""` | Display name. |
+| `url` | string | `""` | XMLTV address. When set it must be an absolute `http` or `https` URL with a host. |
+| `timezone` | string | `""` | Timezone for this source; must be loadable when set. Empty falls back to `epg.default_timezone`. |
+| `proxy` | string | `"direct"` | Outbound route: `direct`, `auto`, or a `[[proxies]]` id. Unknown values fail validation. Empty is filled in as `direct`. |
+| `enabled` | bool | `false` | Whether the source participates in refreshes. |
+
+Channel matching and how built-in sources are handled are covered in [/en/guide/epg/](/en/guide/epg/).
+
+## `[[proxies]]`
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `id` | string | Required | Route identifier, referenced by `egress.default`, `[[egress.rules]]`, `[[upstreams]]`, and `[[epg.sources]]`. `direct` is reserved and means no proxy. |
+| `name` | string | `""` | Display name. |
+| `url` | string | Required | Proxy address. Schemes are limited to `http`, `https`, `socks5`, `socks5h` — for example `http://127.0.0.1:7890` or `socks5h://127.0.0.1:7891`. |
+| `disabled` | bool | `false` | Whether the route is inactive. A disabled route takes no traffic, and decisions pointing at it fall back to direct. |
+
+## `[egress]`
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `default` | string | `"direct"` | Route used when no rule matches. Must be `direct` or a defined `[[proxies]]` id, otherwise validation fails. |
+| `playlist_policy` | string | `"rewrite"` | Playlist URL rewriting policy; one of `rewrite`, `passthrough`, `auto`. Anything else fails validation. `rewrite` always rewrites to a Kiln-relative URL, `passthrough` always keeps the original, `auto` rewrites only when a proxy was actually used. |
+| `docker_proxy_host` | string | `"host.docker.internal"` | Hostname substituted when a container reaches a proxy on the host. |
+| `rules` | array | `[]` | Routing rules, see `[[egress.rules]]` below. |
+
+## `[[egress.rules]]`
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `id` | string | `""` | Rule identifier. When empty, seeding generates `rule-1`, `rule-2`, and so on. |
+| `priority` | int | `0` | Match order; lower runs first and the first match wins. |
+| `kind` | string | `"host_suffix"` | Match type; one of `host_suffix`, `host_exact`, `host_regex`, `channel_id`, `url_regex`. Empty behaves as `host_suffix`. |
+| `pattern` | string | `""` | Match input. Except for `channel_id`, a rule with an empty pattern is skipped. Regex kinds compile with Go's regexp syntax; a compile failure counts as no match. |
+| `proxy` | string | Required | Route used on a match. Must be `direct` or a defined `[[proxies]]` id; empty or unknown fails validation. |
+| `disabled` | bool | `false` | Whether the rule is inactive. |
+
+Route selection, rewriting policies, and container scenarios are covered in [/en/guide/proxy/](/en/guide/proxy/).
+
+## `[[upstreams]]`
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `id` | string | Required | Upstream identifier referenced by a channel's `upstream`. Empty fails validation. |
+| `base_url` | string | Required | Upstream base address. Must parse as an absolute URL; empty or malformed fails validation. Its hostname joins the outbound allowlist automatically. |
+| `proxy` | string | `""` | Proxy dedicated to this upstream. When set it must parse as an absolute URL — note this is a full URL, not a `[[proxies]]` id. |
+| `headers` | table | `{}` | Fixed headers added to requests toward this upstream. |
+
+## `[[channels]]`
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `id` | string | Required | Channel identifier. Empty, `.`, `..`, path separators, control characters, and duplicates all fail validation. |
+| `title` | string | `""` | Display name. |
+| `group` | string | `""` | Group label used in playlists and the admin UI. |
+| `logo_url` | string | `""` | Logo address. |
+| `epg_id` | string | `""` | Identifier matched exactly against the channel id in XMLTV. |
+| `epg_name` | string | `""` | Name used when matching XMLTV channels by name; falls back to `title` when empty. |
+| `epg_source` | string | `""` | Restricts matching to one `[[epg.sources]]` id. |
+| `source_url` | string | `""` | Absolute source address. When set it must be `http` or `https`, carry a host, and contain no fragment; `upstream` and `path` are then unnecessary. |
+| `upstream` | string | Conditional | The `[[upstreams]]` id to use. Required and must exist when `source_url` is absent, otherwise validation fails. |
+| `path` | string | Conditional | Path appended to the upstream `base_url`. Required when `source_url` is absent. |
+| `ingress` | string | `"hls"` | Source type; `hls` or `dash`, lowercased before validation. Anything else fails validation. |
+| `disabled` | bool | `false` | Whether the channel is inactive. A disabled DASH channel no longer requires the global key catalog. |
+| `on_demand` | bool | `true` | Whether the channel pulls on demand. When both `on_demand` and `autostart` are `false`, defaults set `on_demand` to `true`. |
+| `autostart` | bool | `false` | Whether the channel starts pulling at boot. |
+| `idle_timeout_sec` | int | `90` | Seconds a session survives with no viewers. Non-positive values fall back to the default. |
+| `max_viewers` | int | `0` | Concurrent viewer ceiling; `0` means unlimited. |
+| `user_agent` | string | `""` | User-Agent used when fetching this channel. |
+| `headers` | table | `{}` | Fixed headers added when fetching this channel. |
+| `restart_on_failure` | bool | `false` | Whether the session restarts after a failure. Channels with `ingress = "dash"` are forced to `true`. |
+| `prefer_height` | int | `0` | Preferred video height; `0` inherits `ffmpeg.prefer_height`. |
+| `preferred_audio_languages` | array of string | `[]` | Audio language preference, applied in order. A non-empty `selection.audio.preferred_languages` takes precedence. |
+| `packager` | string | `""` | Packaging engine for this channel; empty inherits `packager.engine`. When set it must be `auto`, `native`, or `ffmpeg`. |
+| `selection` | table | `{}` | Fine-grained track selection, see below. |
+
+### `[channels.selection]`
+
+Selection is split into video, audio, and subtitles. Each group has a `mode` and a `track` selector.
+
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `video.mode` | string | `""` | One of `auto`, `cap`, `exact`; empty behaves as `auto`. `exact` requires at least one field in `video.track`, otherwise validation fails. |
+| `video.max_height` | int | `0` | Video height ceiling. A positive value overrides `prefer_height`. |
+| `video.max_frame_rate` | string | `""` | Frame rate ceiling. Currently only length- and control-character-validated; it does not yet influence selection. |
+| `video.track` | table | `{}` | Video track selector, fields below. |
+| `audio.mode` | string | `""` | One of `auto`, `prefer`, `only`; empty behaves as `auto`. `only` requires at least one field in `audio.track`, otherwise validation fails. |
+| `audio.preferred_languages` | array of string | `[]` | Audio language preference. Empty falls back to the channel-level `preferred_audio_languages`. |
+| `audio.track` | table | `{}` | Audio track selector. |
+| `subtitles.mode` | string | `""` | One of `auto`, `off`, `prefer`, `only`; empty behaves as `auto`. Both `prefer` and `only` require at least one field in `subtitles.track`. |
+| `subtitles.track` | table | `{}` | Subtitle track selector. |
+
+All three selectors share the same fields, and any non-empty field counts as specified:
+
+| Key | Type | Description |
+| --- | --- | --- |
+| `key` | string | Unique track key. |
+| `adaptation_set_id` | string | DASH AdaptationSet id. |
+| `representation_id` | string | DASH Representation id. |
+| `language` | string | Language code. |
+| `role` | string | Track role. |
+| `codec` | string | Codec identifier. |
+| `height` | int | Video height; only a positive value counts as specified. |
+| `frame_rate` | string | Frame rate. |
+
+Every string field is limited to 512 characters and must contain no control characters, otherwise validation fails. With the `ffmpeg` engine, a `subtitles.mode` of `prefer` or `only` fails validation outright — only `auto` and `off` are available there. Channel fields and selection in practice are covered in [/en/guide/channels/](/en/guide/channels/).

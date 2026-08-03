@@ -1,0 +1,322 @@
+---
+title: 配置参考
+description: Kiln 配置文件的全部配置节与键，含类型、默认值、约束与环境变量等价项。
+sidebar:
+  order: 2
+---
+
+本页按配置节逐键列出 Kiln 的配置文件格式。默认值一栏写的是源码中实际生效的值，可能与示例文件里写出的值不同：示例文件是一份可用的起点，不是默认值清单。
+
+## 文件格式与加载
+
+配置文件支持 TOML 与 JSONC 两种格式，键名与结构完全等价，解析器由文件扩展名决定：
+
+- `.toml` 走 TOML 解析。
+- `.json` 与 `.jsonc` 走 JSONC 解析，先剥离 `//` 行注释、`/* */` 块注释与对象和数组的尾随逗号，再按标准 JSON 解析。字符串字面量内的这些字符不受影响。
+- 其它扩展名直接报错退出，错误信息会提示可用扩展名。
+
+仓库里的 `configs/examples/kiln.toml` 与 `configs/examples/kiln.jsonc` 是同一份配置的两种写法。本地私有配置建议放 `configs/local.toml`，该路径已在 `.gitignore` 中。
+
+配置路径通过 `-config` 指定，且是必填项，不提供时进程以退出码 `2` 结束：
+
+```bash
+kiln -config /etc/kiln/kiln.toml
+```
+
+<Aside type="note" title="相对路径的解析范围">
+  只有 `packager.keys_file` 的相对路径按**配置文件所在目录**解析。其余路径类的键（`server.data_dir`、`epg.cache_dir`、`auth.token_private_key_file` 等）不做重写，相对路径按**进程工作目录**解析。以 systemd 或容器方式运行时，工作目录未必是你以为的那个，路径类的键建议一律写绝对路径。
+</Aside>
+
+### 加载与校验时机
+
+配置在进程启动时一次性读取，之后不再重载，修改配置文件需要重启。加载按固定顺序执行：
+
+<Steps>
+  <Step title="解析">
+    按扩展名解析文件，语法错误直接失败。
+  </Step>
+  <Step title="环境变量覆盖">
+    应用 `KILN_*` 覆盖，此时环境变量的优先级高于文件中的对应键。详见 [/reference/env/](/reference/env/)。
+  </Step>
+  <Step title="填充默认值">
+    为空值或非正数的键填入默认值，同时对 `[[channels]]` 做归一化（`ingress` 转小写、DASH 频道强制 `restart_on_failure`、既未设 `on_demand` 也未设 `autostart` 时补 `on_demand`）。
+  </Step>
+  <Step title="解析并加载密钥文件">
+    把 `packager.keys_file` 解析为绝对路径并完整读取校验，失败即失败。
+  </Step>
+  <Step title="校验">
+    执行全部结构性校验，任何一条不通过都会打印错误并以退出码 `1` 结束。
+  </Step>
+</Steps>
+
+校验通过之后，资源自适应才开始工作：它会依据探测到的内存与 CPU 上限，**只下压不上调**地覆盖 `server.memory_limit_mb`、`packager.inflight_bytes`、`packager.max_segment_bytes`、`packager.start_segments`、`packager.prefetch_segments`、`epg.max_refresh_concurrency` 与 `epg.max_source_bytes`。启动日志会打印生效后的实际值。
+
+### 配置与数据库的分工
+
+`[[channels]]`、`[[proxies]]` 与 `[[egress.rules]]` 只在对应数据表为空时作为首次启动的种子写入 `server.data_dir` 下的 SQLite，之后管理端的改动以数据库为准，再改配置文件不会覆盖它们。`egress.default`、`egress.playlist_policy`、`egress.docker_proxy_host` 与 `server.public_base_url` 以「不存在才写入」的方式落库，同样只在首次生效。`[[upstreams]]`、`[auth]` 与其余全局键始终以配置文件为准，其中 `[[auth.users]]` 的用户名与密码可以被管理端改写并存入数据库覆盖表。
+
+## `[server]`
+
+| 键 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `listen` | string | `"0.0.0.0:8080"` | HTTP 服务监听地址。等价环境变量 `KILN_LISTEN`。 |
+| `public_base_url` | string | `"http://127.0.0.1:8080"` | 对外可访问的基础 URL，用于生成播放地址等外部链接，尾部斜杠会被去掉。等价环境变量 `KILN_PUBLIC_BASE_URL`。 |
+| `data_dir` | string | `"./data"` | 数据目录，存放 SQLite、自动生成的签名密钥与默认的 EPG 缓存，启动时以 `0750` 创建。等价环境变量 `KILN_DATA_DIR`。 |
+| `resource_mode` | string | `"auto"` | 资源自适应模式，取值 `auto`、`performance`、`constrained`，其它值校验失败。等价环境变量 `KILN_RESOURCE_MODE`。 |
+| `read_timeout_sec` | int | `15` | HTTP 读超时秒数，非正数按默认值处理。 |
+| `write_timeout_sec` | int | `0` | HTTP 写超时秒数，`0` 表示不设写超时。直播长连接会被写超时切断，除非明确需要否则保持 `0`。 |
+| `idle_timeout_sec` | int | `120` | HTTP 空闲连接超时秒数，非正数按默认值处理。 |
+| `memory_limit_mb` | int | `0` | Go 运行时软内存目标，单位 MiB，`0` 表示不设置。负数与超大值校验失败。仅在 `GOMEMLIMIT` 未设置时应用。 |
+
+### resource_mode 的三态语义
+
+- `auto`：先按探测到的有效内存挑选内部档位（低于 256 MiB 用 compact，低于 512 MiB 用 balanced，低于 1 GiB 用 standard，1 GiB 及以上保持配置值），再独立按有效 CPU 收紧流水线深度与 EPG 并发。
+- `constrained`：跳过探测，直接套用最紧的 compact 预算。
+- `performance`：完全退出自适应，配置值原样生效。
+
+三种模式下的下压都是单向的：自适应只会把你配置的数值调小，不会把更小的数值调大。档位对应的具体预算、CPU 上限规则与 Lite 变体的固定档位见 [/guide/variants/](/guide/variants/)。
+
+## `[logging]`
+
+| 键 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `level` | string | `"info"` | 日志级别，识别 `debug`、`info`、`warn`、`error` 及其常见别名，无法识别的值回落到 `info`。等价环境变量 `KILN_LOG_LEVEL`。 |
+| `format` | string | `"text"` | 输出格式，`json` 走结构化 JSON 处理器，其余值都按控制台文本处理。等价环境变量 `KILN_LOG_FORMAT`。 |
+| `color` | string | `"auto"` | 着色策略，`always` 强制着色，`never` 关闭，其余值按 `auto` 处理，即输出为终端且未设 `NO_COLOR` 时着色。仅对 `text` 格式有意义。等价环境变量 `KILN_LOG_COLOR`。 |
+
+## `[auth]`
+
+| 键 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `token_private_key` | string | `""` | 直接内联 Ed25519 私钥 PEM 内容。等价环境变量 `KILN_TOKEN_PRIVATE_KEY`。 |
+| `token_public_key` | string | `""` | 内联 Ed25519 公钥 PEM，仅用于与私钥比对，不匹配则启动失败。等价环境变量 `KILN_TOKEN_PUBLIC_KEY`。 |
+| `token_private_key_file` | string | `""` | 私钥 PEM 文件路径，在内联私钥为空时读取。等价环境变量 `KILN_TOKEN_PRIVATE_KEY_FILE`。 |
+| `token_public_key_file` | string | `""` | 公钥 PEM 文件路径，在内联公钥为空时读取。等价环境变量 `KILN_TOKEN_PUBLIC_KEY_FILE`。 |
+| `token_issuer` | string | `"kiln"` | 会话 JWT 的 `iss`。 |
+| `token_audience` | string | `"kiln"` | 会话 JWT 的 `aud`。 |
+| `token_ttl_hours` | int | `24` | 会话 JWT 有效期小时数，非正数按默认值处理。 |
+| `login_rate_per_min` | int | `20` | 登录接口每分钟限流阈值，非正数按默认值处理。 |
+| `users` | array | 必填 | 用户表，见下方 `[[auth.users]]`，为空时校验失败。 |
+
+签名密钥按以下顺序解析：内联私钥、私钥文件、`{data_dir}/auth/ed25519.pem`。最后一条在文件不存在时会自动生成一对密钥并写入 `{data_dir}/auth/ed25519.pem` 与 `{data_dir}/auth/ed25519.pub.pem`。因此 `token_private_key`、`token_private_key_file` 与 `server.data_dir` 三者至少要有一个非空，否则校验失败。密钥内容必须是合法的 Ed25519 PEM，长度不符或公私钥不匹配都会导致启动失败。
+
+## `[[auth.users]]`
+
+| 键 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `username` | string | 必填 | 登录名，为空或在表内重复都会校验失败。 |
+| `password_hash` | string | 必填 | bcrypt 密码哈希，为空校验失败。 |
+| `role` | string | 必填 | 角色，为空校验失败。`admin` 是唯一的特权角色，可访问全部管理接口；其它取值一律按受限角色处理。 |
+| `channel_ids` | array of string | `[]` | 受限角色可见的频道 ID 白名单，留空表示全部频道。`admin` 不受此项约束。 |
+
+管理端修改用户名或密码时，改动写入数据库覆盖表并按配置中的原始用户名做关联，配置文件本身不会被改写。鉴权模型的完整说明见 [/guide/auth/](/guide/auth/)。
+
+## `[security]`
+
+| 键 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `play_require_auth` | bool | `true` | 播放接口是否要求鉴权。 |
+| `allowed_hosts` | array of string | `[]` | 出站抓取的额外主机白名单。上游 `base_url` 与频道 `source_url` 的主机会自动并入，因此这里只需补充配置未覆盖的主机。 |
+| `public_hosts` | array of string | `[]` | 入站请求的 `Host` 白名单，留空表示不限制，`*` 表示全部放行。来自回环地址的 `/healthz` 与 `/readyz` 不受限制。 |
+| `cors_origins` | array of string | `[]` | 允许的跨域来源，留空表示不下发任何 CORS 响应头。仅当列表恰好是单个 `*` 时才回显 `*`，否则回显匹配到的具体来源并附带 `Vary: Origin`。 |
+| `max_playlist_bytes` | int64 | `8388608` | 单个播放列表抓取的字节上限，非正数按默认值处理。 |
+| `max_body_bytes` | int64 | `1048576` | 管理接口请求体的字节上限，非正数按默认值处理。个别批量接口在此基础上按倍数放宽。 |
+
+<Aside type="caution" title="play_require_auth 只能被环境变量关闭">
+  填充默认值时，只要 `KILN_PLAY_OPEN` 未设置，`play_require_auth` 就会被强制置回 `true`。也就是说，仅在配置文件里写 `play_require_auth = false` 不会生效，关闭播放鉴权必须设置 `KILN_PLAY_OPEN=1`，且该开关只适合调试环境。
+</Aside>
+
+出站白名单还有一层与配置无关的固定防护：链路本地地址、未指定地址、组播地址与云元数据地址始终被拒绝，回环与私有地址必须出现在白名单里才允许访问。
+
+## `[packager]`
+
+| 键 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `engine` | string | `"auto"` | 默认封装引擎，取值 `auto`、`native`、`ffmpeg`，其它值校验失败。`auto` 优先原生并在源不受支持时回退 ffmpeg，`native` 不回退，`ffmpeg` 始终转封装。配置未填时读取环境变量 `KILN_DEFAULT_PACKAGER_ENGINE`。 |
+| `keys_file` | string | `""` | 全局 `kid:key` 目录文件路径，相对路径按配置文件所在目录解析。 |
+| `playlist_size` | int | `8` | 输出播放列表保留的分片数，非正数按默认值处理。 |
+| `ll_hls` | bool | `false` | 是否启用 CMAF part、delta playlist 与 blocking reload。示例配置开启了它，但结构体默认值是关闭。 |
+| `part_target_ms` | int | `500` | LL-HLS part 目标时长毫秒数，必须落在 `100` 到 `5000` 之间，否则校验失败。 |
+| `start_segments` | int | `3` | 冷启动时预备的分片数，非正数按默认值处理。资源自适应可能下调。 |
+| `prefetch_segments` | int | `3` | 稳态下向前预取的分片数，非正数按默认值处理。资源自适应可能下调。 |
+| `max_segment_bytes` | int64 | `33554432` | 单个分片的字节上限，超出即判为异常。非正数按默认值处理。资源自适应可能下调。 |
+| `grace_sec` | int | `30` | 分片在离开播放列表后仍可被取用的宽限秒数，非正数按默认值处理。 |
+| `primary_track_hold_sec` | int | `12` | 音频相对视频允许领先的媒体秒数，非正数按默认值处理。它约束的是播放列表窗口的推进，不是 A/V 同步。 |
+| `stall_timeout_sec` | int | `180` | 清单持续更新但始终没有内容进入播放列表时的失败判定秒数，`-1` 关闭，`0` 按默认值处理。上游不可达不属于这种情况，会继续重试。 |
+| `inflight_bytes` | int64 | `100663296` | 全部频道共用的分片内存预算字节数，非正数按默认值处理。资源自适应可能下调。 |
+
+### inflight_bytes 的取舍
+
+这个值决定峰值内存：4K 分片单个就有几十兆，所以预算按字节计而不是按分片数计，否则内存会变成源码率的函数。它买到的只有冷启动速度：稳态下每条轨道每次刷新只取一个分片，远够不到预算上限。降低它可以压低常驻内存，代价是 4K 频道首个播放列表出得更慢。
+
+### keys_file 的加载与校验
+
+`keys_file` 在启动时一次性完整读取并校验，任何一行不合法都会导致启动失败：
+
+- 每行一对 `kid:key`，空行与以 `#` 开头的行忽略。
+- 缺少冒号、`kid` 或 `key` 为空都会报错并指出行号。
+- `kid` 必须是 32 个十六进制字符，允许写成带连字符的 UUID 形式（比对时去掉连字符）。
+- `key` 必须是 32 个十六进制字符，且不允许出现连字符。
+- 同一个 `kid` 重复出现时，密钥相同则忽略，密钥不同则报错。
+- 文件解析后必须至少包含一对密钥。
+
+比对时 `kid` 与 `key` 都按去连字符加小写归一化。密钥不会出现在管理 API 中，修改文件后需要重启。任何未禁用的 DASH 频道都要求全局密钥非空，否则校验失败。引擎选择与媒体处理细节见 [/guide/media-engine/](/guide/media-engine/)。
+
+## `[ffmpeg]`
+
+| 键 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `mode` | string | `"native"` | 执行方式，`native` 调用本机二进制，`docker` 由 Kiln 启动指定镜像，其它值校验失败。 |
+| `binary` | string | `"ffmpeg"` | `native` 模式下的可执行文件名或路径。 |
+| `docker_image` | string | `"kiln:local"` | `docker` 模式下使用的镜像，其它模式忽略。 |
+| `hls_time` | int | `2` | 转封装输出的目标分片时长秒数，非正数按默认值处理。 |
+| `hls_list_size` | int | `8` | 转封装输出播放列表保留的分片数，非正数按默认值处理。 |
+| `log_level` | string | `"error"` | 传给 ffmpeg 的日志级别。 |
+| `prefer_height` | int | `0` | 全局首选视频高度，`0` 表示不限制。频道级 `prefer_height` 为正数时覆盖它。 |
+| `low_latency` | bool | `false` | 是否启用低延迟输出参数。 |
+| `max_starts` | int | `0` | 并发启动的 ffmpeg 进程数上限，非正数按 `1` 处理。它只覆盖启动阶段，不包含就绪等待，因此慢源不会阻塞其它频道的冷启动。 |
+
+## `[observe]`
+
+| 键 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `enabled` | bool | `true` | 是否暴露 `/metrics`。填充默认值时会被无条件置为 `true`，在配置里写 `false` 不会生效。 |
+| `otlp_endpoint` | string | `""` | OTLP/HTTP trace 导出端点，留空表示不导出。非空时必须是 `http` 或 `https` 且带主机名的绝对 URL，否则校验失败。 |
+| `otlp_insecure` | bool | `false` | 导出时是否允许不安全传输。 |
+| `trace_sample_ratio` | float | `1` | 采样比例，必须在 `0` 到 `1` 之间，非正数在填充默认值时被改写为 `1`。 |
+| `service_name` | string | `"kiln"` | 上报到 OTLP 的 `service.name`。 |
+
+## `[debug.pprof]`
+
+| 键 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `enabled` | bool | `false` | 是否启动独立的 pprof 服务。关闭时完全不创建监听。 |
+| `listen` | string | `"127.0.0.1:6060"` | pprof 监听地址。启用时必须能解析为 `host:port` 形式，且主机是回环 IP，否则校验失败。 |
+
+pprof 使用独立的监听器与路由，永远不会挂到对外的 HTTP 服务上。仅在采集 CPU、堆、阻塞或互斥剖面时临时开启。排障流程见 [/guide/troubleshooting/](/guide/troubleshooting/)。
+
+## `[epg]`
+
+| 键 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `enabled` | bool | `false` | 在 Lite 变体中，置为 `true` 会直接拒绝启动。Full 与 Core 变体不读取此键，EPG 是否有输出取决于是否存在已启用的源。 |
+| `cache` | bool | `true` | 是否启用节目单缓存。缺省即为启用。 |
+| `cache_dir` | string | `"{data_dir}/epg"` | 缓存目录。写成 `memory` 或 `:memory:` 时改用内存缓存，其余值按目录路径处理。 |
+| `refresh_interval_min` | int | `360` | 刷新间隔分钟数，非正数按默认值处理。 |
+| `max_refresh_concurrency` | int | `0` | 并发刷新的源数量上限，`0` 表示不限制（一轮内全部并发）。负数校验失败。资源自适应可能下调，包括把 `0` 收紧为具体数值。 |
+| `max_source_bytes` | int64 | `67108864` | 单个源允许的字节上限，超出即拒绝，非正数按默认值处理。资源自适应可能下调。 |
+| `default_timezone` | string | `"UTC"` | 源未声明时区时使用的默认时区，必须是可加载的时区名，否则校验失败。 |
+| `serve_timezone` | string | `"keep"` | 输出时区策略，当前只接受 `keep`，即原样输出不做换算。 |
+| `sources` | array | `[]` | 节目单源，见下方 `[[epg.sources]]`。 |
+
+## `[[epg.sources]]`
+
+| 键 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `id` | string | 必填 | 源标识，为空或重复都会校验失败。 |
+| `name` | string | `""` | 展示名称。 |
+| `url` | string | `""` | XMLTV 地址，非空时必须是 `http` 或 `https` 且带主机名的绝对 URL。 |
+| `timezone` | string | `""` | 该源的时区，非空时必须可加载，留空则用 `epg.default_timezone`。 |
+| `proxy` | string | `"direct"` | 出站线路，取 `direct`、`auto` 或某个 `[[proxies]]` 的 `id`，未知值校验失败。留空时填充为 `direct`。 |
+| `enabled` | bool | `false` | 是否启用该源。 |
+
+与频道的匹配规则、内置源的处理方式见 [/guide/epg/](/guide/epg/)。
+
+## `[[proxies]]`
+
+| 键 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `id` | string | 必填 | 线路标识，被 `egress.default`、`[[egress.rules]]`、`[[upstreams]]` 与 `[[epg.sources]]` 引用。`direct` 是保留标识，代表直连。 |
+| `name` | string | `""` | 展示名称。 |
+| `url` | string | 必填 | 代理地址，协议限 `http`、`https`、`socks5`、`socks5h`，例如 `http://127.0.0.1:7890` 或 `socks5h://127.0.0.1:7891`。 |
+| `disabled` | bool | `false` | 是否停用。停用的线路不参与路由，引用它的决策会回落到直连。 |
+
+## `[egress]`
+
+| 键 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `default` | string | `"direct"` | 未命中任何规则时使用的线路，必须是 `direct` 或某个已定义的 `[[proxies]].id`，否则校验失败。 |
+| `playlist_policy` | string | `"rewrite"` | 播放列表地址改写策略，取值 `rewrite`、`passthrough`、`auto`，其它值校验失败。`rewrite` 始终改写为经由 Kiln 的地址，`passthrough` 始终保留原始地址，`auto` 仅在实际走了代理时改写。 |
+| `docker_proxy_host` | string | `"host.docker.internal"` | 容器内访问宿主机代理时用于替换的主机名。 |
+| `rules` | array | `[]` | 路由规则，见下方 `[[egress.rules]]`。 |
+
+## `[[egress.rules]]`
+
+| 键 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `id` | string | `""` | 规则标识，留空时首次入库按 `rule-1`、`rule-2` 顺序生成。 |
+| `priority` | int | `0` | 匹配顺序，数值越小越先匹配，命中即停止。 |
+| `kind` | string | `"host_suffix"` | 匹配方式，取值 `host_suffix`、`host_exact`、`host_regex`、`channel_id`、`url_regex`，留空按 `host_suffix` 处理。 |
+| `pattern` | string | `""` | 匹配内容。除 `channel_id` 外，`pattern` 为空的规则被跳过。正则类按 Go 正则语法编译，编译失败视为不匹配。 |
+| `proxy` | string | 必填 | 命中后使用的线路，必须是 `direct` 或已定义的 `[[proxies]].id`，为空或未知都会校验失败。 |
+| `disabled` | bool | `false` | 是否停用该规则。 |
+
+线路选择、改写策略与容器场景的完整说明见 [/guide/proxy/](/guide/proxy/)。
+
+## `[[upstreams]]`
+
+| 键 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `id` | string | 必填 | 上游标识，频道通过 `upstream` 引用，为空校验失败。 |
+| `base_url` | string | 必填 | 上游基础地址，必须是可解析的绝对 URL，为空或非法都会校验失败。其主机名自动进入出站白名单。 |
+| `proxy` | string | `""` | 该上游专用的代理地址，非空时必须是可解析的绝对 URL。注意这里写的是完整 URL，不是 `[[proxies]]` 的 `id`。 |
+| `headers` | table | `{}` | 请求该上游时附加的固定请求头。 |
+
+## `[[channels]]`
+
+| 键 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `id` | string | 必填 | 频道标识，为空、取 `.` 或 `..`、含路径分隔符或控制字符、在表内重复都会校验失败。 |
+| `title` | string | `""` | 展示名称。 |
+| `group` | string | `""` | 分组名称，用于播放列表与管理界面归类。 |
+| `logo_url` | string | `""` | 台标地址。 |
+| `epg_id` | string | `""` | 与 XMLTV 中频道 ID 精确匹配用的标识。 |
+| `epg_name` | string | `""` | 按名称匹配 XMLTV 频道时使用的名称，留空则回落到 `title`。 |
+| `epg_source` | string | `""` | 限定只在某个 `[[epg.sources]].id` 中匹配。 |
+| `source_url` | string | `""` | 直接指定绝对源地址。非空时必须是 `http` 或 `https`、带主机名、不含 fragment，此时不再需要 `upstream` 与 `path`。 |
+| `upstream` | string | 条件必填 | 引用的 `[[upstreams]].id`。未填 `source_url` 时必填且必须存在，否则校验失败。 |
+| `path` | string | 条件必填 | 拼接在上游 `base_url` 之后的路径。未填 `source_url` 时必填。 |
+| `ingress` | string | `"hls"` | 源类型，取值 `hls` 或 `dash`，会转为小写后校验，其它值校验失败。 |
+| `disabled` | bool | `false` | 是否停用。停用的 DASH 频道不再要求全局密钥。 |
+| `on_demand` | bool | `true` | 是否按需拉流。当 `on_demand` 与 `autostart` 都为 `false` 时，填充默认值会把 `on_demand` 置为 `true`。 |
+| `autostart` | bool | `false` | 是否在启动时立即拉流。 |
+| `idle_timeout_sec` | int | `90` | 无观众后保持会话的秒数，非正数按默认值处理。 |
+| `max_viewers` | int | `0` | 并发观众上限，`0` 表示不限制。 |
+| `user_agent` | string | `""` | 抓取该频道时使用的 User-Agent。 |
+| `headers` | table | `{}` | 抓取该频道时附加的固定请求头。 |
+| `restart_on_failure` | bool | `false` | 失败后是否自动重启会话。`ingress = "dash"` 的频道会被强制置为 `true`。 |
+| `prefer_height` | int | `0` | 首选视频高度，`0` 表示沿用 `ffmpeg.prefer_height`。 |
+| `preferred_audio_languages` | array of string | `[]` | 音轨语言优先级列表，按顺序择优。`selection.audio.preferred_languages` 非空时优先于它。 |
+| `packager` | string | `""` | 该频道的封装引擎，留空表示沿用 `packager.engine`。非空时必须是 `auto`、`native` 或 `ffmpeg`。 |
+| `selection` | table | `{}` | 精细选轨配置，见下方。 |
+
+### `[channels.selection]`
+
+选轨分视频、音频、字幕三组，每组都有一个 `mode` 与一个 `track` 选择器。
+
+| 键 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `video.mode` | string | `""` | 取值 `auto`、`cap`、`exact`，留空等同 `auto`。`exact` 要求 `video.track` 至少填一项，否则校验失败。 |
+| `video.max_height` | int | `0` | 视频高度上限，为正数时覆盖 `prefer_height`。 |
+| `video.max_frame_rate` | string | `""` | 帧率上限。当前仅做长度与控制字符校验，尚未参与选轨。 |
+| `video.track` | table | `{}` | 视频轨选择器，字段见下表。 |
+| `audio.mode` | string | `""` | 取值 `auto`、`prefer`、`only`，留空等同 `auto`。`only` 要求 `audio.track` 至少填一项，否则校验失败。 |
+| `audio.preferred_languages` | array of string | `[]` | 音轨语言优先级，留空时回落到频道级 `preferred_audio_languages`。 |
+| `audio.track` | table | `{}` | 音轨选择器。 |
+| `subtitles.mode` | string | `""` | 取值 `auto`、`off`、`prefer`、`only`，留空等同 `auto`。`prefer` 与 `only` 都要求 `subtitles.track` 至少填一项。 |
+| `subtitles.track` | table | `{}` | 字幕轨选择器。 |
+
+三个 `track` 选择器共用同一组字段，任一非空即视为已指定：
+
+| 键 | 类型 | 说明 |
+| --- | --- | --- |
+| `key` | string | 轨道唯一键。 |
+| `adaptation_set_id` | string | DASH AdaptationSet ID。 |
+| `representation_id` | string | DASH Representation ID。 |
+| `language` | string | 语言代码。 |
+| `role` | string | 轨道角色。 |
+| `codec` | string | 编解码标识。 |
+| `height` | int | 视频高度，需为正数才视为已指定。 |
+| `frame_rate` | string | 帧率。 |
+
+所有字符串字段长度不得超过 512，且不得包含控制字符，否则校验失败。使用 `ffmpeg` 引擎时，`subtitles.mode` 取 `prefer` 或 `only` 会直接校验失败，只能用 `auto` 或 `off`。频道字段与选轨的实操说明见 [/guide/channels/](/guide/channels/)。

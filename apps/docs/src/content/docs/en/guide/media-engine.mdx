@@ -1,0 +1,189 @@
+---
+title: Media engine
+description: The three engine modes, what the native DASH decrypt-and-repackage path supports, key files, LL-HLS parameters, the memory-versus-latency trade-off, and the ffmpeg compatibility path.
+sidebar:
+  order: 5
+---
+
+The media engine turns a DASH upstream into HLS that players can consume directly. The native engine decrypts and repackages inside the Kiln process, with no external binary involved; ffmpeg exists only as a compatibility fallback.
+
+<Aside type="note" title="DASH only">
+  `[packager].engine` only decides how DASH ingress is handled. Channels with `ingress = "hls"` are served by playlist rewriting and a same-origin segment proxy, which never touch the media engine. See [Playback](/en/guide/playback/).
+</Aside>
+
+## Choosing an engine
+
+`[packager].engine` takes three values, and they do not overlap:
+
+| Value | Behaviour |
+| --- | --- |
+| `auto` | Use the native engine when the source supports it; fall back to ffmpeg when it does not and the failure is safe to fall back from |
+| `native` | Native only. An unsupported source fails outright instead of falling back |
+| `ffmpeg` | Skip native planning entirely and always run ffmpeg |
+
+A channel's `packager` field overrides the global `[packager].engine`, and `auto` applies when neither is set. The default an image injects through `KILN_DEFAULT_PACKAGER_ENGINE` only applies when the config omits `[packager].engine` — an explicit value always wins.
+
+### auto does not always fall back
+
+When native planning fails, `auto` first decides whether that particular failure can be handed to ffmpeg safely. When it cannot, Kiln returns an error rather than switching engines:
+
+- A source with more than one KID cannot fall back. The ffmpeg path accepts a single CENC key, so handing it a multi-KID source would decode the wrong picture. The request fails with `502`.
+- If a channel selects a subtitle track explicitly (`subtitles.mode` set to `prefer` or `only`), the compatibility engine cannot honour that selection and the request is rejected with `400`.
+- If a fallback is needed but no ffmpeg is available in the runtime, the request fails with `503`. The Core and Lite images ship without ffmpeg — see [Core, Full & Lite](/en/guide/variants/).
+
+`/readyz` moves that boundary earlier: as soon as a DASH channel is pinned to `engine = "ffmpeg"` while ffmpeg is unavailable, readiness reports `503`, so an orchestrator never routes traffic to an instance that is guaranteed to fail.
+
+## The native engine
+
+The native engine reads the MPD, plans the tracks, then downloads, decrypts, and repackages segment by segment into CMAF before publishing HLS playlists. The whole chain runs in Go, with no ffmpeg and no external dependency.
+
+### What the source has to look like
+
+| Dimension | Supported by the native engine |
+| --- | --- |
+| Periods | Single period only |
+| Segment addressing | `SegmentTemplate` with `SegmentTimeline`, `SegmentTemplate` with `duration`, `SegmentList` |
+| Video codecs | `avc1`, `avc3`, `hvc1`, `hev1` |
+| Audio codecs | `mp4a` |
+| Subtitle codecs | `stpp` (TTML) |
+| Encryption | `cenc` and `cbcs`; clear sources also run natively |
+| Track counts | Up to 8 video, 16 audio, and 16 subtitle tracks |
+
+`avc3` and `hev1` require their parameter sets to live in `avcC` or `hvcC`; a track that carries them in-band only is treated as unsupported. The ABR ladder deduplicates candidates by resolution and frame rate, keeps the highest bitrate in each group, and trims to the top 8 rungs.
+
+### How a publication is built
+
+<Steps>
+  <Step title="Plan">
+    Fetch and normalise the MPD, then derive the ABR ladder, the audio renditions, and the subtitle tracks from `prefer_height` and the channel's track selection.
+  </Step>
+  <Step title="Verify">
+    Read each track's init segment, cross-check the manifest's `default_KID` against the KID in `tenc`, and confirm the key catalog has a matching key.
+  </Step>
+  <Step title="Repackage">
+    Download each segment, decrypt it in memory, and rewrite it as a CMAF segment — sliced into parts when LL-HLS is on.
+  </Step>
+  <Step title="Publish">
+    Write the multivariant playlist and one media playlist per track, carrying `EXT-X-MAP` and `EXT-X-PROGRAM-DATE-TIME`.
+  </Step>
+</Steps>
+
+### Reasons a source is rejected
+
+When planning or verification fails, the logs and the channel's `probe` result carry a reason code:
+
+| Reason | Meaning | Falls back under `auto` |
+| --- | --- | --- |
+| `multi_period` | The manifest declares more than one period | Yes |
+| `no_video_representation` | No usable video representation | Yes |
+| `no_audio_representation` | No usable audio representation | Yes |
+| `addressing_unsupported` | The segment addressing mode is not supported | Yes |
+| `manifest_codec_unsupported` | The codec or track shape is outside the native set | Yes |
+| `manifest_kid_conflicts_with_tenc` | The manifest's `default_KID` disagrees with the init segment's `tenc` | Yes |
+| `missing_key_for_kid` | The key catalog has no key for that KID | Yes |
+| `multi_kid_cannot_fall_back` | The source uses several KIDs, which single-key ffmpeg would decode wrongly | No |
+| `native_start_failed` | Any other error during native start-up | Yes |
+
+Malformed init segments produce a finer set of reasons — `not_fragmented_mp4`, `multi_track_init`, `encryption_scheme_unsupported`, `missing_track_kid`, `inband_parameter_sets`, `malformed_media` — each meaning exactly what its name says. See [Troubleshooting](/en/guide/troubleshooting/) for how to read them.
+
+## Key file
+
+Every DASH channel shares one global key catalog, pointed at by `[packager].keys_file`:
+
+```text title="kiln.keys"
+# One pair per line; lines starting with # are comments
+0123456789abcdef0123456789abcdef:fedcba9876543210fedcba9876543210
+01234567-89ab-cdef-0123-456789abcdef:00112233445566778899aabbccddeeff
+```
+
+The parser enforces the format strictly:
+
+- Each line is one `kid:key` pair. Blank lines and lines starting with `#` are ignored.
+- The KID is 32 hex characters and may contain dashes; the key is 32 hex characters and may not.
+- A repeated KID with a different key is an error; a repeated KID with the same key is skipped as a duplicate.
+- A file with no valid entry at all is an error.
+
+Relative paths resolve against the directory holding `kiln.toml`, not the process working directory — which is why keeping the config and the key file side by side still works under the Windows service.
+
+<Aside type="caution" title="Validated once, at startup">
+  The key file is read and validated line by line when the process starts. A single malformed line stops the process from starting, rather than surfacing later when a channel is first played. Edits require a restart. A DASH channel with no global key file configured is rejected as a configuration error.
+</Aside>
+
+Keys never appear in any admin API response, and the per-channel `keys` field has been removed, so there is exactly one place a key can come from.
+
+## LL-HLS
+
+With `[packager].ll_hls` enabled, the native engine publishes low-latency HLS: playlists move to version 9, gain `EXT-X-PART-INF` and `EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES`, and three mechanisms come online together.
+
+**CMAF parts.** Each segment is sliced into parts advertised through `EXT-X-PART`, with independently decodable parts marked `INDEPENDENT=YES`. The part currently being produced is announced through `EXT-X-PRELOAD-HINT`. Part duration comes from `part_target_ms`, which accepts 100 to 5000 and defaults to 500.
+
+**Delta playlists.** A player that sends `_HLS_skip=YES` or `_HLS_skip=v2` receives only the tail of the playlist, with the omitted segments counted by `EXT-X-SKIP:SKIPPED-SEGMENTS`. The skip boundary is six times the target duration, which is exactly what `CAN-SKIP-UNTIL` advertises.
+
+**Blocking reload.** A request carrying `_HLS_msn`, optionally with `_HLS_part`, is held open until that media sequence number or part is ready. `_HLS_part` requires `_HLS_msn`, and a sequence number too far ahead is rejected instead of waiting forever. `PART-HOLD-BACK` is advertised as twice `part_target_ms`.
+
+The related playlist parameters:
+
+| Key | Default | Purpose |
+| --- | ---: | --- |
+| `playlist_size` | `8` | Segments kept in a media playlist |
+| `part_target_ms` | `500` | Target duration of a CMAF part, in milliseconds |
+| `start_segments` | `3` | Segments published on cold start — the tail of the window for live, the head for on-demand |
+| `prefetch_segments` | `3` | Segments prepared concurrently in the pipeline |
+
+With `ll_hls` off, playlists drop back to version 7, no part tags are written, and `part_target_ms` stops mattering.
+
+## Memory versus latency
+
+Peak memory for the native engine is governed mostly by one key: `inflight_bytes`. It is a byte budget for segment data held across every channel at once, counted in bytes rather than segments because a single 4K segment can be tens of megabytes — a segment-count limit would make memory a function of the upstream bitrate.
+
+What that budget buys is cold-start speed, and nothing else: in steady state each track pulls one segment per refresh and never approaches the limit. The example config records measurements taken with a 4K channel and a 1080p channel running at once, both with several audio renditions:
+
+| `inflight_bytes` | Resident memory | First 4K playlist |
+| --- | --- | --- |
+| 96 MiB (default, `100663296`) | 140 to 170 MB | about 8.6 s |
+| 32 MiB (`33554432`) | 106 to 112 MB | about 11 s |
+
+Lower it when resident memory matters more than how fast a 4K channel starts.
+
+The remaining keys each guard one boundary:
+
+- `max_segment_bytes`, default `33554432` (32 MiB), caps a single segment. Together with `inflight_bytes` it also derives the number of download and decrypt slots, so lowering it tightens concurrency at the same time.
+- `primary_track_hold_sec`, default `12`, is how far in media seconds audio may run ahead of video. It is not an A/V sync knob: it stops audio from sliding its playlist window past what a player stalled on video still needs.
+- `stall_timeout_sec`, default `180`. When the manifest keeps updating but nothing ever reaches the playlist, the fault is on our side, so the publication fails and a restart re-plans from scratch. An unreachable upstream is not this case and keeps retrying. Set `-1` to disable.
+- `grace_sec`, default `30`, is how long a segment stays fetchable after it leaves the playlist, covering players that are still reading an older playlist.
+
+<Aside type="tip" title="Resource adaptation lowers these">
+  With `server.resource_mode` set to `auto` or `constrained`, the runtime tightens `inflight_bytes`, `max_segment_bytes`, `start_segments`, and `prefetch_segments` from the container's real memory and CPU — scaling down only, never up. The effective values are printed in the startup log; see [Operations](/en/guide/operations/).
+</Aside>
+
+## The ffmpeg compatibility path
+
+This path is reached only when the native engine cannot handle the source and the failure is safe to fall back from.
+
+`[ffmpeg].mode` decides how ffmpeg is executed:
+
+- `native` runs the local `[ffmpeg].binary` (default `ffmpeg`, resolved from `PATH`).
+- `docker` has Kiln issue `docker run --rm` itself against `[ffmpeg].docker_image`, bind-mounting the work directory, running as a non-root user, and passing outbound proxy environment variables through. No wrapper script is needed.
+
+The rest of the settings:
+
+| Key | Default | Purpose |
+| --- | ---: | --- |
+| `hls_time` | `2` | Target duration of an output segment, in seconds |
+| `hls_list_size` | `8` | Segments kept in the output playlist |
+| `prefer_height` | unset | Resolution ceiling; a channel's `prefer_height` wins |
+| `low_latency` | `false` | Only picks a default for `hls_list_size` when that is absent, so in practice `hls_list_size` decides directly |
+| `max_starts` | `1` | Concurrent ffmpeg launches. It does not cover the readiness wait, so one slow source cannot block every other channel's cold start |
+| `log_level` | `error` | Log level passed to ffmpeg |
+
+The compatibility path is noticeably narrower than the native one: it picks one video and one audio rendition, stream-copies with `-c copy`, emits MPEG-TS segments, and uses a single CENC key. There are no subtitles, no ABR ladder, and no LL-HLS parts. Treat it as a way to keep a channel playable, not as an equivalent implementation.
+
+<Aside type="caution" title="ffmpeg memory sits outside the Go budget">
+  Resource adaptation produces a soft budget for the Go heap and the media working set. ffmpeg is a separate process or a separate container, and its memory is entirely outside that budget. When a constrained profile is active and ffmpeg could still be launched, the startup log emits an advisory warning.
+</Aside>
+
+## Subtitles and timed metadata
+
+**Subtitles.** The native engine consumes DASH `stpp` tracks, that is, fragmented TTML. Each segment is parsed into cues, clipped to that segment's time window, and emitted as a WebVTT segment carrying `X-TIMESTAMP-MAP`, so players see an ordinary HLS subtitle rendition. Language tags are normalised before they are written into `EXT-X-MEDIA`. Text tracks that are not `stpp`, or whose addressing is unsupported, are skipped without affecting audio or video; a channel carries at most 16 subtitle tracks. Setting `subtitles.mode` to `off` disables subtitles entirely, and `prefer` or `only` can only be honoured by the native engine.
+
+**Timed metadata.** `emsg` boxes inside segments are parsed in both version 0 and version 1, with version 0's relative time resolved against the segment's presentation time. Schemes are classified as SCTE-35, ID3, or plain emsg. SCTE-35 splice information is rewritten as an HLS `EXT-X-DATERANGE`: `CLASS` is fixed to `com.apple.hls.scte35`, and `SCTE35-OUT`, `SCTE35-IN`, or `SCTE35-CMD` is written according to direction, alongside `PLANNED-DURATION`, `DURATION`, and `END-DATE`. Observations sharing an event ID are merged across refreshes, so an out seen before a matching in gets its end time filled in automatically. ID3 and other schemes are recognised but are not currently written as playlist tags.

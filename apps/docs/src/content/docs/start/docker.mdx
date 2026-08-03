@@ -1,0 +1,137 @@
+---
+title: Docker 部署
+description: 三个镜像变体、拉取方式、最小运行命令与容器内的资源行为。
+sidebar:
+  order: 3
+---
+
+Kiln 发布三个镜像变体，边界明确，共用同一套配置模型和同一份原生媒体模块。选哪一个取决于是否需要 FFmpeg 兼容回退，以及是否需要数据库与管理控制台。
+
+## 三个变体
+
+| 镜像 | 能力 | 默认 packager | FFmpeg | 定位 |
+| --- | --- | --- | --- | --- |
+| `lite` | 配置、登录、M3U、播放 | `native` | 不包含 | 基于 scratch 的极简运行时，3.8 MB，无数据库 |
+| `core` | 完整 | `native` | 不包含 | 完整管理与观测，纯原生媒体路径 |
+| `full` | 完整 | `auto` | 内置 | 优先原生，必要时回退到 FFmpeg |
+
+`latest` 是 `full` 的别名。三个变体都以非 root 的 uid/gid `999` 运行，默认监听 `8080`，入口命令固定为 `-config /etc/kiln/kiln.toml`，所以只要把配置挂到这个路径就不需要再传任何参数。
+
+lite 不创建 SQLite，公开接口只有 `/healthz`、`/readyz`、`/v1/auth/login`、`/v1/playlist.m3u` 和 `/v1/play/*`。配置里出现 `auto` 或 `ffmpeg` packager、EPG、OTLP、pprof 时，进程会在启动时直接拒绝而不是静默忽略。变体之间的能力差异见 [镜像变体对比](/guide/variants/)。
+
+<Aside type="note" title="镜像默认值不会覆盖显式配置">
+  `KILN_DEFAULT_PACKAGER_ENGINE` 只在配置没有填写 `[packager].engine` 时生效。显式写 `auto`、`native` 或 `ffmpeg` 始终优先，同一份配置不会因为换了镜像标签而改变行为。
+</Aside>
+
+## 拉取镜像
+
+镜像发布在 GitHub Container Registry：
+
+```bash
+docker pull ghcr.io/babywbx/kiln:latest   # full，内置 ffmpeg
+docker pull ghcr.io/babywbx/kiln:core     # 原生 packager，不含 ffmpeg
+docker pull ghcr.io/babywbx/kiln:lite     # 无状态低内存变体
+```
+
+正式版本会同时推出精确版本号与浮动标签：
+
+| 标签形态 | 含义 |
+| --- | --- |
+| `:1.0.0`、`:1.0`、`:1`、`:latest` | full 变体的精确版本、次版本、主版本与最新版 |
+| `:1.0.0-core`、`:1.0-core`、`:1-core`、`:core` | core 变体的同一组标签 |
+| `:1.0.0-lite`、`:1.0-lite`、`:1-lite`、`:lite` | lite 变体的同一组标签 |
+
+预发布版本只推出带完整版本号的那一个标签，不会移动 `latest`、`core`、`lite` 以及主次版本标签。core 覆盖 `linux/amd64`、`linux/arm64`、`linux/arm/v7` 与 `linux/arm/v6`，full 与 lite 覆盖 `linux/amd64` 与 `linux/arm64`。三个变体在发布时都会生成构建溯源证明并推送到镜像仓库。
+
+## 最小运行命令
+
+准备两个文件：一份 `kiln.toml` 和一份 `kiln.keys`。仓库里的 `deploy/docker/kiln.docker.toml.example` 已经按镜像的路径约定写好，`data_dir` 指向 `/var/lib/kiln/data`，`keys_file` 指向 `/etc/kiln/kiln.keys`，复制过来改上游和账号即可。
+
+```bash
+docker run --rm -p 8080:8080 \
+  -v "$PWD/kiln.toml:/etc/kiln/kiln.toml:ro" \
+  -v "$PWD/kiln.keys:/etc/kiln/kiln.keys:ro" \
+  -v kiln-data:/var/lib/kiln/data \
+  ghcr.io/babywbx/kiln:core
+```
+
+lite 面向固定配置的低资源播放节点，可以完全只读运行：
+
+```bash
+docker run --rm -p 8080:8080 --read-only \
+  --cap-drop=ALL --security-opt=no-new-privileges \
+  -v "$PWD/lite.toml:/etc/kiln/kiln.toml:ro" \
+  -v "$PWD/kiln.keys:/etc/kiln/kiln.keys:ro" \
+  -v kiln-lite-data:/var/lib/kiln \
+  ghcr.io/babywbx/kiln:lite
+```
+
+`deploy/docker/lite.docker.toml.example` 是对应的最小配置样板。
+
+<Aside type="caution" title="纯原生镜像不要指定 ffmpeg 引擎">
+  core 与 lite 不含 ffmpeg。若配置里有 DASH 频道显式落到 `ffmpeg` 引擎，`/readyz` 会返回 503 并说明兼容引擎不可用，容器不会进入就绪状态。要么改用 `native`，要么换 full 镜像。
+</Aside>
+
+## Compose 模板
+
+`deploy/docker/compose.example.yaml` 是可以直接改的起点。它默认从仓库源码构建 `full` 目标；使用已发布镜像时删掉 `build` 段，把 `image` 换成 `ghcr.io/babywbx/kiln:core` 即可。
+
+```yaml title="compose.yaml"
+services:
+  kiln:
+    image: ghcr.io/babywbx/kiln:core
+    container_name: kiln
+    ports:
+      - "8080:8080"
+    environment:
+      KILN_PUBLIC_BASE_URL: "http://your-host:8080"
+      KILN_LOG_FORMAT: "text"
+      KILN_LOG_COLOR: "never"
+    volumes:
+      - ./kiln.toml:/etc/kiln/kiln.toml:ro
+      - ./kiln.keys:/etc/kiln/kiln.keys:ro
+      - kiln-data:/var/lib/kiln/data
+    restart: unless-stopped
+
+volumes:
+  kiln-data:
+```
+
+几处值得留意：日志颜色设为 `never`，`docker logs` 里就不会混入 ANSI 转义；`KILN_PUBLIC_BASE_URL` 决定播放列表里写出去的地址，容器端口映射与对外域名不一致时必须设置；上游如果是同一个 Compose 网络里的另一个服务，把 `base_url` 写成 `http://service-name:port` 并让两者共享网络即可。
+
+## 健康检查
+
+`/healthz` 与 `/readyz` 都不需要凭据。`/healthz` 表示进程活着，`/readyz` 会额外检查兼容引擎的可用性，只有当配置里存在落到 ffmpeg 引擎的 DASH 频道而 ffmpeg 不可用时才返回 503。
+
+三个镜像都自带 `HEALTHCHECK`：间隔 30 秒、超时 3 秒、启动宽限 10 秒、连续 3 次失败判定为 unhealthy。core 与 full 用 `wget` 探测 `/healthz`；lite 基于 scratch，没有任何外部命令，改用二进制自带的 `-healthcheck` 子命令完成同样的探测。这个子命令也可以在容器外单独使用：
+
+```bash
+docker exec kiln /usr/local/bin/kiln -healthcheck http://127.0.0.1:8080/healthz
+```
+
+## 容器内的资源自适应
+
+`server.resource_mode` 默认为 `auto`。进程启动时会探测 cgroup 里的实际内存与 CPU 限制，据此收紧 Go 软内存目标、分片内存预算、单段上限与流水线并发。探测覆盖 cgroup v1 与 v2、嵌套 cgroup、父级继承的限制以及小数 CPU quota，也就是说 `docker run --cpus` 与 `--memory` 会被真实读到。
+
+自适应只下压、不上调：配置里已经写得更低的值不会被抬高。启动日志会打印探测结果、生效档位和全部预算，用来核对容器是否落在预期档位。
+
+```bash
+# 复现低资源策略
+docker run --rm --cpus=1 --memory=192m --memory-swap=192m \
+  -v "$PWD/resource-smoke.toml:/etc/kiln/kiln.toml:ro" \
+  ghcr.io/babywbx/kiln:core
+```
+
+宿主机探测不准时，用 `KILN_RESOURCE_MEMORY_MB` 与 `KILN_RESOURCE_CPUS` 覆盖探测结果；完全退出自适应用 `resource_mode = "performance"`。档位表与调优建议见 [运维与调优](/guide/operations/)。
+
+## 出站代理与 docker_proxy_host
+
+`[egress].docker_proxy_host` 默认是 `host.docker.internal`，只在 `[ffmpeg].mode = "docker"` 时生效。此时 Kiln 会为 ffmpeg 容器注入代理环境变量，如果代理 URL 的主机是 `127.0.0.1`、`localhost` 或 `::1`，就把主机名替换成 `docker_proxy_host` 并保留端口，否则子容器里的回环地址指向的是它自己。代理线路、按域名路由与连通性测试见 [出站代理](/guide/proxy/)。
+
+## 数据持久化
+
+`data_dir` 是唯一需要持久化的目录，镜像里默认是 `/var/lib/kiln/data`。core 与 full 在其中放 SQLite 数据库 `kiln.db`、自动生成的会话密钥 `auth/ed25519.pem`，以及启用 EPG 缓存时的缓存目录。挂载点必须对 uid/gid `999` 可写，否则首次启动会失败。
+
+lite 不创建数据库，`data_dir` 只存自动生成的登录密钥和临时媒体文件；配合 `--read-only` 使用时，把可写卷挂在 `/var/lib/kiln` 上。
+
+挂进容器的 `kiln.toml` 与 `kiln.keys` 建议一律加 `:ro`。密钥文件在启动时一次性完整校验，修改后需要重启容器才会生效。

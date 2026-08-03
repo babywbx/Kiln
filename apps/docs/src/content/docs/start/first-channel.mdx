@@ -1,0 +1,125 @@
+---
+title: 第一个频道
+description: 从上游定义到播放验证的端到端流程。
+sidebar:
+  order: 5
+---
+
+一个可播放的频道由两部分组成：一个 `[[upstreams]]` 描述上游在哪，一个 `[[channels]]` 描述从上游的哪条路径取什么格式。下面走一遍完整流程。
+
+## 配置到播放
+
+<Steps>
+  <Step title="定义上游">
+    上游只需要一个 id 和一个基地址。频道用 `upstream` 引用它，用 `path` 拼出实际地址，所以换机器或换端口时只改这一处。
+
+    ```toml title="kiln.toml"
+    [[upstreams]]
+    id = "origin"
+    base_url = "https://origin.example.com:8000"
+
+    [upstreams.headers]
+    X-Custom = "value"
+    ```
+
+    `[upstreams.headers]` 可选，用于上游要求固定请求头的场景，会附加到该上游的所有出站请求上。
+  </Step>
+
+  <Step title="定义一个 HLS 频道">
+    最短的一个频道定义如下。`id` 会出现在播放地址里，`title` 与 `group` 决定播放列表里的显示名和分组。
+
+    ```toml title="kiln.toml"
+    [[channels]]
+    id = "demo-hls"
+    title = "Demo HLS"
+    group = "Demo"
+    upstream = "origin"
+    path = "/live/demo-hls"
+    ingress = "hls"
+    on_demand = true
+    ```
+
+    `ingress` 只接受 `hls` 和 `dash`，留空时默认按 `hls` 处理。使用 `upstream` 时 `path` 必填，缺失会在启动时报错。字段全表见 [频道模型](/guide/channels/)。
+  </Step>
+
+  <Step title="加一个 DASH 频道">
+    DASH 频道的定义结构一样，区别只在 `ingress` 和密钥。
+
+    ```toml title="kiln.toml"
+    [packager]
+    keys_file = "kiln.keys"
+
+    [[channels]]
+    id = "demo-dash"
+    title = "Demo DASH"
+    group = "Demo"
+    upstream = "origin"
+    path = "/live/demo-dash"
+    ingress = "dash"
+    on_demand = true
+    ```
+
+    `keys_file` 是全局的 `kid:key` 目录，所有 DASH 频道共用。只要存在一个启用的 DASH 频道而没有配置它，启动时就会直接失败。多轨道与清晰度选择见 [多轨与 ABR](/guide/variants/)。
+  </Step>
+
+  <Step title="写好密钥文件">
+    每行一对 `kid:key`，十六进制，`#` 开头的行和空行会被忽略。
+
+    ```text title="kiln.keys"
+    # kid:key（hex）。替换成真实密钥，不要提交到版本库。
+    000102030405060708090a0b0c0d0e0f:0f0e0d0c0b0a09080706050403020100
+    ```
+
+    kid 与 key 都必须是 32 个十六进制字符。kid 允许写成带连字符的 UUID 形式，解析时会去掉连字符；key 不允许出现连字符。同一个 kid 重复出现时，如果对应的 key 不同会报错，完全相同则去重。文件里一对都没有同样视为错误。
+  </Step>
+
+  <Step title="重启并验证">
+    密钥文件在启动时一次性完整校验，改动之后必须重启进程才会生效，密钥也不会出现在任何管理接口的返回里。重启后先用 curl 确认播放列表和播放地址：
+
+    ```bash
+    TOKEN=$(curl -s http://127.0.0.1:8080/v1/auth/login \
+      -H 'content-type: application/json' \
+      -d '{"username":"admin","password":"admin"}' | jq -r .token)
+
+    curl -s http://127.0.0.1:8080/v1/playlist.m3u -H "authorization: Bearer $TOKEN"
+    curl -s "http://127.0.0.1:8080/v1/play/demo-hls/index.m3u8?token=$TOKEN"
+    ```
+
+    播放列表里应当出现刚定义的两个频道。把其中的播放地址粘进任意支持 HLS 的播放器，或者把整份播放列表交给 IPTV 客户端，就能看到画面。分发方式与播放密钥见 [播放与分发](/guide/playback/)。
+  </Step>
+</Steps>
+
+<Aside type="note" title="相对路径按配置文件解析">
+  `keys_file` 写相对路径时，按 `kiln.toml` 所在目录解析，而不是按进程的工作目录。把 `kiln.keys` 放在配置文件旁边是最省心的做法，Windows 服务模式和容器里都不会因为工作目录不同而找不到文件。
+</Aside>
+
+## on_demand 与 autostart
+
+这两个开关决定上游连接什么时候建立、什么时候释放，可以单独用也可以一起用。
+
+| 开关 | 行为 |
+| --- | --- |
+| `on_demand` | 有人取用时才拉起上游；空闲超过 `idle_timeout_sec` 后停掉会话，释放上游连接 |
+| `autostart` | 进程启动后立即拉起，失败按指数退避重试，直到成功或进程退出 |
+
+两个都不填时，`on_demand` 会被自动置为 `true`，也就是默认按需拉流。
+
+按需回收由一个每 5 秒执行一次的回收器完成：某个频道距上一次取用超过它的 `idle_timeout_sec`（默认 90 秒）就会被停掉，下一次取用重新冷启动。冷启动需要先从上游取到足够的分片才能产出第一份播放列表，所以按需频道的首帧会比常驻频道慢一些；这段延迟由 `[packager]` 的 `start_segments` 与 `inflight_bytes` 决定，权衡方式见 [媒体引擎](/guide/media-engine/)。
+
+没有开 `on_demand` 的频道不参与空闲回收，一旦拉起就会一直挂着。上游断流后的重启逻辑也受它影响：`on_demand` 频道在失败时若已经超过空闲时长，会直接结束会话而不是继续重启。
+
+<Aside type="tip" title="常看的频道两个都开">
+  `autostart = true` 与 `on_demand = true` 并不冲突。开机就预热，长时间没人看时依然回收上游连接，这是常看频道的推荐组合。想让频道彻底停用，用 `disabled = true`，它既不会被预热也不会出现在播放列表里。
+</Aside>
+
+## 也可以在控制台里做
+
+上面这些字段在管理控制台里都有对应的表单。控制台还提供频道预热、预览、连通性探测和 M3U 批量导入导出，改完立即生效，不需要手工编辑文件。见 [管理控制台](/guide/admin/)。
+
+密钥文件是唯一的例外：它只从磁盘读取，改动之后必须重启。
+
+## 下一步
+
+- [频道模型](/guide/channels/)：字段全表、分组与导入导出。
+- [播放与分发](/guide/playback/)：播放密钥、访问日志与客户端接入。
+- [排障](/guide/troubleshooting/)：频道拉不起来时的定位顺序。

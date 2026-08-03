@@ -1,0 +1,651 @@
+---
+title: API reference
+description: Credential model, error contract, rate limits, and every registered route in the Kiln HTTP API.
+sidebar:
+  order: 4
+---
+
+The full Kiln binary registers 69 routes, split across four credential classes: public endpoints, session-or-token endpoints, session-only endpoints, and playback endpoints. This page lists all of them, including the admin-console-only routes the README overview table folds away.
+
+<Aside type="note" title="Which build">
+This page covers the full build (`kiln`). The Lite variant (`kiln-lite`) exposes 7 of these routes; see the Lite variant section at the end.
+</Aside>
+
+## Credential model
+
+Four credentials, four responsibilities, no overlap.
+
+| Credential | Shape | How it travels | Used for |
+| --- | --- | --- | --- |
+| None | None | None | Health probes, metrics, EPG, logos, login |
+| Session JWT | Ed25519 (EdDSA) signed JWT | `Authorization: Bearer <jwt>`; playback endpoints also accept `?token=` | Admin console and interactive use |
+| Admin API token | `kiln_v1_` prefix plus 48 base62 characters | `Authorization: Bearer kiln_v1_...` | Scripts and automation |
+| Playback key | `v1` prefix plus 126 base62 characters | Path-based `/p/{token}/...` | Player-facing distribution links |
+
+### How credentials travel
+
+The `Authorization: Bearer` header carries both session JWTs and admin API tokens. The server first checks whether the value matches the `kiln_v1_` shape and treats it as an API token if it does; otherwise it parses it as a session JWT. No extra header or parameter is needed to disambiguate.
+
+Playback endpoints accept two additional forms:
+
+- The `?token=<jwt>` query parameter, which takes precedence over the `Authorization` header.
+- The path form `/p/{token}/`, where `{token}` is a playback key. This form reads no request headers at all: the link itself is the credential.
+
+### Session JWTs
+
+`POST /v1/auth/login` exchanges a username and password for a JWT. Tokens are Ed25519-signed and carry issuer, audience, `exp`, `iat`, `nbf`, and `jti`, validated with 30 seconds of clock leeway. Lifetime comes from `auth.token_ttl` and defaults to 24 hours. The token carries `role` and `channels` and is bound to the account's `auth_revision`, so changing login credentials invalidates every previously issued token.
+
+Admin endpoints additionally require `role` to be `admin`. A non-admin session gets 403 `forbidden`.
+
+### Admin API tokens
+
+The plaintext is returned exactly once, at creation and on rotation. The server stores only a SHA-256 digest and a display prefix. Tokens carry four permissions:
+
+| Permission | Covers |
+| --- | --- |
+| `read` | Listing, detail, status, and log reads |
+| `write` | Creates and updates |
+| `delete` | Deletes and revocations |
+| `refresh` | Probes, warmups, previews, refreshes, connection tests, session teardown |
+
+An API token can only reach **registered** routes. The registry holds 43 entries, which are exactly the rows marked with a permission in the "Session or API token endpoints" and "Admin endpoints" sections below. Anything else is denied, with one of these reasons:
+
+| Reason | Status | Meaning |
+| --- | --- | --- |
+| `revoked` | 401 | The token is disabled or revoked |
+| `expired` | 401 | The token has expired |
+| `session_required` | 403 | The route accepts a login session only |
+| `route_not_available` | 403 | The route is not registered for API tokens |
+| `missing_scope` | 403 | The token lacks the permission the route requires |
+
+Every API token request is written to the audit log, allowed or denied. Read it back with `GET /v1/admin/api-token-logs`.
+
+### Playback keys
+
+Playback keys are created under Playback Access Control in the admin console. They can be scoped to all channels or an explicit channel ID list, given an expiry, and revoked at any time. Every use through `/p/{token}/` is recorded in the playback access log. The first 10 characters serve as the display prefix, and both the access log and the request log keep only that prefix.
+
+## Shared conventions
+
+### Error responses
+
+Every error uses the same JSON shape:
+
+```json
+{
+  "error": {
+    "code": "invalid_request",
+    "message": "invalid json body"
+  }
+}
+```
+
+`code` is a stable machine-readable identifier; `message` is for humans. Internal errors never leak their cause: the message is always `internal server error`.
+
+| `code` | Typical status | When |
+| --- | --- | --- |
+| `invalid_request` | 400 | Body, parameter, or field validation failed |
+| `unauthorized` | 401 | Missing, invalid, or expired credential |
+| `forbidden` | 403 | Valid credential, insufficient authority |
+| `not_found` | 404 / 410 | Resource missing or session gone |
+| `conflict` | 409 | Optimistic concurrency or state conflict |
+| `upstream_error` | 502 | Upstream fetch or probe failed |
+| `unavailable` | 503 | Media part not ready yet |
+| `not_ready` | 502 / 503 | Playlist or compatibility engine not ready |
+| `too_many_requests` | 429 | Rate limit tripped |
+| `internal` | 500 | Server-side failure |
+| `current_password_invalid` | 422 | Wrong current password on a credential change |
+| `username_taken` | 409 | Target username already in use |
+
+### Request and response headers
+
+Every response carries `X-Request-ID`, echoed from the request when present and generated otherwise. Responses also set `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, a `Content-Security-Policy`, and `Cache-Control: no-store, no-cache, must-revalidate`.
+
+`OPTIONS` requests return 204 immediately. CORS headers follow `security.cors_origins` and are omitted entirely when it is unset. When `security.public_hosts` is configured, requests whose `Host` is not on the list get 403 `forbidden`; `/healthz` and `/readyz` from a loopback address are exempt.
+
+### Optimistic concurrency
+
+Resources that need concurrency safety use a revision number plus the `If-Match` header. `GET /v1/admin/channels/{id}` returns the current revision in `ETag`; other resources expose it as a `revision` field in the response body. A mismatch returns 409 `conflict`.
+
+| Endpoint | `If-Match` |
+| --- | --- |
+| `PUT` and `DELETE` on `/v1/admin/settings`, `/v1/admin/egress`, and its `proxies` and `rules` sub-resources | Required; missing means 409 |
+| `PUT` and `DELETE /v1/admin/epg/sources/{id}` | Required; missing returns 428 (except deleting a preset source) |
+| Update, rotate, revoke, and delete on `/v1/admin/api-tokens/{id}` | Required; missing means 409 |
+| `POST`, `PUT`, and `DELETE` on the `/v1/admin/channels` family | Optional; validated when supplied |
+| Revoke and delete on `/v1/admin/access-tokens/{id}` | Optional; validated when supplied |
+| `PUT /v1/admin/channels/reorder` | Replaced by the `revisions` map in the body; missing means 409 |
+
+### Rate limits
+
+`POST /v1/auth/login` is rate limited per client IP over a one-minute window. The quota comes from `auth.login_rate_per_min` and defaults to 20 per minute. Exceeding it returns 429 `too_many_requests`.
+
+`PUT /v1/me/credentials` shares the same limiter, keyed by username plus client IP.
+
+## Public endpoints
+
+No credential required.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/` | Service info, and the fallback for unmatched GET paths |
+| `GET` | `/healthz` | Liveness probe |
+| `GET` | `/readyz` | Readiness probe |
+| `GET` | `/metrics` | Prometheus metrics |
+| `GET` | `/admin`, `/admin/` | Admin console assets |
+| `POST` | `/v1/auth/login` | Exchange credentials for a session JWT (rate limited) |
+| `GET` | `/v1/epg.xml` | XMLTV guide |
+| `GET` | `/v1/epg.xml.gz` | Gzipped XMLTV guide |
+| `GET` | `/v1/logo/{id}` | Channel logo |
+
+### `GET /`
+
+Redirects to `/admin` with a 302 when `Accept` contains `text/html`, otherwise returns JSON:
+
+```json
+{ "name": "kiln", "version": "1.0.0", "commit": "dev", "admin": "/admin" }
+```
+
+This pattern also catches every unmatched GET path, which returns 404 `not_found`.
+
+### `GET /healthz`
+
+Always returns `{"status":"ok"}`.
+
+### `GET /readyz`
+
+If a DASH ingress channel resolves to the FFmpeg compatibility engine, readiness checks that ffmpeg is available and returns 503 `not_ready` when it is not. Otherwise it returns `{"status":"ready"}`.
+
+### `GET /metrics`
+
+Returns 404 when `observe.enabled` is `false`. When enabled, it serves Prometheus text as `text/plain; version=0.0.4`.
+
+### `GET /admin` and `GET /admin/`
+
+Serves the embedded admin console. Assets under `/admin/assets/` support gzip negotiation and `ETag` conditional requests.
+
+### `POST /v1/auth/login`
+
+Request body; unknown fields are rejected:
+
+```json
+{ "username": "admin", "password": "..." }
+```
+
+On success, 200:
+
+```json
+{
+  "token": "...",
+  "expires_at": "2026-01-01T00:00:00Z",
+  "username": "admin",
+  "role": "admin"
+}
+```
+
+A bad username or password returns 401 `unauthorized`.
+
+### `GET /v1/epg.xml` and `GET /v1/epg.xml.gz`
+
+Return the XMLTV guide for all channels; the compressed variant uses `Content-Type: application/gzip`. With no EPG source configured, the response is a well-formed but empty document. When the EPG cache is disabled, each request first triggers an on-demand refresh.
+
+### `GET /v1/logo/{id}`
+
+Tries the built-in candidate sources in order, keyed on the channel's EPG name (falling back to its title). On success it returns the image bytes with `Cache-Control: public, max-age=3600, stale-if-error=86400` and `X-Kiln-Logo-Source`. If every candidate fails, it returns 502 `upstream_error`.
+
+## Session or API token endpoints
+
+Reachable with a login session or an admin API token holding the listed permission. Admin role is not required.
+
+| Method | Path | Permission | Purpose |
+| --- | --- | --- | --- |
+| `GET` | `/v1/me` | `read` | Describe the current credential |
+| `GET` | `/v1/channels` | `read` | Visible channel list |
+| `GET` | `/v1/status` | `read` | Runtime snapshot |
+
+### `GET /v1/me`
+
+```json
+{
+  "username": "admin",
+  "role": "admin",
+  "channel_ids": [],
+  "credential": "session",
+  "scopes": null
+}
+```
+
+`credential` is `session` or `api_token`. For an API token, `username` holds the token name and `scopes` lists its permissions.
+
+### `GET /v1/channels`
+
+Returns `{"channels": [...]}`. Each entry carries `id`, `title`, `group`, `logo_url`, `epg_id`, `epg_name`, `epg_source`, `ingress`, `on_demand`, `autostart`, `source_url`, `upstream`, `path`, `disabled`, `prefer_height`, `preferred_audio_languages`, `sort_order`, `revision`, and `play_url`.
+
+A non-admin session with a channel scope sees only the channels it declares.
+
+### `GET /v1/status`
+
+Returns `uptime_sec`, `bytes_in`, `bytes_out`, `requests`, `errors`, `goroutines`, `session_count`, and a `sessions` array. Each session carries `channel_id`, `mode`, `engine`, `pack_mode`, `fallback_reason`, `started_at`, `last_touch`, `state`, `errors`, `last_error`, and an optional `packager` counter block.
+
+A non-admin session with a channel scope sees `sessions` and `session_count` filtered to that scope.
+
+## Session-only endpoints
+
+These accept a login session only. An admin API token is refused: `/v1/me/credentials`, `/v1/admin/api-tokens/*`, and `/v1/admin/api-token-logs` are denied with `session_required`, while `/v1/playlist.m3u` is denied with `route_not_available`. This boundary is what keeps a token from escalating itself.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/v1/playlist.m3u` | Playlist carrying the session token |
+| `PUT` | `/v1/me/credentials` | Change login credentials |
+| `GET` | `/v1/admin/api-tokens` | List admin API tokens |
+| `POST` | `/v1/admin/api-tokens` | Create an admin API token |
+| `PUT` | `/v1/admin/api-tokens/{id}` | Update name, note, permissions, enabled state, expiry |
+| `POST` | `/v1/admin/api-tokens/{id}/rotate` | Issue new plaintext |
+| `POST` | `/v1/admin/api-tokens/{id}/revoke` | Revoke |
+| `DELETE` | `/v1/admin/api-tokens/{id}` | Delete |
+| `GET` | `/v1/admin/api-token-logs` | Token audit log |
+
+### `GET /v1/playlist.m3u`
+
+Returns `application/vnd.apple.mpegurl` with playback URLs prefixed by `/v1/play/` and the caller's session token appended to each one. When EPG sources are configured, the playlist header carries `x-tvg-url` pointing at `/v1/epg.xml.gz`.
+
+### `PUT /v1/me/credentials`
+
+Requires an admin session. Request body; unknown fields are rejected:
+
+```json
+{
+  "current_password": "...",
+  "username": "newname",
+  "new_password": "..."
+}
+```
+
+At least one of `username` and `new_password` must be present. New passwords are 8 to 72 bytes; usernames are at most 64 characters and may not contain control characters. On success the response matches the login shape, meaning a brand new session token: the old one stops working immediately. A wrong current password returns 422 `current_password_invalid`; a taken username returns 409 `username_taken`.
+
+### `GET /v1/admin/api-tokens`
+
+```json
+{
+  "tokens": [
+    {
+      "id": "...",
+      "name": "ci",
+      "token_prefix": "kiln_v1_ab12cd34",
+      "scopes": ["read", "write"],
+      "enabled": true,
+      "created_by": "admin",
+      "created_at": 0,
+      "expires_at": 0,
+      "last_used_at": 0,
+      "revision": 1,
+      "updated_at": 0
+    }
+  ],
+  "available_scopes": ["read", "write", "delete", "refresh"]
+}
+```
+
+### `POST /v1/admin/api-tokens`
+
+Body: `{ "name": "ci", "note": "", "scopes": ["read"], "expires_in_sec": 0 }`. `name` is required, at least one permission must be granted, and `expires_in_sec` of 0 means no expiry, capped at 10 years. Returns 201:
+
+```json
+{
+  "token": "kiln_v1_...",
+  "credential": { "id": "...", "token_prefix": "kiln_v1_ab12cd34" },
+  "warning": "store this token now; it will not be shown again"
+}
+```
+
+### `PUT /v1/admin/api-tokens/{id}`
+
+All body fields are optional: `name`, `note`, `scopes`, `enabled`, `expires_at`. Returns `{"credential": {...}}`.
+
+### `POST /v1/admin/api-tokens/{id}/rotate`
+
+Issues new plaintext and invalidates the old one. The response matches the create shape.
+
+### `POST /v1/admin/api-tokens/{id}/revoke`
+
+Returns `{"ok": true}`.
+
+### `DELETE /v1/admin/api-tokens/{id}`
+
+Returns 204 with no body.
+
+### `GET /v1/admin/api-token-logs`
+
+Returns the 100 most recent audit records:
+
+```json
+{
+  "logs": [
+    {
+      "id": 1,
+      "token_id": "...",
+      "token_prefix": "kiln_v1_ab12cd34",
+      "method": "GET",
+      "path": "/v1/admin/channels",
+      "required_scope": "read",
+      "decision": "allow",
+      "status": 200,
+      "remote": "127.0.0.1",
+      "user_agent": "curl/8",
+      "request_id": "...",
+      "created_at": 0
+    }
+  ]
+}
+```
+
+Denied records carry an extra `reason` field.
+
+## Playback endpoints
+
+Playback has two parallel path families: `/v1/play/` for session and preview tokens, and `/p/{token}/` for playback keys. The three file shapes map one to one across both.
+
+| Method | Path | Credential | Purpose |
+| --- | --- | --- | --- |
+| `GET` | `/v1/play/{id}/index.m3u8` | Session or preview token | Channel entry playlist |
+| `GET` | `/v1/play/{id}/live/{file}` | Session or preview token | Locally packaged output: media playlists, segments, CMAF parts |
+| `GET` | `/v1/play/{id}/u/{upstream}` | Session or preview token | Signed upstream fetch proxy |
+| `GET` | `/p/{token}/playlist.m3u` | Playback key in the path | Playlist scoped to that key |
+| `GET` | `/p/{token}/play/{id}/index.m3u8` | Playback key in the path | Channel entry playlist |
+| `GET` | `/p/{token}/play/{id}/live/{file}` | Playback key in the path | Locally packaged output |
+| `GET` | `/p/{token}/play/{id}/u/{upstream}` | Playback key in the path | Signed upstream fetch proxy |
+
+### The three file shapes
+
+- `index.m3u8` is the entry point. HLS ingress fetches the upstream playlist and rewrites its URLs; DASH ingress serves the locally packaged master playlist.
+- `live/{file}` serves locally packaged output. File names may not contain path separators. When the publication generation changes, the request is redirected with a 307 carrying a `g` query parameter; a stale generation returns 410 with `Retry-After`. In low-latency mode the `_HLS_msn`, `_HLS_part`, and `_HLS_skip` directives are parsed and block for up to 15 seconds. Immutable segments carry `Cache-Control: private, max-age=31536000, immutable`.
+- `u/{upstream}` proxies an upstream fetch. The target URL is encoded and carries an HMAC `sig`; a mismatch returns 403, and the target host must also pass the egress allowlist. Playlist responses are rewritten further; everything else is streamed through untouched.
+
+### Authorization behaviour
+
+Whether `/v1/play/` requires a credential is controlled by `security.play_require_auth`, which defaults to on. The credential can arrive as `?token=` or as `Authorization: Bearer`, and both accept session JWTs and preview tokens. Preview tokens are issued only by `POST /v1/admin/channels/{id}/preview`, last 5 minutes, cover a single channel, and are rejected on every non-playback endpoint.
+
+The `/p/{token}/` family always validates the playback key in the path, regardless of `security.play_require_auth`. An invalid, disabled, revoked, or expired key returns 401 `unauthorized`; a valid key requesting an out-of-scope channel returns 403 `forbidden`.
+
+### Viewer limits
+
+When a channel sets `max_viewers`, the first `index.m3u8` request mints a signed viewer lease and issues a 307 back to the same URL with a `viewer` query parameter. Later requests renew the lease with that parameter. A bad lease signature returns 403, and exceeding the limit is rejected by the session layer.
+
+## Admin endpoints
+
+Everything below lives under `/v1/admin` and requires the admin role. Both sessions and admin API tokens can reach these routes; tokens need the permission listed in each table.
+
+### Channels
+
+| Method | Path | Permission | Purpose |
+| --- | --- | --- | --- |
+| `GET` | `/v1/admin/channels` | `read` | List every channel, disabled included |
+| `GET` | `/v1/admin/channels/{id}` | `read` | Channel detail, response carries `ETag` |
+| `POST` | `/v1/admin/channels` | `write` | Create a channel |
+| `PUT` | `/v1/admin/channels/{id}` | `write` | Update a channel |
+| `DELETE` | `/v1/admin/channels/{id}` | `delete` | Delete a channel |
+| `POST` | `/v1/admin/channels/enable-all` | `write` | Enable in bulk |
+| `POST` | `/v1/admin/channels/disable-all` | `write` | Disable in bulk |
+| `PUT` | `/v1/admin/channels/reorder` | `write` | Reorder the list |
+
+`GET /v1/admin/channels` returns `{"channels": [...]}` with the same fields as `GET /v1/channels`.
+
+`GET /v1/admin/channels/{id}` returns:
+
+```json
+{
+  "channel": { "id": "demo-hls", "title": "Demo HLS" },
+  "egress_binding": { "mode": "auto" },
+  "effective_user_agent": "Kiln/1.0.0",
+  "revision": 3,
+  "updated_at": 0
+}
+```
+
+Sensitive request headers are blanked in the response: `authorization`, `proxy-authorization`, `cookie`, and any header whose name contains `token`, `secret`, or `api-key`. Leaving them blank on write keeps the stored value. `egress_binding.mode` is `auto`, `direct`, or `profile`, the last of which also carries `profile_id`.
+
+`POST` and `PUT` take a channel object with an optional `egress` block:
+
+```json
+{
+  "id": "demo-hls",
+  "title": "Demo HLS",
+  "ingress": "hls",
+  "source_url": "https://example.com/live/index.m3u8",
+  "egress": { "mode": "profile", "profile_id": "eu-1" }
+}
+```
+
+`egress.new_proxy` creates a proxy profile inline in the same request, but cannot be combined with an existing `profile_id`. The response is `{"ok": true, "id": "demo-hls", "egress_profile_id": "..."}`. A revision mismatch returns 409; validation failures return 400.
+
+`enable-all` and `disable-all` return `{"ok": true, "changed": 12, "channel_ids": [...]}`.
+
+`reorder` takes `{"ids": [...], "revisions": {"demo-hls": 3}}`, and both fields are required.
+
+### Sessions, probes, and previews
+
+| Method | Path | Permission | Purpose |
+| --- | --- | --- | --- |
+| `POST` | `/v1/admin/channels/{id}/probe` | `refresh` | Probe a saved channel's source |
+| `POST` | `/v1/admin/source-probes` | `refresh` | Probe an unsaved channel draft |
+| `POST` | `/v1/admin/channels/{id}/warmup` | `refresh` | Warm up a channel session |
+| `POST` | `/v1/admin/channels/{id}/preview` | `refresh` | Mint a preview playback URL |
+| `DELETE` | `/v1/admin/sessions/{id}` | `refresh` | Tear down a channel session |
+
+Probing a non-DASH channel returns `{"ok": true, "status": 200, "content_type": "...", "final_url": "...", "dur_ms": 42}`, and `source-probes` adds `proxy_id`. Returned URLs are stripped of credentials, query strings, and fragments.
+
+Probing a DASH channel returns `{"ok": true, "dur_ms": 1200, "inspection": {...}}`, where `inspection` reports whether the native engine can handle the manifest, the suggested engine, and the compatibility reason. Without global media keys configured, it returns 400.
+
+`source-probes` takes the same body as a channel write, plus an optional `egress` block selecting the route to test with. Use it to validate connectivity before saving.
+
+`warmup` returns 202 `{"state": "starting"}`.
+
+`preview` returns 201:
+
+```json
+{
+  "play_url": "https://kiln.example.com/v1/play/demo-hls/index.m3u8?token=...",
+  "expires_at": "2026-01-01T00:05:00Z"
+}
+```
+
+`DELETE /v1/admin/sessions/{id}` returns 204.
+
+### EPG
+
+| Method | Path | Permission | Purpose |
+| --- | --- | --- | --- |
+| `GET` | `/v1/admin/epg/presets` | `read` | Built-in source presets |
+| `GET` | `/v1/admin/epg/sources` | `read` | Configured sources and their status |
+| `POST` | `/v1/admin/epg/sources` | `write` | Add a source |
+| `PUT` | `/v1/admin/epg/sources/{id}` | `write` | Update a source |
+| `DELETE` | `/v1/admin/epg/sources/{id}` | `delete` | Delete a source; presets are hidden instead |
+| `GET` | `/v1/admin/epg/matches` | `read` | Channel-to-guide match results |
+| `POST` | `/v1/admin/epg/refresh` | `refresh` | Refresh every enabled source now |
+
+`GET /v1/admin/epg/sources` returns `{"sources": [...], "statuses": [...]}`. Each source entry is `{"source": {...}, "enabled": true, "revision": 1, "updated_at": 0}`. Each status carries `source_id`, `last_attempt`, `last_success`, `stale`, `error`, `channel_count`, `programme_count`, `available`, and `metadata`.
+
+The source write body is `{"id": "...", "name": "...", "url": "...", "timezone": "...", "proxy": "direct", "enabled": true}`, and unknown fields are rejected. `id` is required; the URL must be http or https; `timezone` must be a valid IANA zone; `proxy` is `auto` or the ID of a configured route, defaulting to `direct`. For a preset source you can submit only the fields you want to override; the rest fall back to preset values. Creation returns 201 and updates return 200, both with `{"ok": true, "source": {...}}`.
+
+`GET /v1/admin/epg/matches` returns `{"matches": [...]}`, where each entry carries `channel_id`, `status`, and optional `match`, `candidates`, and `logo_candidates`.
+
+`POST /v1/admin/epg/refresh` returns 409 when no source is enabled, otherwise `{"ok": true, "statuses": [...]}`. If some sources failed, `ok` is `false` and the per-source detail is in `statuses`.
+
+### Upstreams
+
+| Method | Path | Permission | Purpose |
+| --- | --- | --- | --- |
+| `GET` | `/v1/admin/upstreams` | `read` | List upstreams defined in the config file |
+
+Returns `{"upstreams": [{"id": "main", "base_url": "https://example.com/live"}]}`.
+
+### Playback keys
+
+| Method | Path | Permission | Purpose |
+| --- | --- | --- | --- |
+| `GET` | `/v1/admin/access-tokens` | `read` | List playback keys |
+| `POST` | `/v1/admin/access-tokens` | `write` | Create a playback key |
+| `POST` | `/v1/admin/access-tokens/{id}/revoke` | `delete` | Revoke |
+| `DELETE` | `/v1/admin/access-tokens/{id}` | `delete` | Delete |
+
+The list returns `{"access_tokens": [...]}` with `id`, `name`, `token_prefix`, `scope`, `enabled`, `note`, `created_at`, `last_used_at`, `revoked_at`, `expires_at`, and `revision`. Plaintext is never included.
+
+The create body is `{"name": "...", "note": "...", "channel_ids": ["demo-hls"], "expires_in_sec": 0}`. An empty `channel_ids` means all channels, and `expires_in_sec` of 0 means no expiry, capped at 10 years. Returns 201:
+
+```json
+{
+  "id": "...",
+  "name": "living-room",
+  "token": "v1...",
+  "token_prefix": "v1AbCdEfGh",
+  "scope": "...",
+  "playlist_url": "https://kiln.example.com/p/v1.../playlist.m3u",
+  "created_at": 0,
+  "expires_at": 0,
+  "warning": "store this token now; it will not be shown again"
+}
+```
+
+Revoke and delete both return `{"ok": true}`.
+
+### Playback access logs
+
+| Method | Path | Permission | Purpose |
+| --- | --- | --- | --- |
+| `GET` | `/v1/admin/access-logs` | `read` | Query the playback access log |
+| `DELETE` | `/v1/admin/access-logs` | `delete` | Clear the playback access log |
+
+The query accepts `limit` and `token_id` and returns `{"access_logs": [...]}`, where each record carries `id`, `token_id`, `token_prefix`, `path`, `channel_id`, `status`, `remote`, and `created_at`. Keys in the path are already truncated to their display prefix. Clearing returns `{"deleted": 128}`.
+
+Records are pruned according to `access_log_retention_days`, which defaults to 30 days.
+
+### Settings
+
+| Method | Path | Permission | Purpose |
+| --- | --- | --- | --- |
+| `GET` | `/v1/admin/settings` | `read` | Read runtime settings |
+| `PUT` | `/v1/admin/settings` | `write` | Write runtime settings |
+
+The read returns the config-file values `listen`, `cors_origins`, `public_hosts`, and `play_require_auth`, plus the runtime-editable `public_base_url` and `access_log_retention_days` and the current `revision`.
+
+The write body is `{"public_base_url": "https://kiln.example.com", "access_log_retention_days": "30"}`. Both fields are strings, and retention must be between 1 and 3650. `If-Match` is required; without it the request returns 409.
+
+### Import and export
+
+| Method | Path | Permission | Purpose |
+| --- | --- | --- | --- |
+| `POST` | `/v1/admin/import/m3u` | `write` | Preview or apply an M3U import |
+| `POST` | `/v1/admin/exports/m3u` | `write` | Export a playlist file |
+
+The import body is `{"content": "#EXTM3U...", "apply": false, "revisions": {}}`. With `apply` false the request only parses and previews; with `apply` true it writes, and `revisions` must carry the channel revisions observed during the preview. The response is `{"preview": true, "count": 30, "created": 12, "updated": 3, "skipped": 15, "entries": [...]}`. If any channel changed since the preview, the request returns 409.
+
+The export returns 201 with `Content-Type: application/vnd.apple.mpegurl` and `Content-Disposition: attachment; filename="kiln-playlist.m3u"`. It mints a playback key named `M3U export` and embeds that in the URLs, so neither the session token nor an admin token ever leaks into the file.
+
+### Network egress
+
+| Method | Path | Permission | Purpose |
+| --- | --- | --- | --- |
+| `GET` | `/v1/admin/egress` | `read` | Read the egress configuration |
+| `PUT` | `/v1/admin/egress` | `write` | Replace the egress configuration |
+| `POST` | `/v1/admin/egress/proxies` | `write` | Create a proxy profile |
+| `PUT` | `/v1/admin/egress/proxies/{id}` | `write` | Update a proxy profile |
+| `DELETE` | `/v1/admin/egress/proxies/{id}` | `delete` | Delete a proxy profile |
+| `POST` | `/v1/admin/egress/rules` | `write` | Create a routing rule |
+| `PUT` | `/v1/admin/egress/rules/{id}` | `write` | Update a routing rule |
+| `DELETE` | `/v1/admin/egress/rules/{id}` | `delete` | Delete a routing rule |
+| `POST` | `/v1/admin/egress/test` | `refresh` | Connection test |
+
+The read returns:
+
+```json
+{
+  "default": "direct",
+  "playlist_policy": "rewrite",
+  "docker_proxy_host": "host.docker.internal",
+  "proxies": [
+    {
+      "id": "eu-1",
+      "name": "eu-1",
+      "url": "http://proxy.example.com",
+      "disabled": false,
+      "credential_configured": true,
+      "revision": 2
+    }
+  ],
+  "rules": [],
+  "source": "sqlite",
+  "revision": 5
+}
+```
+
+Proxy URLs are reduced to scheme and host in responses; whether credentials are stored is reported by `credential_configured`. On write, if the scheme and host are unchanged and no credentials are supplied, the stored credentials are preserved.
+
+A proxy profile needs an `id` and a `url`. Schemes are limited to `http`, `https`, `socks5`, and `socks5h`, and the `id` cannot be the reserved value `direct`. Rule `kind` is one of `host_suffix`, `host_exact`, `channel`, `host_regex`, or `url_regex`; regex kinds are compiled during validation. Rules cannot reference a missing or disabled profile. `playlist_policy` is `rewrite`, `passthrough`, or `auto`. Deleting a profile also drops the rules that reference it and resets the default to `direct`.
+
+Single-item writes read the current configuration, apply the change, validate the whole document, and write it back, so they are covered by the same `If-Match` requirement.
+
+The connection test body:
+
+```json
+{
+  "target": "custom",
+  "url": "https://example.com/live/index.m3u8",
+  "channel_id": "demo-hls",
+  "proxy_id": "eu-1"
+}
+```
+
+A `target` of `bing` uses the built-in public probe URL. `source` and `custom` require `url`, and the destination must be a public address. With no `target` and no `url`, the built-in probe is used. `proxy_url` tests an unsaved route directly, and `draft` tests an entire unsaved configuration. The response is always 200; the outcome lives in the fields:
+
+```json
+{
+  "ok": true,
+  "reachable": true,
+  "outcome": "success",
+  "status": 200,
+  "proxy_id": "eu-1",
+  "via_proxy": "eu-1",
+  "reason": "rule:eu",
+  "rewrite": true,
+  "final_url": "https://example.com/live/index.m3u8",
+  "dur_ms": 180,
+  "target": "custom"
+}
+```
+
+On failure `ok` is `false` and `outcome` is one of `blocked`, `dns`, `timeout`, `tls`, `proxy`, `proxy_auth`, `http_error`, or `network`, with an `error` description alongside.
+
+## Lite variant
+
+The Lite binary registers 7 routes. There is no admin console, no admin API, no EPG, no metrics, and no path-based playback keys. Channels come from a static catalog in the config file, and SQLite is not used.
+
+| Method | Path | Credential |
+| --- | --- | --- |
+| `GET` | `/healthz` | None |
+| `GET` | `/readyz` | None |
+| `POST` | `/v1/auth/login` | None (rate limited) |
+| `GET` | `/v1/playlist.m3u` | Session token |
+| `GET` | `/v1/play/{id}/index.m3u8` | Session token |
+| `GET` | `/v1/play/{id}/live/{file}` | Session token |
+| `GET` | `/v1/play/{id}/u/{upstream}` | Session token |
+
+What differs:
+
+- `/readyz` always reports ready and runs no compatibility-engine check.
+- `/v1/playlist.m3u` uses playback authorization rather than session authorization, so it follows `security.play_require_auth` and accepts either an `Authorization: Bearer` header or a `?token=` query parameter.
+- The error response format is identical to the full build.
+- Responses set only `X-Content-Type-Options`, `Referrer-Policy`, `Cache-Control`, and CORS. There is no `X-Request-ID`, no CSP, and no `X-Frame-Options`.
+- Host allowlist checks and `OPTIONS` handling match the full build.
+
+## Related reading
+
+<CardGrid>
+  <Card title="Authentication" icon="ph:key">
+    The full credential model and operational guidance in [Authentication](/en/guide/auth/).
+  </Card>
+  <Card title="Configuration" icon="ph:sliders">
+    Values for the `auth`, `security`, and `egress` sections in [Configuration](/en/reference/config/).
+  </Card>
+  <Card title="Command line" icon="ph:terminal">
+    Binary flags and helper scripts in [Command line](/en/reference/cli/).
+  </Card>
+</CardGrid>

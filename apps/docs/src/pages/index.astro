@@ -1,46 +1,64 @@
 ---
 import BaseLayout from "../layouts/BaseLayout.astro";
 import Header from "../components/Header.astro";
+import { Card } from "../components/ui/card";
+import { CardGrid } from "../components/ui/card-grid";
+import { Code } from "../components/ui/code";
 import { config } from "virtual:nimbus/config";
+
+const install =
+  "curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh | sh -s -- --lang zh";
 ---
 
 <BaseLayout title={config.title} description={config.description}>
   <div class="flex flex-col min-h-screen">
     <Header />
-    <main class="flex-1 mx-auto max-w-2xl w-full px-6 py-24">
+    <main class="flex-1 mx-auto max-w-3xl w-full px-6 py-20">
       <h1
         class="text-foreground leading-tight"
         style="font-size: var(--nb-h1-size); font-weight: var(--nb-h1-weight); letter-spacing: var(--nb-h1-tracking);"
       >
         {config.title}
       </h1>
-      <p class="mt-2 text-[1.0625rem] text-muted-foreground leading-relaxed">
-        {config.description}
+      <p class="mt-3 text-[1.0625rem] text-muted-foreground leading-relaxed">
+        自托管的 HLS 与 DASH 频道网关：原生引擎直接解密重封装 DASH
+        源，不依赖 ffmpeg；频道按需拉流、空闲自动回收；播放、管理与脚本访问各走各的凭据。单个二进制即可部署，也提供
+        Docker 镜像。
       </p>
 
-      <div class="mt-8 grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <a
-          href="/welcome"
-          class="block rounded-lg border border-border p-4 transition-colors hover:border-border-strong no-underline"
-        >
-          <div class="font-medium text-foreground">Welcome</div>
-          <div class="mt-0.5 text-sm text-muted-foreground">Start here</div>
-        </a>
-        <a
-          href="/getting-started"
-          class="block rounded-lg border border-border p-4 transition-colors hover:border-border-strong no-underline"
-        >
-          <div class="font-medium text-foreground">Getting Started</div>
-          <div class="mt-0.5 text-sm text-muted-foreground">Install + configure</div>
-        </a>
-        <a
-          href="/components"
-          class="block rounded-lg border border-border p-4 transition-colors hover:border-border-strong no-underline"
-        >
-          <div class="font-medium text-foreground">Components</div>
-          <div class="mt-0.5 text-sm text-muted-foreground">See them in action</div>
-        </a>
+      <div class="mt-8">
+        <div class="text-sm font-medium text-foreground mb-2">一行命令安装</div>
+        <Code code={install} lang="bash" />
       </div>
+
+      <CardGrid class="mt-10">
+        <a href="/start/" class="no-underline block">
+          <Card title="入门" icon="ph:rocket-launch" class="h-full transition-colors hover:ring-border-strong">
+            从安装到跑通第一个频道，脚本、Docker 与手动部署三条路径任选。
+          </Card>
+        </a>
+        <a href="/guide/" class="no-underline block">
+          <Card title="指南" icon="ph:book-open" class="h-full transition-colors hover:ring-border-strong">
+            频道、播放、鉴权、媒体引擎、EPG、出站代理与运维的完整讲解。
+          </Card>
+        </a>
+        <a href="/reference/" class="no-underline block">
+          <Card title="参考" icon="ph:brackets-curly" class="h-full transition-colors hover:ring-border-strong">
+            配置文件、环境变量、HTTP API 与命令行的逐项参考。
+          </Card>
+        </a>
+        <a href="/en/" class="no-underline block">
+          <Card title="English" icon="ph:translate" class="h-full transition-colors hover:ring-border-strong">
+            The full documentation is also available in English.
+          </Card>
+        </a>
+      </CardGrid>
+
+      <p class="mt-10 text-sm text-muted-foreground">
+        项目托管在
+        <a href="https://github.com/babywbx/kiln" target="_blank" rel="noopener">GitHub</a>
+        ，问题与建议欢迎提 issue。
+      </p>
     </main>
   </div>
 </BaseLayout>

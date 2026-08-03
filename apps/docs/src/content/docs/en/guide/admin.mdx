@@ -1,0 +1,117 @@
+---
+title: Admin console
+description: "A tour of Kiln's built-in admin UI: overview, channels, programme guide, network egress, access control, and system settings."
+sidebar:
+  order: 9
+---
+
+Kiln ships a single-page admin UI inside the binary, so there is nothing extra to deploy. It covers the whole operational loop: configuring channels, importing and exporting playlists, managing guide sources, arranging outbound proxies, issuing playback keys and API tokens, and reading access records.
+
+## Getting in
+
+The console is served under `/admin`, and a browser hitting the root path is redirected there. Sign in with an account from the config file. Only `role = "admin"` accounts may enter; any other role is returned to the login page.
+
+- **Stay signed in** decides where the token is kept: checked stores it persistently, unchecked keeps it to the current tab. Tabs in the same browser share the session, and signing out of one signs out the rest.
+- The top-right corner toggles light and dark appearance, and the account menu switches the interface language (Simplified Chinese, Traditional Chinese, English). The choice is stored in the browser.
+- The sidebar collapses to an icon rail, and leaving a form with unsaved changes asks for confirmation first.
+
+Navigation has six fixed sections: Overview, Channels, Programme Guide, Access Control, Network Egress, and System Settings.
+
+## Overview
+
+The landing screen answers one question: is anything wrong right now?
+
+Five metrics sit at the top: total channels, enabled channels, active sessions, guide coverage (matched over enabled), and loaded programmes.
+
+**Instance Health** reports HTTP reachability, the goroutine count, and the time of the last status refresh, polling once per second. When the service becomes unreachable the status dot turns red and retries continue in the background.
+
+**Active Sessions** lists the running playback sessions with channel, state, type, engine, packaging mode, and last error, and lets you stop any of them. Stopping is immediate: players currently watching are interrupted, and the session restarts on the next playback request.
+
+## Channels
+
+Channels are the bulk of the console, split into a list and a detail view. Field-level semantics live in [Channel management](/en/guide/channels/).
+
+### List view
+
+The table shows channel, source, format, run mode, guide status, and state, with per-row preview and configure actions plus up and down controls to reorder the catalog. The order carries through to the generated playlist.
+
+Bulk actions in the page header:
+
+- **Enable all / Disable all**: disabling hides channels from the catalog, interrupts running sessions, and invalidates their playback URLs.
+- **Import M3U / Export M3U**: covered in the next section.
+
+### Detail view
+
+The detail view is a sectioned form, filled in order:
+
+<Steps>
+  <Step title="Channel information">
+    Channel ID, display name, and group. The ID is immutable once created.
+  </Step>
+  <Step title="Stream source">
+    The full HLS or DASH source URL, with an inline test that reports whether the address responds and which egress it connected through.
+  </Step>
+  <Step title="Run mode">
+    Stream format, start behaviour (prewarm at startup, always running, start on demand), idle-stop seconds, preferred video height, viewer cap, and related playback preferences. DASH channels can also choose a packaging engine here and run a track inspection that reads the MPD, enumerates the available video renditions, audio tracks, and subtitles, and confirms the chosen combination can be delivered together before you save it.
+  </Step>
+  <Step title="Programme guide and logo">
+    The channel's identity in XMLTV. Pick a candidate ID from the refreshed guide data, and optionally a logo; leaving the logo blank falls back to Kiln's logo proxy.
+  </Step>
+</Steps>
+
+An **Advanced request settings** disclosure holds the user agent, extra request headers, and failure-recovery behaviour; sensitive headers are not echoed back after saving. **Network egress** lets a channel follow the global rules, force a direct connection, or pin one proxy, and a pasted proxy URL can be turned into a new proxy on the spot.
+
+The command bar at the top offers four immediate actions: probe the source, start now, open preview, and stop the current session. A **Channel Management** card at the bottom groups enable, disable, and permanent delete.
+
+## Search with romanized matching
+
+The channel filter matches names, IDs, groups, and per-channel search aliases, and it carries a built-in mapping from Han characters to both Mandarin pinyin and Cantonese jyutping. You can type the characters themselves, the full romanization, or just the initials, and simplified and traditional forms are interchangeable. Longer queries also tolerate up to two character errors, so a typo or two still finds the channel.
+
+The mapping tables load on demand, the first time the filter is used, so they never sit in the critical path of the first paint.
+
+## M3U import and export
+
+**Import** takes pasted M3U text and parses it into a preview that marks each entry as created, updated, or skipped before anything is written. Import is additive: channels missing from the pasted list are never deleted.
+
+**Export** produces an M3U you can hand straight to a player. A playback-only, revocable distribution credential is created automatically for it, so the exported URLs never carry an administrator login token.
+
+## Programme guide
+
+**Guide Sources** manages every XMLTV source. Built-in presets start disabled; enable, edit, or delete them as needed, or add a custom source pointing at any reachable `.xml` or `.xml.gz` URL. Each source carries its own ID, display name, time zone, and network egress, so a restricted source can simply be given a proxy.
+
+Once sources are enabled, **Refresh Now** downloads the data. The result reports how many programmes were loaded and how many sources failed, while the table shows per-source status (waiting for a first refresh, download failed, data out of date, or normal) along with channel and programme counts.
+
+Below that, **Channel Matching** breaks channels into matched, review, and unmatched. Kiln will not guess which ID a same-named channel belongs to, so review and unmatched entries are resolved one by one on the channel detail page. The full workflow is in [Programme guide](/en/guide/epg/).
+
+## Network egress
+
+This section decides how Kiln reaches out to stream sources, and it follows a draft, test, apply cycle: every change lands in a draft, and **Apply Changes** stays disabled until a route test has passed.
+
+- **Default egress**: the connection used by requests that match no rule, plus the playlist handling policy (route everything through Kiln, keep origin addresses, or automatic). Containers that need to reach a proxy on the host set the container proxy host here.
+- **Proxy servers**: `http`, `https`, `socks5`, and `socks5h` are supported. Credentials are stored server-side only and are never echoed back after applying.
+- **Routing rules**: evaluated by priority, lower numbers first, matching on hostname suffix, exact hostname, hostname regular expression, channel ID, or full-URL regular expression.
+- **Connection test**: either a one-click public connectivity probe for a proxy, or a full route verification against a channel or a custom address. Only a final HTTP 200 counts as a pass, and the result names the route taken, the egress used, and the elapsed time.
+
+For choosing between policies and rules, see [Outbound proxies](/en/guide/proxy/).
+
+## Access control
+
+This section has two tabs.
+
+**Playback Keys** lists every issued playback credential with its name, key prefix, channel scope, expiry, and status. At creation you choose the allowed channels and a validity period; the complete key is shown once, together with a ready-to-copy playlist URL. Existing keys can be revoked (effective immediately, audit record retained) or deleted outright.
+
+**Playback Access Log** records requests to playlists and playback endpoints: time, key prefix, request path, channel, status code, and client address. Only the key prefix survives in the recorded path. The log keeps at most 5,000 entries and is trimmed automatically according to the retention setting; it can also be cleared manually, which cannot be undone.
+
+Distribution patterns are covered in [Playback and distribution](/en/guide/playback/).
+
+## System settings
+
+The settings page holds four cards, top to bottom.
+
+**Account and language** shows the signed-in account and interface language with entry points to change either. Changing the username or password requires the current password, and saving immediately invalidates sessions on other devices.
+
+**Administrator API tokens** issues dedicated credentials for scripts and automation. Pick the `read`, `write`, `delete`, and `refresh` scopes the job needs (presets are available as a starting point), set an expiry, and copy the plaintext, which is shown once and stored only as a SHA-256 digest. Existing tokens can be edited, rotated, or revoked. The invocation audit sits in the same card, listing recent allowed and denied calls. The rules behind it are in [Authentication](/en/guide/auth/).
+
+**Playback URLs and access logs** carries two settings that take effect immediately: the public base URL used to build playback and playlist addresses, and access log retention in days (1 to 3650).
+
+**Active configuration** is read-only: listen address, whether playback authentication is on, CORS origins, allowed public hosts, and the service version. These require a config file change and a restart. See the [configuration reference](/en/reference/config/).

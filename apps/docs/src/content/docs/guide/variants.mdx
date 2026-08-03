@@ -1,0 +1,132 @@
+---
+title: Core、Full 与 Lite
+description: 三个发行变体的能力边界、构建与分发形态、Lite 的固定资源预算、受控实测对比数据与选型指引。
+sidebar:
+  order: 6
+---
+
+Kiln 发行三个变体。它们共用同一套配置模型和同一份原生媒体模块，区别在于控制面的完整度、是否携带 ffmpeg，以及资源预算的松紧。
+
+## 三个变体
+
+| 维度 | Core | Full | Lite |
+| --- | --- | --- | --- |
+| 默认 packager | `native` | `auto` | `native` |
+| 原生 HLS / DASH | 是 | 是 | 是 |
+| FFmpeg | 不包含 | 内置 8.1.2 | 不包含 |
+| 登录、M3U、播放 | 是 | 是 | 是 |
+| SQLite 数据库 | 是 | 是 | 否 |
+| 管理控制台与管理 API | 是 | 是 | 否 |
+| EPG | 是 | 是 | 否 |
+| OTLP 与 pprof | 是 | 是 | 否 |
+| 基础镜像 | Alpine | Alpine 加 FFmpeg | `scratch` |
+| 定位 | 完整的纯原生部署 | 完整的兼容部署 | 固定配置的低资源播放节点 |
+
+`kiln:latest` 是同版本 `kiln:full` 的别名，不是第四种运行时实现。
+
+<Aside type="note" title="Core 的“无 ffmpeg”是依赖边界">
+  Core 并没有在编译期删掉兼容代码，它只是官方镜像里不放 ffmpeg 可执行文件。自行往 Core 容器里塞一个 ffmpeg 会改变这条边界。真正在编译期裁剪的是 Lite。
+</Aside>
+
+镜像提供的默认 packager 通过 `KILN_DEFAULT_PACKAGER_ENGINE` 注入，只在配置里没有写 `[packager].engine` 时生效。同一份配置不会因为换了镜像标签而悄悄改变行为，详见 [媒体引擎](/guide/media-engine/)。
+
+## 构建与分发形态
+
+Core 与 Full 使用完全相同的标准构建入口和编译参数，产出的应用二进制大小一致，差别只有镜像里是否存在 ffmpeg 以及注入的环境变量。Lite 是唯一一个在编译期就不同的变体：
+
+```bash
+# Core 与 Full 共用的标准构建
+CGO_ENABLED=0 go build -trimpath -o kiln ./apps/server
+
+# Lite 通过构建标签换掉整个入口与控制面
+CGO_ENABLED=0 go build -tags=lite -trimpath -o kiln ./apps/server
+```
+
+`lite` 标签让编译器选中另一份 `main`，SQLite、管理控制台、EPG、遥测导出这些控制面依赖根本不会进入依赖闭包，因此 Lite 不是“把功能关掉”，而是没有编译进去。
+
+三个镜像对应 Dockerfile 里的三个 target：
+
+```bash
+docker build --target core -f deploy/docker/Dockerfile -t kiln:core .
+docker build --target full -f deploy/docker/Dockerfile -t kiln:full .
+docker build --target lite -f deploy/docker/Dockerfile -t kiln:lite .
+```
+
+Core 的多架构构建覆盖 `linux/amd64`、`linux/arm64`、`linux/arm/v7` 与 `linux/arm/v6`。二进制分发方面，安装脚本的 `--lite` 只提供 Linux 构建，其它平台安装的都是完整版，参见 [安装脚本](/start/install-script/)。
+
+## Lite 的边界
+
+Lite 的公开接口只有 `/healthz`、`/readyz`、`/v1/auth/login`、`/v1/playlist.m3u` 和 `/v1/play/*`。它不创建 SQLite，`data_dir` 里只有自动生成的登录密钥和临时媒体文件，因此可以配合只读根文件系统运行。
+
+配置里出现下面任何一项时，Lite 会在启动时直接拒绝，而不是静默忽略：
+
+- 全局或任一频道的 packager 引擎不是 `native`
+- 启用了 EPG
+- 配置了 OTLP 导出端点
+- 启用了 pprof
+
+## Lite 的固定资源预算
+
+Core 与 Full 按容器实际内存挑选内部档位，Lite 则不管宿主机多大，都固定使用同一组预算，以保证跨机器的低内存特征一致：
+
+| 生效值 | Lite | 对比：受限档位的 Core / Full |
+| --- | ---: | ---: |
+| Go 软内存目标 | 24 MiB | 48 MiB |
+| 原生 inflight 上限 | 24 MiB | 32 MiB |
+| 单段上限 | 20 MiB | 20 MiB |
+| 启动 / 预取流水线 | 1 / 1 | 1 / 1 |
+| GOGC | 50 | 75 |
+| 主动回收媒体页缓存 | 是 | 是 |
+
+这组数字在 `resource_mode` 为 `auto` 和 `constrained` 时都成立，只有 `performance` 会让 Lite 完全退出自适应、改用配置里写的值。预算是 Go 堆与媒体工作集的软目标，不是容器总 RSS 的保证。
+
+## 性能对比
+
+下面的数字来自仓库内的受控实测，测试日期 2026-07-23，架构 `linux/arm64`，三个变体在相同宿主机、相同容器限制（1 CPU、128 MiB）、相同配置和相同媒体 fixture 下各跑 5 轮、共 100 次完整链路。
+
+体积（MB 为十进制字节）：
+
+| 变体 | Docker 本地镜像 | Kiln 二进制 | 额外 FFmpeg |
+| --- | ---: | ---: | ---: |
+| Lite | 3.84 MB | 9.31 MB | 无 |
+| Core | 13.27 MB | 22.22 MB | 无 |
+| Full | 66.41 MB | 22.22 MB | 109.57 MB |
+
+内存与链路稳定性：
+
+| 变体 | 负载后 RSS 中位数（范围） | 成功链路 | OOM |
+| --- | ---: | ---: | ---: |
+| Lite | 13.01 MiB（11.48 到 13.33） | 100 / 100 | 0 |
+| Core | 25.17 MiB（25.11 到 25.27） | 100 / 100 | 0 |
+| Full | 25.21 MiB（21.03 到 25.35） | 100 / 100 | 0 |
+
+结论性的几条：
+
+- Lite 的镜像比 Core 小 71.1%，比 Full 小 94.2%；二进制比 Core 与 Full 小 58.1%。
+- Lite 的负载后 RSS 中位数比 Core 低 48.3%、比 Full 低 48.4%。这个下降来自运行时结构和预算共同变化，不只是二进制变小。
+- Core 与未启动 ffmpeg 子进程的 Full 在原生路径上没有可解释的内存差异，两者相差约 0.14%。把 ffmpeg 放进镜像主要增加分发与磁盘成本。
+- 官方验收里，Lite 在 1 CPU、64 MiB 的容器中完成 10 次链路，负载后 RSS 为 12.80 MiB，无 OOM。
+
+<Aside type="caution" title="这组数据不能支持什么">
+  实验使用的是小体积确定性 fixture，不是真实码率。它无法支持 1080p 或 4K 的吞吐排名、多频道并发容量、CPU 效率、首帧时间、长时间内存稳定性，也没有覆盖 Full 真正启动 ffmpeg 回退时的内存与 CPU 成本。真实部署应对目标频道单独做端到端验收和长稳测试。
+</Aside>
+
+## 怎么选
+
+<CardGrid>
+  <Card title="选 Core">
+    需要完整的管理控制台、数据库、EPG 和观测能力，并且已经确认所有 DASH 频道都能被原生引擎处理。相比 Full 显著减少镜像体积，但在同样的原生路径上不要指望进程内存明显更低。
+  </Card>
+  <Card title="选 Full">
+    输入兼容性优先，需要保留 ffmpeg 回退。原生可处理时它的内存表现与 Core 接近；真正发生回退时，容器限制要按“Kiln 进程加 ffmpeg 子进程加页缓存”来设。
+  </Card>
+  <Card title="选 Lite">
+    节点只需要登录、M3U 和播放，频道完全由原生引擎处理，配置用文件管理不需要运行时数据库和管理台，并且资源预算、镜像拉取速度或攻击面是首要考虑。
+  </Card>
+</CardGrid>
+
+不确定时从 Full 起步，把频道跑通、确认日志里都是原生路径之后再换 Core；需要边缘播放节点时再单独部署 Lite。三者共用同一份配置模型，迁移只需要换镜像，参见 [Docker 部署](/start/docker/)。
+
+## Windows
+
+Windows 发行版不含 ffmpeg，也没有 Lite 构建。`[packager].engine` 为 `auto` 时会自动走原生引擎，确实需要兼容回退时自行安装 ffmpeg 并加入 `PATH`。其它方面 Windows 版与完整版一致，包含管理控制台、数据库、EPG 与观测能力，安装与服务注册见 [二进制安装](/start/binary/)。

@@ -1,0 +1,222 @@
+---
+title: Authentication
+description: Kiln's four credential types, session signing keys, administrator API tokens, and a production hardening checklist.
+sidebar:
+  order: 4
+---
+
+Kiln answers "who is calling" with four credentials that never overlap. Public endpoints need none. Login sessions serve the admin console. Administrator API tokens serve scripts and automation. Path-based playback keys serve players and playlist distribution. None of them can promote itself into another.
+
+## Credentials at a glance
+
+| Credential | Shape | Used for | Lifetime |
+| --- | --- | --- | --- |
+| Public endpoint | No credential | Health checks, metrics, EPG, logos | Not applicable |
+| Session JWT | `Authorization: Bearer <jwt>`, Ed25519 signed | Admin console, interactive debugging | `token_ttl_hours` (24 by default); invalidated when credentials change |
+| Administrator API token | `kiln_v1_` prefix plus 48 random characters | Scripts, CI, external tooling | Expiry set at creation; rotatable and revocable |
+| Playback key | `v1` prefix plus 126 random characters, carried in the URL path | Players and playlist distribution | Expiry set at creation; revocable |
+
+<Aside type="note" title="The credential type is visible">
+  `GET /v1/me` echoes back which credential served the request: a session reports `credential: "session"`, a token reports `credential: "api_token"` along with its granted scopes. Start there when a call unexpectedly returns 403.
+</Aside>
+
+## Users and roles
+
+Users live in the `[[auth.users]]` array of the config file. At least one is required or startup validation fails. Every user needs `username`, `password_hash`, and `role`, and usernames must be unique.
+
+```toml title="kiln.toml"
+[[auth.users]]
+username = "admin"
+password_hash = "$2a$10$..."
+role = "admin"
+
+[[auth.users]]
+username = "operator"
+password_hash = "$2a$10$..."
+role = "viewer"
+channel_ids = ["demo-hls", "demo-dash"]
+```
+
+`role = "admin"` grants everything and is also the gate to the admin console: after login the console re-checks `/v1/me` and sends any non-admin role back to the login page. Other roles are constrained by `channel_ids` and only see and play the channels listed there, across the channel list, the playlist, and the status endpoint. An empty `channel_ids` means no channel restriction.
+
+Passwords are stored as bcrypt hashes, never in plaintext. To generate one:
+
+<Tabs>
+  <TabItem label="Make">
+    ```bash
+    make hash PASSWORD='your-password'
+    ```
+  </TabItem>
+  <TabItem label="go run">
+    ```bash
+    go run scripts/hash-password.go 'your-password'
+    ```
+  </TabItem>
+</Tabs>
+
+## Session JWTs
+
+`POST /v1/auth/login` exchanges a username and password for an Ed25519-signed JWT. The response also carries the expiry, the username, and the role.
+
+```bash
+curl -s http://127.0.0.1:8080/v1/auth/login \
+  -H 'content-type: application/json' \
+  -d '{"username":"admin","password":"your-password"}'
+```
+
+### Signing keys
+
+The algorithm is fixed to `EdDSA`. The private key is resolved in order, first match wins:
+
+<Steps>
+  <Step title="Inline PEM in config">
+    `auth.token_private_key`, or the `KILN_TOKEN_PRIVATE_KEY` environment variable.
+  </Step>
+  <Step title="Key file path">
+    `auth.token_private_key_file`, or the `KILN_TOKEN_PRIVATE_KEY_FILE` environment variable.
+  </Step>
+  <Step title="Auto-managed in the data directory">
+    With neither of the above, Kiln reads `{data_dir}/auth/ed25519.pem`. If the file is missing it generates a fresh pair, writes the private key with mode `0600`, and stores the public key at `{data_dir}/auth/ed25519.pub.pem`.
+  </Step>
+</Steps>
+
+The public key is optional and is derived from the private key when omitted. If you do supply `token_public_key` or `token_public_key_file`, Kiln verifies that it matches the private key and refuses to start otherwise. At least one of the private key, the private key file, or `server.data_dir` must be present, or config validation fails.
+
+To generate a pair by hand:
+
+```bash
+go run scripts/gen-jwt-keys.go ./secrets   # writes ed25519.pem / ed25519.pub.pem
+```
+
+<Aside type="caution" title="Auto-managed keys don't fit multiple instances">
+  Auto-generated keys live inside each instance's own data directory. When several instances share the same users, configure one private key explicitly (file or environment variable). Otherwise a session issued by one instance will not verify on another.
+</Aside>
+
+### Validation and rate limiting
+
+- Issued tokens carry `iss`, `aud`, `exp`, `iat`, `nbf`, `sub`, and a single-use `jti`. All time-based assertions are enforced on verification, with 30 seconds of clock skew allowed.
+- `token_issuer` and `token_audience` both default to `kiln` and must match at verification time. Changing either invalidates every outstanding token.
+- `token_ttl_hours` defaults to 24 and falls back to 24 hours for any value at or below zero.
+- Login attempts are rate limited per client IP. `login_rate_per_min` defaults to 20 and excess attempts return 429. The credential-change endpoint has a separate limiter keyed by username and IP.
+- Preview tokens issued by the console are a restricted session: bound to a single channel, expiring in five minutes by default, and explicitly rejected by every management endpoint.
+
+## Administrator API tokens
+
+Session JWTs belong in a browser; scripts should not borrow one. Issue a dedicated credential instead, under **Settings → Admin API Tokens** in the console.
+
+### Issuing and storing
+
+The plaintext is `kiln_v1_` followed by 48 random characters and is **shown exactly once**, at creation or rotation. The server keeps only its SHA-256 digest plus a short recognizable prefix, so no endpoint can reveal the plaintext again. If you lose it, rotate.
+
+```bash
+curl -s http://127.0.0.1:8080/v1/admin/channels \
+  -H "authorization: Bearer kiln_v1_..." | jq
+```
+
+### The four scopes
+
+Scopes are independent, and none implies another. Grant only what the job needs:
+
+<CardGrid>
+  <Card title="read">
+    Read channels, settings, egress configuration, and logs.
+  </Card>
+  <Card title="write">
+    Create and modify configuration, including M3U import and export, but never delete.
+  </Card>
+  <Card title="delete">
+    Delete channels and egress entries, revoke playback keys, clear access logs.
+  </Card>
+  <Card title="refresh">
+    Probe sources, refresh the guide, warm up and preview channels, stop sessions, test egress routes.
+  </Card>
+</CardGrid>
+
+### Expiry, rotation, revocation
+
+- Expiry is set at creation and can be adjusted later, up to ten years. Leave it unset for a token that never expires.
+- **Rotation** keeps the name, scopes, and expiry and replaces only the secret. The old value stops working immediately and the new plaintext is again shown once. Prefer rotation when replacing a leaked credential.
+- **Revocation** is permanent. Every subsequent request with that token returns 401.
+- Deleting the record invalidates the token and removes it from the list, but the prefix snapshots already written to the audit log are preserved.
+- Edit, rotate, revoke, and delete all require an `If-Match` header carrying the current `revision`. A missing or stale value returns 409, so two admin sessions cannot silently overwrite each other.
+
+### Audit log
+
+Every request made with an administrator API token is recorded, allowed and denied alike: token prefix, method and path, required scope, decision and denial reason, HTTP status, client address, user agent, and request ID. The console shows the most recent calls directly below the token list.
+
+Denial reasons are a fixed set, which makes them easy to act on:
+
+| Reason | Status | Meaning |
+| --- | --- | --- |
+| `revoked` | 401 | The token was revoked or disabled |
+| `expired` | 401 | The token has passed its expiry |
+| `session_required` | 403 | The route accepts login sessions only |
+| `route_not_available` | 403 | The route is not registered for API tokens |
+| `missing_scope` | 403 | The token lacks the scope this route requires |
+
+### Boundaries
+
+<Aside type="danger" title="Tokens cannot escalate themselves">
+  An administrator API token cannot change login credentials, and cannot create, edit, or rotate other tokens or read the token audit log, because those routes accept login sessions only. More importantly, the server keeps an explicit route-to-scope registry and **any unregistered route returns 403**, so a newly added endpoint is never exposed to tokens by omission.
+</Aside>
+
+## Changing login credentials
+
+`PUT /v1/me/credentials` changes the username or the password and accepts an administrator login session only; API tokens are rejected. The request must include the current password. New passwords are 8 to 72 bytes, and usernames are at most 64 characters with no control characters.
+
+A successful save does three things: it stores the new credentials as an override, increments the account's credential revision, and returns a fresh session token. The revision bump **invalidates every previously issued session**, signing out other devices. In the console the same action lives under System Settings, in the account card or the account menu in the top-right corner.
+
+<Aside type="note" title="Changes do not go back to the config file">
+  The updated username and password hash are kept in the state database under the data directory, keyed by the original username from the config, and applied on top of the matching config entry at startup. The config file itself is never rewritten, so the `password_hash` it contains may no longer be the one in effect.
+</Aside>
+
+## What `[security]` controls
+
+```toml title="kiln.toml"
+[security]
+play_require_auth = true
+allowed_hosts = []
+# cors_origins = ["http://127.0.0.1:5173"]
+# public_hosts = ["kiln.lan", "origin.example.com", "localhost"]
+max_playlist_bytes = 8388608
+max_body_bytes = 1048576
+```
+
+| Key | Effect |
+| --- | --- |
+| `play_require_auth` | Whether playback endpoints require a credential. On by default; turning it off makes everything under `/v1/play/` world-readable and is for local debugging only. `KILN_PLAY_OPEN=1` is the same switch |
+| `allowed_hosts` | Outbound allowlist of origin hosts Kiln may fetch from. Hosts already declared by upstreams and channel source URLs are merged in automatically, so this usually only needs the extra domains that redirects land on |
+| `public_hosts` | Inbound allowlist matched against the request `Host` header. When non-empty, anything outside the list gets 403, except loopback health checks. Empty means unrestricted |
+| `cors_origins` | Origins allowed to call the API cross-origin. Empty means same-origin only, and no CORS headers are emitted at all |
+| `max_playlist_bytes` | Read ceiling for a single upstream playlist, 8 MiB by default, so an oversized manifest cannot exhaust memory |
+| `max_body_bytes` | Read ceiling for admin request bodies, 1 MiB by default; import endpoints are allowed a multiple of it |
+
+On top of that, every response carries `X-Content-Type-Options`, `Referrer-Policy`, `X-Frame-Options: DENY`, a strict `Content-Security-Policy`, and `Cache-Control: no-store`, which also means the console cannot be embedded in a third-party page.
+
+## Playback keys
+
+A playback key is a separate credential meant for players and playlist distribution. It travels in the URL path (`/p/{token}/...`), can be scoped to a subset of channels with an expiry, can be revoked at any time, and every use is written to the playback access log with only the key prefix retained in the recorded path. It is fully isolated from login credentials, so handing a playback URL to a third-party device leaks no administrative access.
+
+Creation, revocation, and the access log all live under Access Control in the console. See [Playback and distribution](/en/guide/playback/).
+
+## Production hardening checklist
+
+<Steps>
+  <Step title="Replace the sample password">
+    The `admin` / `admin` pair in the example config exists only for the first launch. Generate a new bcrypt hash with `make hash` and replace `password_hash`, or change it from the console after logging in.
+  </Step>
+  <Step title="Pin the signing key">
+    In production, set `token_private_key_file` or `KILN_TOKEN_PRIVATE_KEY_FILE` explicitly and fold the key into your backup and rotation process. A key that Kiln auto-generated disappears with its data directory, and every session dies with it.
+  </Step>
+  <Step title="Keep play_require_auth on">
+    Make sure no stray `KILN_PLAY_OPEN=1` survives in the environment. Distribute playback keys instead of disabling playback authentication.
+  </Step>
+  <Step title="Tighten the host allowlists">
+    Use `public_hosts` to pin the domains served and `allowed_hosts` to pin the origins fetched. Leaving both empty means any `Host` reaches the service and the outbound surface is decided entirely by channel configuration.
+  </Step>
+  <Step title="Give automation its own token">
+    Scripts should always use an administrator API token with the minimum scopes for the job, a real expiry, periodic rotation, and the audit log as the record of who called what.
+  </Step>
+</Steps>
+
+Full value ranges live in the [configuration reference](/en/reference/config/), and the overrides in [environment variables](/en/reference/env/).

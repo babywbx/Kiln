@@ -11,6 +11,22 @@ const nimbusConfig = defineNimbusConfig({
   locale: "zh-CN",
   github: "https://github.com/babywbx/kiln",
   socialImageAlt: "Kiln 文档预览",
+  sidebar: {
+    scope: "section",
+    items: [
+      { label: "入门", autogenerate: { directory: "start" } },
+      { label: "指南", autogenerate: { directory: "guide" } },
+      { label: "参考", autogenerate: { directory: "reference" } },
+      {
+        label: "English",
+        items: [
+          { label: "Getting started", autogenerate: { directory: "en/start" } },
+          { label: "Guides", autogenerate: { directory: "en/guide" } },
+          { label: "Reference", autogenerate: { directory: "en/reference" } },
+        ],
+      },
+    ],
+  },
 });
 
 export default defineConfig({

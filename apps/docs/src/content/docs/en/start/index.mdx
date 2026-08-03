@@ -1,0 +1,79 @@
+---
+title: Quick start
+description: Three deployment paths and the shortest path to a verified install.
+sidebar:
+  order: 1
+---
+
+Kiln collapses your HLS and DASH origins into a single entry point that serves one authenticated M3U playlist and on-demand HLS output. The whole service is a single binary, and DASH decryption and repackaging are implemented natively in Go, so FFmpeg is not required.
+
+## Pick a deployment path
+
+<CardGrid>
+  <Card title="Install script" icon="ph:terminal">
+    One command on Linux and macOS; run it again to upgrade, or register a systemd unit. See [Install script](/en/start/install-script/).
+  </Card>
+  <Card title="Docker" icon="ph:cube">
+    Three image variants (core, full, lite) with a Compose template, health checks, and container resource adaptation. See [Docker](/en/start/docker/).
+  </Card>
+  <Card title="Manual binary" icon="ph:hard-drives">
+    Download an archive from Releases, verify it against `SHA256SUMS`, and place it yourself. Windows runs it as a service. See [Binary](/en/start/binary/).
+  </Card>
+</CardGrid>
+
+All three run the same binary against the same configuration model, so moving between them means moving a `kiln.toml`, not rewriting one.
+
+## Try it from source first
+
+To see it working before installing anything, run the bundled example config. Requires Go 1.26 or newer. Native DASH needs no ffmpeg; only the compatibility fallback does.
+
+```bash
+git clone https://github.com/babywbx/Kiln.git
+cd Kiln
+go run ./apps/server -config configs/examples/kiln.toml
+```
+
+`-config` is required and the process exits immediately without it. The example lives at `configs/examples/kiln.toml`, with an equivalent `kiln.jsonc` beside it; either format works.
+
+The server listens on `0.0.0.0:8080`, the sample account is `admin` / `admin`, and the admin UI is at `/admin`.
+
+<Aside type="caution" title="The example config is for local trials only">
+  Its password hash and origin address are placeholders, and `configs/examples/kiln.toml` points at `http://127.0.0.1:5050`, so channels will not start unless something is listening there. Read "Before you go live" below before exposing the service.
+</Aside>
+
+## Verify in three commands
+
+Log in once, and both the playlist and the playback URLs follow from the token:
+
+```bash
+TOKEN=$(curl -s http://127.0.0.1:8080/v1/auth/login \
+  -H 'content-type: application/json' \
+  -d '{"username":"admin","password":"admin"}' | jq -r .token)
+
+curl -s http://127.0.0.1:8080/v1/channels -H "authorization: Bearer $TOKEN" | jq
+curl -s http://127.0.0.1:8080/v1/playlist.m3u -H "authorization: Bearer $TOKEN"
+curl -s "http://127.0.0.1:8080/v1/play/hls-demo/index.m3u8?token=$TOKEN"
+```
+
+`hls-demo` is the channel id from the example config; swap in your own. `/v1/playlist.m3u` accepts a login session only, while everything under `/v1/play/` takes either a `?token=` query parameter or an `Authorization` header. The full credential split is documented in the [API reference](/en/reference/api/).
+
+## Before you go live
+
+Exactly two things must change before the service faces anything but your own machine: the bcrypt hash of the login password, and the signing key for session JWTs.
+
+```bash
+go run scripts/hash-password.go 'your-password'
+go run scripts/gen-jwt-keys.go ./secrets   # writes ed25519.pem / ed25519.pub.pem
+```
+
+Put the hash in `password_hash` under `[[auth.users]]`, and the key paths in `token_private_key_file` and `token_public_key_file` under `[auth]`. Environment variables such as `KILN_TOKEN_PRIVATE_KEY_FILE` work as well. See [Authentication](/en/guide/auth/) for the full model and [Environment variables](/en/reference/env/) for the complete list.
+
+<Aside type="tip" title="Keys are optional to start">
+  Left unset, the process generates an Ed25519 key pair at `{data_dir}/auth/ed25519.pem` with `0600` permissions on the private key. That is fine for a single machine. Provide the files explicitly when several instances must share one signing identity, or when tokens should survive a rebuilt data directory.
+</Aside>
+
+## Next
+
+- [Your first channel](/en/start/first-channel/): from origin to working HLS and DASH channels.
+- [Channels](/en/guide/channels/): the full field reference, grouping, import and export.
+- [Configuration reference](/en/reference/config/): every `kiln.toml` setting.

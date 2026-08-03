@@ -1,0 +1,222 @@
+---
+title: 鉴权与凭据
+description: Kiln 的四种凭据、会话 JWT 密钥管理、管理员 API Token 与生产加固清单。
+sidebar:
+  order: 4
+---
+
+Kiln 把「谁在调用」拆成四种互不重叠的凭据：公开端点不需要凭据，登录会话服务管理控制台，管理员 API Token 服务脚本与自动化，路径式播放密钥服务播放器分发。任何一种都无法把自己升级成另一种。
+
+## 凭据总览
+
+| 凭据 | 形态 | 适用场景 | 生命周期 |
+| --- | --- | --- | --- |
+| 公开端点 | 不带凭据 | 健康检查、指标、EPG、台标 | 不适用 |
+| 登录会话 JWT | `Authorization: Bearer <jwt>`，Ed25519 签名 | 管理控制台、交互式调试 | `token_ttl_hours`（默认 24 小时），修改登录凭据后立即失效 |
+| 管理员 API Token | `kiln_v1_` 前缀 + 48 位随机字符 | 脚本、CI、外部管理工具 | 创建时设定有效期，可轮换、可撤销 |
+| 路径式播放密钥 | `v1` 前缀 + 126 位随机字符，写在 URL 路径里 | 播放器与播放列表分发 | 创建时设定有效期，可吊销 |
+
+<Aside type="note" title="凭据类型是可见的">
+  `GET /v1/me` 会回显当前请求使用的凭据类型与权限：会话返回 `credential: "session"`，API Token 返回 `credential: "api_token"` 以及该 Token 的权限列表。排查「为什么这个调用是 403」时先看这里。
+</Aside>
+
+## 用户与角色
+
+用户写在配置文件的 `[[auth.users]]` 数组里，至少需要一个，否则启动时校验失败。每个用户必须提供 `username`、`password_hash` 和 `role`，用户名不可重复。
+
+```toml title="kiln.toml"
+[[auth.users]]
+username = "admin"
+password_hash = "$2a$10$..."
+role = "admin"
+
+[[auth.users]]
+username = "operator"
+password_hash = "$2a$10$..."
+role = "viewer"
+channel_ids = ["demo-hls", "demo-dash"]
+```
+
+`role = "admin"` 拥有全部权限，也是进入管理控制台的门槛：控制台在登录后会再查一次 `/v1/me`，角色不是 `admin` 就会被退回登录页。其它角色受 `channel_ids` 约束，只能在频道列表、播放列表和运行状态里看到并播放列出的频道；`channel_ids` 留空表示不限制频道。
+
+口令以 bcrypt 哈希保存，配置里不出现明文。生成哈希：
+
+<Tabs>
+  <TabItem label="Make">
+    ```bash
+    make hash PASSWORD='your-password'
+    ```
+  </TabItem>
+  <TabItem label="go run">
+    ```bash
+    go run scripts/hash-password.go 'your-password'
+    ```
+  </TabItem>
+</Tabs>
+
+## 会话 JWT
+
+登录端点 `POST /v1/auth/login` 用用户名和口令换一枚 Ed25519 签名的 JWT，响应里同时给出过期时间、用户名和角色。
+
+```bash
+curl -s http://127.0.0.1:8080/v1/auth/login \
+  -H 'content-type: application/json' \
+  -d '{"username":"admin","password":"your-password"}'
+```
+
+### 签名密钥
+
+签名算法固定为 `EdDSA`，服务端按下面的顺序解析私钥，先命中者生效：
+
+<Steps>
+  <Step title="配置内联 PEM">
+    `auth.token_private_key`，或环境变量 `KILN_TOKEN_PRIVATE_KEY`。
+  </Step>
+  <Step title="密钥文件路径">
+    `auth.token_private_key_file`，或环境变量 `KILN_TOKEN_PRIVATE_KEY_FILE`。
+  </Step>
+  <Step title="数据目录自动生成">
+    以上都没有时，读取 `{data_dir}/auth/ed25519.pem`；文件不存在就地生成一对新密钥，私钥权限 `0600`，公钥写到 `{data_dir}/auth/ed25519.pub.pem`。
+  </Step>
+</Steps>
+
+公钥是可选的：不填就从私钥推导。如果同时提供了 `token_public_key` 或 `token_public_key_file`，服务端会校验它与私钥匹配，不匹配直接启动失败。私钥、私钥文件和 `server.data_dir` 三者必须至少有一个，否则配置校验不通过。
+
+手动生成一对密钥：
+
+```bash
+go run scripts/gen-jwt-keys.go ./secrets   # 写出 ed25519.pem / ed25519.pub.pem
+```
+
+<Aside type="caution" title="自动生成的密钥不适合多实例">
+  自动生成的密钥落在各自的数据目录里。多个实例共享同一批用户时，请显式配置同一份私钥（文件或环境变量），否则一个实例签发的会话在另一个实例上验不过。
+</Aside>
+
+### 校验规则与限流
+
+- 签发的令牌带 `iss`、`aud`、`exp`、`iat`、`nbf`、`sub` 和一次性 `jti`；校验时四项时间断言全部生效，允许 30 秒时钟偏差。
+- `token_issuer` 与 `token_audience` 默认都是 `kiln`，校验时必须与签发时一致。改了这两项，历史令牌全部作废。
+- `token_ttl_hours` 默认 24，取值小于等于 0 时回落到 24 小时。
+- 登录限流按客户端 IP 计数，`login_rate_per_min` 默认每分钟 20 次，超出返回 429。修改登录凭据的接口另有一条按「用户名 + IP」计数的限流。
+- 管理控制台用于「预览」的临时令牌是一种特殊会话：只绑定单个频道、默认 5 分钟过期，且被管理接口显式拒绝，只能用于播放。
+
+## 管理员 API Token
+
+会话 JWT 是给浏览器的，脚本不该拿它。长期自动化请在管理控制台的「设置 → 管理员 API Token」里签发独立凭据。
+
+### 签发与保管
+
+明文形如 `kiln_v1_` 加 48 位随机字符，**只在创建（或轮换）后展示一次**。服务端只保存它的 SHA-256 摘要，外加一段用于识别的前缀，因此没有任何接口能把明文找回来，丢了就只能轮换。
+
+```bash
+curl -s http://127.0.0.1:8080/v1/admin/channels \
+  -H "authorization: Bearer kiln_v1_..." | jq
+```
+
+### 四种权限
+
+权限互不隐含，按用途勾选：
+
+<CardGrid>
+  <Card title="read">
+    读取频道、设置、出口配置与各类日志。
+  </Card>
+  <Card title="write">
+    新增与修改配置，包括导入导出 M3U，但不能删除。
+  </Card>
+  <Card title="delete">
+    删除频道与出口条目、吊销播放密钥、清空访问日志。
+  </Card>
+  <Card title="refresh">
+    探测节目源、刷新 EPG、预热与预览频道、停止会话、测试网络出口。
+  </Card>
+</CardGrid>
+
+### 有效期、轮换与撤销
+
+- 有效期在创建时设定，也可以后续调整，上限 10 年；不设则永不过期。
+- **轮换**保留名称、权限和有效期，只换掉随机值，旧值立即失效，新明文同样只显示一次。替换泄露的凭据优先用轮换。
+- **撤销**不可恢复，之后所有使用该 Token 的请求都会得到 401。
+- 删除记录会让 Token 立即失效并从列表里消失，但审计日志中已记录的前缀快照仍会保留。
+- 编辑、轮换、撤销、删除都要求携带 `If-Match` 头传入当前 `revision`，缺失或过期返回 409，避免两个管理端并发覆盖。
+
+### 审计日志
+
+每一次使用管理员 API Token 的请求都会落一条记录，允许和拒绝都记：Token 前缀、方法与路径、所需权限、判定结果与拒绝原因、HTTP 状态、客户端地址、User-Agent 和请求编号。控制台在同一张卡片下方展示最近的调用记录。
+
+拒绝原因是固定的几种，便于定位：
+
+| 原因 | 状态 | 含义 |
+| --- | --- | --- |
+| `revoked` | 401 | Token 已撤销或被停用 |
+| `expired` | 401 | Token 已过期 |
+| `session_required` | 403 | 该路由只认登录会话 |
+| `route_not_available` | 403 | 该路由未登记给 API Token |
+| `missing_scope` | 403 | Token 缺少这条路由所需的权限 |
+
+### 边界
+
+<Aside type="danger" title="Token 无法自我提权">
+  管理员 API Token 不能修改登录凭据，也不能创建、编辑、轮换其他 Token 或读取 Token 审计日志：这些路由只认登录会话。更重要的是，服务端维护一张显式的路由权限登记表，**未登记的路由一律 403**，新增接口不会因为遗漏而默认对 Token 开放。
+</Aside>
+
+## 修改登录凭据
+
+`PUT /v1/me/credentials` 用于改用户名或口令，只接受管理员登录会话，API Token 调用会被拒绝。请求必须带当前口令，新口令长度为 8 到 72 字节，用户名不超过 64 个字符且不能含控制字符。
+
+保存成功后会做三件事：把新凭据作为覆盖项写入状态库、递增该账户的凭据版本号、返回一枚全新的会话令牌。版本号递增意味着**此前签发的所有会话立即作废**，其他设备会被登出。在管理控制台里，这个操作在「系统设置 → 账户与语言」或右上角账户菜单里。
+
+<Aside type="note" title="改动不落回配置文件">
+  修改后的用户名与口令哈希保存在数据目录的状态库里，按配置中的原用户名建立映射，启动时覆盖配置文件中的对应条目。配置文件本身不会被改写，因此文件里的 `password_hash` 可能不再是当前生效的值。
+</Aside>
+
+## `[security]` 的安全语义
+
+```toml title="kiln.toml"
+[security]
+play_require_auth = true
+allowed_hosts = []
+# cors_origins = ["http://127.0.0.1:5173"]
+# public_hosts = ["kiln.lan", "origin.example.com", "localhost"]
+max_playlist_bytes = 8388608
+max_body_bytes = 1048576
+```
+
+| 键 | 作用 |
+| --- | --- |
+| `play_require_auth` | 播放端点是否需要凭据，默认开启。关闭后 `/v1/play/` 下的地址对任何人可用，仅供本机调试；环境变量 `KILN_PLAY_OPEN=1` 是同一个开关 |
+| `allowed_hosts` | 出站白名单，限制 Kiln 允许拉取的源站主机。配置中已声明的上游与频道源地址主机会自动并入，通常只需补充重定向落到的额外域名 |
+| `public_hosts` | 入站白名单，按请求的 `Host` 头判定。非空时不在列表内的请求一律 403，回环地址上的健康检查除外；留空表示不限制 |
+| `cors_origins` | 允许携带凭据跨源访问的来源列表。留空表示只允许同源，浏览器侧不会收到任何 CORS 响应头 |
+| `max_playlist_bytes` | 单个上游播放列表的读取上限，默认 8 MiB，防止超大清单拖垮内存 |
+| `max_body_bytes` | 管理接口请求体的读取上限，默认 1 MiB；导入类接口按倍数放宽 |
+
+除此之外，所有响应都会带上 `X-Content-Type-Options`、`Referrer-Policy`、`X-Frame-Options: DENY`、严格的 `Content-Security-Policy` 与 `Cache-Control: no-store`，管理控制台因此不能被嵌入到第三方页面里。
+
+## 播放密钥
+
+播放密钥是给播放器和播放列表分发用的独立凭据：它出现在 URL 路径里（`/p/{token}/...`），可以限定频道范围与有效期，可以随时吊销，每次取用都会记入播放访问日志，日志中的路径只保留密钥前缀。它与登录凭据完全隔离，把播放地址交给第三方设备也不会泄露管理权限。
+
+创建、吊销与访问日志都在管理控制台的「访问控制」里，用法见 [播放与分发](/guide/playback/)。
+
+## 生产加固清单
+
+<Steps>
+  <Step title="换掉示例口令">
+    示例配置里的 `admin` / `admin` 只用于第一次启动。用 `make hash` 生成新的 bcrypt 哈希替换 `password_hash`，或登录后直接在控制台里改。
+  </Step>
+  <Step title="固定 JWT 签名密钥">
+    生产环境显式配置 `token_private_key_file` 或 `KILN_TOKEN_PRIVATE_KEY_FILE`，把密钥纳入备份与轮换流程。依赖数据目录自动生成的密钥会随目录一起丢失，届时所有会话失效。
+  </Step>
+  <Step title="保持 play_require_auth 开启">
+    确认没有在环境里遗留 `KILN_PLAY_OPEN=1`。对外分发用播放密钥，不要关闭播放鉴权。
+  </Step>
+  <Step title="收紧主机白名单">
+    用 `public_hosts` 限定对外域名，用 `allowed_hosts` 限定允许拉取的源站。两者都留空意味着任何 `Host` 都能访问，且出站范围完全由频道配置决定。
+  </Step>
+  <Step title="给自动化独立 Token">
+    脚本一律使用管理员 API Token，按用途授予最小权限并设置有效期，定期轮换，通过审计日志核对调用来源。
+  </Step>
+</Steps>
+
+配置项的完整取值范围见 [配置参考](/reference/config/)，环境变量见 [环境变量](/reference/env/)。

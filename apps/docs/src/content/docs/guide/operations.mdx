@@ -1,0 +1,356 @@
+---
+title: 运维
+description: 以服务方式长期运行 Kiln：systemd 与 Windows 服务、数据目录与备份、升级、日志、健康检查、指标、OTLP 追踪、pprof 与资源自适应。
+sidebar:
+  order: 10
+---
+
+这一页覆盖 Kiln 上线之后的日常事务：怎么把它挂成系统服务，数据放在哪里、怎么备份，升级要注意什么，以及日志、健康检查、指标、追踪和资源自适应各自如何配置与核对。
+
+## 作为服务运行
+
+### systemd
+
+安装脚本带 `--service` 时会注册一个 systemd unit 并设为开机自启。这一步需要 root，且只支持带 systemd 的 Linux。
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh -o /tmp/kiln-install.sh
+sudo sh /tmp/kiln-install.sh --yes --service --lang zh
+```
+
+脚本会先建一个专用系统用户。如果 `kiln` 用户不存在，就用 `useradd -r -U` 创建一个禁止登录（`nologin` 或 `/bin/false`）的账号，家目录指向 `/var/lib/kiln`，然后创建 `/etc/kiln` 与 `/var/lib/kiln` 并把后者的属主改成该用户。生成的 unit 如下：
+
+```ini title="/etc/systemd/system/kiln.service"
+[Unit]
+Description=Kiln
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=kiln
+Group=kiln
+ExecStart=/usr/local/bin/kiln -config /etc/kiln/kiln.toml
+WorkingDirectory=/var/lib/kiln
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/kiln
+
+[Install]
+WantedBy=multi-user.target
+```
+
+加固要点集中在四条：`NoNewPrivileges=true` 断掉提权路径；`ProtectSystem=strict` 让整个文件系统对进程只读，再用 `ReadWritePaths=/var/lib/kiln` 单独开一个可写目录；`ProtectHome=true` 遮蔽所有家目录；`PrivateTmp=true` 给进程独立的临时目录。也正因为 `ProtectSystem=strict`，`data_dir` 必须落在 `/var/lib/kiln` 里面，写别处会直接失败。
+
+<Aside type="note" title="安装目录的限制">
+  `--service` 会拒绝把二进制装到相对路径，或者装到 `/home`、`/root`、`/tmp`、`/var/tmp` 及其子目录、含空格的路径下。默认目标是 `/usr/local/bin`。
+</Aside>
+
+`ExecStart` 里写死的是配置文件的绝对路径。脚本执行到最后一步时，如果 `/etc/kiln/kiln.toml` 已存在就 `systemctl enable --now kiln`，否则只安装 unit 并保持停用，同时提示先创建配置。先装后写配置的话，补一条命令即可：
+
+```bash
+sudo systemctl enable --now kiln
+sudo systemctl status kiln
+sudo journalctl -u kiln -f
+```
+
+移除服务：
+
+```bash
+sudo systemctl disable --now kiln
+sudo rm /etc/systemd/system/kiln.service
+sudo systemctl daemon-reload
+```
+
+安装脚本的 `--uninstall` 也会顺带停用并移除服务，但会保留 `/etc/kiln` 下的配置和 `/var/lib/kiln` 里的数据。
+
+### Windows 服务
+
+Windows 用内置的 `kiln.exe service` 子命令注册服务，不需要额外的守护工具。安装、卸载与日志位置见 [二进制部署](/start/binary/)。
+
+## 数据目录与备份
+
+`server.data_dir` 默认是 `./data`，相对路径按进程工作目录解析。systemd unit 把 `WorkingDirectory` 设成了 `/var/lib/kiln`，Windows 服务模式则会把工作目录切到配置文件所在目录，两种情况下写 `./data` 都能落到可预期的位置。目录本身以 `0750` 创建。
+
+| 路径 | 内容 | 需要备份 |
+| --- | --- | --- |
+| `kiln.db` | SQLite 主库：频道、用户覆写、EPG 源、代理线路、访问令牌与审计日志。文件权限 `0600` | 是 |
+| `kiln.db-wal`、`kiln.db-shm` | WAL 与共享内存边车文件，同样收紧到 `0600` | 与主库一起 |
+| `auth/ed25519.pem` | 会话 JWT 的 Ed25519 私钥。没有通过配置或环境变量注入密钥时自动生成 | 是 |
+| `auth/ed25519.pub.pem` | 对应公钥，随私钥一起生成 | 是 |
+| `epg/` | EPG 磁盘缓存。`epg.cache_dir` 留空时默认落在这里 | 否，可重新抓取 |
+| `sessions/<channel-id>/<generation>/` | 会话运行期的媒体工作目录，下面再分 `native/` 与 `ffmpeg/` | 否，重启即重建 |
+
+备份最省事的做法是停掉进程再整目录复制。在线备份务必把 `kiln.db-wal` 一起带上，只拷主库会丢掉尚未 checkpoint 的写入。`sessions/` 可以直接跳过，它在每次启动新会话时都会被清空重建。
+
+<Aside type="caution" title="密钥丢失的后果">
+  `auth/ed25519.pem` 一旦丢失或被重新生成，所有已签发的会话 JWT 立即失效，管理界面和播放端都要重新登录。需要在多实例之间共享同一套凭据时，用 `auth.token_private_key_file` 或 `KILN_TOKEN_PRIVATE_KEY_FILE` 显式注入，而不是依赖自动生成。
+</Aside>
+
+媒体解密用的 `packager.keys_file` 不在 `data_dir` 内，相对路径按 `kiln.toml` 所在目录解析，需要单独纳入备份范围。
+
+## 升级
+
+<Tabs>
+  <TabItem label="安装脚本">
+    重新执行一次安装脚本就是升级。脚本会探测平台、选择可用下载源、校验 `SHA256SUMS`，然后原子替换二进制。
+
+    ```bash
+    curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh | sh -s -- --lang zh
+    ```
+
+    装成了 systemd 服务的话，替换完二进制后重启一次即可：
+
+    ```bash
+    sudo systemctl restart kiln
+    ```
+  </TabItem>
+  <TabItem label="二进制">
+    从 Releases 下载对应平台的包，停服务、换文件、起服务。替换前先用 `kiln -version` 记下当前版本，出问题时方便回退。
+
+    ```bash
+    kiln -version
+    ```
+  </TabItem>
+  <TabItem label="Docker">
+    拉新镜像后重建容器，数据卷保持不变。
+
+    ```bash
+    docker pull ghcr.io/babywbx/kiln:latest
+    docker compose up -d
+    ```
+  </TabItem>
+</Tabs>
+
+数据库迁移在启动时自动执行，不需要任何手动步骤。Kiln 在库里维护一张 `schema_version` 表，启动时读出当前版本，然后逐级应用缺失的迁移直到追上二进制支持的版本，整个过程包在一个事务里，中途失败会整体回滚，进程随即以 `sqlite open failed` 退出。
+
+跨多个版本升级走的是同一条迁移链，不需要先升到中间版本再升到目标版本，直接换成最新二进制即可。
+
+<Aside type="danger" title="降级不受支持">
+  如果库的 schema 版本比二进制支持的还新，启动会直接失败并打印 `database schema version N is newer than supported version M`。回退到旧版本前必须先恢复对应时点的数据库备份。
+</Aside>
+
+## 日志
+
+日志由 `[logging]` 三个字段控制，环境变量优先级更高，适合在容器里临时改。
+
+| 配置项 | 环境变量 | 取值 |
+| --- | --- | --- |
+| `level` | `KILN_LOG_LEVEL` | `debug`、`info`、`warn`、`error`，默认 `info` |
+| `format` | `KILN_LOG_FORMAT` | `text`（默认）或 `json` |
+| `color` | `KILN_LOG_COLOR` | `auto`（默认）、`always`、`never` |
+
+级别解析接受若干别名：`dbg` 与 `trace` 等同于 `debug`，`warning`、`wrn` 等同于 `warn`，`err`、`erro`、`fatal` 等同于 `error`；无法识别的值一律回落到 `info`。格式只区分两种，`structured` 是 `json` 的别名，其余值都按 `text` 处理。
+
+着色只对 `text` 生效。`auto` 表示仅当输出是终端设备时才上色，重定向到文件或管道时自动关闭；此外只要环境变量 `NO_COLOR` 非空，`auto` 一律不着色。要在保留终端的同时强制关闭，用 `KILN_LOG_COLOR=never`。
+
+`json` 格式下每条记录都带 `service=kiln` 字段，便于在集中式日志系统里过滤。
+
+访问日志的级别是按响应结果动态决定的：5xx 记为 `error`，4xx 记为 `warn`，其余为 `info`；而 `/healthz`、`/readyz`、`/` 以及包含 `/live/` 或 `/u/` 的高频路径降到 `debug`，默认级别下不会刷屏。想看完整的分片请求流水，把级别调到 `debug`。
+
+播放路径里的令牌不会原样落盘。形如 `/p/<token>/...` 的路径在写日志和写访问审计表之前会被改写成 `/p/<前缀>…/<后缀>`，只保留可用于定位的令牌前缀。
+
+日志去向随部署方式而变：
+
+- **systemd**：走标准输出，用 `journalctl -u kiln` 查看。
+- **Docker**：`docker logs kiln`。
+- **Windows 服务**：SCM 会丢弃标准输出，所以进程改写到配置文件目录下的 `kiln.log`。文件超过 16 MB 时，在下次启动时重命名为 `kiln.log.1`，只保留一代。
+- **前台运行**：直接打到终端。
+
+## 健康检查
+
+两个端点都不需要凭据，语义不同，不要混用。
+
+<CardGrid>
+  <Card title="/healthz" icon="ph:heartbeat">
+    存活探针。只要 HTTP 服务在跑就返回 `200` 与 `{"status":"ok"}`，不检查任何依赖。适合做进程守护和容器重启判定。
+  </Card>
+  <Card title="/readyz" icon="ph:check-circle">
+    就绪探针。除了存活，还会检查兼容引擎：当目录里存在 `ingress = "dash"` 且生效引擎为 `ffmpeg` 的频道时，若 ffmpeg 不可用则返回 `503` 与 `not_ready`，消息为 `ffmpeg compatibility engine is not available`。适合做流量摘挂。
+  </Card>
+</CardGrid>
+
+配置了 `security.public_hosts` 时，Host 头不在列表内的请求会被中间件挡在 `403 host not allowed`。为了不让探针被这条规则误伤，来自回环地址的 `/healthz` 与 `/readyz` 被显式豁免。从别的机器上探测时，记得把探测用的域名或 IP 加进 `public_hosts`。
+
+二进制自带一个健康检查子命令，3 秒超时，2xx 退出码为 0，其余为 1：
+
+```bash
+kiln -healthcheck http://127.0.0.1:8080/healthz
+```
+
+镜像里已经配好 `HEALTHCHECK`：`core` 与 `full` 基于 Alpine，用 `wget` 探 `/healthz`；`lite` 基于 `scratch`，没有 shell 和 wget，直接用上面这个子命令。
+
+## 指标
+
+`GET /metrics` 输出 Prometheus 文本格式（`text/plain; version=0.0.4`）。进程级指标包括 `kiln_uptime_seconds`、`kiln_bytes_in_total`、`kiln_bytes_out_total`、`kiln_http_requests_total`、`kiln_errors_total`、`kiln_goroutines` 和 `kiln_sessions`。
+
+每个活跃会话额外产出一条 `kiln_session_info`，标签为 `channel`、`engine`、`state`；打包器统计带 `channel` 标签，覆盖 `kiln_packager_segments_published_total`、`kiln_packager_segment_fetch_errors_total`、`kiln_packager_manifest_errors_total`、`kiln_packager_key_mismatches_total` 等计数器，以及 `kiln_packager_cache_bytes`、`kiln_packager_clock_offset_seconds` 等瞬时量。排查上游抖动时，先看 `segment_fetch_errors` 和 `manifest_errors` 的增速。
+
+端点由 `[observe].enabled` 控制，而配置加载时会把它置为开启，因此 `core` 与 `full` 始终对外提供 `/metrics`。`lite` 不注册这个路由。
+
+<Aside type="caution" title="指标端点没有鉴权">
+  `/metrics` 会暴露频道 ID 与会话状态。放到公网前，用反向代理限制来源，或者用 `security.public_hosts` 把服务收敛到内部域名。
+</Aside>
+
+## OTLP 追踪
+
+填了 `[observe].otlp_endpoint` 才会初始化导出器，留空时完全不引入追踪开销。
+
+```toml title="kiln.toml"
+[observe]
+otlp_endpoint = "https://collector.example.com/v1/traces"
+otlp_insecure = false
+trace_sample_ratio = 0.1
+service_name = "kiln"
+```
+
+导出走 OTLP/HTTP，批量发送。`otlp_insecure = true` 用于内网明文 collector。采样器是 `ParentBased(TraceIDRatioBased)`：上游已有采样决定时跟随上游，否则按 `trace_sample_ratio` 抽样；该值不大于 0 或者大于 1 时按 `1` 处理，也就是全采。`service_name` 留空时为 `kiln`，资源属性里还会带上构建版本。
+
+传播格式为 W3C `traceparent` 加 `baggage`，入站请求头里的上下文会被提取并延续。
+
+<Aside type="tip" title="span 里不会出现敏感值">
+  HTTP 服务端 span 名固定为 `http.server`，属性只有 `http.request.method`、`http.response.status_code` 和 `http.route`。`http.route` 记的是路由模式（例如 `GET /v1/play/{id}/index.m3u8`），不是实际请求行，因此原始 URL、播放令牌和查询串都不会进入 trace。
+</Aside>
+
+初始化失败不会拖垮进程，只打一条 `OpenTelemetry setup failed` 警告后继续以无追踪模式运行。`lite` 变体在配置里出现 `otlp_endpoint` 时会直接拒绝启动，而不是静默忽略。
+
+## pprof 诊断
+
+pprof 默认关闭，只在排查内存或 CPU 问题时临时打开，查完立刻关掉。
+
+```toml title="kiln.toml"
+[debug.pprof]
+enabled = true
+listen = "127.0.0.1:6060"
+```
+
+<Steps>
+  <Step title="开启并重启">
+    改配置后重启进程。`listen` 必须解析为回环 IP，写成 `0.0.0.0:6060` 或某个外网地址会在启动时报 `debug.pprof.listen must use a loopback IP` 并退出。留空时默认 `127.0.0.1:6060`。
+  </Step>
+  <Step title="确认已监听">
+    启动日志里会多一条 `pprof listening`，带 `addr` 字段。pprof 跑在独立端口和独立的 mux 上，不会混进业务端口的路由表。
+  </Step>
+  <Step title="采集">
+    在本机执行，或者先用 `ssh -L 6060:127.0.0.1:6060 host` 把端口转发到本地。
+
+    ```bash
+    go tool pprof http://127.0.0.1:6060/debug/pprof/profile?seconds=30
+    go tool pprof http://127.0.0.1:6060/debug/pprof/heap
+    go tool pprof http://127.0.0.1:6060/debug/pprof/block
+    go tool pprof http://127.0.0.1:6060/debug/pprof/mutex
+    ```
+
+    另外还有 `allocs`、`goroutine`、`threadcreate` 和 `trace` 可用。CPU profile 会阻塞采集时长，先跑内存快照再跑 CPU 更省事。
+  </Step>
+  <Step title="关闭">
+    把 `enabled` 改回 `false` 并重启。诊断端口留着不关等于多一个内部攻击面。
+  </Step>
+</Steps>
+
+`lite` 不含 pprof，配置里出现 `[debug.pprof].enabled = true` 会导致启动失败。
+
+## 资源自适应
+
+Kiln 启动时会探测可用的内存与 CPU，据此下调内存相关的预算，让同一份配置在 256 MB 的小机器和多核服务器上都能跑起来。
+
+### 三种模式
+
+`server.resource_mode` 只有三个取值：
+
+| 取值 | 行为 |
+| --- | --- |
+| `auto` | 默认。按探测到的有效内存选档位，再独立应用 CPU 上限 |
+| `constrained` | 强制使用最紧的 `compact` 档，忽略探测结果 |
+| `performance` | 完全退出自适应，配置写什么就是什么，探测结果只记录不生效 |
+
+### 内存档位
+
+`auto` 下按有效内存落到四档之一，启动日志的 `resource_profile` 字段就是档位名：
+
+| 档位 | 有效内存 | Go 软目标 | 原生 inflight | 单段上限 | 流水线上限 | GOGC | EPG 单源上限 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `compact` | `< 256 MiB` | 48 MiB | 32 MiB | 20 MiB | 1 | 75 | 4 MiB |
+| `balanced` | `256–511 MiB` | 96 MiB | 48 MiB | 32 MiB | 2 | 100 | 按内存推算 |
+| `standard` | `512–1023 MiB` | 192 MiB | 64 MiB | 32 MiB | 2 | 100 | 按内存推算 |
+| `large` | `≥ 1 GiB` | 保持配置 | 保持配置 | 保持配置 | 保持配置 | 运行时默认 | 保持配置 |
+
+`balanced` 与 `standard` 的 EPG 单源上限按有效内存的 1/128 推算，并夹在 4 MiB 到 64 MiB 之间。768 MB 的容器算出来是 6 MiB，正好对应启动日志里的 `epg_max_source_mb=6`。
+
+前三档还会打开一个额外开关：写完与读完媒体文件后主动向内核建议丢弃页缓存（启动日志 `drop_file_cache=true`），避免容器的内存账单被页缓存推高。`large` 档不做这件事。
+
+### CPU 钳制
+
+CPU 是独立于内存单独计算的，只影响流水线深度和 EPG 刷新并发：
+
+- 有效 milli-CPU 小于 4000 时，流水线上限取 `ceil(milli / 1000)`；4 核起不再下压。
+- EPG 刷新并发取 `ceil(milli / 2000)` 与内存 GiB 数四舍五入后的较小值，最低为 1。
+- 内存档位和 CPU 钳制各自给出一个上限，最终值取三者（配置值、内存档位、CPU 钳制）中的最小。
+
+探测覆盖 cgroup v1 与 v2、嵌套 cgroup、父级继承的限制以及小数 CPU quota。给 `--cpus=1.5` 的容器会得到 `effective_cpus=2` 与 `effective_cpu_milli=1500`。
+
+<Aside type="caution" title="只会下压，不会上调">
+  自适应对每一项预算做的都是「取较小值」。如果你把 `packager.inflight_bytes` 配成 16 MiB，即便落到 `standard` 档，它也不会被抬到 64 MiB。想完整保留手写数值，用 `resource_mode = "performance"`。
+</Aside>
+
+### Lite 的固定预算
+
+`lite` 变体不参与档位判定。无论 `auto` 还是 `constrained`，都固定使用 24 MiB Go 软目标、24 MiB inflight、20 MiB 单段上限、1/1 流水线和 `GOGC=50`，以保证跨宿主机的一致低内存特征。只有 `performance` 能让它退出这套预算。
+
+### 覆盖与优先级
+
+| 变量 | 作用 |
+| --- | --- |
+| `KILN_RESOURCE_MODE` | 覆盖 `resource_mode`，取值同配置 |
+| `KILN_RESOURCE_MEMORY_MB` | 覆盖探测到的内存，用于宿主机探测不准或复现某一档位 |
+| `KILN_RESOURCE_CPUS` | 覆盖探测到的 CPU 核数 |
+| `GOMEMLIMIT` | 始终优先。设了它，配置里的 `server.memory_limit_mb` 就不再写入 Go 软目标 |
+| `GOGC` | 设了它，档位给出的 `GCPercent` 不再生效 |
+
+### 用启动日志核对
+
+启动那条 `kiln starting` 记录把探测值和全部生效预算都打了出来，是核对档位最快的办法：
+
+```text
+resource_mode=auto resource_profile=compact resource_constrained=true
+effective_cpus=1 effective_cpu_milli=1000 effective_memory_mb=192
+memory_limit_mb=48 effective_go_memory_limit_mb=48
+inflight_mb=32 max_segment_mb=20 gc_percent=75 drop_file_cache=true
+start_segments=1 prefetch_segments=1
+epg_refresh_concurrency=1 epg_max_source_mb=4
+```
+
+`effective_memory_mb` 是探测结果，`memory_limit_mb` 是最终写入的 Go 软目标，`effective_go_memory_limit_mb` 是运行时实际生效的值。三者对不上时，先看有没有设 `GOMEMLIMIT`。若 `resource_profile` 显示 `configured`，说明内存探测没拿到数值，档位判定被跳过了，这时用 `KILN_RESOURCE_MEMORY_MB` 手工指定。
+
+### 在本地复现某一档位
+
+`deploy/docker/resource-smoke.toml` 是一份最小配置，配合 `docker run` 的资源限制就能复现任一档位：
+
+```bash
+docker run --rm --cpus=1 --memory=192m --memory-swap=192m \
+  -v "$PWD/deploy/docker/resource-smoke.toml:/etc/kiln/kiln.toml:ro" \
+  kiln:core
+```
+
+改成 `--cpus=2 --memory=384m` 得到 `balanced`，`--cpus=2 --memory=768m` 得到 `standard`，`--cpus=4 --memory=1g` 得到 `large`。加上 `-e KILN_RESOURCE_MODE=constrained` 可以在大机器上验证强制低资源路径。
+
+<Aside type="caution" title="这些是软预算，不是 RSS 保证">
+  表中的数字约束的是 Go 堆和媒体工作集。SQLite、goroutine 栈、内核页缓存，以及 `full` 镜像启动的 FFmpeg 子进程都在预算之外。需要单一进程的内存边界时，用 `core` 或 `lite` 的原生引擎。
+</Aside>
+
+## 下一步
+
+<CardGrid>
+  <Card title="故障排查" icon="ph:first-aid-kit">
+    症状对照表、真实日志关键字与处理步骤，见[故障排查](/guide/troubleshooting/)。
+  </Card>
+  <Card title="配置参考" icon="ph:sliders">
+    每个配置段的完整字段与默认值，见[配置参考](/reference/config/)。
+  </Card>
+  <Card title="环境变量" icon="ph:terminal-window">
+    所有 `KILN_` 前缀变量与优先级，见[环境变量](/reference/env/)。
+  </Card>
+</CardGrid>

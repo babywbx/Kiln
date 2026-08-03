@@ -1,0 +1,161 @@
+---
+title: Channels & upstreams
+description: The channel model field by field, upstream definitions, config versus console ownership, and enable, import, and self-check operations.
+sidebar:
+  order: 2
+---
+
+A channel is the only real object in Kiln. It binds one upstream address, one ingress format, and one run policy together, and shows up externally as a single playback URL plus a line in the playlist. This page covers that model field by field.
+
+## The channel model
+
+### Identity and presentation
+
+- `id`: the unique identifier. It appears in playback URLs, in the playlist's `tvg-id` attribute, and in access logs. Changing it creates a different channel as far as players are concerned, so favourites and history on the client side are lost.
+- `title`: display name. Falls back to `id` when empty.
+- `group`: group name, written to the playlist's `group-title` attribute.
+- `logo_url`: logo address. When it is empty and a built-in logo candidate matches, the playlist points at `/v1/logo/{id}` instead and Kiln fetches the image for you.
+- `epg_id`, `epg_name`, `epg_source`: guide matching fields. `epg_name` falls back to `title`. See [EPG](/en/guide/epg/).
+
+### Stream source
+
+There are two ways to point at a source, and you pick exactly one:
+
+- `upstream` + `path`: `upstream` references an `id` from `[[upstreams]]`, and `path` is appended to that upstream's `base_url`. A `path` starting with `http://` or `https://` is treated as absolute and used as is.
+- `source_url`: a complete address written inline. It replaces both `upstream` and `path`, and a channel using it inherits no upstream-level headers.
+
+`ingress` decides how the source is handled. It is `hls` or `dash`, and defaults to `hls` when empty:
+
+- `hls`: same-origin segment proxying. The playlist is rewritten before it reaches the player and segments are fetched on demand.
+- `dash`: decrypted locally against the global `kid:key` catalog and repackaged to HLS. An enabled DASH channel requires `[packager].keys_file` to be configured, otherwise saving fails.
+
+### Run policy
+
+- `on_demand`: release the upstream connection when nobody is watching. Enabling it puts the channel under idle reclamation.
+- `autostart`: pull the channel up when the process starts, without waiting for a viewer.
+- `idle_timeout_sec`: how long counts as nobody watching. Values of zero or below normalise to `90` seconds. Only applies to `on_demand` channels.
+- `max_viewers`: concurrent viewer ceiling. Above zero it enables viewer leases and returns 429 once the ceiling is hit; empty or zero means unlimited.
+- `restart_on_failure`: restart automatically after the upstream drops. Forced on for DASH channels at save time.
+
+The two switches combine into the three run modes shown in the admin console:
+
+| `autostart` | `on_demand` | Console label | Behaviour |
+| --- | --- | --- | --- |
+| off | on | Start when viewed | The first viewer starts it, idle reclaims it |
+| on | on | Prewarm at startup | Started at boot, still reclaimed when idle |
+| on | off | Always running | Started at boot, never reclaimed |
+
+With both switches off, `on_demand` is turned on automatically, so there is no such thing as a channel that neither prewarms nor starts on demand.
+
+<Aside type="note" title="Autostart at boot">
+  Startup autostart follows the channels declared in the configuration file. Channels created only in the admin console should be brought up with Start now or by their first viewer.
+</Aside>
+
+### Media selection
+
+These fields apply only to the DASH repackaging path. HLS channels are proxied same-origin and no track plan is made:
+
+- `prefer_height`: target vertical resolution. Zero or empty falls back to `[ffmpeg].prefer_height`.
+- `preferred_audio_languages`: audio language codes in priority order, for example `["zh", "en"]`.
+- `selection`: finer-grained track selection with a separate mode and track for video, audio, and subtitles. See [Variants & tracks](/en/guide/variants/).
+- `packager`: a per-channel engine override taking the same values as `[packager].engine`. An invalid value is ignored and the global setting applies.
+
+### Request headers
+
+- `user_agent`: the User-Agent used when fetching this channel.
+- `headers`: extra request headers for this channel. Merged with the upstream-level `headers`, with the channel winning on duplicate keys.
+
+### Disabling
+
+A channel with `disabled` set does not appear in the channel list or the playlist, and playback requests are answered as not found. A disabled DASH channel can be saved even before the global key file exists, which makes it easy to land the definition first and supply keys later.
+
+## Upstream definitions
+
+Upstreams are defined in the configuration file only. They let several channels share one origin's address and credentials:
+
+```toml
+[[upstreams]]
+id = "origin"
+base_url = "http://127.0.0.1:5050"
+proxy = ""
+
+[upstreams.headers]
+X-Custom = "value"
+```
+
+- `id`: what a channel's `upstream` field references.
+- `base_url`: the origin's base address; a channel's `path` is appended to it.
+- `proxy`: pin this upstream to a specific outbound route. Leave it empty to fall back to the rules in [Outbound proxying](/en/guide/proxy/).
+- `headers`: request headers injected into every fetch for channels on this upstream. A channel's own `headers` can override individual keys.
+
+The matching channel:
+
+```toml
+[[channels]]
+id = "hls-demo"
+title = "Demo HLS"
+group = "Demo"
+upstream = "origin"
+path = "/live/demo-hls"
+ingress = "hls"
+on_demand = true
+autostart = false
+```
+
+## Config file versus admin console
+
+The two are not the same store, and the boundary is worth memorising:
+
+- **Channels**: the `[[channels]]` blocks are written into SQLite only on first start, while the channel table is still empty. From then on the database is the single source of truth: editing the config file neither reseeds nor overwrites console changes. Bulk-adjust existing channels through the console or the admin API instead.
+- **Upstreams**: `[[upstreams]]` is always read from the configuration file, and the console cannot add or edit them. Saving a channel validates that the referenced `upstream` exists in the config, and rejects it otherwise.
+- **Public base URL**: `server.public_base_url` is seeded into the settings table on first start, after which the settings table wins and the console can change it.
+- **Outbound routes and EPG sources**: seeded the same way, database-authoritative afterwards.
+
+The `lite` variant creates no database. Its channels come entirely from the configuration file, read-only, with the admin API unavailable.
+
+## Enabling and disabling
+
+- Individual channels toggle through the `disabled` field; both the console switch and the admin API write to it.
+- Bulk operations map to `POST /v1/admin/channels/enable-all` and `POST /v1/admin/channels/disable-all`, and require the `write` scope.
+- Disabling only hides the channel. It deletes nothing and does not disturb the channel's position in the list.
+- A running session is not torn down by disabling. Stop it explicitly with `DELETE /v1/admin/sessions/{id}` when you need to.
+
+## M3U import and export
+
+### Import
+
+Import runs in two passes, preview and apply, both through `POST /v1/admin/import/m3u` with the `apply` flag deciding which. The preview returns the planned action and reason for every entry so you can confirm before writing.
+
+Parsing and generation rules:
+
+- Reads the `group-title`, `tvg-logo`, `tvg-id`, and `tvg-name` attributes on `#EXTINF` lines, plus the trailing title.
+- The channel `id` is slugged from `tvg-id`, falling back to the title, then to the URL path. Collisions get `-2`, `-3`, and so on, capped at 48 characters.
+- An address ending in `.mpd` is inferred as `dash`; everything else as `hls`.
+- Imported channels always write `source_url` and clear `upstream` and `path`.
+- Newly created channels default to `on_demand` enabled with a 90-second idle timeout.
+- An entry whose `id` already exists is treated as an update, and only non-empty fields overwrite the existing values.
+- Entries with an invalid address, or that fail validation, are skipped with the reason recorded in the preview.
+- Import never deletes channels that are missing from the list.
+- Apply carries the revisions read during the preview, so if anything changed in the meantime the whole batch returns 409 instead of clobbering someone else's edit.
+
+### Export
+
+`POST /v1/admin/exports/m3u` returns an M3U you can hand straight to a player. It automatically creates an unscoped playback key and builds every address under the `/p/{token}/play/` prefix, so an admin credential is never embedded. When the export is no longer needed, revoke that key under Playback Access Control in the console to invalidate the whole file at once.
+
+## Self-checks: warmup, probe, and preview
+
+These three are easy to confuse but do entirely different things. All of them require the `refresh` scope.
+
+<Steps>
+  <Step title="probe: test the source, create nothing">
+    `POST /v1/admin/channels/{id}/probe` runs a single upstream check without creating a session or producing any media. For an HLS channel it fetches the source address, reads a small opening chunk, and returns the status code, content type, final address, and elapsed time. For a DASH channel it parses the manifest, plans tracks once against `prefer_height` and `selection`, and verifies that the global keys are in place. The channel editor can also probe an unsaved draft through `POST /v1/admin/source-probes`. Use it to confirm the address, headers, and route actually work.
+  </Step>
+  <Step title="warmup: bring the session up early">
+    `POST /v1/admin/channels/{id}/warmup` starts a session in the background, or simply refreshes the activity timestamp if the channel is already running. It returns 202 immediately without waiting for the first playlist, so success means the startup path has begun, not that media is flowing. Its purpose is removing cold-start latency on on-demand channels.
+  </Step>
+  <Step title="preview: get a short-lived playback credential">
+    `POST /v1/admin/channels/{id}/preview` issues a credential valid for five minutes and returns a complete playback URL carrying `?token=`, ready for the console's built-in player. A preview credential can only play; every admin endpoint rejects it, which makes it safe to share briefly with a colleague to confirm the picture.
+  </Step>
+</Steps>
+
+The usual order is probe to confirm the source is reachable, warmup to confirm a session starts, and preview to confirm the picture is right. If all three pass and something is still wrong, head to [Troubleshooting](/en/guide/troubleshooting/).

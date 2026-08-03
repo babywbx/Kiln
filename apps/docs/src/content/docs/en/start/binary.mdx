@@ -1,0 +1,185 @@
+---
+title: Manual install & Windows service
+description: Download a release archive, verify it, run it, and register Kiln as a Windows service.
+sidebar:
+  order: 4
+---
+
+When the [install script](/en/start/install-script/) is not an option, or the target is Windows, grab a release archive from GitHub. Every archive is one static binary plus the license and readme files: unpack and run, no runtime dependencies.
+
+## Release artifacts
+
+Artifact names follow a fixed pattern, `<name>_<version>_<os>_<arch>`, packed as `.tar.gz` on Linux and macOS and `.zip` on Windows.
+
+| System | Architecture | File |
+| --- | --- | --- |
+| Linux | amd64 | `kiln_<version>_linux_amd64.tar.gz` |
+| Linux | arm64 | `kiln_<version>_linux_arm64.tar.gz` |
+| Linux | armv7 | `kiln_<version>_linux_armv7.tar.gz` |
+| Linux | armv6 | `kiln_<version>_linux_armv6.tar.gz` |
+| macOS | amd64 | `kiln_<version>_darwin_amd64.tar.gz` |
+| macOS | arm64 | `kiln_<version>_darwin_arm64.tar.gz` |
+| Windows | amd64 | `kiln_<version>_windows_amd64.zip` |
+| Windows | arm64 | `kiln_<version>_windows_arm64.zip` |
+
+The lite variant is built for Linux only. Its archives use the `kiln-lite` prefix, cover `amd64`, `arm64`, `armv7`, and `armv6`, and the executable inside is named `kiln-lite` as well. See [Lite, Core and Full](/en/guide/variants/).
+
+Each archive contains the executable (`kiln`, or `kiln.exe` on Windows) plus `LICENSE`, `NOTICE`, `README.md`, and `README.en.md`. Every release also publishes a single `SHA256SUMS` covering all archives from that release.
+
+<Aside type="tip" title="Stronger provenance">
+  The release pipeline signs build provenance for every binary, so beyond the checksum you can run `gh attestation verify` to confirm an artifact really came from this repository's release workflow.
+</Aside>
+
+## Linux and macOS
+
+<Steps>
+  <Step title="Download the archive and the checksums">
+    Get the archive for your platform from the [Releases](https://github.com/babywbx/kiln) page, together with `SHA256SUMS`, into the same directory.
+  </Step>
+  <Step title="Verify the checksum">
+    Do not continue on a mismatch; download again or switch sources.
+
+    <Tabs>
+      <TabItem label="Linux">
+        ```bash
+        sha256sum --ignore-missing -c SHA256SUMS
+        ```
+      </TabItem>
+      <TabItem label="macOS">
+        ```bash
+        grep 'kiln_1.0.0_darwin_arm64.tar.gz' SHA256SUMS | shasum -a 256 -c -
+        ```
+      </TabItem>
+    </Tabs>
+  </Step>
+  <Step title="Unpack and put it on PATH">
+    ```bash
+    tar -xzf kiln_1.0.0_linux_amd64.tar.gz
+    sudo install -m 0755 kiln /usr/local/bin/kiln
+    ```
+
+    Without sudo, use a user directory instead: `install -m 0755 kiln ~/.local/bin/kiln`, and make sure `~/.local/bin` is on `PATH`.
+  </Step>
+  <Step title="Confirm it runs">
+    ```bash
+    kiln -version
+    ```
+
+    The output carries the version, commit, build time, and variant. A binary that refuses to start usually means the wrong architecture, or a target directory mounted `noexec`.
+  </Step>
+  <Step title="Run it">
+    ```bash
+    kiln -config kiln.toml
+    ```
+
+    Config syntax lives in [Configuration](/en/reference/config/), flags in the [CLI reference](/en/reference/cli/).
+  </Step>
+</Steps>
+
+On Apple Silicon, pick `darwin_arm64`. A shell running under Rosetta reports `x86_64` from `uname -m`, and choosing the archive from that would leave you with a translated build.
+
+To keep it running across reboots on Linux, the install script's [`--service`](/en/start/install-script/) flag registers a systemd unit for you.
+
+## Windows
+
+The Windows build ships its own service commands, so no external supervisor or wrapper is needed.
+
+<Steps>
+  <Step title="Unpack into a stable directory">
+    Download `kiln_<version>_windows_amd64.zip` and unpack it somewhere permanent, for example `C:\kiln`. Check the hash against the matching line in `SHA256SUMS`.
+
+    ```powershell
+    Get-FileHash kiln_1.0.0_windows_amd64.zip -Algorithm SHA256
+    ```
+  </Step>
+  <Step title="Put the config next to it">
+    Place `kiln.toml` in the same directory, for example `C:\kiln\kiln.toml`.
+  </Step>
+  <Step title="Register and start the service">
+    Run these from an elevated terminal.
+
+    ```powershell
+    kiln.exe service install -config C:\kiln\kiln.toml
+    kiln.exe service start
+    kiln.exe service status
+    ```
+  </Step>
+</Steps>
+
+Stopping and removing it is two more commands:
+
+```powershell
+kiln.exe service stop
+kiln.exe service uninstall
+```
+
+`remove` is accepted as an alias for `uninstall`.
+
+### Subcommand flags
+
+| Flag | Applies to | Description | Default |
+| --- | --- | --- | --- |
+| `-config` | `install` only | Path to the config file, required; resolved to an absolute path and checked for readability before the service is created | — |
+| `-name` | All subcommands | Service name, used to tell several instances apart on one host | `Kiln` |
+| `-display` | `install` only | Display name shown in the services UI | `Kiln Streaming Gateway` |
+
+Running several instances means passing the same `-name` to every subcommand:
+
+```powershell
+kiln.exe service install -config C:\kiln\edge.toml -name KilnEdge -display "Kiln Edge"
+kiln.exe service start -name KilnEdge
+```
+
+`install` refuses to touch an existing service of the same name and exits with an error instead of overwriting it. `start` and `stop` wait up to 30 seconds for the state to settle. `uninstall` asks a running service to stop and waits up to 20 seconds before deleting the registration. `status` reports running, stopped, starting, stopping, paused, or unknown.
+
+<Aside type="caution" title="Elevation required">
+  Every service subcommand opens the service control manager with full access, so an unelevated terminal fails to connect. Install and uninstall in particular must run from an administrator prompt. Service management exists only in the Windows build; on other platforms the `service` subcommand prints a notice and exits 2.
+</Aside>
+
+### Autostart and restart policy
+
+The installed service uses automatic start, so it comes up with the machine. It also carries a three-step recovery policy: restart after 5 seconds on the first failure, 15 seconds on the second, 60 seconds on the third, with the failure count resetting after 24 hours.
+
+The service accepts the standard stop and shutdown requests and drains through the normal graceful shutdown path rather than being killed.
+
+### Working directory and relative paths
+
+The service control manager starts processes in `system32`. When Kiln detects that it is running as a service, it resolves `-config` to an absolute path and changes the working directory to the folder holding that config. Relative paths such as `data_dir = "./data"` therefore still resolve against the config file, not against `system32`.
+
+Installation records the absolute config path, so moving either the binary or the config means registering the service again. Running as a service without a `-config` value exits 2.
+
+### Logs
+
+Standard output is discarded under the service control manager, so Kiln redirects stdout and stderr to `kiln.log` in the directory holding the config.
+
+At every start, an existing `kiln.log` larger than 16 MB is renamed to `kiln.log.1` before the new file is opened. Rotation keeps that single generation only, so archive it elsewhere if you need longer retention. Log format and fields are covered in [Operations](/en/guide/operations/).
+
+### Firewall
+
+Serving anything beyond localhost needs an inbound rule, since the Windows firewall blocks it by default:
+
+```powershell
+New-NetFirewallRule -DisplayName "Kiln" -Direction Inbound -LocalPort 8080 -Protocol TCP -Action Allow
+```
+
+### About ffmpeg
+
+The Windows distribution ships without ffmpeg. With `[packager].engine` set to `auto`, the native engine is selected automatically and day-to-day use is unaffected. Install ffmpeg and add it to `PATH` only if the compatibility fallback is genuinely needed. See [Media engine](/en/guide/media-engine/).
+
+### Uninstalling
+
+`kiln.exe service uninstall` removes the service registration and nothing else. Everything under `data_dir`, along with `kiln.log` and the config file, stays where it is and has to be cleaned up by hand.
+
+## Next steps
+
+<CardGrid>
+  <Card title="Create your first channel" icon="ph:arrow-right">
+    Write a minimal config and get it serving: [First channel](/en/start/first-channel/).
+  </Card>
+  <Card title="An easier install">
+    On Linux and macOS, one command handles installs and upgrades: [Install script](/en/start/install-script/).
+  </Card>
+  <Card title="It will not start">
+    Startup failures, port conflicts, and permission problems are covered in [Troubleshooting](/en/guide/troubleshooting/).
+  </Card>
+</CardGrid>

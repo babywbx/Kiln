@@ -1,0 +1,130 @@
+---
+title: EPG 节目单
+description: 启用节目单源，选择缓存模式，控制刷新、体积与时区，并把合并后的 XMLTV 提供给播放器。
+sidebar:
+  order: 7
+---
+
+Kiln 会抓取你启用的 XMLTV 源，解析后与频道做匹配，再把命中的频道与节目合并成一份对外的节目单。播放器只需要拿到 `/v1/epg.xml.gz`，不必知道上游有几个源。
+
+## 工作方式
+
+- 节目单源在管理控制台的「节目单」页维护，结果保存在 SQLite 中，不需要改配置文件。
+- 内置预设源默认全部停用。首次使用时必须手动启用至少一个，或者添加自定义源。
+- 配置文件里的 `[[epg.sources]]` 只在数据库中还没有任何源记录时播种一次，之后一律以数据库为准。
+- 完整版把 `[epg].enabled` 当作意图声明，真正决定是否对外输出的是「有没有已启用的源」。Lite 构建不提供节目单，把 `enabled` 设为 `true` 会让进程拒绝启动。
+
+```toml title="kiln.toml"
+[epg]
+enabled = true
+cache = true
+cache_dir = "./data/epg"
+refresh_interval_min = 360
+max_refresh_concurrency = 0
+max_source_bytes = 67108864
+default_timezone = "UTC"
+serve_timezone = "keep"
+```
+
+<Steps>
+  <Step title="启用源">
+    在「节目单」页启用一个内置源，或添加自定义源，填写可访问的 XMLTV 地址，`.xml` 与 `.xml.gz` 都支持。
+  </Step>
+  <Step title="首次刷新">
+    点击「立即刷新」。Kiln 会立刻抓取全部已启用的源，并按源列出频道数、节目数与失败原因。
+  </Step>
+  <Step title="确认匹配">
+    在频道页面为「待确认」和「未匹配」的频道指定对应的节目单频道。只有匹配成功的频道才会进入对外输出，参见 [频道管理](/guide/channels/)。
+  </Step>
+</Steps>
+
+## 缓存模式
+
+`cache` 与 `cache_dir` 一起决定原始 XMLTV 的保存方式，共三种组合。
+
+<Tabs>
+  <TabItem label="磁盘（默认）">
+    `cache = true`，`cache_dir` 指向一个目录，缺省为 `{data_dir}/epg`。
+
+    每个源的原始 XMLTV 以「JSON 头加正文」的形式落盘，带长度与 SHA-256 校验，写入时先写临时文件再原子替换。缓存跨重启存活，抓取时会带上 `If-None-Match` 与 `If-Modified-Since`，源没有变化时直接命中 304。抓取或解析失败时，可以退回上一次的缓存内容继续对外提供。
+  </TabItem>
+  <TabItem label="内存">
+    `cache = true`，且 `cache_dir = "memory"`（`:memory:` 等价）。
+
+    条件请求与失败回退的行为与磁盘一致，但不产生任何磁盘写入，进程重启后需要重新完整下载一遍。适合只读根文件系统，或不希望在数据目录里堆积大文件的部署。
+  </TabItem>
+  <TabItem label="关闭">
+    `cache = false`。
+
+    不保存原始 XMLTV，也就没有条件请求与失败回退。此外，每次访问 `/v1/epg.xml` 或 `/v1/epg.xml.gz` 都会先同步刷新一遍全部源，再渲染响应。
+  </TabItem>
+</Tabs>
+
+<Aside type="caution" title="关闭缓存的代价">
+  关闭缓存会把整轮抓取的延迟直接加到公开端点的响应时间上，源越大越明显，并且每次请求都会重新下载。默认保留磁盘缓存；确实不能写盘时改用内存缓存，而不是关闭。
+</Aside>
+
+## 刷新
+
+- `refresh_interval_min` 默认 360。进程启动后先立即刷新一次，之后按此间隔滚动刷新。
+- `max_refresh_concurrency` 为 `0` 表示所有源同时刷新；正数表示同时最多刷新这么多个源。
+- 在 `server.resource_mode = "auto"`（默认值）下，`0` 与过大的正数都会按探测到的 CPU 与内存下压到安全值，进入低资源档位时固定为 1。`constrained` 同样固定为 1，`performance` 则完全不做这类调整。取值细节见 [配置参考](/reference/config/)。
+
+手动刷新用 `POST /v1/admin/epg/refresh`，需要 `refresh` 权限。没有任何已启用的源时返回 409。刷新按源独立进行，个别源失败不会影响其它源，响应里会带回每个源的最新状态。
+
+## 体积上限
+
+`max_source_bytes` 默认 64 MiB（`67108864`），作用于解压之后的 XMLTV 正文。
+
+- 下载超限时本轮抓取失败，已有数据保持可用并被标记为过期，不会被半截内容覆盖。
+- 缓存中已经超限的条目同样会被丢弃，不参与回退。
+- `auto` 模式下这个值也会随内存下压：内存低于 256 MiB 时降到 4 MiB，其余低资源档位按内存量在 4 MiB 到 64 MiB 之间取值。
+
+## 时区
+
+- 每个源都可以单独设置 IANA 时区，用于解析源里没有带偏移标注的时间戳。控制台中新建的自定义源默认使用 `UTC`。
+- `default_timezone` 是源未声明时区时的兜底，必须是合法的 IANA 名称，非法值会导致启动时配置校验失败。
+- `serve_timezone` 目前只接受 `keep`：输出保留每条节目原有的 UTC 偏移，Kiln 不会把全部时间统一换算到某个时区。填其它值同样会导致配置校验失败。
+
+## 逐源出口
+
+每个源都有独立的出口设置，与全局出站路由配合使用。
+
+| 取值 | 含义 |
+| --- | --- |
+| `direct` | 默认值，直接连接，不参与出站路由规则 |
+| `auto` | 跟随全局出站路由，按规则决定直连还是走某条线路 |
+| 某条线路的 id | 固定走这条线路，忽略路由规则 |
+
+<Aside type="note" title="默认不走代理">
+  即使配置了出站规则，节目单抓取默认仍然直连。需要代理时，把对应的源改成 `auto` 或直接指定线路，详见 [出站代理](/guide/proxy/)。
+</Aside>
+
+## 对外输出
+
+| 路径 | 鉴权 | 说明 |
+| --- | --- | --- |
+| `GET /v1/epg.xml` | 无 | 合并后的 XMLTV |
+| `GET /v1/epg.xml.gz` | 无 | 同一份内容的 gzip 版本 |
+| `GET /v1/logo/{id}` | 无 | 频道台标，命中内置台标表时回源代取 |
+
+- 输出只包含匹配成功的频道。频道 ID 会被改写成 Kiln 自己的频道 ID，对应节目一并改写，播放器因此可以直接用 M3U 里的 `tvg-id` 对上号。
+- `/v1/playlist.m3u` 以及播放密钥下的分发列表，会在 `#EXTM3U` 上带 `x-tvg-url` 指向 `/v1/epg.xml.gz`。
+- 没有任何已启用的源时，两个端点返回一份合法但为空的 XMLTV，而不是 404。
+- gzip 结果会在内存中缓存一份，源数据或频道列表变化后自动失效；压缩后体积超过 `max_source_bytes` 的四分之一（最多 8 MiB）时不缓存，直接返回。
+- 台标端点用频道的 `epg_name`（缺省用标题）归一化后查内置台标表，依次尝试候选地址，单张最多 2 MiB，命中后带一小时公共缓存返回，并用 `X-Kiln-Logo-Source` 标明实际来源；没有匹配时返回 404。这次抓取同样走该频道的出站路由。
+
+<Aside type="caution" title="这三个端点是公开的">
+  节目单与台标端点不做鉴权，也不受 `security.play_require_auth` 影响。它们只暴露频道名称、台标与节目信息，不含播放地址；如果连这些也不希望公开，请在反向代理层做访问控制。
+</Aside>
+
+## 管理端接口
+
+| 方法与路径 | 权限 |
+| --- | --- |
+| `GET /v1/admin/epg/presets`、`/v1/admin/epg/sources`、`/v1/admin/epg/matches` | `read` |
+| `POST /v1/admin/epg/sources`、`PUT /v1/admin/epg/sources/{id}` | `write` |
+| `DELETE /v1/admin/epg/sources/{id}` | `delete` |
+| `POST /v1/admin/epg/refresh` | `refresh` |
+
+更新与删除需要带 `If-Match` 版本号，冲突时返回 409。删除内置预设源是隐藏而不是物理删除，其它接口的完整说明见 [API 参考](/reference/api/)。

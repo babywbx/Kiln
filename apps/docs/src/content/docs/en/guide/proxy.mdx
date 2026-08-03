@@ -1,0 +1,142 @@
+---
+title: Outbound proxies
+description: Define reusable proxy routes and host-based rules that decide how Kiln reaches origins, guide sources and logo files.
+sidebar:
+  order: 8
+---
+
+Outbound routing has two layers: `[[proxies]]` defines reusable routes, and `[egress]` decides which traffic takes which route. Channels, EPG sources and logo fetches all share the same routing table, so there is no per-feature proxy setting to keep in sync.
+
+## The model
+
+Every outbound URL is resolved on its own:
+
+<Steps>
+  <Step title="Match rules by priority">
+    Rules are evaluated in ascending `priority` order. The first match wins and evaluation stops there.
+  </Step>
+  <Step title="Fall back to the default">
+    When nothing matches, `egress.default` applies.
+  </Step>
+  <Step title="Resolve the route">
+    `direct` connects directly. A proxy id uses that route. If the referenced route is missing or disabled, the request falls back to a direct connection.
+  </Step>
+</Steps>
+
+```toml title="kiln.toml"
+[[proxies]]
+id = "proxy-http"
+name = "HTTP route"
+url = "http://127.0.0.1:7890"
+
+[[proxies]]
+id = "proxy-socks"
+name = "SOCKS5 route"
+url = "socks5h://127.0.0.1:7891"
+
+[egress]
+default = "direct"
+playlist_policy = "rewrite"
+# docker_proxy_host = "host.docker.internal"
+
+[[egress.rules]]
+id = "example-cdn"
+priority = 10
+kind = "host_suffix"
+pattern = "example-cdn.com"
+proxy = "proxy-http"
+```
+
+<Aside type="note" title="The console is the source of truth">
+  Like channels, outbound settings live in SQLite. `[[proxies]]` and `[[egress.rules]]` from the config file seed the database once, and only while no proxy rows exist; `default`, `playlist_policy` and `docker_proxy_host` are written only if the corresponding setting is absent. After the first start, edit them in the [admin console](/en/guide/admin/).
+</Aside>
+
+## Defining a route
+
+- `id` must be unique and is what `egress.default`, rules and EPG sources reference. `name` is display only.
+- `url` accepts the `http`, `https`, `socks5` and `socks5h` schemes, for example `http://127.0.0.1:7890` or `socks5h://127.0.0.1:7891`.
+- Put credentials in the URL when the proxy needs them, for example `http://user:password@127.0.0.1:7890`. The console shows that a route has credentials without echoing the password back.
+- `socks5h` resolves hostnames at the proxy, `socks5` resolves them locally first. Prefer `socks5h` when the origin only resolves correctly from the proxy's network.
+- Routes can be disabled instead of deleted. A route referenced by `egress.default` or by an enabled rule cannot be left disabled.
+
+<Aside type="caution" title="ffmpeg only understands HTTP proxies">
+  The ffmpeg engine receives proxy settings through environment variables and can only use `http` or `https` proxies. If a channel ends up on the ffmpeg path and its URL routes to a SOCKS route, the publication fails outright and tells you to use an HTTP proxy or go direct. The native engine has no such limitation, see [Media engine](/en/guide/media-engine/).
+</Aside>
+
+## Default egress and rules
+
+`egress.default` is either `direct` or the id of a route, and covers everything no rule matched.
+
+A rule consists of `id`, `priority`, `kind`, `pattern` and `proxy`, and can be disabled individually. Lower `priority` numbers win. `proxy` may also be `direct`, which is how you punch a direct hole through a deployment that otherwise proxies everything.
+
+| `kind` | Matches against |
+| --- | --- |
+| `host_suffix` | Hostname suffix. `example.com` matches `example.com` and `cdn.example.com`, but not `notexample.com` |
+| `host_exact` | The full hostname, exact comparison |
+| `host_regex` | A regular expression over the hostname |
+| `channel_id` | Exact channel id |
+| `url_regex` | A regular expression over the full URL |
+
+An omitted `kind` is treated as `host_suffix`. Regex rules are compiled before they are saved, and a rule that fails to compile never takes effect.
+
+## Playlist handling
+
+`playlist_policy` controls how absolute origin URLs are presented to the player when Kiln relays an upstream HLS playlist.
+
+| Value | Behaviour |
+| --- | --- |
+| `rewrite` (default) | Everything is rewritten back to Kiln; the player talks only to Kiln |
+| `passthrough` | Origin URLs are left untouched; the player connects to the origin |
+| `auto` | Only URLs that need a proxy are rewritten, the rest stay as origin URLs |
+
+Under `rewrite`, Kiln resolves every media line and every `URI="..."` attribute to an absolute URL, then replaces it with `/v1/play/<channel id>/u/<encoded url>?sig=...` on its own origin. Behind an access token the prefix becomes `/p/<token>/play/<channel id>/u/` instead. The URL is encoded with URL-safe Base64 and keeps a recognisable extension, and the signature is an HMAC over the channel id and target URL, keyed by a random value generated at process start, so rewritten URLs stop working after a restart. The player therefore only ever contacts Kiln, and Kiln performs the upstream fetch through whichever route the rules selected. Nested variant playlists are rewritten again as they are pulled.
+
+`passthrough` sends the player straight to the origin. Those requests bypass Kiln's proxy routes and never carry the channel's custom headers, so it only makes sense when the player itself can reach the origin. `auto` splits the difference: URLs that need a proxy come back through Kiln, everything else keeps its origin address and saves a hop.
+
+<Aside type="note" title="Viewer limits take precedence">
+  A channel with `max_viewers` set is always rewritten regardless of the policy, since Kiln cannot count concurrent viewers otherwise.
+</Aside>
+
+## Reaching a host proxy from a container
+
+`docker_proxy_host` defaults to `host.docker.internal` and only matters when `ffmpeg.mode = "docker"`. When Kiln injects proxy environment variables into the ffmpeg container, it rewrites `127.0.0.1`, `localhost` and `::1` in the proxy URL to this hostname while keeping the port, because inside the container the loopback address points at the container itself. The route definition still uses the address as seen from the host.
+
+## What outbound routing covers
+
+| Traffic | Notes |
+| --- | --- |
+| Channel origin fetches | Playlists and segments, on both the native and the ffmpeg path |
+| EPG fetches | Routed by the rules only when the source's egress is `auto`; `direct` or a named route is honoured as configured, see [EPG](/en/guide/epg/) |
+| Channel logos | The upstream fetch behind `/v1/logo/{id}`, matched with the channel id in scope |
+| Admin probes | Channel probe, preview, and the outbound connectivity test |
+
+`channel_id` rules can only match when the request carries a channel context. EPG fetches have none, so they are never selected by that rule kind.
+
+## Console and connectivity test
+
+The **Outbound proxies** page edits a draft. Adding or changing routes and rules only touches the draft, and **Apply** stays disabled until a connectivity test passes; any further edit resets that state and requires a new test. It is a cheap way to avoid pushing a typo in a proxy address to a running service.
+
+The test maps to `POST /v1/admin/egress/test` and needs the `refresh` scope. Optional parameters:
+
+- `target`: omit it to use the built-in public probe target. `source` or `custom` requires a `url`, which must resolve to a public address.
+- `channel_id`: resolve the route as that channel would, which is how you verify `channel_id` rules.
+- `proxy_id` or `proxy_url`: test one saved route, or an address that has not been saved yet.
+- `draft`: resolve against the draft configuration without touching the running one.
+
+The response reports the selected `proxy_id`, the matching `reason`, whether playlists would be rewritten, the elapsed `dur_ms`, and reachability with HTTP status and final URL. A proxy demanding authentication is called out explicitly.
+
+## Common topologies
+
+<CardGrid>
+  <Card title="Direct by default, proxy a few hosts" icon="ph:arrow-right">
+    Keep `default = "direct"` and add one `host_suffix` rule per origin that needs the proxy. The right shape when most origins are reachable and only a few are not.
+  </Card>
+  <Card title="Proxy by default, a few direct">
+    Set `default = "proxy-http"`, then add rules with `proxy = "direct"` for LAN or local origins. Internal upstreams stay off the proxy, which never sees your internal addresses.
+  </Card>
+  <Card title="ffmpeg in a container, proxy on the host">
+    Point the route at `http://127.0.0.1:7890` as seen from the host and leave `docker_proxy_host` at its default. Kiln swaps in a reachable hostname when it injects the environment.
+  </Card>
+</CardGrid>
+
+For diagnosing a route that behaves unexpectedly, see [Troubleshooting](/en/guide/troubleshooting/).
