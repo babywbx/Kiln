@@ -46,6 +46,7 @@ type RestartPolicy struct {
 
 type Catalog interface {
 	Config() config.File
+	ActiveChannels() []config.Channel
 	Get(string) (config.Channel, bool)
 	SourceURL(config.Channel) (string, error)
 	Upstream(config.Channel) (config.Upstream, error)
@@ -977,7 +978,7 @@ func (m *Manager) Get(channelID string) (*Session, bool) {
 
 func (m *Manager) autostart(ctx context.Context) {
 	var channels sync.WaitGroup
-	for _, ch := range m.cat.Config().ActiveChannels() {
+	for _, ch := range m.cat.ActiveChannels() {
 		if !ch.Autostart {
 			continue
 		}

@@ -139,3 +139,37 @@ func TestPublicChannelViewsDoNotExposeSourceCredentials(t *testing.T) {
 		t.Fatalf("admin channel lost editable source: %+v", adminViews)
 	}
 }
+
+func TestActiveChannelsPrefersStore(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	cfg := config.File{Channels: []config.Channel{{
+		ID: "cfg-only", SourceURL: "https://one.example/live.m3u8",
+		Ingress: "hls", Autostart: true,
+	}}}
+	svc := New(cfg, db)
+	if err := svc.Upsert(config.Channel{
+		ID: "db-only", SourceURL: "https://two.example/live.m3u8",
+		Ingress: "hls", Autostart: true, OnDemand: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ids := map[string]bool{}
+	for _, ch := range svc.ActiveChannels() {
+		ids[ch.ID] = true
+	}
+	if !ids["db-only"] || ids["cfg-only"] {
+		t.Fatalf("store-backed active channels = %v", ids)
+	}
+
+	static := New(cfg, nil)
+	channels := static.ActiveChannels()
+	if len(channels) != 1 || channels[0].ID != "cfg-only" {
+		t.Fatalf("config-backed active channels = %+v", channels)
+	}
+}

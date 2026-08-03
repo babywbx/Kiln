@@ -15,6 +15,14 @@ type staticCatalog struct {
 
 func (c staticCatalog) Config() config.File { return config.File{} }
 
+func (c staticCatalog) ActiveChannels() []config.Channel {
+	channels := make([]config.Channel, 0, len(c.channels))
+	for _, ch := range c.channels {
+		channels = append(channels, ch)
+	}
+	return channels
+}
+
 func (c staticCatalog) Get(id string) (config.Channel, bool) {
 	ch, ok := c.channels[id]
 	return ch, ok

@@ -740,3 +740,36 @@ func (p *autostartPackager) startCount(channelID string) int {
 	defer p.mu.Unlock()
 	return p.calls[channelID]
 }
+
+func TestAutostartIncludesStoreManagedChannels(t *testing.T) {
+	t.Parallel()
+
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	cat := catalog.New(config.File{}, db)
+	if err := cat.Upsert(config.Channel{
+		ID: "console", Title: "Console",
+		SourceURL: "https://one.example/live.m3u8",
+		Ingress:   "hls", Autostart: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	manager := session.NewManager(
+		cat, nil, observe.New(), t.TempDir(), config.FFmpeg{}, nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)), nil,
+	)
+	manager.SetPackager(&fakePackager{results: []startResult{{job: newFakeJob()}}})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager.Start(ctx)
+	defer manager.Shutdown()
+
+	eventually(t, func() bool {
+		sess, ok := manager.Get("console")
+		return ok && sess.State() == "running"
+	})
+}

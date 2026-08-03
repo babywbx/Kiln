@@ -29,6 +29,10 @@ func (s *Service) List() []config.Channel {
 	return s.cfg.ActiveChannels()
 }
 
+func (s *Service) ActiveChannels() []config.Channel {
+	return s.cfg.ActiveChannels()
+}
+
 func (s *Service) FilterByIDs(channels []config.Channel, ids []string) []config.Channel {
 	return channelconfig.FilterByIDs(channels, ids)
 }

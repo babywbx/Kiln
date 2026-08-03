@@ -55,6 +55,14 @@ func (s *Service) PublicBase() string {
 	return s.cfg.Server.PublicBaseURL
 }
 
+func (s *Service) ActiveChannels() []config.Channel {
+	channels, err := s.List(false)
+	if err != nil {
+		return s.cfg.ActiveChannels()
+	}
+	return channels
+}
+
 func (s *Service) List(includeDisabled bool) ([]config.Channel, error) {
 	if s.db == nil {
 		if includeDisabled {
