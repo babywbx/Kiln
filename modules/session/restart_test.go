@@ -377,6 +377,53 @@ func TestRestartKeepsPublicationUntilReplacementIsReady(t *testing.T) {
 	}
 }
 
+func TestAcquireConcurrentlySharesOneStart(t *testing.T) {
+	t.Parallel()
+
+	release := make(chan struct{})
+	job := newFakeJob()
+	engine := &fakePackager{results: []startResult{
+		{start: func(ctx context.Context, _ packager.Request) (packager.Job, error) {
+			select {
+			case <-release:
+				return job, nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}},
+	}}
+	manager, _ := newRestartManager(t, engine)
+	defer manager.Shutdown()
+
+	const concurrency = 16
+	var group sync.WaitGroup
+	sessions := make([]*session.Session, concurrency)
+	errs := make([]error, concurrency)
+	group.Add(concurrency)
+	for i := range concurrency {
+		go func() {
+			defer group.Done()
+			sessions[i], errs[i] = manager.Acquire("news")
+		}()
+	}
+	eventually(t, func() bool { return engine.startCount() == 1 })
+	time.Sleep(10 * time.Millisecond)
+	close(release)
+	group.Wait()
+
+	for i := range concurrency {
+		if errs[i] != nil {
+			t.Fatalf("Acquire[%d] error = %v", i, errs[i])
+		}
+		if sessions[i] != sessions[0] {
+			t.Fatalf("Acquire[%d] returned a different session", i)
+		}
+	}
+	if got := engine.startCount(); got != 1 {
+		t.Fatalf("packager starts = %d, want 1", got)
+	}
+}
+
 func TestAutostartRetriesChannelsIndependently(t *testing.T) {
 	t.Parallel()
 

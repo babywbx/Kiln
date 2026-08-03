@@ -227,6 +227,32 @@ func TestManagerEnforcesMaximumActiveViewers(t *testing.T) {
 	}
 }
 
+func TestStopChannelReleasesViewerSlots(t *testing.T) {
+	t.Parallel()
+
+	manager, _ := newManager(t, config.Channel{
+		ID:         "news",
+		Upstream:   "origin",
+		Path:       "/live.m3u8",
+		Ingress:    "hls",
+		MaxViewers: 1,
+	})
+
+	if err := manager.AdmitViewer("news", "viewer-a"); err != nil {
+		t.Fatalf("AdmitViewer(viewer-a) error = %v", err)
+	}
+	if err := manager.AdmitViewer("news", "viewer-b"); err != session.ErrViewerLimit {
+		t.Fatalf("AdmitViewer(viewer-b) error = %v, want ErrViewerLimit", err)
+	}
+	manager.StopChannel("news")
+	if err := manager.AdmitViewer("news", "viewer-b"); err != nil {
+		t.Fatalf("AdmitViewer(after stop) error = %v", err)
+	}
+	if err := manager.RefreshViewer("news", "viewer-a"); err != session.ErrViewerLease {
+		t.Fatalf("RefreshViewer(evicted) error = %v, want ErrViewerLease", err)
+	}
+}
+
 func newManager(t *testing.T, channel config.Channel) (*session.Manager, *observe.Service) {
 	t.Helper()
 	return newManagerWithBaseURL(t, "https://example.com", channel)
