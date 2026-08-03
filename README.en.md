@@ -28,6 +28,7 @@ channels into one authenticated M3U playlist and on-demand HLS output.
 - [✨ Features](#-features)
 - [🚀 Quick Start](#-quick-start)
 - [🐳 Docker](#-docker)
+- [🪟 Windows Service](#-windows-service)
 - [⚙️ Configuration](#️-configuration)
 - [🌐 Environment Variables](#-environment-variables)
 - [🔌 API](#-api)
@@ -76,6 +77,7 @@ DASH decryption and repackaging are implemented natively in Go, so FFmpeg is not
 | Outbound proxying | Route HTTP / SOCKS by host or channel; the channel editor can create and test a route inline |
 | Admin console | Responsive web UI, channel pre-warming and preview, Pinyin / Jyutping search that bridges simplified and traditional forms, compressed static assets |
 | Resource adaptation | Tightens memory budgets and concurrency from the container's real memory and CPU — scales down only, never up |
+| Cross-platform | A single binary for Linux, macOS, and Windows, with built-in Windows service installation and restart policy |
 | Observability | `/v1/status`, Prometheus `/metrics`, optional OTLP traces, `/healthz` and `/readyz` |
 
 <div align="right">
@@ -169,6 +171,41 @@ It creates no SQLite database; `data_dir` only holds the auto-generated login ke
 > Image defaults apply only when `[packager].engine` is absent from the config. An explicit `auto`, `native`, or `ffmpeg` always wins, so the same config never changes behavior because of an image tag.
 
 `core` builds for `linux/amd64`, `linux/arm64`, `linux/arm/v7`, and `linux/arm/v6`. Capability boundaries, image sizes, and constrained-container measurements are documented in [Lite, Core and Full performance comparison][variant-doc] (Chinese), and `deploy/docker/compose.example.yaml` provides a Compose template.
+
+<div align="right">
+
+[![][back-to-top]](#readme-top)
+
+</div>
+
+## 🪟 Windows Service
+
+On Windows the built-in service commands run Kiln in the background, with no extra supervisor. Install and uninstall need an elevated terminal.
+
+```powershell
+kiln.exe service install -config C:\kiln\kiln.toml
+kiln.exe service start
+kiln.exe service status
+kiln.exe service stop
+kiln.exe service uninstall
+```
+
+`-name` picks the service name (default `Kiln`) so several instances can coexist on one host, and `-display` sets the display name. The service is installed as automatic-start with a three-step restart policy (5s, 15s, 60s).
+
+The SCM starts processes in `system32`, so Kiln switches the working directory to the folder holding the config. Relative paths such as `data_dir = "./data"` therefore still resolve against the config file. Installation records the absolute config path, so moving the binary or the config means reinstalling the service.
+
+Standard output is discarded under the SCM, so logs go to `kiln.log` next to the config. Once it passes 16 MB it is rotated to `kiln.log.1` on the next start.
+
+> \[!NOTE\]
+> The Windows distribution ships without ffmpeg. With `[packager].engine` set to `auto` the native engine is selected automatically; install ffmpeg and add it to `PATH` if the compatibility fallback is genuinely needed.
+
+Serving beyond localhost needs an inbound rule, since the Windows firewall blocks it by default:
+
+```powershell
+New-NetFirewallRule -DisplayName "Kiln" -Direction Inbound -LocalPort 8080 -Protocol TCP -Action Allow
+```
+
+Uninstalling only removes the service registration; `data_dir`, logs, and the config are left in place.
 
 <div align="right">
 

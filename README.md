@@ -28,6 +28,7 @@
 - [✨ 特性](#-特性)
 - [🚀 快速开始](#-快速开始)
 - [🐳 Docker](#-docker)
+- [🪟 Windows 服务](#-windows-服务)
 - [⚙️ 配置](#️-配置)
 - [🌐 环境变量](#-环境变量)
 - [🔌 API](#-api)
@@ -76,6 +77,7 @@ DASH 的解密与重封装由 Go 原生实现，默认不需要 FFmpeg。整套�
 | 出站代理 | 按域名或频道路由 HTTP / SOCKS，频道编辑页可直接新建线路并测试连通性 |
 | 管理控制台 | 响应式 Web UI，频道预热与预览，拼音、粤拼与简繁互通搜索，静态资源压缩传输 |
 | 资源自适应 | 按容器实际内存与 CPU 自动收紧内存预算和并发，只下压、不上调 |
+| 跨平台部署 | Linux、macOS、Windows 单二进制，Windows 自带服务安装与失败重启 |
 | 可观测 | `/v1/status`、Prometheus `/metrics`、可选 OTLP traces、`/healthz` 与 `/readyz` |
 
 <div align="right">
@@ -169,6 +171,41 @@ docker run --rm -p 8080:8080 --read-only \
 > 镜像默认值只在配置没有填写 `[packager].engine` 时生效。显式写 `auto`、`native` 或 `ffmpeg` 始终优先，同一份配置不会被镜像标签悄悄改变行为。
 
 `core` 多架构覆盖 `linux/amd64`、`linux/arm64`、`linux/arm/v7` 和 `linux/arm/v6`。完整的能力边界、体积和受限容器实测数据见 [Lite、Core 与 Full 性能比较][variant-doc]，`deploy/docker/compose.example.yaml` 提供了 Compose 模板。
+
+<div align="right">
+
+[![][back-to-top]](#readme-top)
+
+</div>
+
+## 🪟 Windows 服务
+
+Windows 上用内置的服务命令挂到后台，不需要额外的守护工具。安装和卸载需要管理员权限的终端。
+
+```powershell
+kiln.exe service install -config C:\kiln\kiln.toml
+kiln.exe service start
+kiln.exe service status
+kiln.exe service stop
+kiln.exe service uninstall
+```
+
+`-name` 指定服务名（默认 `Kiln`），同一台机器跑多个实例时用它区分，`-display` 改服务显示名。安装后服务为自动启动，并带三级失败重启策略（5 秒、15 秒、60 秒）。
+
+SCM 会在 `system32` 下启动进程，Kiln 会把工作目录切到配置文件所在目录，所以配置里的相对路径（例如 `data_dir = "./data"`）仍然相对配置文件解析。安装时记录的是配置文件的绝对路径，之后移动二进制或配置需要重新安装。
+
+服务模式下标准输出会被 SCM 丢弃，日志改写到配置目录下的 `kiln.log`，超过 16 MB 时在下次启动时轮转为 `kiln.log.1`。
+
+> \[!NOTE\]
+> Windows 发行版不含 ffmpeg。`[packager].engine` 为 `auto` 时会自动走原生引擎；确实需要兼容回退时，自行安装 ffmpeg 并加入 `PATH`。
+
+对外提供服务要放行入站端口，Windows 防火墙默认拦截：
+
+```powershell
+New-NetFirewallRule -DisplayName "Kiln" -Direction Inbound -LocalPort 8080 -Protocol TCP -Action Allow
+```
+
+卸载只移除服务注册，`data_dir`、日志和配置需要自行清理。
 
 <div align="right">
 
