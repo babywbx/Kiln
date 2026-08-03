@@ -1,4 +1,4 @@
-.PHONY: build build-debug build-release build-lite test test-lite test-extended test-admin-ui test-docker-targets test-lite-contract test-local-tools test-complete coverage run tidy hash keys fmt vet lint vuln ci clean audit-admin-ui \
+.PHONY: build build-debug build-release build-lite test test-lite test-extended test-admin-ui test-docker-targets test-lite-contract test-local-tools test-complete coverage run tidy hash keys fmt vet vet-cross lint vuln ci clean audit-admin-ui \
 		docker docker-full docker-core docker-lite docker-images docker-multiarch docker-core-multiarch docker-lite-multiarch \
 		docker-verify docker-verify-images docker-verify-lite docker-smoke docker-smoke-lite docker-reap fixtures \
         media-oracle test-safety test-resource-docker-basic test-resource-docker-extended test-resource-docker-core-media test-resource-docker-full benchmark-performance performance-live soak
@@ -114,6 +114,12 @@ fmt:
 vet:
 	go vet ./...
 
+vet-cross:
+	GOOS=windows GOARCH=amd64 go vet ./...
+	GOOS=windows GOARCH=amd64 go vet -tags lite ./...
+	GOOS=darwin GOARCH=arm64 go vet ./...
+	GOOS=darwin GOARCH=arm64 go vet -tags lite ./...
+
 lint:
 	@command -v golangci-lint >/dev/null 2>&1 || { echo "golangci-lint not found: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest"; exit 1; }
 	golangci-lint run ./...
@@ -122,7 +128,7 @@ vuln:
 	@command -v govulncheck >/dev/null 2>&1 || { echo "govulncheck not found: go install golang.org/x/vuln/cmd/govulncheck@latest"; exit 1; }
 	govulncheck ./...
 
-ci: fmt vet lint build test test-lite test-admin-ui test-docker-targets media-oracle vuln
+ci: fmt vet vet-cross lint build test test-lite test-admin-ui test-docker-targets media-oracle vuln
 
 test-complete: ci test-extended test-local-tools test-safety benchmark-performance
 	$(MAKE) docker-lite

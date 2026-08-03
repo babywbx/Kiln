@@ -60,6 +60,9 @@ jobs:
       - name: Run go vet
         run: make vet
 
+      - name: Run go vet for Cross-Platform Targets
+        run: make vet-cross
+
       - name: Run golangci-lint
         run: make lint
 
