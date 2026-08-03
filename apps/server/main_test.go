@@ -34,7 +34,6 @@ func TestBuildEPGServiceUsesPersistedSourcesWithoutLegacyEnabledFlag(t *testing.
 
 	service, err := buildEPGService(config.File{
 		Server: config.Server{DataDir: directory},
-		EPG:    config.EPG{Enabled: false},
 	}, db, nil, slog.Default())
 	if err != nil {
 		t.Fatal(err)

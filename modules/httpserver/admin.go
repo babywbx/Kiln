@@ -568,7 +568,7 @@ func (s *Server) handleAdminGetSettings(w http.ResponseWriter, r *http.Request) 
 		"listen":            s.deps.Cfg.Server.Listen,
 		"cors_origins":      s.deps.Cfg.Security.CORSOrigins,
 		"public_hosts":      s.deps.Cfg.Security.PublicHosts,
-		"play_require_auth": s.deps.Cfg.Security.PlayRequireAuth,
+		"play_require_auth": s.deps.Cfg.Security.PlayAuthRequired(),
 	}
 	if s.deps.Store != nil {
 		snapshot, err := s.deps.Store.GetRuntimeSettingsSnapshot()

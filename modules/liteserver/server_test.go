@@ -101,7 +101,8 @@ func TestHLSPlaybackRewritesAndProxiesMedia(t *testing.T) {
 	cfg := config.File{
 		Server: config.Server{PublicBaseURL: "http://kiln.test"},
 		Security: config.Security{
-			AllowedHosts: []string{"127.0.0.1"}, MaxPlaylistBytes: 1 << 20,
+			PlayRequireAuth: config.Bool(false),
+			AllowedHosts:    []string{"127.0.0.1"}, MaxPlaylistBytes: 1 << 20,
 		},
 		Packager: config.Packager{Engine: config.EngineNative},
 		Channels: []config.Channel{{
@@ -236,7 +237,7 @@ func TestPlaybackAuthenticationUsesTheExistingLoginContract(t *testing.T) {
 			}},
 		},
 		Security: config.Security{
-			PlayRequireAuth: true, AllowedHosts: []string{"127.0.0.1"},
+			PlayRequireAuth: config.Bool(true), AllowedHosts: []string{"127.0.0.1"},
 			MaxPlaylistBytes: 1 << 20, MaxBodyBytes: 1 << 20,
 		},
 		Packager: config.Packager{Engine: config.EngineNative},

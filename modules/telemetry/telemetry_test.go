@@ -30,7 +30,7 @@ func TestSetupExportsOTLPHTTPSpans(t *testing.T) {
 	t.Cleanup(func() { otel.SetTracerProvider(noop.NewTracerProvider()) })
 
 	shutdown, err := Setup(t.Context(), config.Observe{
-		Enabled: true, OTLPEndpoint: collector.URL, OTLPInsecure: true,
+		Enabled: config.Bool(true), OTLPEndpoint: collector.URL, OTLPInsecure: true,
 		TraceSampleRatio: 1, ServiceName: "kiln-test",
 	}, "test-version")
 	if err != nil {

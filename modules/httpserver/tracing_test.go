@@ -39,7 +39,7 @@ func TestServerTracesOnlyWhenTelemetryIsReady(t *testing.T) {
 	}
 
 	configured := config.File{Observe: config.Observe{
-		Enabled:      true,
+		Enabled:      config.Bool(true),
 		OTLPEndpoint: "http://collector.test/v1/traces",
 	}}
 	serveHealth(configured, false)

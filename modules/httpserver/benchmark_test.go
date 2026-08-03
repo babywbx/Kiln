@@ -176,7 +176,7 @@ func newDistributionBenchmarkServer(b *testing.B) distributionBenchmarkFixture {
 			IdleTimeout:   30,
 		},
 		Security: config.Security{
-			PlayRequireAuth:  true,
+			PlayRequireAuth:  config.Bool(true),
 			MaxPlaylistBytes: 1 << 20,
 			MaxBodyBytes:     1 << 20,
 		},

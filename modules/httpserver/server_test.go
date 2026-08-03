@@ -60,7 +60,7 @@ func TestEPGEndToEnd(t *testing.T) {
 			Username: "admin", PasswordHash: hash, Role: "admin",
 		}}},
 		Security: config.Security{MaxBodyBytes: 1 << 20},
-		EPG: config.EPG{Enabled: false, Cache: &cache, Sources: []config.EPGSource{{
+		EPG: config.EPG{Cache: &cache, Sources: []config.EPGSource{{
 			ID: "fixture", Name: "Fixture", URL: origin.URL, Timezone: "Asia/Hong_Kong", Proxy: "direct", Enabled: true,
 		}}},
 		Channels: []config.Channel{{
@@ -320,7 +320,7 @@ func TestEPGUnavailableReturnsLegalEmptyDocument(t *testing.T) {
 	server := httpserver.New(httpserver.Deps{
 		Cfg: config.File{
 			Server: config.Server{ReadTimeout: 5, IdleTimeout: 30},
-			EPG:    config.EPG{Enabled: true, Cache: &cache},
+			EPG:    config.EPG{Cache: &cache},
 		},
 		Observe: observe.New(),
 		Log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -395,7 +395,7 @@ func TestHLSPlayEndToEnd(t *testing.T) {
 			}},
 		},
 		Security: config.Security{
-			PlayRequireAuth:  true,
+			PlayRequireAuth:  config.Bool(true),
 			MaxPlaylistBytes: 1 << 20,
 			MaxBodyBytes:     1 << 20,
 		},
@@ -414,9 +414,9 @@ func TestHLSPlayEndToEnd(t *testing.T) {
 			UserAgent:      "kiln-test",
 		}},
 		FFmpeg:  config.FFmpeg{Binary: "ffmpeg", HLSTime: 2, HLSListSize: 4},
-		Observe: config.Observe{Enabled: true},
+		Observe: config.Observe{Enabled: config.Bool(true)},
 	}
-	cfg.Security.PlayRequireAuth = true
+	cfg.Security.PlayRequireAuth = config.Bool(true)
 	allowed := cfg.AllowedHostSet()
 
 	obs := observe.New()

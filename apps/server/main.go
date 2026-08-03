@@ -83,7 +83,7 @@ func runServer(cfgPath string) int {
 		return 1
 	}
 	shutdownTelemetry, err := telemetry.Setup(context.Background(), cfg.Observe, version.Version)
-	tracingReady := err == nil && cfg.Observe.Enabled && cfg.Observe.OTLPEndpoint != ""
+	tracingReady := err == nil && cfg.Observe.EnabledOrDefault() && cfg.Observe.OTLPEndpoint != ""
 	if err != nil {
 		log.Warn("OpenTelemetry setup failed", "err", err)
 		shutdownTelemetry = func(context.Context) error { return nil }

@@ -71,7 +71,8 @@ func TestValidateLiteConfigRejectsExcludedFeatures(t *testing.T) {
 		},
 		{
 			name: "epg",
-			cfg:  config.File{Packager: config.Packager{Engine: config.EngineNative}, EPG: config.EPG{Enabled: true}},
+			cfg: config.File{Packager: config.Packager{Engine: config.EngineNative},
+				EPG: config.EPG{Sources: []config.EPGSource{{ID: "guide", Enabled: true}}}},
 			want: "epg is not available",
 		},
 		{
@@ -101,6 +102,7 @@ func TestValidateLiteConfigAcceptsNativeChannels(t *testing.T) {
 	cfg := config.File{
 		Packager: config.Packager{Engine: config.EngineNative},
 		Channels: []config.Channel{{ID: "news"}},
+		EPG:      config.EPG{Sources: []config.EPGSource{{ID: "guide"}}},
 	}
 	if err := validateLiteConfig(cfg); err != nil {
 		t.Fatalf("validateLiteConfig() = %v", err)

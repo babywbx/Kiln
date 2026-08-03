@@ -90,7 +90,7 @@ func StartDashHLS(parent context.Context, opt DashOptions) (*DashJob, error) {
 		if opt.LowLatency {
 			opt.HLSListSize = 4
 		} else {
-			opt.HLSListSize = 6
+			opt.HLSListSize = 8
 		}
 	}
 	if opt.LogLevel == "" {

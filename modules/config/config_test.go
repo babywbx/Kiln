@@ -79,7 +79,7 @@ preferred_audio_languages = ["yue", "zh"]
 	if err := invalidPartTarget.validate(); err == nil {
 		t.Fatal("invalid LL-HLS part target accepted")
 	}
-	if !cfg.EPG.Enabled || cfg.EPG.CacheEnabled() || cfg.EPG.RefreshIntervalMin != 30 {
+	if cfg.EPG.CacheEnabled() || cfg.EPG.RefreshIntervalMin != 30 {
 		t.Fatalf("epg config: %+v", cfg.EPG)
 	}
 	if cfg.EPG.CacheDir != filepath.Join(cfg.Server.DataDir, "epg") || len(cfg.EPG.Sources) != 1 || cfg.EPG.Sources[0].ID != "hk-1" {
@@ -484,4 +484,107 @@ func containsByte(b []byte, c byte) bool {
 		}
 	}
 	return false
+}
+
+func minimalAuthTOML() string {
+	return `
+[[auth.users]]
+username = "admin"
+password_hash = "$2a$10$8JxhvnpdTX/TrOTi1XaYWuPlrZK1aw3ANgGIWpTO6KtD2M432w7Ie"
+role = "admin"
+`
+}
+
+func loadTOMLBody(t *testing.T, body string) File {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "kiln.toml")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg
+}
+
+func TestOptionalBooleansDefaultOn(t *testing.T) {
+	cfg := loadTOMLBody(t, minimalAuthTOML())
+	if !cfg.Observe.EnabledOrDefault() {
+		t.Fatal("observe should default to enabled")
+	}
+	if !cfg.Security.PlayAuthRequired() {
+		t.Fatal("playback auth should default to required")
+	}
+}
+
+func TestOptionalBooleansHonorExplicitFalse(t *testing.T) {
+	cfg := loadTOMLBody(t, minimalAuthTOML()+`
+[observe]
+enabled = false
+
+[security]
+play_require_auth = false
+`)
+	if cfg.Observe.EnabledOrDefault() {
+		t.Fatal("observe.enabled = false was ignored")
+	}
+	if cfg.Security.PlayAuthRequired() {
+		t.Fatal("security.play_require_auth = false was ignored")
+	}
+}
+
+func TestPlayOpenEnvOverridesConfig(t *testing.T) {
+	t.Setenv("KILN_PLAY_OPEN", "0")
+	cfg := loadTOMLBody(t, minimalAuthTOML()+`
+[security]
+play_require_auth = false
+`)
+	if !cfg.Security.PlayAuthRequired() {
+		t.Fatal("KILN_PLAY_OPEN=0 should force playback auth on")
+	}
+
+	t.Setenv("KILN_PLAY_OPEN", "1")
+	open := loadTOMLBody(t, minimalAuthTOML())
+	if open.Security.PlayAuthRequired() {
+		t.Fatal("KILN_PLAY_OPEN=1 should disable playback auth")
+	}
+}
+
+func TestHLSListSizeDefaultTracksLowLatency(t *testing.T) {
+	var plain File
+	plain.applyDefaults()
+	if plain.FFmpeg.HLSListSize != 8 {
+		t.Fatalf("default list size = %d, want 8", plain.FFmpeg.HLSListSize)
+	}
+
+	var lowLatency File
+	lowLatency.FFmpeg.LowLatency = true
+	lowLatency.applyDefaults()
+	if lowLatency.FFmpeg.HLSListSize != 4 {
+		t.Fatalf("low-latency default list size = %d, want 4", lowLatency.FFmpeg.HLSListSize)
+	}
+
+	var explicit File
+	explicit.FFmpeg.LowLatency = true
+	explicit.FFmpeg.HLSListSize = 6
+	explicit.applyDefaults()
+	if explicit.FFmpeg.HLSListSize != 6 {
+		t.Fatalf("explicit list size = %d, want 6", explicit.FFmpeg.HLSListSize)
+	}
+}
+
+func TestRemovedKeysStayIgnored(t *testing.T) {
+	cfg := loadTOMLBody(t, minimalAuthTOML()+`
+[epg]
+enabled = true
+
+[[upstreams]]
+id = "origin"
+base_url = "http://127.0.0.1:5050"
+proxy = "http://127.0.0.1:7890"
+`)
+	if len(cfg.Upstreams) != 1 || cfg.Upstreams[0].ID != "origin" {
+		t.Fatalf("upstreams = %+v", cfg.Upstreams)
+	}
 }

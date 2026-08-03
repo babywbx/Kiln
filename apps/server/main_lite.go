@@ -128,8 +128,10 @@ func validateLiteConfig(cfg config.File) error {
 			return fmt.Errorf("channel %q requires native packager engine", channel.ID)
 		}
 	}
-	if cfg.EPG.Enabled {
-		return fmt.Errorf("epg is not available in lite")
+	for _, source := range cfg.EPG.Sources {
+		if source.Enabled {
+			return fmt.Errorf("epg is not available in lite")
+		}
 	}
 	if cfg.Observe.OTLPEndpoint != "" {
 		return fmt.Errorf("OpenTelemetry export is not available in lite")

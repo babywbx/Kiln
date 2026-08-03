@@ -153,7 +153,7 @@ func newLiveServer(t *testing.T) (*httptest.Server, *session.Manager) {
 			TokenAudience: "kiln",
 			Users:         []config.User{{Username: "admin", PasswordHash: hash, Role: "admin"}},
 		},
-		Security: config.Security{MaxPlaylistBytes: 1 << 20, MaxBodyBytes: 1 << 20},
+		Security: config.Security{PlayRequireAuth: config.Bool(false), MaxPlaylistBytes: 1 << 20, MaxBodyBytes: 1 << 20},
 		Upstreams: []config.Upstream{{
 			ID:      "origin",
 			BaseURL: "http://origin.invalid",

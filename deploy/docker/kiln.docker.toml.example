@@ -69,7 +69,6 @@ enabled = false
 listen = "127.0.0.1:6060"
 
 [epg]
-enabled = false
 cache = true
 cache_dir = "/var/lib/kiln/data/epg"
 refresh_interval_min = 360

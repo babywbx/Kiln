@@ -55,7 +55,6 @@ type EgressRule struct {
 }
 
 type EPG struct {
-	Enabled               bool        `json:"enabled" toml:"enabled"`
 	Cache                 *bool       `json:"cache,omitempty" toml:"cache,omitempty"`
 	CacheDir              string      `json:"cache_dir" toml:"cache_dir"`
 	RefreshIntervalMin    int         `json:"refresh_interval_min" toml:"refresh_interval_min"`
@@ -118,7 +117,8 @@ type User struct {
 }
 
 type Security struct {
-	PlayRequireAuth  bool     `json:"play_require_auth" toml:"play_require_auth"`
+	// nil means unset; playback auth defaults on. See PlayAuthRequired.
+	PlayRequireAuth  *bool    `json:"play_require_auth" toml:"play_require_auth"`
 	AllowedHosts     []string `json:"allowed_hosts" toml:"allowed_hosts"`
 	MaxPlaylistBytes int64    `json:"max_playlist_bytes" toml:"max_playlist_bytes"`
 	MaxBodyBytes     int64    `json:"max_body_bytes" toml:"max_body_bytes"`
@@ -126,10 +126,13 @@ type Security struct {
 	PublicHosts      []string `json:"public_hosts" toml:"public_hosts"`
 }
 
+func (s Security) PlayAuthRequired() bool {
+	return s.PlayRequireAuth == nil || *s.PlayRequireAuth
+}
+
 type Upstream struct {
 	ID      string            `json:"id" toml:"id"`
 	BaseURL string            `json:"base_url" toml:"base_url"`
-	Proxy   string            `json:"proxy" toml:"proxy"`
 	Headers map[string]string `json:"headers" toml:"headers"`
 }
 
@@ -195,11 +198,16 @@ type TrackSelection struct {
 }
 
 type Observe struct {
-	Enabled          bool    `json:"enabled" toml:"enabled"`
+	// nil means unset; observability defaults on. See EnabledOrDefault.
+	Enabled          *bool   `json:"enabled" toml:"enabled"`
 	OTLPEndpoint     string  `json:"otlp_endpoint,omitempty" toml:"otlp_endpoint,omitempty"`
 	OTLPInsecure     bool    `json:"otlp_insecure,omitempty" toml:"otlp_insecure,omitempty"`
 	TraceSampleRatio float64 `json:"trace_sample_ratio,omitempty" toml:"trace_sample_ratio,omitempty"`
 	ServiceName      string  `json:"service_name,omitempty" toml:"service_name,omitempty"`
+}
+
+func (o Observe) EnabledOrDefault() bool {
+	return o.Enabled == nil || *o.Enabled
 }
 
 type Debug struct {
@@ -381,11 +389,14 @@ func (c *File) applyEnvOverrides() {
 	}
 	switch os.Getenv("KILN_PLAY_OPEN") {
 	case "1", "true", "TRUE":
-		c.Security.PlayRequireAuth = false
+		c.Security.PlayRequireAuth = Bool(false)
 	case "0", "false", "FALSE":
-		c.Security.PlayRequireAuth = true
+		c.Security.PlayRequireAuth = Bool(true)
 	}
 }
+
+// Bool returns a pointer to b, for optional boolean config fields.
+func Bool(b bool) *bool { return &b }
 
 func (c *File) applyDefaults() {
 	if c.Server.Listen == "" {
@@ -432,7 +443,11 @@ func (c *File) applyDefaults() {
 		c.FFmpeg.HLSTime = 2
 	}
 	if c.FFmpeg.HLSListSize <= 0 {
-		c.FFmpeg.HLSListSize = 8
+		if c.FFmpeg.LowLatency {
+			c.FFmpeg.HLSListSize = 4
+		} else {
+			c.FFmpeg.HLSListSize = 8
+		}
 	}
 	if c.FFmpeg.LogLevel == "" {
 		c.FFmpeg.LogLevel = "error"
@@ -470,7 +485,6 @@ func (c *File) applyDefaults() {
 	if c.Packager.InflightBytes <= 0 {
 		c.Packager.InflightBytes = 96 << 20
 	}
-	c.Observe.Enabled = true
 	if c.Observe.TraceSampleRatio <= 0 {
 		c.Observe.TraceSampleRatio = 1
 	}
@@ -488,9 +502,6 @@ func (c *File) applyDefaults() {
 	}
 	if c.Logging.Color == "" {
 		c.Logging.Color = "auto"
-	}
-	if os.Getenv("KILN_PLAY_OPEN") == "" {
-		c.Security.PlayRequireAuth = true
 	}
 	if c.Security.MaxPlaylistBytes <= 0 {
 		c.Security.MaxPlaylistBytes = 8 << 20
@@ -629,11 +640,6 @@ func (c File) validate() error {
 		}
 		if _, err := url.ParseRequestURI(u.BaseURL); err != nil {
 			return fmt.Errorf("upstream %q base_url invalid: %w", u.ID, err)
-		}
-		if u.Proxy != "" {
-			if _, err := url.ParseRequestURI(u.Proxy); err != nil {
-				return fmt.Errorf("upstream %q proxy invalid: %w", u.ID, err)
-			}
 		}
 		up[u.ID] = u
 	}

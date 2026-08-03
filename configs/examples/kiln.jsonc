@@ -62,7 +62,6 @@
     // "trace_sample_ratio": 0.1,
   },
   "epg": {
-    "enabled": false,
     "cache": true,
     "refresh_interval_min": 360,
     "max_refresh_concurrency": 0,

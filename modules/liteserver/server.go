@@ -168,7 +168,7 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 
 func (s *Server) handlePlaylist(w http.ResponseWriter, r *http.Request) {
 	channels := s.catalog.List()
-	if s.cfg.Security.PlayRequireAuth {
+	if s.cfg.Security.PlayAuthRequired() {
 		claims, ok := r.Context().Value(claimsContextKey).(auth.Claims)
 		if !ok {
 			writeAppError(w, auth.ErrInvalidToken)
@@ -204,7 +204,7 @@ func writeAppError(w http.ResponseWriter, err error) {
 
 func (s *Server) requirePlayAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !s.cfg.Security.PlayRequireAuth {
+		if !s.cfg.Security.PlayAuthRequired() {
 			next(w, r)
 			return
 		}
@@ -219,7 +219,7 @@ func (s *Server) requirePlayAuth(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (s *Server) authorizeChannel(r *http.Request, channelID string) error {
-	if !s.cfg.Security.PlayRequireAuth {
+	if !s.cfg.Security.PlayAuthRequired() {
 		return nil
 	}
 	claims, ok := r.Context().Value(claimsContextKey).(auth.Claims)

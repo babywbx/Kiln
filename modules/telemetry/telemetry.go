@@ -15,7 +15,7 @@ import (
 type Shutdown func(context.Context) error
 
 func Setup(ctx context.Context, cfg config.Observe, serviceVersion string) (Shutdown, error) {
-	if !cfg.Enabled || cfg.OTLPEndpoint == "" {
+	if !cfg.EnabledOrDefault() || cfg.OTLPEndpoint == "" {
 		return func(context.Context) error { return nil }, nil
 	}
 	exporterOptions := []otlptracehttp.Option{otlptracehttp.WithEndpointURL(cfg.OTLPEndpoint)}

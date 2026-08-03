@@ -434,7 +434,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
-	if !s.deps.Cfg.Observe.Enabled {
+	if !s.deps.Cfg.Observe.EnabledOrDefault() {
 		writeAppErr(w, apperr.ErrNotFound)
 		return
 	}
@@ -655,7 +655,7 @@ func (s *Server) recordAdminTokenLog(r *http.Request, token store.AdminAPITokenR
 
 func (s *Server) requirePlayAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !s.deps.Cfg.Security.PlayRequireAuth {
+		if !s.deps.Cfg.Security.PlayAuthRequired() {
 			next(w, r)
 			return
 		}
@@ -669,7 +669,7 @@ func (s *Server) requirePlayAuth(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (s *Server) authorizeChannel(r *http.Request, channelID string) error {
-	if !s.deps.Cfg.Security.PlayRequireAuth {
+	if !s.deps.Cfg.Security.PlayAuthRequired() {
 		return nil
 	}
 	c := claimsFrom(r)
