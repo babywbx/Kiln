@@ -729,7 +729,7 @@ func (db *DB) GetEgressSnapshot() (EgressSnapshot, error) {
 		profile.Disabled = intBool(disabled)
 		snapshot.Profiles = append(snapshot.Profiles, profile)
 	}
-	if err := rows.Close(); err != nil {
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return EgressSnapshot{}, err
 	}
 	ruleRows, err := db.sql.Query(`SELECT id, priority, kind, pattern, proxy_id, disabled, revision, updated_at FROM proxy_rules ORDER BY priority ASC, id ASC`)
@@ -746,7 +746,7 @@ func (db *DB) GetEgressSnapshot() (EgressSnapshot, error) {
 		rule.Disabled = intBool(disabled)
 		snapshot.Rules = append(snapshot.Rules, rule)
 	}
-	if err := ruleRows.Close(); err != nil {
+	if err := errors.Join(ruleRows.Err(), ruleRows.Close()); err != nil {
 		return EgressSnapshot{}, err
 	}
 	settingRows, err := db.sql.Query(`SELECT key, value, revision FROM settings
@@ -1386,7 +1386,7 @@ func (db *DB) SetAllChannelsDisabled(disabled bool) ([]string, error) {
 		}
 		ids = append(ids, id)
 	}
-	if err := rows.Close(); err != nil {
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return nil, err
 	}
 	if len(ids) > 0 {
