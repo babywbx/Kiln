@@ -29,7 +29,7 @@ When native planning fails, `auto` first decides whether that particular failure
 
 - A source with more than one KID cannot fall back. The ffmpeg path accepts a single CENC key, so handing it a multi-KID source would decode the wrong picture. The request fails with `502`.
 - If a channel selects a subtitle track explicitly (`subtitles.mode` set to `prefer` or `only`), the compatibility engine cannot honour that selection and the request is rejected with `400`.
-- If a fallback is needed but no ffmpeg is available in the runtime, the request fails with `503`. The Core and Lite images ship without ffmpeg — see [Core, Full & Lite](/en/guide/variants/).
+- If a fallback is needed but no ffmpeg is available in the runtime, the request fails with `503`. The Lite and Core images ship without ffmpeg — see [Lite, Core & Full](/en/guide/variants/).
 
 `/readyz` moves that boundary earlier: as soon as a DASH channel is pinned to `engine = "ffmpeg"` while ffmpeg is unavailable, readiness reports `503`, so an orchestrator never routes traffic to an instance that is guaranteed to fail.
 

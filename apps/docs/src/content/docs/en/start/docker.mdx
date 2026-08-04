@@ -28,20 +28,20 @@ Lite creates no SQLite database, and its public surface is limited to `/healthz`
 Images are published to the GitHub Container Registry:
 
 ```bash
-docker pull ghcr.io/babywbx/kiln:latest   # full, includes ffmpeg
-docker pull ghcr.io/babywbx/kiln:core     # native packager, no ffmpeg
 docker pull ghcr.io/babywbx/kiln:lite     # stateless low-memory variant
+docker pull ghcr.io/babywbx/kiln:core     # native packager, no ffmpeg
+docker pull ghcr.io/babywbx/kiln:latest   # full, includes ffmpeg
 ```
 
 A stable release publishes an exact version alongside moving tags:
 
 | Tag shape | Meaning |
 | --- | --- |
-| `:1.0.0`, `:1.0`, `:1`, `:latest` | Exact, minor, major, and newest release of the full variant |
+| `:1.0.0-lite`, `:1.0-lite`, `:1-lite`, `:lite` | Exact, minor, major, and newest release of the lite variant |
 | `:1.0.0-core`, `:1.0-core`, `:1-core`, `:core` | The same set for core |
-| `:1.0.0-lite`, `:1.0-lite`, `:1-lite`, `:lite` | The same set for lite |
+| `:1.0.0`, `:1.0`, `:1`, `:latest` | The same set for full, with `:latest` as its newest release |
 
-A prerelease publishes only its exact version tag and never moves `latest`, `core`, `lite`, or the major and minor tags. Core builds for `linux/amd64`, `linux/arm64`, `linux/arm/v7`, and `linux/arm/v6`; full and lite build for `linux/amd64` and `linux/arm64`. All three get build provenance attestations pushed to the registry at release time.
+A prerelease publishes only its exact version tag and never moves `lite`, `core`, `latest`, or the major and minor tags. Core builds for `linux/amd64`, `linux/arm64`, `linux/arm/v7`, and `linux/arm/v6`; lite and full build for `linux/amd64` and `linux/arm64`. All three get build provenance attestations pushed to the registry at release time.
 
 ## Minimal run
 
@@ -69,7 +69,7 @@ docker run --rm -p 8080:8080 --read-only \
 `deploy/docker/lite.docker.toml.example` is the matching minimal config.
 
 <Aside type="caution" title="Do not pin the ffmpeg engine on a native-only image">
-  Core and lite ship without ffmpeg. If a DASH channel resolves to the `ffmpeg` engine, `/readyz` returns 503 stating that the compatibility engine is unavailable, and the container never reaches a ready state. Switch the channel to `native`, or use the full image.
+  Lite and core ship without ffmpeg. If a DASH channel resolves to the `ffmpeg` engine, `/readyz` returns 503 stating that the compatibility engine is unavailable, and the container never reaches a ready state. Switch the channel to `native`, or use the full image.
 </Aside>
 
 ## Compose

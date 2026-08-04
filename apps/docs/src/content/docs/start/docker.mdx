@@ -28,20 +28,20 @@ lite 不创建 SQLite，公开接口只有 `/healthz`、`/readyz`、`/v1/auth/lo
 镜像发布在 GitHub Container Registry：
 
 ```bash
-docker pull ghcr.io/babywbx/kiln:latest   # full，内置 ffmpeg
-docker pull ghcr.io/babywbx/kiln:core     # 原生 packager，不含 ffmpeg
 docker pull ghcr.io/babywbx/kiln:lite     # 无状态低内存变体
+docker pull ghcr.io/babywbx/kiln:core     # 原生 packager，不含 ffmpeg
+docker pull ghcr.io/babywbx/kiln:latest   # full，内置 ffmpeg
 ```
 
 正式版本会同时推出精确版本号与浮动标签：
 
 | 标签形态 | 含义 |
 | --- | --- |
-| `:1.0.0`、`:1.0`、`:1`、`:latest` | full 变体的精确版本、次版本、主版本与最新版 |
+| `:1.0.0-lite`、`:1.0-lite`、`:1-lite`、`:lite` | lite 变体的精确版本、次版本、主版本与最新版 |
 | `:1.0.0-core`、`:1.0-core`、`:1-core`、`:core` | core 变体的同一组标签 |
-| `:1.0.0-lite`、`:1.0-lite`、`:1-lite`、`:lite` | lite 变体的同一组标签 |
+| `:1.0.0`、`:1.0`、`:1`、`:latest` | full 变体的同一组标签，`:latest` 即 full 的最新版 |
 
-预发布版本只推出带完整版本号的那一个标签，不会移动 `latest`、`core`、`lite` 以及主次版本标签。core 覆盖 `linux/amd64`、`linux/arm64`、`linux/arm/v7` 与 `linux/arm/v6`，full 与 lite 覆盖 `linux/amd64` 与 `linux/arm64`。三个变体在发布时都会生成构建溯源证明并推送到镜像仓库。
+预发布版本只推出带完整版本号的那一个标签，不会移动 `lite`、`core`、`latest` 以及主次版本标签。core 覆盖 `linux/amd64`、`linux/arm64`、`linux/arm/v7` 与 `linux/arm/v6`，lite 与 full 覆盖 `linux/amd64` 与 `linux/arm64`。三个变体在发布时都会生成构建溯源证明并推送到镜像仓库。
 
 ## 最小运行命令
 
@@ -69,7 +69,7 @@ docker run --rm -p 8080:8080 --read-only \
 `deploy/docker/lite.docker.toml.example` 是对应的最小配置样板。
 
 <Aside type="caution" title="纯原生镜像不要指定 ffmpeg 引擎">
-  core 与 lite 不含 ffmpeg。若配置里有 DASH 频道显式落到 `ffmpeg` 引擎，`/readyz` 会返回 503 并说明兼容引擎不可用，容器不会进入就绪状态。要么改用 `native`，要么换 full 镜像。
+  lite 与 core 不含 ffmpeg。若配置里有 DASH 频道显式落到 `ffmpeg` 引擎，`/readyz` 会返回 503 并说明兼容引擎不可用，容器不会进入就绪状态。要么改用 `native`，要么换 full 镜像。
 </Aside>
 
 ## Compose 模板

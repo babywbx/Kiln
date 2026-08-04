@@ -1,5 +1,5 @@
 ---
-title: Core, Full & Lite
+title: Lite, Core & Full
 description: Capability boundaries of the three distribution variants, how they are built and shipped, Lite's fixed resource budget, controlled benchmark results, and how to pick one.
 sidebar:
   order: 6
@@ -9,18 +9,18 @@ Kiln ships three variants. They share one configuration model and the same nativ
 
 ## The three variants
 
-| Dimension | Core | Full | Lite |
+| Dimension | Lite | Core | Full |
 | --- | --- | --- | --- |
-| Default packager | `native` | `auto` | `native` |
+| Default packager | `native` | `native` | `auto` |
 | Native HLS / DASH | Yes | Yes | Yes |
-| FFmpeg | Not included | Bundled, 8.1.2 | Not included |
+| FFmpeg | Not included | Not included | Bundled, 8.1.2 |
 | Login, M3U, playback | Yes | Yes | Yes |
-| SQLite database | Yes | Yes | No |
-| Admin console and admin API | Yes | Yes | No |
-| EPG | Yes | Yes | No |
-| OTLP and pprof | Yes | Yes | No |
-| Base image | Alpine | Alpine plus FFmpeg | `scratch` |
-| Purpose | Complete, purely native deployment | Complete deployment with compatibility | Fixed-config, low-resource playback node |
+| SQLite database | No | Yes | Yes |
+| Admin console and admin API | No | Yes | Yes |
+| EPG | No | Yes | Yes |
+| OTLP and pprof | No | Yes | Yes |
+| Base image | `scratch` | Alpine | Alpine plus FFmpeg |
+| Purpose | Fixed-config, low-resource playback node | Complete, purely native deployment | Complete deployment with compatibility |
 
 `kiln:latest` is an alias for the matching `kiln:full`, not a fourth runtime.
 
@@ -47,9 +47,9 @@ The `lite` tag selects a different `main`, so SQLite, the admin console, EPG, an
 The three images map to three Dockerfile targets:
 
 ```bash
+docker build --target lite -f deploy/docker/Dockerfile -t kiln:lite .
 docker build --target core -f deploy/docker/Dockerfile -t kiln:core .
 docker build --target full -f deploy/docker/Dockerfile -t kiln:full .
-docker build --target lite -f deploy/docker/Dockerfile -t kiln:lite .
 ```
 
 Core builds for `linux/amd64`, `linux/arm64`, `linux/arm/v7`, and `linux/arm/v6`. For binary distribution, the install script's `--lite` flag is Linux-only; every other platform installs the complete variant. See [Install script](/en/start/install-script/).
@@ -114,14 +114,14 @@ What the run supports:
 ## Picking one
 
 <CardGrid>
+  <Card title="Pick Lite" icon="ph:feather">
+    The node only needs login, M3U, and playback, every channel is handled natively, configuration lives in a file with no runtime database or console, and resource budget, image pull speed, or attack surface is the priority.
+  </Card>
   <Card title="Pick Core" icon="ph:stack">
     You want the full admin console, database, EPG, and observability, and you have already confirmed every DASH channel can be handled natively. It is far smaller than Full, but do not expect meaningfully lower process memory on the same native path.
   </Card>
   <Card title="Pick Full" icon="ph:package">
     Input compatibility comes first and you want the ffmpeg fallback available. On natively supported input its memory profile matches Core; when a fallback actually happens, size the container as "Kiln process plus ffmpeg child plus page cache".
-  </Card>
-  <Card title="Pick Lite" icon="ph:feather">
-    The node only needs login, M3U, and playback, every channel is handled natively, configuration lives in a file with no runtime database or console, and resource budget, image pull speed, or attack surface is the priority.
   </Card>
 </CardGrid>
 

@@ -29,7 +29,7 @@ sidebar:
 
 - 一个源里出现多个 KID 时禁止回退。ffmpeg 路径只接受单个 CENC 密钥，交给它会解出错误的画面，此时返回 `502`。
 - 频道显式选择了字幕轨（`subtitles.mode` 为 `prefer` 或 `only`）时，兼容引擎无法履行这个选择，请求被拒为 `400`。
-- 需要回退但运行环境里没有 ffmpeg 时返回 `503`。Core 与 Lite 镜像不含 ffmpeg，详见 [Core、Full 与 Lite](/guide/variants/)。
+- 需要回退但运行环境里没有 ffmpeg 时返回 `503`。Lite 与 Core 镜像不含 ffmpeg，详见 [Lite、Core 与 Full](/guide/variants/)。
 
 `/readyz` 会把这条边界前移：只要存在 `engine` 为 `ffmpeg` 的 DASH 频道而 ffmpeg 不可用，就返回 `503`，避免编排系统把流量导到一个注定失败的实例上。
 
