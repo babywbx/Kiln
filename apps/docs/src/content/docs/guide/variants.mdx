@@ -61,7 +61,7 @@ Lite 的公开接口只有 `/healthz`、`/readyz`、`/v1/auth/login`、`/v1/play
 配置里出现下面任何一项时，Lite 会在启动时直接拒绝，而不是静默忽略：
 
 - 全局或任一频道的 packager 引擎不是 `native`
-- 启用了 EPG
+- 存在已启用的 EPG 源
 - 配置了 OTLP 导出端点
 - 启用了 pprof
 

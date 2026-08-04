@@ -140,7 +140,7 @@ Lite 二进制的命令行与完整版完全一致，差异在启动后的行为
 - 启动前会校验配置，不满足以下任一条件即拒绝启动，以状态码 1 退出并记录 `lite config rejected`：
   - `packager.engine` 必须是 `native`；
   - 每个频道解析出的引擎都必须是 `native`；
-  - `epg.enabled` 必须为 `false`；
+  - `[[epg.sources]]` 里不能有任何一项 `enabled = true`；
   - `observe.otlp_endpoint` 必须为空；
   - `debug.pprof.enabled` 必须为 `false`。
 - 资源自适应使用固定的低内存档位，不随宿主机内存浮动。

@@ -189,7 +189,7 @@ The images already declare `HEALTHCHECK`. `core` and `full` are Alpine-based and
 
 Each active session adds a `kiln_session_info` sample labeled with `channel`, `engine`, and `state`. Packager statistics are labeled by `channel` and cover counters such as `kiln_packager_segments_published_total`, `kiln_packager_segment_fetch_errors_total`, `kiln_packager_manifest_errors_total`, and `kiln_packager_key_mismatches_total`, plus gauges like `kiln_packager_cache_bytes` and `kiln_packager_clock_offset_seconds`. When chasing upstream flakiness, look at the rate of `segment_fetch_errors` and `manifest_errors` first.
 
-The endpoint is gated on `[observe].enabled`, which config loading turns on, so `core` and `full` always serve `/metrics`. `lite` does not register the route at all.
+The endpoint is gated on `[observe].enabled`. Omitting the key means on, so `core` and `full` serve `/metrics` by default; an explicit `false` makes the route return 404. `lite` does not register the route at all.
 
 <Aside type="caution" title="The metrics endpoint is unauthenticated">
   `/metrics` exposes channel IDs and session state. Before putting it on a public interface, restrict access at the reverse proxy or narrow the service to internal hostnames with `security.public_hosts`.
@@ -197,7 +197,7 @@ The endpoint is gated on `[observe].enabled`, which config loading turns on, so 
 
 ## OTLP tracing
 
-The exporter is only initialized when `[observe].otlp_endpoint` is set. Leave it empty and tracing costs nothing.
+The exporter is only initialized when `[observe].otlp_endpoint` is set and `[observe].enabled` has not been explicitly turned off. Leave either out of the picture and tracing costs nothing.
 
 ```toml title="kiln.toml"
 [observe]

@@ -107,9 +107,9 @@ First confirm which credential you are using. Four credential types cover four s
 
 **Symptom**: you disabled playback auth but the play endpoints still demand a credential.
 
-**How to tell**: `security.play_require_auth` defaults to on. A `play_require_auth = false` in the config file is only honored when the `KILN_PLAY_OPEN` environment variable is set; otherwise config loading forces the field back to `true`.
+**How to tell**: `security.play_require_auth` defaults to on when omitted. Confirm the config really carries `play_require_auth = false`, then confirm no stray `KILN_PLAY_OPEN=0` survives in the environment, since the variable outranks the file.
 
-**Fix**: set `KILN_PLAY_OPEN=1` in a debugging environment.
+**Fix**: in a debugging environment, set `play_require_auth = false` under `[security]`, or set `KILN_PLAY_OPEN=1`.
 
 <Aside type="danger" title="Never disable playback auth in production">
   With it off, anyone can pull every stream. This is a debugging switch, not a deployment option.
@@ -222,14 +222,11 @@ Compare that against the profile table in [Operations](/en/guide/operations/). T
 
 **Symptom**: the guide is empty or never updates.
 
-**How to tell**: check four things in order.
+**How to tell**: check three things in order.
 
 <Steps>
-  <Step title="The master switch">
-    `[epg].enabled` must be `true`. The `lite` variant has no EPG at all and refuses to start when it is enabled.
-  </Step>
   <Step title="Whether any source is enabled">
-    Built-in sources are all disabled by default and have to be enabled individually, in the admin UI or in the config. The `epg_sources` field in the startup log is the number of active sources; `0` means none are enabled.
+    There is no EPG master switch; output depends only on having an enabled source. Built-in sources are all disabled by default and have to be enabled individually, in the admin UI or in the config. The `epg_sources` field in the startup log is the number of active sources; `0` means none are enabled. The `lite` variant has no EPG at all and refuses to start when the config carries an enabled source.
   </Step>
   <Step title="Size limit">
     An `EPG refresh failed` log whose `err` contains `EPG source exceeds decompressed size limit` means the decompressed XMLTV is larger than `epg.max_source_bytes`. The default cap is 64 MiB, but low-resource profiles pull it down to somewhere between 4 MiB and 64 MiB. The `epg_max_source_mb` field in the startup log is the value in force. Cached payloads over the limit are discarded the same way.

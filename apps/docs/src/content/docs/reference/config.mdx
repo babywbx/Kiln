@@ -115,15 +115,15 @@ kiln -config /etc/kiln/kiln.toml
 
 | 键 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `play_require_auth` | bool | `true` | 播放接口是否要求鉴权。 |
+| `play_require_auth` | bool | `true` | 播放接口是否要求鉴权。可选键，不写即为 `true`。 |
 | `allowed_hosts` | array of string | `[]` | 出站抓取的额外主机白名单。上游 `base_url` 与频道 `source_url` 的主机会自动并入，因此这里只需补充配置未覆盖的主机。 |
 | `public_hosts` | array of string | `[]` | 入站请求的 `Host` 白名单，留空表示不限制，`*` 表示全部放行。来自回环地址的 `/healthz` 与 `/readyz` 不受限制。 |
 | `cors_origins` | array of string | `[]` | 允许的跨域来源，留空表示不下发任何 CORS 响应头。仅当列表恰好是单个 `*` 时才回显 `*`，否则回显匹配到的具体来源并附带 `Vary: Origin`。 |
 | `max_playlist_bytes` | int64 | `8388608` | 单个播放列表抓取的字节上限，非正数按默认值处理。 |
 | `max_body_bytes` | int64 | `1048576` | 管理接口请求体的字节上限，非正数按默认值处理。个别批量接口在此基础上按倍数放宽。 |
 
-<Aside type="caution" title="play_require_auth 只能被环境变量关闭">
-  填充默认值时，只要 `KILN_PLAY_OPEN` 未设置，`play_require_auth` 就会被强制置回 `true`。也就是说，仅在配置文件里写 `play_require_auth = false` 不会生效，关闭播放鉴权必须设置 `KILN_PLAY_OPEN=1`，且该开关只适合调试环境。
+<Aside type="caution" title="关闭播放鉴权只适合调试环境">
+  显式写 `play_require_auth = false` 即可关闭播放鉴权，不再需要额外的环境变量。环境变量 `KILN_PLAY_OPEN` 的优先级高于配置文件：取 `1`、`true`、`TRUE` 强制关闭，取 `0`、`false`、`FALSE` 强制要求鉴权。任何对外可达的部署都不要关掉它。
 </Aside>
 
 出站白名单还有一层与配置无关的固定防护：链路本地地址、未指定地址、组播地址与云元数据地址始终被拒绝，回环与私有地址必须出现在白名单里才允许访问。
@@ -170,17 +170,17 @@ kiln -config /etc/kiln/kiln.toml
 | `binary` | string | `"ffmpeg"` | `native` 模式下的可执行文件名或路径。 |
 | `docker_image` | string | `"kiln:local"` | `docker` 模式下使用的镜像，其它模式忽略。 |
 | `hls_time` | int | `2` | 转封装输出的目标分片时长秒数，非正数按默认值处理。 |
-| `hls_list_size` | int | `8` | 转封装输出播放列表保留的分片数，非正数按默认值处理。 |
+| `hls_list_size` | int | `8` | 转封装输出播放列表保留的分片数。未显式设置或为非正数时，`low_latency = true` 取 `4`，否则取 `8`。 |
 | `log_level` | string | `"error"` | 传给 ffmpeg 的日志级别。 |
 | `prefer_height` | int | `0` | 全局首选视频高度，`0` 表示不限制。频道级 `prefer_height` 为正数时覆盖它。 |
-| `low_latency` | bool | `false` | 是否启用低延迟输出参数。 |
+| `low_latency` | bool | `false` | 决定 `hls_list_size` 的默认值：为 `true` 时取 `4`，否则取 `8`。显式写下的 `hls_list_size` 始终优先。 |
 | `max_starts` | int | `0` | 并发启动的 ffmpeg 进程数上限，非正数按 `1` 处理。它只覆盖启动阶段，不包含就绪等待，因此慢源不会阻塞其它频道的冷启动。 |
 
 ## `[observe]`
 
 | 键 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `enabled` | bool | `true` | 是否暴露 `/metrics`。填充默认值时会被无条件置为 `true`，在配置里写 `false` 不会生效。 |
+| `enabled` | bool | `true` | 是否暴露 `/metrics` 并启用 OTLP 导出。可选键，不写即为 `true`；显式写 `false` 时 `/metrics` 返回 404，导出器也不再初始化。 |
 | `otlp_endpoint` | string | `""` | OTLP/HTTP trace 导出端点，留空表示不导出。非空时必须是 `http` 或 `https` 且带主机名的绝对 URL，否则校验失败。 |
 | `otlp_insecure` | bool | `false` | 导出时是否允许不安全传输。 |
 | `trace_sample_ratio` | float | `1` | 采样比例，必须在 `0` 到 `1` 之间，非正数在填充默认值时被改写为 `1`。 |
@@ -199,7 +199,6 @@ pprof 使用独立的监听器与路由，永远不会挂到对外的 HTTP 服�
 
 | 键 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `enabled` | bool | `false` | 在 Lite 变体中，置为 `true` 会直接拒绝启动。Full 与 Core 变体不读取此键，EPG 是否有输出取决于是否存在已启用的源。 |
 | `cache` | bool | `true` | 是否启用节目单缓存。缺省即为启用。 |
 | `cache_dir` | string | `"{data_dir}/epg"` | 缓存目录。写成 `memory` 或 `:memory:` 时改用内存缓存，其余值按目录路径处理。 |
 | `refresh_interval_min` | int | `360` | 刷新间隔分钟数，非正数按默认值处理。 |
@@ -259,7 +258,6 @@ pprof 使用独立的监听器与路由，永远不会挂到对外的 HTTP 服�
 | --- | --- | --- | --- |
 | `id` | string | 必填 | 上游标识，频道通过 `upstream` 引用，为空校验失败。 |
 | `base_url` | string | 必填 | 上游基础地址，必须是可解析的绝对 URL，为空或非法都会校验失败。其主机名自动进入出站白名单。 |
-| `proxy` | string | `""` | 该上游专用的代理地址，非空时必须是可解析的绝对 URL。注意这里写的是完整 URL，不是 `[[proxies]]` 的 `id`。 |
 | `headers` | table | `{}` | 请求该上游时附加的固定请求头。 |
 
 ## `[[channels]]`

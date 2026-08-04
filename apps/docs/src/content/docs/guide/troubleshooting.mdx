@@ -107,9 +107,9 @@ ss -ltnp | grep 8080
 
 **症状**：明明关掉了播放鉴权，播放接口还是要凭据。
 
-**判断**：`security.play_require_auth` 的默认值是开启。只有设置了环境变量 `KILN_PLAY_OPEN` 时，配置文件里写的 `play_require_auth = false` 才会被保留；否则配置加载阶段会把它强制置回 `true`。
+**判断**：`security.play_require_auth` 不写时默认要求鉴权。先确认配置里确实写了 `play_require_auth = false`，再确认环境里没有残留 `KILN_PLAY_OPEN=0`，环境变量的优先级高于配置文件。
 
-**处理**：调试环境用 `KILN_PLAY_OPEN=1` 关闭播放鉴权。
+**处理**：调试环境在 `[security]` 里写 `play_require_auth = false`，或设置 `KILN_PLAY_OPEN=1`。
 
 <Aside type="danger" title="不要在对外服务上关闭播放鉴权">
   关掉之后任何人都能直接拉流。这是调试开关，不是部署选项。
@@ -222,14 +222,11 @@ inflight_mb=64 max_segment_mb=32 gc_percent=100 drop_file_cache=true
 
 **症状**：节目单为空或长期不更新。
 
-**判断**：按顺序核对四件事。
+**判断**：按顺序核对三件事。
 
 <Steps>
-  <Step title="EPG 总开关">
-    `[epg].enabled` 必须为 `true`。`lite` 变体不支持 EPG，配置里开了会直接拒绝启动。
-  </Step>
   <Step title="源是否启用">
-    内置源默认全部停用，需要在管理界面或配置里逐个启用。启动日志的 `epg_sources` 字段就是当前生效的源数量，为 `0` 说明一个都没启用。
+    EPG 没有总开关，是否有输出只看有没有已启用的源。内置源默认全部停用，需要在管理界面或配置里逐个启用。启动日志的 `epg_sources` 字段就是当前生效的源数量，为 `0` 说明一个都没启用。`lite` 变体不支持 EPG，配置里存在已启用的源会直接拒绝启动。
   </Step>
   <Step title="体积超限">
     日志里出现 `EPG refresh failed`，`err` 含 `EPG source exceeds decompressed size limit` 时，说明解压后的 XMLTV 超过了 `epg.max_source_bytes`。默认上限是 64 MiB，但在低资源档位下会被自动压到 4 MiB 到 64 MiB 之间的某个值，启动日志的 `epg_max_source_mb` 就是实际生效值。已缓存的内容超限时同样会被丢弃。

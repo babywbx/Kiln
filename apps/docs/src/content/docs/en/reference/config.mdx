@@ -115,15 +115,15 @@ Changing a username or password from the admin surface writes an override row ke
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `play_require_auth` | bool | `true` | Whether playback endpoints require credentials. |
+| `play_require_auth` | bool | `true` | Whether playback endpoints require credentials. The key is optional; omitting it means `true`. |
 | `allowed_hosts` | array of string | `[]` | Extra hosts allowed for outbound fetches. Hosts from upstream `base_url` and channel `source_url` are added automatically, so this only needs hosts the config does not already imply. |
 | `public_hosts` | array of string | `[]` | Inbound `Host` allowlist. Empty means no restriction; `*` allows everything. `/healthz` and `/readyz` from a loopback client are always exempt. |
 | `cors_origins` | array of string | `[]` | Allowed cross-origin origins. Empty means no CORS headers are emitted at all. `*` is echoed back literally only when it is the single entry; otherwise the matched origin is echoed with `Vary: Origin`. |
 | `max_playlist_bytes` | int64 | `8388608` | Byte ceiling for a fetched playlist. Non-positive values fall back to the default. |
 | `max_body_bytes` | int64 | `1048576` | Byte ceiling for admin request bodies. Non-positive values fall back to the default. A few bulk endpoints multiply it. |
 
-<Aside type="caution" title="play_require_auth can only be turned off from the environment">
-  While defaults are being filled in, `play_require_auth` is forced back to `true` whenever `KILN_PLAY_OPEN` is unset. Setting `play_require_auth = false` in the file alone therefore has no effect: disabling playback authentication requires `KILN_PLAY_OPEN=1`, and that switch belongs in debugging environments only.
+<Aside type="caution" title="Turning playback auth off belongs in debugging environments only">
+  An explicit `play_require_auth = false` disables playback authentication on its own; no environment variable is needed. `KILN_PLAY_OPEN` still outranks the file: `1`, `true`, or `TRUE` forces authentication off, while `0`, `false`, or `FALSE` forces it on. Never turn it off on a deployment reachable from anywhere else.
 </Aside>
 
 The outbound allowlist sits on top of a fixed guard that no configuration relaxes: link-local, unspecified, multicast, and cloud metadata addresses are always refused, and loopback or private addresses must appear in the allowlist to be reachable.
@@ -170,17 +170,17 @@ Both `kid` and `key` are normalized by removing dashes and lowercasing. Keys nev
 | `binary` | string | `"ffmpeg"` | Executable name or path used in `native` mode. |
 | `docker_image` | string | `"kiln:local"` | Image used in `docker` mode; ignored otherwise. |
 | `hls_time` | int | `2` | Target segment duration in seconds for remuxed output. Non-positive values fall back to the default. |
-| `hls_list_size` | int | `8` | Segments retained in remuxed output playlists. Non-positive values fall back to the default. |
+| `hls_list_size` | int | `8` | Segments retained in remuxed output playlists. When unset or non-positive, the default is `4` if `low_latency` is `true` and `8` otherwise. |
 | `log_level` | string | `"error"` | Log level passed to ffmpeg. |
 | `prefer_height` | int | `0` | Global preferred video height; `0` means no preference. A positive per-channel `prefer_height` overrides it. |
-| `low_latency` | bool | `false` | Enables the low-latency output arguments. |
+| `low_latency` | bool | `false` | Picks the default for `hls_list_size`: `4` when `true`, `8` otherwise. An explicit `hls_list_size` always wins. |
 | `max_starts` | int | `0` | Ceiling on concurrent ffmpeg launches; non-positive values behave as `1`. It covers the launch only, not the readiness wait, so a slow source does not block other channels' cold start. |
 
 ## `[observe]`
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `enabled` | bool | `true` | Whether `/metrics` is served. It is forced to `true` while defaults are filled in, so writing `false` in the config has no effect. |
+| `enabled` | bool | `true` | Whether `/metrics` is served and OTLP export runs. The key is optional; omitting it means `true`. An explicit `false` makes `/metrics` return 404 and skips exporter setup entirely. |
 | `otlp_endpoint` | string | `""` | OTLP/HTTP trace export endpoint; empty disables export. When set it must be an absolute `http` or `https` URL with a host, otherwise validation fails. |
 | `otlp_insecure` | bool | `false` | Whether insecure transport is allowed for export. |
 | `trace_sample_ratio` | float | `1` | Sampling ratio, constrained to `0` through `1`. Non-positive values are rewritten to `1` while defaults are filled in. |
@@ -199,7 +199,6 @@ pprof uses its own listener and mux and is never mounted on the public server. T
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `enabled` | bool | `false` | On the Lite variant, `true` refuses to start. The Full and Core variants do not read this key; whether EPG produces output depends on having at least one enabled source. |
 | `cache` | bool | `true` | Whether the guide cache is used. Omitting the key means enabled. |
 | `cache_dir` | string | `"{data_dir}/epg"` | Cache directory. `memory` or `:memory:` switches to an in-memory store; any other value is treated as a directory path. |
 | `refresh_interval_min` | int | `360` | Refresh interval in minutes. Non-positive values fall back to the default. |
@@ -259,7 +258,6 @@ Route selection, rewriting policies, and container scenarios are covered in [/en
 | --- | --- | --- | --- |
 | `id` | string | Required | Upstream identifier referenced by a channel's `upstream`. Empty fails validation. |
 | `base_url` | string | Required | Upstream base address. Must parse as an absolute URL; empty or malformed fails validation. Its hostname joins the outbound allowlist automatically. |
-| `proxy` | string | `""` | Proxy dedicated to this upstream. When set it must parse as an absolute URL — note this is a full URL, not a `[[proxies]]` id. |
 | `headers` | table | `{}` | Fixed headers added to requests toward this upstream. |
 
 ## `[[channels]]`

@@ -48,7 +48,7 @@ sidebar:
 两个开关都关闭时，`on_demand` 会被自动打开，不存在既不预热也不按需的频道。
 
 <Aside type="note" title="启动时的自动拉起">
-  进程启动阶段的自动拉起以配置文件里声明的频道为准。只在管理控制台创建的频道，请用「立即启动」或第一个观众来拉起会话。
+  进程启动阶段会遍历频道目录里的全部有效频道，数据库是权威来源。也就是说，只在管理控制台创建并打开 `autostart` 的频道，进程重启后同样会被自动拉起。
 </Aside>
 
 ### 媒体选择
@@ -77,7 +77,6 @@ sidebar:
 [[upstreams]]
 id = "origin"
 base_url = "http://127.0.0.1:5050"
-proxy = ""
 
 [upstreams.headers]
 X-Custom = "value"
@@ -85,7 +84,6 @@ X-Custom = "value"
 
 - `id`：频道通过 `upstream` 字段引用它。
 - `base_url`：源站基础地址，频道的 `path` 拼接在它后面。
-- `proxy`：固定走某条出站线路，留空时按 [出站代理](/guide/proxy/) 的规则决定。
 - `headers`：注入到该上游所有频道回源请求里的请求头，频道级 `headers` 可以逐键覆盖。
 
 对应的频道写法：

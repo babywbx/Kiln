@@ -12,11 +12,10 @@ Kiln fetches the XMLTV sources you enable, matches them against your channels, a
 - Sources are managed on the **EPG** page of the admin console and stored in SQLite. No config file edit is required.
 - Every built-in preset source ships **disabled**. Enable at least one, or add a custom source, before you expect any data.
 - `[[epg.sources]]` in the config file seeds the database once, and only while no source rows exist. After that the database wins.
-- In the full build, `[epg].enabled` is a statement of intent: what actually decides whether a guide is served is whether any source is enabled. The lite build has no EPG at all, and refuses to start when `enabled = true`.
+- There is no EPG master switch. Whether a guide is served depends solely on whether any source is enabled. The lite build has no EPG at all, and refuses to start when the config carries an enabled EPG source.
 
 ```toml title="kiln.toml"
 [epg]
-enabled = true
 cache = true
 cache_dir = "./data/epg"
 refresh_interval_min = 360

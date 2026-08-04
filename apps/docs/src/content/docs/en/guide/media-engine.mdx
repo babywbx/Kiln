@@ -170,9 +170,9 @@ The rest of the settings:
 | Key | Default | Purpose |
 | --- | ---: | --- |
 | `hls_time` | `2` | Target duration of an output segment, in seconds |
-| `hls_list_size` | `8` | Segments kept in the output playlist |
+| `hls_list_size` | `8` | Segments kept in the output playlist; the default drops to `4` when `low_latency` is on |
 | `prefer_height` | unset | Resolution ceiling; a channel's `prefer_height` wins |
-| `low_latency` | `false` | Only picks a default for `hls_list_size` when that is absent, so in practice `hls_list_size` decides directly |
+| `low_latency` | `false` | Picks the default for `hls_list_size`: `4` when on, `8` when off. An explicit `hls_list_size` always wins |
 | `max_starts` | `1` | Concurrent ffmpeg launches. It does not cover the readiness wait, so one slow source cannot block every other channel's cold start |
 | `log_level` | `error` | Log level passed to ffmpeg |
 

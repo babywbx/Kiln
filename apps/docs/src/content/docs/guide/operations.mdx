@@ -189,7 +189,7 @@ kiln -healthcheck http://127.0.0.1:8080/healthz
 
 每个活跃会话额外产出一条 `kiln_session_info`，标签为 `channel`、`engine`、`state`；打包器统计带 `channel` 标签，覆盖 `kiln_packager_segments_published_total`、`kiln_packager_segment_fetch_errors_total`、`kiln_packager_manifest_errors_total`、`kiln_packager_key_mismatches_total` 等计数器，以及 `kiln_packager_cache_bytes`、`kiln_packager_clock_offset_seconds` 等瞬时量。排查上游抖动时，先看 `segment_fetch_errors` 和 `manifest_errors` 的增速。
 
-端点由 `[observe].enabled` 控制，而配置加载时会把它置为开启，因此 `core` 与 `full` 始终对外提供 `/metrics`。`lite` 不注册这个路由。
+端点由 `[observe].enabled` 控制。该键不写时默认开启，因此 `core` 与 `full` 默认对外提供 `/metrics`；显式写 `false` 会让这个路由返回 404。`lite` 不注册这个路由。
 
 <Aside type="caution" title="指标端点没有鉴权">
   `/metrics` 会暴露频道 ID 与会话状态。放到公网前，用反向代理限制来源，或者用 `security.public_hosts` 把服务收敛到内部域名。
@@ -197,7 +197,7 @@ kiln -healthcheck http://127.0.0.1:8080/healthz
 
 ## OTLP 追踪
 
-填了 `[observe].otlp_endpoint` 才会初始化导出器，留空时完全不引入追踪开销。
+填了 `[observe].otlp_endpoint` 且 `[observe].enabled` 未被显式关掉，才会初始化导出器；留空或关掉时完全不引入追踪开销。
 
 ```toml title="kiln.toml"
 [observe]

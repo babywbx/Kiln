@@ -48,7 +48,7 @@ The two switches combine into the three run modes shown in the admin console:
 With both switches off, `on_demand` is turned on automatically, so there is no such thing as a channel that neither prewarms nor starts on demand.
 
 <Aside type="note" title="Autostart at boot">
-  Startup autostart follows the channels declared in the configuration file. Channels created only in the admin console should be brought up with Start now or by their first viewer.
+  Startup autostart walks every active channel in the catalog, with the database as the authority. A channel created only in the admin console with `autostart` on is therefore brought up automatically after a restart too.
 </Aside>
 
 ### Media selection
@@ -77,7 +77,6 @@ Upstreams are defined in the configuration file only. They let several channels 
 [[upstreams]]
 id = "origin"
 base_url = "http://127.0.0.1:5050"
-proxy = ""
 
 [upstreams.headers]
 X-Custom = "value"
@@ -85,7 +84,6 @@ X-Custom = "value"
 
 - `id`: what a channel's `upstream` field references.
 - `base_url`: the origin's base address; a channel's `path` is appended to it.
-- `proxy`: pin this upstream to a specific outbound route. Leave it empty to fall back to the rules in [Outbound proxying](/en/guide/proxy/).
 - `headers`: request headers injected into every fetch for channels on this upstream. A channel's own `headers` can override individual keys.
 
 The matching channel:

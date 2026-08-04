@@ -170,9 +170,9 @@ key 不会出现在任何管理 API 的响应里，频道级的 `keys` 字段也
 | 键 | 默认值 | 作用 |
 | --- | ---: | --- |
 | `hls_time` | `2` | 输出分片的目标时长，秒 |
-| `hls_list_size` | `8` | 输出播放列表保留的分片数 |
+| `hls_list_size` | `8` | 输出播放列表保留的分片数，`low_latency` 打开时默认降到 `4` |
 | `prefer_height` | 未设 | 目标分辨率上限，频道级 `prefer_height` 优先 |
-| `low_latency` | `false` | 只在 `hls_list_size` 未给出时决定其默认值，实际部署里通常由 `hls_list_size` 直接决定 |
+| `low_latency` | `false` | 决定 `hls_list_size` 的默认值：打开取 `4`，关闭取 `8`。显式写下的 `hls_list_size` 始终优先 |
 | `max_starts` | `1` | 并发启动 ffmpeg 的上限。它不覆盖就绪等待，所以一个慢源不会阻塞其它频道的冷启动 |
 | `log_level` | `error` | 传给 ffmpeg 的日志级别 |
 
