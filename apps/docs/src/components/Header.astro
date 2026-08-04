@@ -67,7 +67,7 @@ const showSections = true;
       </a>
 
       {showSections && (
-        <nav aria-label="Sections" class="hidden md:flex items-center gap-1 ml-4 pl-4 border-l border-border h-6">
+        <nav aria-label={isEnglish ? "Sections" : "分区"} class="hidden md:flex items-center gap-1 ml-4 pl-4 border-l border-border h-6">
           {sections.map((section) => (
             <a
               href={section.href}
@@ -75,7 +75,7 @@ const showSections = true;
               class:list={[
                 "px-2 py-1 rounded-md text-[0.8125rem] font-medium no-underline transition-colors",
                 section.isActive
-                  ? "text-foreground bg-accent"
+                  ? "text-link bg-primary/10"
                   : "text-muted-foreground hover:text-foreground hover:bg-accent/60",
               ]}
             >
@@ -118,7 +118,7 @@ const showSections = true;
           shape="square"
           size="sm"
           icon="ph:list"
-          aria-label="Open navigation"
+          aria-label={isEnglish ? "Open navigation" : "打开导航"}
           data-menu-btn
           class="lg:hidden text-muted-foreground"
         />

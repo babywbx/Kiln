@@ -1,4 +1,5 @@
 ---
+import { isEnglishPath } from "@/lib/i18n";
 /**
  * TOC — on-this-page nav with scroll-spy. Static rail rendered inline
  * (border-l + S-curve SVGs at indent changes); animated active indicator
@@ -13,12 +14,15 @@ interface Props extends HTMLAttributes<"div"> {
 }
 
 const { headings, class: className, ...attrs } = Astro.props;
+
+const isEnglish = isEnglishPath(Astro.url.pathname);
+const tocLabel = isEnglish ? "On this page" : "本页目录";
 ---
 
 {headings.length > 0 && (
   <div data-nb-toc class={cn("toc-container", className)} {...attrs}>
-    <h2 class="mb-2 text-sm font-semibold text-foreground">On this page</h2>
-    <nav aria-label="Table of contents" class="relative">
+    <h2 class="mb-2 text-sm font-semibold text-foreground">{tocLabel}</h2>
+    <nav aria-label={tocLabel} class="relative">
       <svg
         data-nb-toc-rail
         aria-hidden="true"
@@ -62,7 +66,7 @@ const { headings, class: className, ...attrs } = Astro.props;
                 href={`#${h.slug}`}
                 data-nb-toc-link
                 data-nb-slug={h.slug}
-                class="block border-l-2 border-border pl-5 py-1.5 text-[0.8125rem] leading-snug text-muted-foreground no-underline transition-colors duration-150 hover:border-foreground/20 hover:text-foreground aria-[current=true]:font-medium aria-[current=true]:text-foreground"
+                class="block border-l-2 border-border pl-5 py-1.5 text-[0.8125rem] leading-snug text-muted-foreground no-underline transition-colors duration-150 hover:border-foreground/20 hover:text-foreground aria-[current=true]:font-medium aria-[current=true]:text-link"
                 style={`margin-left: calc(${indent}rem - 0.125rem);`}
               >
                 {h.text}

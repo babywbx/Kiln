@@ -3,19 +3,38 @@ import { Icon } from "astro-icon/components";
 import { cn } from "@/lib/cn";
 import type { HTMLAttributes } from "astro/types";
 
-interface Props extends HTMLAttributes<"article"> {
+interface Props extends HTMLAttributes<"a"> {
   title: string;
   /** Iconify icon name, e.g. `ph:lightning`. */
   icon?: string;
+  /** When set, the whole card becomes a link. */
+  href?: string;
 }
 
-const { title, icon, class: className, ...attrs } = Astro.props;
+const { title, icon, href, class: className, ...attrs } = Astro.props;
+const Tag = href ? "a" : "article";
 ---
 
-<article class={cn("my-4 rounded-lg bg-card p-5 shadow-sm ring ring-border", className)} {...attrs}>
-  {icon && <Icon name={icon} class="mb-2.5 block w-6 h-6 text-foreground" />}
-  <h3 class="m-0 text-base font-semibold leading-snug text-foreground">{title}</h3>
+<Tag
+  href={href}
+  class={cn(
+    "group my-4 block rounded-lg bg-card p-5 no-underline shadow-sm ring ring-border",
+    href && "transition-all hover:shadow-default hover:ring-primary/50",
+    className,
+  )}
+  {...attrs}
+>
+  <div class="flex items-center gap-2.5">
+    {icon && <Icon name={icon} class="h-5 w-5 shrink-0 text-primary" />}
+    <h3 class="m-0 text-base font-semibold leading-snug text-foreground">{title}</h3>
+    {href && (
+      <Icon
+        name="ph:arrow-right"
+        class="ml-auto h-4 w-4 shrink-0 -translate-x-1 text-muted-foreground opacity-0 transition-all group-hover:translate-x-0 group-hover:opacity-100"
+      />
+    )}
+  </div>
   <div class="mt-1.5 text-sm leading-normal text-muted-foreground">
     <slot />
   </div>
-</article>
+</Tag>

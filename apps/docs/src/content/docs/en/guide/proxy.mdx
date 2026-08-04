@@ -128,13 +128,13 @@ The response reports the selected `proxy_id`, the matching `reason`, whether pla
 ## Common topologies
 
 <CardGrid>
-  <Card title="Direct by default, proxy a few hosts" icon="ph:arrow-right">
+  <Card title="Direct by default, proxy a few hosts" icon="ph:path">
     Keep `default = "direct"` and add one `host_suffix` rule per origin that needs the proxy. The right shape when most origins are reachable and only a few are not.
   </Card>
-  <Card title="Proxy by default, a few direct">
+  <Card title="Proxy by default, a few direct" icon="ph:shuffle">
     Set `default = "proxy-http"`, then add rules with `proxy = "direct"` for LAN or local origins. Internal upstreams stay off the proxy, which never sees your internal addresses.
   </Card>
-  <Card title="ffmpeg in a container, proxy on the host">
+  <Card title="ffmpeg in a container, proxy on the host" icon="ph:cube">
     Point the route at `http://127.0.0.1:7890` as seen from the host and leave `docker_proxy_host` at its default. Kiln swaps in a reachable hostname when it injects the environment.
   </Card>
 </CardGrid>

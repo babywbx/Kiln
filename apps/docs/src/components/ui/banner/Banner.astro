@@ -1,4 +1,5 @@
 ---
+import { isEnglishPath } from "@/lib/i18n";
 /**
  * Banner — announcement strip. Pass `dismissible: { id, days? }` to
  * show a close button that persists to localStorage.
@@ -14,6 +15,7 @@ interface Props extends HTMLAttributes<"div"> {
 }
 
 const { content, variant = "note", dismissible, class: className, ...attrs } = Astro.props;
+const dismissAria = isEnglishPath(Astro.url.pathname) ? "Dismiss banner" : "关闭横幅";
 
 function sanitizeBannerHtml(value: string): string {
   return value
@@ -50,7 +52,7 @@ const safeContent = sanitizeBannerHtml(content);
       type="button"
       data-nb-banner-close
       class="-my-1 -mr-2 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-current opacity-60 transition-[background-color,opacity] hover:bg-card/60 hover:opacity-100"
-      aria-label="Dismiss banner"
+      aria-label={dismissAria}
     >
       <Icon name="ph:x" class="w-3.5 h-3.5" />
     </button>

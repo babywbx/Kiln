@@ -114,13 +114,13 @@ Core 与 Full 按容器实际内存挑选内部档位，Lite 则不管宿主机�
 ## 怎么选
 
 <CardGrid>
-  <Card title="选 Core">
+  <Card title="选 Core" icon="ph:stack">
     需要完整的管理控制台、数据库、EPG 和观测能力，并且已经确认所有 DASH 频道都能被原生引擎处理。相比 Full 显著减少镜像体积，但在同样的原生路径上不要指望进程内存明显更低。
   </Card>
-  <Card title="选 Full">
+  <Card title="选 Full" icon="ph:package">
     输入兼容性优先，需要保留 ffmpeg 回退。原生可处理时它的内存表现与 Core 接近；真正发生回退时，容器限制要按“Kiln 进程加 ffmpeg 子进程加页缓存”来设。
   </Card>
-  <Card title="选 Lite">
+  <Card title="选 Lite" icon="ph:feather">
     节点只需要登录、M3U 和播放，频道完全由原生引擎处理，配置用文件管理不需要运行时数据库和管理台，并且资源预算、镜像拉取速度或攻击面是首要考虑。
   </Card>
 </CardGrid>

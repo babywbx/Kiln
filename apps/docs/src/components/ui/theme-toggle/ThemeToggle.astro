@@ -1,4 +1,5 @@
 ---
+import { isEnglishPath } from "@/lib/i18n";
 /**
  * ThemeToggle — light/dark switcher. Persists to localStorage; theme
  * applies to `<html data-mode="dark">` via the inline script in BaseLayout
@@ -11,6 +12,7 @@ import type { HTMLAttributes } from "astro/types";
 interface Props extends HTMLAttributes<"button"> {}
 
 const { class: className, ...attrs } = Astro.props;
+const themeAria = isEnglishPath(Astro.url.pathname) ? "Toggle dark mode" : "切换深浅色";
 ---
 
 <button
@@ -20,7 +22,7 @@ const { class: className, ...attrs } = Astro.props;
     className,
   )}
   {...attrs}
-  aria-label="Toggle dark mode"
+  aria-label={themeAria}
   data-nb-state="light"
 >
   <Icon name="ph:sun" class="w-[1.125rem] h-[1.125rem] hidden group-data-[nb-state=dark]:block" />

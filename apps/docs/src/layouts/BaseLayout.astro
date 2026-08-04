@@ -5,6 +5,7 @@ import "../styles/globals.css";
 import "../styles/prose.css";
 import { config } from "virtual:nimbus/config";
 import { getCollectionLlmsUrl, getVersionStatus } from "@cloudflare/nimbus-docs";
+import { isEnglishPath } from "@/lib/i18n";
 import AgentDirective from "@/components/AgentDirective.astro";
 import { SearchDialog } from "@/components/ui/search";
 import NimbusHead from "@cloudflare/nimbus-docs/components/NimbusHead.astro";
@@ -24,7 +25,7 @@ const {
   entryId,
 } = Astro.props;
 
-const lang = config.locale ?? "en";
+const lang = isEnglishPath(Astro.url.pathname) ? "en" : (config.locale ?? "en");
 // Per-page agent-index pointer. For pages in non-primary or version
 // collections, this resolves to `/<prefix>/llms.txt` (e.g. `/v0/llms.txt`
 // for a v0 docs page, `/blog/llms.txt` for a blog post). Falls back to
@@ -103,7 +104,7 @@ const llmsUrl = Astro.site
       href="#main-content"
       class="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-100 focus:rounded-md focus:bg-primary focus:px-4 focus:py-2 focus:text-sm focus:font-medium focus:text-primary-foreground focus:no-underline focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2"
     >
-      Skip to content
+      {isEnglishPath(Astro.url.pathname) ? "Skip to content" : "跳到正文"}
     </a>
     {markdownUrl && !isHiddenVersion && <AgentDirective markdownUrl={markdownUrl} llmsUrl={llmsUrl} />}
     <slot />

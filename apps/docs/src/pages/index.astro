@@ -1,64 +1,69 @@
 ---
-import BaseLayout from "../layouts/BaseLayout.astro";
-import Header from "../components/Header.astro";
-import { Card } from "../components/ui/card";
-import { CardGrid } from "../components/ui/card-grid";
-import { Code } from "../components/ui/code";
-import { config } from "virtual:nimbus/config";
-
-const install =
-  "curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh | sh -s -- --lang zh";
+import LandingPage from "../components/LandingPage.astro";
 ---
 
-<BaseLayout title={config.title} description={config.description}>
-  <div class="flex flex-col min-h-screen">
-    <Header />
-    <main class="flex-1 mx-auto max-w-3xl w-full px-6 py-20">
-      <h1
-        class="text-foreground leading-tight"
-        style="font-size: var(--nb-h1-size); font-weight: var(--nb-h1-weight); letter-spacing: var(--nb-h1-tracking);"
-      >
-        {config.title}
-      </h1>
-      <p class="mt-3 text-[1.0625rem] text-muted-foreground leading-relaxed">
-        自托管的 HLS 与 DASH 频道网关：原生引擎直接解密重封装 DASH
-        源，不依赖 ffmpeg；频道按需拉流、空闲自动回收；播放、管理与脚本访问各走各的凭据。单个二进制即可部署，也提供
-        Docker 镜像。
-      </p>
-
-      <div class="mt-8">
-        <div class="text-sm font-medium text-foreground mb-2">一行命令安装</div>
-        <Code code={install} lang="bash" />
-      </div>
-
-      <CardGrid class="mt-10">
-        <a href="/start/" class="no-underline block">
-          <Card title="入门" icon="ph:rocket-launch" class="h-full transition-colors hover:ring-border-strong">
-            从安装到跑通第一个频道，脚本、Docker 与手动部署三条路径任选。
-          </Card>
-        </a>
-        <a href="/guide/" class="no-underline block">
-          <Card title="指南" icon="ph:book-open" class="h-full transition-colors hover:ring-border-strong">
-            频道、播放、鉴权、媒体引擎、EPG、出站代理与运维的完整讲解。
-          </Card>
-        </a>
-        <a href="/reference/" class="no-underline block">
-          <Card title="参考" icon="ph:brackets-curly" class="h-full transition-colors hover:ring-border-strong">
-            配置文件、环境变量、HTTP API 与命令行的逐项参考。
-          </Card>
-        </a>
-        <a href="/en/" class="no-underline block">
-          <Card title="English" icon="ph:translate" class="h-full transition-colors hover:ring-border-strong">
-            The full documentation is also available in English.
-          </Card>
-        </a>
-      </CardGrid>
-
-      <p class="mt-10 text-sm text-muted-foreground">
-        项目托管在
-        <a href="https://github.com/babywbx/kiln" target="_blank" rel="noopener">GitHub</a>
-        ，问题与建议欢迎提 issue。
-      </p>
-    </main>
-  </div>
-</BaseLayout>
+<LandingPage
+  title="Kiln"
+  description="自托管 HLS 与 DASH 频道网关：原生解密重封装、按需拉流、统一鉴权入口。"
+  badges={["v1.0.0", "MIT License", "单个二进制"]}
+  headingPre="自托管的 "
+  headingEmber="HLS / DASH 频道网关"
+  sub="原生引擎在进程内解密并重封装 DASH 源，不依赖 ffmpeg；频道按需拉流、空闲自动回收；播放、管理与脚本访问各走各的凭据。Linux、macOS、Windows 全平台，单个二进制即可部署。"
+  install="curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh | sh -s -- --lang zh"
+  installLabel="一行命令安装"
+  ctaPrimary={{ label: "快速开始", href: "/start/" }}
+  ctaSecondary={{ label: "浏览文档", href: "/guide/" }}
+  featuresTitle="为什么是 Kiln"
+  features={[
+    {
+      icon: "ph:fire",
+      title: "原生媒体引擎",
+      body: "DASH 解密与重封装在进程内完成，不依赖 ffmpeg；需要兼容回退时也可以交给它。",
+    },
+    {
+      icon: "ph:play-circle",
+      title: "按需拉流",
+      body: "有人观看才连接上游，空闲自动回收；重要频道可以常驻预热。",
+    },
+    {
+      icon: "ph:key",
+      title: "统一鉴权入口",
+      body: "登录会话、管理员 API Token、路径式播放密钥与公开端点各管一段，互不越权。",
+    },
+    {
+      icon: "ph:lightning",
+      title: "低延迟 HLS",
+      body: "原生支持 CMAF part、delta playlist 与 blocking reload。",
+    },
+    {
+      icon: "ph:squares-four",
+      title: "管理控制台",
+      body: "频道、节目单、出站代理与访问控制在网页里完成，改完即生效。",
+    },
+    {
+      icon: "ph:cpu",
+      title: "资源自适应",
+      body: "按容器内存与 CPU 配额自动选档，128 MiB 内存的容器也能稳定运行。",
+    },
+  ]}
+  stepsTitle="三步跑起来"
+  steps={[
+    {
+      title: "安装",
+      body: "一行命令装好二进制，或直接拉取 Docker 镜像。",
+      href: "/start/",
+    },
+    {
+      title: "配置频道",
+      body: "在 kiln.toml 或管理控制台里定义上游与频道。",
+      href: "/start/first-channel/",
+    },
+    {
+      title: "开始播放",
+      body: "播放器打开播放地址，按需拉流自动开始。",
+      href: "/guide/playback/",
+    },
+  ]}
+  footerDocs={{ label: "文档", href: "/start/" }}
+  footerLang={{ label: "English", href: "/en/" }}
+/>

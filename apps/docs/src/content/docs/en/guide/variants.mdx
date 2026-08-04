@@ -114,13 +114,13 @@ What the run supports:
 ## Picking one
 
 <CardGrid>
-  <Card title="Pick Core">
+  <Card title="Pick Core" icon="ph:stack">
     You want the full admin console, database, EPG, and observability, and you have already confirmed every DASH channel can be handled natively. It is far smaller than Full, but do not expect meaningfully lower process memory on the same native path.
   </Card>
-  <Card title="Pick Full">
+  <Card title="Pick Full" icon="ph:package">
     Input compatibility comes first and you want the ffmpeg fallback available. On natively supported input its memory profile matches Core; when a fallback actually happens, size the container as "Kiln process plus ffmpeg child plus page cache".
   </Card>
-  <Card title="Pick Lite">
+  <Card title="Pick Lite" icon="ph:feather">
     The node only needs login, M3U, and playback, every channel is handled natively, configuration lives in a file with no runtime database or console, and resource budget, image pull speed, or attack surface is the priority.
   </Card>
 </CardGrid>

@@ -1,0 +1,157 @@
+---
+import { Icon } from "astro-icon/components";
+import BaseLayout from "../layouts/BaseLayout.astro";
+import Header from "./Header.astro";
+import { Card } from "./ui/card";
+import { Code } from "./ui/code";
+import { LinkButton } from "./ui/link-button";
+
+interface Feature {
+  icon: string;
+  title: string;
+  body: string;
+}
+
+interface Step {
+  title: string;
+  body: string;
+  href: string;
+}
+
+interface Props {
+  title: string;
+  description: string;
+  badges: string[];
+  headingPre: string;
+  headingEmber: string;
+  sub: string;
+  install: string;
+  installLabel: string;
+  ctaPrimary: { label: string; href: string };
+  ctaSecondary: { label: string; href: string };
+  featuresTitle: string;
+  features: Feature[];
+  stepsTitle: string;
+  steps: Step[];
+  footerDocs: { label: string; href: string };
+  footerLang: { label: string; href: string };
+}
+
+const {
+  title,
+  description,
+  badges,
+  headingPre,
+  headingEmber,
+  sub,
+  install,
+  installLabel,
+  ctaPrimary,
+  ctaSecondary,
+  featuresTitle,
+  features,
+  stepsTitle,
+  steps,
+  footerDocs,
+  footerLang,
+} = Astro.props;
+---
+
+<BaseLayout title={title} description={description}>
+  <div class="flex min-h-screen flex-col">
+    <Header />
+    <main class="flex-1 w-full">
+      <section class="mx-auto max-w-3xl px-6 pt-20 pb-4 text-center">
+        <div class="mb-6 inline-flex items-center gap-2 rounded-full bg-card px-3.5 py-1.5 text-xs font-medium text-muted-foreground ring ring-border">
+          {badges.map((badge, i) => (
+            <>
+              {i > 0 && <span class="text-border-strong">·</span>}
+              <span>{badge}</span>
+            </>
+          ))}
+        </div>
+        <h1 class="text-balance text-[2.75rem] font-bold leading-[1.15] tracking-tight text-foreground sm:text-[3.25rem]">
+          {headingPre}
+          <span class="bg-gradient-to-r from-primary to-primary-hover bg-clip-text text-transparent">
+            {headingEmber}
+          </span>
+        </h1>
+        <p class="mx-auto mt-5 max-w-2xl text-pretty text-[1.0625rem] leading-relaxed text-muted-foreground">
+          {sub}
+        </p>
+
+        <div class="mx-auto mt-8 max-w-3xl text-left [&_pre]:text-[0.8125rem]">
+          <div class="mb-2 text-sm font-medium text-foreground">{installLabel}</div>
+          <Code code={install} lang="bash" />
+        </div>
+
+        <div class="mt-8 flex flex-wrap items-center justify-center gap-3">
+          <LinkButton href={ctaPrimary.href} variant="primary" size="lg">
+            {ctaPrimary.label}
+            <Icon name="ph:arrow-right" class="h-4 w-4" />
+          </LinkButton>
+          <LinkButton href={ctaSecondary.href} variant="secondary" size="lg">
+            {ctaSecondary.label}
+          </LinkButton>
+          <LinkButton
+            href="https://github.com/babywbx/kiln"
+            variant="minimal"
+            size="lg"
+            target="_blank"
+            rel="noopener"
+          >
+            <Icon name="ph:github-logo" class="h-4 w-4" />
+            GitHub
+          </LinkButton>
+        </div>
+      </section>
+
+      <section class="mx-auto max-w-5xl px-6 pt-16">
+        <h2 class="text-center text-xl font-semibold tracking-tight text-foreground">
+          {featuresTitle}
+        </h2>
+        <div class="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 [&>*]:my-0">
+          {features.map((feature) => (
+            <Card title={feature.title} icon={feature.icon} class="h-full">
+              {feature.body}
+            </Card>
+          ))}
+        </div>
+      </section>
+
+      <section class="mx-auto max-w-5xl px-6 pt-16 pb-8">
+        <h2 class="text-center text-xl font-semibold tracking-tight text-foreground">
+          {stepsTitle}
+        </h2>
+        <div class="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-3 [&>*]:my-0">
+          {steps.map((step, i) => (
+            <a href={step.href} class="group block rounded-lg bg-card p-5 no-underline shadow-sm ring ring-border transition-all hover:shadow-default hover:ring-primary/50">
+              <div class="flex items-center gap-2.5">
+                <span class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[0.8125rem] font-semibold text-link">
+                  {i + 1}
+                </span>
+                <h3 class="m-0 text-base font-semibold leading-snug text-foreground">{step.title}</h3>
+                <Icon
+                  name="ph:arrow-right"
+                  class="ml-auto h-4 w-4 shrink-0 -translate-x-1 text-muted-foreground opacity-0 transition-all group-hover:translate-x-0 group-hover:opacity-100"
+                />
+              </div>
+              <p class="mt-1.5 text-sm leading-normal text-muted-foreground">{step.body}</p>
+            </a>
+          ))}
+        </div>
+      </section>
+    </main>
+
+    <footer class="mt-12 border-t border-border">
+      <div class="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-3 px-6 py-7 text-sm text-muted-foreground">
+        <span>© 2026 Babywbx · MIT License</span>
+        <nav class="flex items-center gap-5">
+          <a href={footerDocs.href} class="no-underline hover:text-foreground transition-colors">{footerDocs.label}</a>
+          <a href="https://github.com/babywbx/kiln" target="_blank" rel="noopener" class="no-underline hover:text-foreground transition-colors">GitHub</a>
+          <a href={footerLang.href} class="no-underline hover:text-foreground transition-colors">{footerLang.label}</a>
+        </nav>
+      </div>
+    </footer>
+  </div>
+</BaseLayout>

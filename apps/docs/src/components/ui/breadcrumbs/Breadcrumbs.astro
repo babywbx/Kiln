@@ -1,4 +1,5 @@
 ---
+import { isEnglishPath } from "@/lib/i18n";
 import { cn } from "@/lib/cn";
 import type { HTMLAttributes } from "astro/types";
 import type { Breadcrumb } from "@cloudflare/nimbus-docs/types";
@@ -9,7 +10,16 @@ interface Props extends HTMLAttributes<"nav"> {
   maxVisible?: number;
 }
 
-const { items, maxVisible = 4, class: className, ...attrs } = Astro.props;
+const { items: rawItems, maxVisible = 4, class: className, ...attrs } = Astro.props;
+
+const isEnglish = isEnglishPath(Astro.url.pathname);
+const localized = isEnglish
+  ? rawItems.map((crumb, i) => (i === 0 ? { ...crumb, href: "/en/" } : crumb))
+  : rawItems.map((crumb, i) => (i === 0 ? { ...crumb, label: "首页" } : crumb));
+// Section landings repeat the group label; keep only the current-page crumb.
+const items = localized.filter(
+  (crumb, i) => i === localized.length - 1 || crumb.label !== localized[i + 1].label,
+);
 
 // Determine if we need to collapse the middle
 const shouldCollapse = items.length > maxVisible;
@@ -22,7 +32,7 @@ const tailItems = shouldCollapse ? items.slice(items.length - tailCount) : [];
 ---
 
 {items.length > 1 && (
-  <nav aria-label="Breadcrumb" class={cn("text-xs font-medium", className)} {...attrs}>
+  <nav aria-label={isEnglish ? "Breadcrumb" : "面包屑导航"} class={cn("text-xs font-medium", className)} {...attrs}>
     <ol class="flex flex-wrap items-center gap-y-0.5 text-muted-foreground">
       {headItems.map((crumb, i) => (
         <li class="flex items-center">
@@ -43,7 +53,7 @@ const tailItems = shouldCollapse ? items.slice(items.length - tailCount) : [];
           <details class="relative group">
             <summary
               class="list-none cursor-pointer select-none rounded px-1 py-0.5 transition-colors hover:bg-accent hover:text-foreground [&::-webkit-details-marker]:hidden group-open:before:fixed group-open:before:inset-0 group-open:before:z-[39] group-open:before:cursor-default group-open:before:content-['']"
-              aria-label={`Show ${collapsedItems.length} more path segments`}
+              aria-label={isEnglish ? `Show ${collapsedItems.length} more path segments` : `展开另外 ${collapsedItems.length} 级路径`}
             >
               <span class="tracking-widest">&hellip;</span>
             </summary>

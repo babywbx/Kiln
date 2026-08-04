@@ -2,6 +2,18 @@ import { mount } from "@cloudflare/nimbus-docs/client";
 import type { SearchProvider, SearchResult } from "@cloudflare/nimbus-docs/types";
 import { provider } from "./providers/pagefind";
 
+const isEnglishPage =
+  location.pathname === "/en" || location.pathname.startsWith("/en/");
+const messages = {
+  buildOnly: isEnglishPage
+    ? "Search is available after a production build."
+    : "搜索在正式构建后可用。",
+  searching: isEnglishPage ? "Searching…" : "搜索中…",
+  noResults: isEnglishPage ? "No results found." : "没有找到结果。",
+  unavailable: isEnglishPage ? "Search is temporarily unavailable." : "搜索暂时不可用。",
+  hint: isEnglishPage ? "Type to search…" : "输入以搜索…",
+};
+
 export interface SearchConfig {
   input: HTMLInputElement;
   resultsContainer: HTMLElement;
@@ -103,7 +115,7 @@ export function initSearch(config: SearchConfig): SearchInstance {
       initialized = true;
       return true;
     } catch {
-      emptyState.textContent = "Search is available after a production build.";
+      emptyState.textContent = messages.buildOnly;
       return false;
     }
   }
@@ -114,7 +126,7 @@ export function initSearch(config: SearchConfig): SearchInstance {
     const signal = activeController.signal;
 
     emptyState.style.display = "";
-    emptyState.textContent = "Searching…";
+    emptyState.textContent = messages.searching;
     clearResults();
 
     if (!(await ensureInitialized()) || signal.aborted) return;
@@ -128,7 +140,7 @@ export function initSearch(config: SearchConfig): SearchInstance {
 
       if (results.length === 0) {
         emptyState.style.display = "";
-        emptyState.textContent = "No results found.";
+        emptyState.textContent = messages.noResults;
         return;
       }
 
@@ -139,7 +151,7 @@ export function initSearch(config: SearchConfig): SearchInstance {
       if (signal.aborted) return;
       clearResults();
       emptyState.style.display = "";
-      emptyState.textContent = "Search is temporarily unavailable.";
+      emptyState.textContent = messages.unavailable;
     }
   }
 
@@ -151,7 +163,7 @@ export function initSearch(config: SearchConfig): SearchInstance {
         activeController?.abort();
         clearResults();
         emptyState.style.display = "";
-        emptyState.textContent = "Type to search…";
+        emptyState.textContent = messages.hint;
         return;
       }
       void runSearch(query);
@@ -190,7 +202,7 @@ export function initSearch(config: SearchConfig): SearchInstance {
       activeIndex = -1;
       clearResults();
       emptyState.style.display = "";
-      emptyState.textContent = "Type to search…";
+      emptyState.textContent = messages.hint;
       await ensureInitialized();
     },
     destroy() {

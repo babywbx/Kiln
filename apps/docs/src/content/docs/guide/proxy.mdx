@@ -128,13 +128,13 @@ proxy = "proxy-http"
 ## 常见拓扑
 
 <CardGrid>
-  <Card title="默认直连，个别域走代理" icon="ph:arrow-right">
+  <Card title="默认直连，个别域走代理" icon="ph:path">
     `default = "direct"`，为需要代理的域名加一条 `host_suffix` 规则指向线路。适合大部分源可直连、只有个别源需要绕行的部署。
   </Card>
-  <Card title="默认代理，个别域直连">
+  <Card title="默认代理，个别域直连" icon="ph:shuffle">
     `default = "proxy-http"`，再为内网或本地源加一条 `proxy = "direct"` 的规则。局域网上游不必绕出去，也避免代理看到内网地址。
   </Card>
-  <Card title="容器内 ffmpeg 走宿主代理">
+  <Card title="容器内 ffmpeg 走宿主代理" icon="ph:cube">
     线路填宿主机上的 `http://127.0.0.1:7890`，保持 `docker_proxy_host` 为默认值，Kiln 会在注入容器时自动换成可达的主机名。
   </Card>
 </CardGrid>

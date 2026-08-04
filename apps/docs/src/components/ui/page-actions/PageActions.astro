@@ -1,4 +1,5 @@
 ---
+import { isEnglishPath } from "@/lib/i18n";
 import { Icon } from "astro-icon/components";
 import { cn } from "@/lib/cn";
 import type { HTMLAttributes } from "astro/types";
@@ -10,11 +11,18 @@ interface Props extends HTMLAttributes<"div"> {
 
 const { markdownUrl, lastUpdated, class: className, ...attrs } = Astro.props;
 
+const isEnglish = isEnglishPath(Astro.url.pathname);
+const updatedLabel = isEnglish ? "Updated" : "更新于";
+const copyLabel = isEnglish ? "Copy page" : "复制本页";
+const copiedLabel = isEnglish ? "Copied" : "已复制";
+const copyErrorLabel = isEnglish ? "Couldn't copy" : "复制失败";
+const mdLabel = isEnglish ? "View as Markdown" : "Markdown 版本";
+
 const baseBtn =
   "inline-flex cursor-pointer items-center gap-1.5 rounded-md bg-transparent px-2 py-1 text-muted-foreground no-underline transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2";
 
 const formattedDate = lastUpdated
-  ? new Intl.DateTimeFormat(undefined, { year: "numeric", month: "short", day: "numeric" }).format(lastUpdated)
+  ? new Intl.DateTimeFormat(isEnglish ? "en" : "zh-CN", { year: "numeric", month: "short", day: "numeric" }).format(lastUpdated)
   : null;
 ---
 
@@ -22,13 +30,16 @@ const formattedDate = lastUpdated
   <div
     data-nb-page-actions
     data-md-url={markdownUrl}
+    data-label-copy={copyLabel}
+    data-label-copied={copiedLabel}
+    data-label-copy-error={copyErrorLabel}
     class={cn("not-prose -ml-2 flex flex-wrap items-center gap-y-1 text-[0.8125rem]", className)}
     {...attrs}
   >
     {lastUpdated && (
       <span class="inline-flex items-center gap-1.5 px-2 py-1 text-muted-foreground">
         <Icon name="ph:clock" class="w-3.5 h-3.5" />
-        Updated <time datetime={lastUpdated.toISOString()}>{formattedDate}</time>
+        {updatedLabel} <time datetime={lastUpdated.toISOString()}>{formattedDate}</time>
       </span>
     )}
 
@@ -41,7 +52,7 @@ const formattedDate = lastUpdated
         <button type="button" data-nb-page-actions-copy class={baseBtn}>
           <Icon name="ph:copy" class="w-3.5 h-3.5" data-nb-page-actions-copy-icon is:inline />
           <Icon name="ph:check" class="hidden w-3.5 h-3.5 text-success" data-nb-page-actions-check-icon is:inline />
-          <span data-nb-page-actions-label aria-live="polite">Copy page</span>
+          <span data-nb-page-actions-label aria-live="polite">{copyLabel}</span>
         </button>
 
         <span aria-hidden="true" class="select-none text-muted-foreground/40">|</span>
@@ -53,7 +64,7 @@ const formattedDate = lastUpdated
           class={baseBtn}
         >
           <Icon name="ph:markdown-logo" class="w-3.5 h-3.5" />
-          View as Markdown
+          {mdLabel}
         </a>
       </>
     )}

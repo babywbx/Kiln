@@ -1,0 +1,69 @@
+---
+import LandingPage from "../../components/LandingPage.astro";
+---
+
+<LandingPage
+  title="Kiln"
+  description="Self-hosted HLS & DASH channel gateway: native decrypt-and-remux, on-demand pulling, one authenticated entry point."
+  badges={["v1.0.0", "MIT License", "Single binary"]}
+  headingPre="The self-hosted "
+  headingEmber="HLS / DASH channel gateway"
+  sub="The native engine decrypts and remuxes DASH sources in-process, with no ffmpeg required; channels pull on demand and are reclaimed when idle; playback, administration, and scripted access each use their own credentials. One binary for Linux, macOS, and Windows."
+  install="curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh | sh"
+  installLabel="Install with one command"
+  ctaPrimary={{ label: "Quick start", href: "/en/start/" }}
+  ctaSecondary={{ label: "Browse the docs", href: "/en/guide/" }}
+  featuresTitle="Why Kiln"
+  features={[
+    {
+      icon: "ph:fire",
+      title: "Native media engine",
+      body: "DASH decryption and remuxing happen in-process, no ffmpeg required; a compatibility fallback is there when you need it.",
+    },
+    {
+      icon: "ph:play-circle",
+      title: "On-demand pulling",
+      body: "Upstreams connect only when someone is watching and are reclaimed when idle; important channels can stay warm.",
+    },
+    {
+      icon: "ph:key",
+      title: "One authenticated entry point",
+      body: "Login sessions, admin API tokens, path play keys, and public endpoints each cover their own slice, with no privilege crossover.",
+    },
+    {
+      icon: "ph:lightning",
+      title: "Low-latency HLS",
+      body: "CMAF parts, delta playlists, and blocking reload, natively.",
+    },
+    {
+      icon: "ph:squares-four",
+      title: "Admin console",
+      body: "Channels, EPG, outbound proxies, and access control managed in the browser, applied immediately.",
+    },
+    {
+      icon: "ph:cpu",
+      title: "Resource adaptation",
+      body: "Budgets follow the container's memory and CPU quota; a 128 MiB container runs fine.",
+    },
+  ]}
+  stepsTitle="Up and running in three steps"
+  steps={[
+    {
+      title: "Install",
+      body: "One command for the binary, or pull the Docker image.",
+      href: "/en/start/",
+    },
+    {
+      title: "Configure a channel",
+      body: "Define upstreams and channels in kiln.toml or the admin console.",
+      href: "/en/start/first-channel/",
+    },
+    {
+      title: "Start playing",
+      body: "Open the play URL in a player; on-demand pulling kicks in automatically.",
+      href: "/en/guide/playback/",
+    },
+  ]}
+  footerDocs={{ label: "Docs", href: "/en/start/" }}
+  footerLang={{ label: "中文", href: "/" }}
+/>

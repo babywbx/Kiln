@@ -118,16 +118,16 @@ curl -s http://127.0.0.1:8080/v1/admin/channels \
 Scopes are independent, and none implies another. Grant only what the job needs:
 
 <CardGrid>
-  <Card title="read">
+  <Card title="read" icon="ph:eye">
     Read channels, settings, egress configuration, and logs.
   </Card>
-  <Card title="write">
+  <Card title="write" icon="ph:pencil-simple">
     Create and modify configuration, including M3U import and export, but never delete.
   </Card>
-  <Card title="delete">
+  <Card title="delete" icon="ph:trash">
     Delete channels and egress entries, revoke playback keys, clear access logs.
   </Card>
-  <Card title="refresh">
+  <Card title="refresh" icon="ph:arrows-clockwise">
     Probe sources, refresh the guide, warm up and preview channels, stop sessions, test egress routes.
   </Card>
 </CardGrid>
