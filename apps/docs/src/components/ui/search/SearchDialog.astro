@@ -13,7 +13,7 @@ const hintClose = isEnglish ? "close" : "关闭";
 ---
 
 <Dialog aria-label={searchAria} data-search-dialog>
-  <DialogContent class="max-w-xl bg-muted shadow-xl ring-border">
+  <DialogContent class="max-w-3xl max-h-[80vh] bg-muted shadow-xl ring-border">
     <div class="overflow-hidden rounded-t-lg bg-card border-b border-border">
       <div class="flex items-center gap-3 border-b border-border px-4 py-3">
         <Icon name="ph:magnifying-glass" class="h-4 w-4 shrink-0 text-muted-foreground" />
@@ -26,7 +26,7 @@ const hintClose = isEnglish ? "close" : "关闭";
           aria-controls="search-listbox"
           type="text"
           placeholder={searchPlaceholder}
-          class="min-w-0 flex-1 border-0 bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-none"
+          class="min-w-0 flex-1 border-0 bg-transparent text-base text-foreground placeholder:text-muted-foreground focus:outline-none"
           autocomplete="off"
           spellcheck="false"
           autocorrect="off"
@@ -42,7 +42,7 @@ const hintClose = isEnglish ? "close" : "关闭";
         role="listbox"
         id="search-listbox"
         aria-orientation="vertical"
-        class="min-h-40 overflow-y-auto p-2"
+        class="min-h-96 max-h-[65vh] overflow-y-auto p-2"
       >
         <p data-search-empty class="py-8 text-center text-sm text-muted-foreground">
           {searchHint}

@@ -14,6 +14,83 @@ const messages = {
   hint: isEnglishPage ? "Type to search…" : "输入以搜索…",
 };
 
+interface ZhHeadingEntry {
+  t: string;
+  s: string;
+}
+
+interface ZhPageEntry {
+  u: string;
+  t: string;
+  h: ZhHeadingEntry[];
+}
+
+type ZhSearchModule = typeof import("../../../lib/zh-search/romanized-search.js");
+
+interface ZhState {
+  module: ZhSearchModule;
+  index: Awaited<ReturnType<ZhSearchModule["buildSearchIndex"]>>;
+  pageTitles: Map<string, string>;
+}
+
+let zhStatePromise: Promise<ZhState> | null = null;
+
+function loadZhState(): Promise<ZhState> {
+  if (!zhStatePromise) {
+    zhStatePromise = (async () => {
+      const [module, response] = await Promise.all([
+        import("../../../lib/zh-search/romanized-search.js"),
+        fetch("/search-zh.json"),
+      ]);
+      const pages: ZhPageEntry[] = await response.json();
+      const items = [];
+      const pageTitles = new Map<string, string>();
+      for (const page of pages) {
+        pageTitles.set(page.u, page.t);
+        items.push({ title: page.t, id: page.u });
+        for (const heading of page.h) {
+          items.push({ title: heading.t, id: `${page.u}#${heading.s}`, group: page.t });
+        }
+      }
+      const index = await module.buildSearchIndex(items);
+      return { module, index, pageTitles };
+    })();
+  }
+  return zhStatePromise;
+}
+
+async function zhSearch(query: string): Promise<SearchResult[]> {
+  if (isEnglishPage || !query.trim()) return [];
+  try {
+    const { module, index, pageTitles } = await loadZhState();
+    const matches = await module.searchIndex(index, query, 16);
+    const byUrl = new Map<string, SearchResult>();
+    const entryFor = (baseUrl: string, fallbackTitle: string): SearchResult => {
+      let entry = byUrl.get(baseUrl);
+      if (!entry) {
+        entry = {
+          title: pageTitles.get(baseUrl) ?? fallbackTitle,
+          url: baseUrl,
+          subResults: [],
+        };
+        byUrl.set(baseUrl, entry);
+      }
+      return entry;
+    };
+    for (const match of matches) {
+      if (!match.id.includes("#")) entryFor(match.id, match.title);
+    }
+    for (const match of matches) {
+      if (!match.id.includes("#")) continue;
+      const [baseUrl] = match.id.split("#");
+      entryFor(baseUrl, match.title).subResults?.push({ title: match.title, url: match.id });
+    }
+    return [...byUrl.values()].slice(0, 6);
+  } catch {
+    return [];
+  }
+}
+
 export interface SearchConfig {
   input: HTMLInputElement;
   resultsContainer: HTMLElement;
@@ -132,8 +209,17 @@ export function initSearch(config: SearchConfig): SearchInstance {
     if (!(await ensureInitialized()) || signal.aborted) return;
 
     try {
-      const results = await provider.search(query, { signal });
+      const [zhResults, providerResults] = await Promise.all([
+        zhSearch(query),
+        provider.search(query, { signal }),
+      ]);
       if (signal.aborted) return;
+
+      const seen = new Set(zhResults.map((result) => result.url));
+      const results = [
+        ...zhResults,
+        ...providerResults.filter((result) => !seen.has(result.url.split("#")[0])),
+      ];
 
       clearResults();
       activeIndex = -1;
