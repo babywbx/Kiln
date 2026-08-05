@@ -1,13 +1,15 @@
 import { generateOpenGraphImage } from "astro-og-canvas";
 import { config } from "virtual:nimbus/config";
 import { ogCardConfig } from "./og/_og-card-config";
+import { assertOgCovered } from "./og/_og-coverage";
 
 export const prerender = true;
 
 export async function GET() {
+  assertOgCovered(`${config.title}${config.description ?? ""}`, "og.png");
   const body = await generateOpenGraphImage({
     title: config.title,
-    description: config.description,
+    description: config.description ?? "",
     ...ogCardConfig,
   });
 

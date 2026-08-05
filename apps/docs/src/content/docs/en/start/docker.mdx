@@ -11,9 +11,9 @@ Kiln ships three image variants with explicit boundaries, sharing one configurat
 
 | Image | Capabilities | Default packager | FFmpeg | Purpose |
 | --- | --- | --- | --- | --- |
-| `lite` | Config, login, M3U, playback | `native` | Not included | Minimal scratch runtime, 3.8 MB, no database |
-| `core` | Full | `native` | Not included | Complete management and observability, natively only |
-| `full` | Full | `auto` | Bundled | Native first, falls back when needed |
+| <Badge text="lite" variant="success" /> | Config, login, M3U, playback | `native` | Not included | Minimal scratch runtime, 3.8 MB, no database |
+| <Badge text="core" variant="info" /> | Full | `native` | Not included | Complete management and observability, natively only |
+| <Badge text="full" variant="warning" /> | Full | `auto` | Bundled | Native first, falls back when needed |
 
 `latest` is an alias for `full`. All three run as the non-root uid/gid `999`, listen on `8080`, and hard-code `-config /etc/kiln/kiln.toml` as their command, so mounting the config at that path is all it takes to start with no arguments.
 

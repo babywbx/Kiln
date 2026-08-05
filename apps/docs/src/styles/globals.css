@@ -46,6 +46,7 @@
 	--nb-code-bg: oklch(0.968 0.014 55);
 	--nb-code-border: oklch(0.925 0.03 55);
 	--nb-code-text: oklch(0.46 0.13 40);
+	--nb-code-block-bg: color-mix(in oklab, var(--nb-primary) 3%, var(--nb-card));
 
 	/* Borders / focus */
 	--nb-border: oklch(0.935 0 0);
@@ -78,8 +79,9 @@
 
 	/* Typography — self-hosted via @fontsource-variable in BaseLayout.astro */
 	--nb-font-sans:
-		"Inter Variable", "Inter", system-ui, -apple-system, "Segoe UI", Roboto,
-		sans-serif;
+		"Inter Variable", "Inter", "PingFang SC", "Hiragino Sans GB",
+		"Microsoft YaHei", "Noto Sans SC", system-ui, -apple-system, "Segoe UI",
+		Roboto, sans-serif;
 	--nb-font-mono:
 		"JetBrains Mono Variable", "JetBrains Mono", ui-monospace, "Cascadia Code",
 		"Source Code Pro", Menlo, Consolas, monospace;
@@ -98,6 +100,12 @@
 	--nb-shadow-sm: 0 1px 2px oklch(0 0 0 / 0.04);
 	--nb-shadow: 0 1px 3px oklch(0 0 0 / 0.06), 0 1px 2px oklch(0 0 0 / 0.04);
 	--nb-shadow-lg: 0 4px 12px oklch(0 0 0 / 0.08), 0 2px 4px oklch(0 0 0 / 0.04);
+}
+
+:root:lang(zh) {
+	--nb-h1-tracking: 0;
+	--nb-h2-tracking: 0;
+	--nb-h3-tracking: 0;
 }
 
 /* Wider content area on large displays (e.g. MacBook Pro 16″) */
@@ -275,6 +283,20 @@ body {
 	background: var(--nb-muted-foreground);
 }
 
+[data-nb-sidebar] a[aria-current="page"] {
+	position: relative;
+}
+[data-nb-sidebar] a[aria-current="page"]::before {
+	content: "";
+	position: absolute;
+	left: 0;
+	top: 15%;
+	height: 70%;
+	width: 3px;
+	border-radius: 0 2px 2px 0;
+	background: var(--nb-primary);
+}
+
 /* ---- Shiki code-block styling + copy button ---- */
 
 pre.astro-code {
@@ -283,7 +305,7 @@ pre.astro-code {
 	padding: 0.75rem 1rem;
 	border-radius: 0.5rem;
 	border: 1px solid var(--nb-border);
-	background-color: var(--nb-card);
+	background-color: var(--nb-code-block-bg);
 	overflow-x: auto;
 	font-family: var(--nb-font-mono);
 	font-size: 0.875rem;
@@ -352,7 +374,7 @@ pre.astro-code span {
 	margin: 1rem 0;
 	border: 1px solid var(--nb-border);
 	border-radius: 0.5rem;
-	background-color: var(--nb-card);
+	background-color: var(--nb-code-block-bg);
 	overflow: hidden;
 }
 .nb-code-figure > pre.astro-code {

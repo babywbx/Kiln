@@ -14,7 +14,9 @@ const { items: rawItems, maxVisible = 4, class: className, ...attrs } = Astro.pr
 
 const isEnglish = isEnglishPath(Astro.url.pathname);
 const localized = isEnglish
-  ? rawItems.map((crumb, i) => (i === 0 ? { ...crumb, href: "/en/" } : crumb))
+  ? rawItems
+      .filter((crumb) => crumb.label !== "English")
+      .map((crumb, i) => (i === 0 ? { ...crumb, href: "/en/" } : crumb))
   : rawItems.map((crumb, i) => (i === 0 ? { ...crumb, label: "首页" } : crumb));
 const items = localized.filter(
   (crumb, i) => i === localized.length - 1 || crumb.label !== localized[i + 1].label,

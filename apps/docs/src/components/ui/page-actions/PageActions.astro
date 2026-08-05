@@ -10,6 +10,7 @@ interface Props extends HTMLAttributes<"div"> {
 }
 
 const { markdownUrl, lastUpdated, class: className, ...attrs } = Astro.props;
+const markdownPath = markdownUrl ? new URL(markdownUrl, Astro.url).pathname : undefined;
 
 const isEnglish = isEnglishPath(Astro.url.pathname);
 const updatedLabel = isEnglish ? "Updated" : "更新于";
@@ -29,7 +30,7 @@ const formattedDate = lastUpdated
 {(markdownUrl || lastUpdated) && (
   <div
     data-nb-page-actions
-    data-md-url={markdownUrl}
+    data-md-url={markdownPath}
     data-label-copy={copyLabel}
     data-label-copied={copiedLabel}
     data-label-copy-error={copyErrorLabel}
@@ -58,7 +59,7 @@ const formattedDate = lastUpdated
         <span aria-hidden="true" class="select-none text-muted-foreground/40">|</span>
 
         <a
-          href={markdownUrl}
+          href={markdownPath}
           target="_blank"
           rel="noopener noreferrer"
           class={baseBtn}

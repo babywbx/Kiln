@@ -11,9 +11,9 @@ Kiln 发布三个镜像变体，边界明确，共用同一套配置模型和同
 
 | 镜像 | 能力 | 默认 packager | FFmpeg | 定位 |
 | --- | --- | --- | --- | --- |
-| `lite` | 配置、登录、M3U、播放 | `native` | 不包含 | 基于 scratch 的极简运行时，3.8 MB，无数据库 |
-| `core` | 完整 | `native` | 不包含 | 完整管理与观测，纯原生媒体路径 |
-| `full` | 完整 | `auto` | 内置 | 优先原生，必要时回退到 FFmpeg |
+| <Badge text="lite" variant="success" /> | 配置、登录、M3U、播放 | `native` | 不包含 | 基于 scratch 的极简运行时，3.8 MB，无数据库 |
+| <Badge text="core" variant="info" /> | 完整 | `native` | 不包含 | 完整管理与观测，纯原生媒体路径 |
+| <Badge text="full" variant="warning" /> | 完整 | `auto` | 内置 | 优先原生，必要时回退到 FFmpeg |
 
 `latest` 是 `full` 的别名。三个变体都以非 root 的 uid/gid `999` 运行，默认监听 `8080`，入口命令固定为 `-config /etc/kiln/kiln.toml`，所以只要把配置挂到这个路径就不需要再传任何参数。
 

@@ -37,21 +37,22 @@ const langHref = isEnglish
 const langLabel = isEnglish ? "中文" : "EN";
 const langAria = isEnglish ? "切换到中文" : "Switch to English";
 
-const zhSections = [
-  { label: "入门", href: "/start/" },
-  { label: "指南", href: "/guide/" },
-  { label: "参考", href: "/reference/" },
+const inReference = isEnglish
+  ? currentSlug.startsWith("/en/reference")
+  : currentSlug.startsWith("/reference");
+const onLanding = currentSlug === "/" || currentSlug === "/en";
+const sections = [
+  {
+    label: isEnglish ? "Docs" : "文档",
+    href: isEnglish ? "/en/start/" : "/start/",
+    isActive: !onLanding && !inReference,
+  },
+  {
+    label: isEnglish ? "Reference" : "参考",
+    href: isEnglish ? "/en/reference/" : "/reference/",
+    isActive: inReference,
+  },
 ];
-const enSections = [
-  { label: "Getting started", href: "/en/start/" },
-  { label: "Guides", href: "/en/guide/" },
-  { label: "Reference", href: "/en/reference/" },
-];
-const sections = (isEnglish ? enSections : zhSections).map((s) => ({
-  ...s,
-  isActive: `${currentSlug}/`.startsWith(s.href),
-}));
-const showSections = true;
 ---
 
 <header class="sticky top-0 z-30 border-b border-border bg-card/80 backdrop-blur-lg">
@@ -63,24 +64,22 @@ const showSections = true;
         </span>
       </a>
 
-      {showSections && (
-        <nav aria-label={isEnglish ? "Sections" : "分区"} class="hidden md:flex items-center gap-1 ml-4 pl-4 border-l border-border h-6">
-          {sections.map((section) => (
-            <a
-              href={section.href}
-              aria-current={section.isActive ? "page" : undefined}
-              class:list={[
-                "px-2 py-1 rounded-md text-[0.8125rem] font-medium no-underline transition-colors",
-                section.isActive
-                  ? "text-link bg-primary/10"
-                  : "text-muted-foreground hover:text-foreground hover:bg-accent/60",
-              ]}
-            >
-              {section.label}
-            </a>
-          ))}
-        </nav>
-      )}
+      <nav aria-label={isEnglish ? "Sections" : "分区"} class="hidden md:flex items-center gap-1 ml-4 pl-4 border-l border-border h-6">
+        {sections.map((section) => (
+          <a
+            href={section.href}
+            aria-current={section.isActive ? "page" : undefined}
+            class:list={[
+              "px-2 py-1 rounded-md text-[0.8125rem] font-medium no-underline transition-colors",
+              section.isActive
+                ? "text-link bg-primary/10"
+                : "text-muted-foreground hover:text-foreground hover:bg-accent/60",
+            ]}
+          >
+            {section.label}
+          </a>
+        ))}
+      </nav>
     </div>
 
     <div class="flex items-center gap-2">

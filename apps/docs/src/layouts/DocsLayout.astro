@@ -15,7 +15,7 @@ import { Breadcrumbs } from "@/components/ui/breadcrumbs";
 import { Pagination } from "@/components/ui/pagination";
 import { PageActions } from "@/components/ui/page-actions";
 import { Badge } from "@/components/ui/badge";
-import type { DocsPageProps } from "@cloudflare/nimbus-docs/types";
+import type { DocsPageProps, SidebarItem } from "@cloudflare/nimbus-docs/types";
 import { getVersionStatus, getVersionAlternates } from "@cloudflare/nimbus-docs";
 import { isEnglishPath } from "@/lib/i18n";
 
@@ -27,6 +27,34 @@ const navAria = isEnglishUI ? "Site navigation" : "站点导航";
 const closeAria = isEnglishUI ? "Close sidebar" : "关闭导航";
 
 const { title, description, sidebar, headings, breadcrumbs, prevNext, mode = "doc", banner, head = [], searchable, noindex, markdownUrl, socialImage, lastUpdated, editUrl, draft, audience, collection, entryId } = Astro.props;
+
+const inReference = isEnglishUI
+  ? Astro.url.pathname.startsWith("/en/reference")
+  : Astro.url.pathname.startsWith("/reference");
+const referenceLabels = ["参考", "Reference"];
+
+function localizeSidebar(): SidebarItem[] {
+  if (sidebar === false) return [];
+  let items = sidebar;
+  if (isEnglishUI) {
+    const en = sidebar.find((item) => item.type === "group" && item.label === "English");
+    items = en && en.type === "group" ? en.children : sidebar;
+  } else {
+    items = items.filter((item) => !(item.type === "group" && item.label === "English"));
+  }
+  return items.filter((item) =>
+    item.type === "group" && referenceLabels.includes(item.label) ? inReference : !inReference,
+  );
+}
+const localizedSidebar = localizeSidebar();
+
+const sameLang = (href: string): boolean => isEnglishPath(href) === isEnglishUI;
+const localizedPrevNext = prevNext
+  ? {
+      prev: prevNext.prev && sameLang(prevNext.prev.href) ? prevNext.prev : undefined,
+      next: prevNext.next && sameLang(prevNext.next.href) ? prevNext.next : undefined,
+    }
+  : prevNext;
 
 // `searchable` derives from `noindex` when omitted: a non-crawlable page is
 // by default not in the site search either. Explicit `searchable: true`
@@ -98,7 +126,7 @@ const hasPagination = Astro.slots.has("pagination");
               ) : (
                 <nav class="px-4 pb-12 pt-5 flex-1">
                   <SidebarFilter />
-                  <Sidebar items={sidebar} persist />
+                  <Sidebar items={localizedSidebar} persist />
                 </nav>
               )}
               <div class="pointer-events-none sticky bottom-0 h-8 bg-gradient-to-t from-base to-transparent" />
@@ -228,7 +256,7 @@ const hasPagination = Astro.slots.has("pagination");
                   </div>
                 )}
               </div>
-              {hasPagination ? <slot name="pagination" /> : <Pagination prevNext={prevNext} />}
+              {hasPagination ? <slot name="pagination" /> : <Pagination prevNext={localizedPrevNext} />}
             </div>
           </main>
 
@@ -264,7 +292,7 @@ const hasPagination = Astro.slots.has("pagination");
           {hasSidebar ? <slot name="sidebar" /> : (
             <Fragment>
               <SidebarFilter />
-              <Sidebar items={sidebar} />
+              <Sidebar items={localizedSidebar} />
             </Fragment>
           )}
         </nav>

@@ -2,6 +2,7 @@ node_modules/
 dist/
 .astro/
 .wrangler/
+src/fonts-src/
 
 .env
 .env.local

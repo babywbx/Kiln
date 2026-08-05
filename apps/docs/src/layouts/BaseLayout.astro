@@ -40,6 +40,19 @@ const llmsIndexPath = collection
 const llmsUrl = Astro.site
   ? new URL(llmsIndexPath, Astro.site).href
   : llmsIndexPath;
+
+const pagePath = Astro.url.pathname;
+const isEnglishPage = isEnglishPath(pagePath);
+const zhPath = isEnglishPage ? (pagePath === "/en/" || pagePath === "/en" ? "/" : pagePath.slice(3)) : pagePath;
+const enPath = isEnglishPage ? pagePath : pagePath === "/" ? "/en/" : `/en${pagePath}`;
+const hreflangs =
+  !noindex && Astro.site
+    ? [
+        { hreflang: "zh-CN", href: new URL(zhPath, Astro.site).href },
+        { hreflang: "en", href: new URL(enPath, Astro.site).href },
+        { hreflang: "x-default", href: new URL(zhPath, Astro.site).href },
+      ]
+    : [];
 ---
 
 <!doctype html>
@@ -98,6 +111,9 @@ const llmsUrl = Astro.site
       collection={collection}
       entryId={entryId}
     />
+    {hreflangs.map((alt) => (
+      <link rel="alternate" hreflang={alt.hreflang} href={alt.href} />
+    ))}
   </head>
   <body class="min-h-screen bg-background text-foreground antialiased">
     <a

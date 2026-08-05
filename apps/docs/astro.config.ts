@@ -12,7 +12,6 @@ const nimbusConfig = defineNimbusConfig({
   github: "https://github.com/babywbx/kiln",
   socialImageAlt: "Kiln 文档预览",
   sidebar: {
-    scope: "section",
     items: [
       { label: "入门", autogenerate: { directory: "start" } },
       { label: "指南", autogenerate: { directory: "guide" } },

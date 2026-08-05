@@ -10,6 +10,7 @@
     "typecheck": "astro check",
     "lint:docs": "nimbus-docs lint",
     "lint:docs:fix": "nimbus-docs lint --fix",
+    "og:fonts": "./scripts/build-og-fonts.sh",
     "prepreview:cf": "astro build",
     "preview:cf": "wrangler dev",
     "predeploy": "astro check && astro build",
