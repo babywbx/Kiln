@@ -117,7 +117,6 @@ type User struct {
 }
 
 type Security struct {
-	// nil means unset; playback auth defaults on. See PlayAuthRequired.
 	PlayRequireAuth  *bool    `json:"play_require_auth" toml:"play_require_auth"`
 	AllowedHosts     []string `json:"allowed_hosts" toml:"allowed_hosts"`
 	MaxPlaylistBytes int64    `json:"max_playlist_bytes" toml:"max_playlist_bytes"`
@@ -198,7 +197,6 @@ type TrackSelection struct {
 }
 
 type Observe struct {
-	// nil means unset; observability defaults on. See EnabledOrDefault.
 	Enabled          *bool   `json:"enabled" toml:"enabled"`
 	OTLPEndpoint     string  `json:"otlp_endpoint,omitempty" toml:"otlp_endpoint,omitempty"`
 	OTLPInsecure     bool    `json:"otlp_insecure,omitempty" toml:"otlp_insecure,omitempty"`
@@ -395,7 +393,6 @@ func (c *File) applyEnvOverrides() {
 	}
 }
 
-// Bool returns a pointer to b, for optional boolean config fields.
 func Bool(b bool) *bool { return &b }
 
 func (c *File) applyDefaults() {

@@ -27,7 +27,6 @@ const { showSidebar = true } = Astro.props;
 // Normalize trailing slash so isActive matches sidebar hrefs.
 const currentSlug = Astro.url.pathname.replace(/\/$/, "") || "/";
 
-// Chinese lives at the root, English mirrors it under /en with matching slugs.
 const isEnglish = currentSlug === "/en" || currentSlug.startsWith("/en/");
 const strippedSlug = currentSlug.slice(3);
 const langHref = isEnglish
@@ -38,8 +37,6 @@ const langHref = isEnglish
 const langLabel = isEnglish ? "中文" : "EN";
 const langAria = isEnglish ? "切换到中文" : "Switch to English";
 
-// The framework's section tab strip only covers non-primary collections, so
-// the language-aware tabs live here instead. Active state is prefix-based.
 const zhSections = [
   { label: "入门", href: "/start/" },
   { label: "指南", href: "/guide/" },

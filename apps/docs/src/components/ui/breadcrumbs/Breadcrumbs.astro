@@ -16,7 +16,6 @@ const isEnglish = isEnglishPath(Astro.url.pathname);
 const localized = isEnglish
   ? rawItems.map((crumb, i) => (i === 0 ? { ...crumb, href: "/en/" } : crumb))
   : rawItems.map((crumb, i) => (i === 0 ? { ...crumb, label: "首页" } : crumb));
-// Section landings repeat the group label; keep only the current-page crumb.
 const items = localized.filter(
   (crumb, i) => i === localized.length - 1 || crumb.label !== localized[i + 1].label,
 );

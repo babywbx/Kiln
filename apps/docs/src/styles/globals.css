@@ -35,16 +35,14 @@
 	--nb-accent: oklch(0.967 0 0);
 	--nb-accent-foreground: var(--nb-foreground);
 
-	/* Primary action / brand — kiln ember */
+	/* Primary action / brand */
 	--nb-primary: oklch(0.62 0.17 45);
 	--nb-primary-foreground: oklch(0.99 0.01 45);
 	--nb-primary-hover: oklch(0.53 0.16 45);
 
-	/* Prose links — deeper ember for body-text contrast */
 	--nb-link: oklch(0.5 0.15 42);
 	--nb-link-hover: oklch(0.42 0.14 40);
 
-	/* Inline code — warm tint, Bun-style */
 	--nb-code-bg: oklch(0.968 0.014 55);
 	--nb-code-border: oklch(0.925 0.03 55);
 	--nb-code-text: oklch(0.46 0.13 40);
@@ -76,8 +74,6 @@
 	--nb-sidebar-width: 17.5rem;
 	--nb-toc-width: 16rem;
 	--nb-content-max: 47rem;
-	/* Header is h-14 plus a 1px bottom border; sticky rails must match the
-	   full 57px or they snap up 1px on the first scroll tick. */
 	--nb-header-offset: calc(3.5rem + 1px);
 
 	/* Typography — self-hosted via @fontsource-variable in BaseLayout.astro */
