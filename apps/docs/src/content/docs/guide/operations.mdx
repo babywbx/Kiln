@@ -1,11 +1,11 @@
 ---
 title: 运维
-description: 以服务方式长期运行 Kiln：systemd 与 Windows 服务、数据目录与备份、升级、日志、健康检查、指标、OTLP 追踪、pprof 与资源自适应。
+description: 长期运行 Kiln 所需的服务配置、备份与升级，以及日志、健康检查、指标、追踪、诊断和资源管理。
 sidebar:
   order: 10
 ---
 
-这一页覆盖 Kiln 上线之后的日常事务：怎么把它挂成系统服务，数据放在哪里、怎么备份，升级要注意什么，以及日志、健康检查、指标、追踪和资源自适应各自如何配置与核对。
+Kiln 上线后，可以在这里找到日常运维所需的信息：注册系统服务、备份数据、升级版本，以及配置日志、健康检查、指标、追踪和资源自适应。
 
 ## 作为服务运行
 
@@ -84,7 +84,7 @@ Windows 用内置的 `kiln.exe service` 子命令注册服务，不需要额外�
 | `epg/` | EPG 磁盘缓存。`epg.cache_dir` 留空时默认落在这里 | 否，可重新抓取 |
 | `sessions/<channel-id>/<generation>/` | 会话运行期的媒体工作目录，下面再分 `native/` 与 `ffmpeg/` | 否，重启即重建 |
 
-备份最省事的做法是停掉进程再整目录复制。在线备份务必把 `kiln.db-wal` 一起带上，只拷主库会丢掉尚未 checkpoint 的写入。`sessions/` 可以直接跳过，它在每次启动新会话时都会被清空重建。
+最简单可靠的备份方式是先停止 Kiln，再复制整个数据目录。如需在线备份，请使用 SQLite Backup API 或具备同等一致性保证的快照工具；分别复制 `kiln.db` 与 `kiln.db-wal` 不能保证得到同一时刻的数据。无需备份 `sessions/`，Kiln 会在新会话启动时重新创建其中的内容。
 
 <Aside type="caution" title="密钥丢失的后果">
   `auth/ed25519.pem` 一旦丢失或被重新生成，所有已签发的会话 JWT 立即失效，管理界面和播放端都要重新登录。需要在多实例之间共享同一套凭据时，用 `auth.token_private_key_file` 或 `KILN_TOKEN_PRIVATE_KEY_FILE` 显式注入，而不是依赖自动生成。
@@ -143,7 +143,7 @@ Windows 用内置的 `kiln.exe service` 子命令注册服务，不需要额外�
 | `format` | `KILN_LOG_FORMAT` | `text`（默认）或 `json` |
 | `color` | `KILN_LOG_COLOR` | `auto`（默认）、`always`、`never` |
 
-级别解析接受若干别名：`dbg` 与 `trace` 等同于 `debug`，`warning`、`wrn` 等同于 `warn`，`err`、`erro`、`fatal` 等同于 `error`；无法识别的值一律回落到 `info`。格式只区分两种，`structured` 是 `json` 的别名，其余值都按 `text` 处理。
+级别解析接受若干别名：`dbg` 与 `trace` 等同于 `debug`，`warning`、`wrn` 等同于 `warn`，`err`、`erro`、`fatal` 等同于 `error`；无法识别时使用 `info`。格式只区分两种，`structured` 是 `json` 的别名，其余值都按 `text` 处理。
 
 着色只对 `text` 生效。`auto` 表示仅当输出是终端设备时才上色，重定向到文件或管道时自动关闭；此外只要环境变量 `NO_COLOR` 非空，`auto` 一律不着色。要在保留终端的同时强制关闭，用 `KILN_LOG_COLOR=never`。
 
@@ -169,7 +169,7 @@ Windows 用内置的 `kiln.exe service` 子命令注册服务，不需要额外�
     存活探针。只要 HTTP 服务在跑就返回 `200` 与 `{"status":"ok"}`，不检查任何依赖。适合做进程守护和容器重启判定。
   </Card>
   <Card title="/readyz" icon="ph:check-circle">
-    就绪探针。除了存活，还会检查兼容引擎：当目录里存在 `ingress = "dash"` 且生效引擎为 `ffmpeg` 的频道时，若 ffmpeg 不可用则返回 `503` 与 `not_ready`，消息为 `ffmpeg compatibility engine is not available`。适合做流量摘挂。
+    就绪探针。除了确认服务存活，还会检查兼容引擎：当频道目录中存在 `ingress = "dash"` 且实际使用 `ffmpeg` 引擎的频道时，如果 FFmpeg 不可用，会返回 `503` 与 `not_ready`，消息为 `ffmpeg compatibility engine is not available`。适合用来决定是否向实例发送流量。
   </Card>
 </CardGrid>
 
@@ -286,13 +286,13 @@ Kiln 启动时会探测可用的内存与 CPU，据此下调内存相关的预�
 
 CPU 是独立于内存单独计算的，只影响流水线深度和 EPG 刷新并发：
 
-- 有效 milli-CPU 小于 4000 时，流水线上限取 `ceil(milli / 1000)`；4 核起不再下压。
+- 有效 milli-CPU 小于 4000 时，流水线上限取 `ceil(milli / 1000)`；达到 4 核后不再降低。
 - EPG 刷新并发取 `ceil(milli / 2000)` 与内存 GiB 数四舍五入后的较小值，最低为 1。
 - 内存档位和 CPU 钳制各自给出一个上限，最终值取三者（配置值、内存档位、CPU 钳制）中的最小。
 
 探测覆盖 cgroup v1 与 v2、嵌套 cgroup、父级继承的限制以及小数 CPU quota。给 `--cpus=1.5` 的容器会得到 `effective_cpus=2` 与 `effective_cpu_milli=1500`。
 
-<Aside type="caution" title="只会下压，不会上调">
+<Aside type="caution" title="只会降低，不会提高">
   自适应对每一项预算做的都是「取较小值」。如果你把 `packager.inflight_bytes` 配成 16 MiB，即便落到 `standard` 档，它也不会被抬到 64 MiB。想完整保留手写数值，用 `resource_mode = "performance"`。
 </Aside>
 
@@ -323,7 +323,7 @@ start_segments=1 prefetch_segments=1
 epg_refresh_concurrency=1 epg_max_source_mb=4
 ```
 
-`effective_memory_mb` 是探测结果，`memory_limit_mb` 是最终写入的 Go 软目标，`effective_go_memory_limit_mb` 是运行时实际生效的值。三者对不上时，先看有没有设 `GOMEMLIMIT`。若 `resource_profile` 显示 `configured`，说明内存探测没拿到数值，档位判定被跳过了，这时用 `KILN_RESOURCE_MEMORY_MB` 手工指定。
+`effective_memory_mb` 是探测结果，`memory_limit_mb` 是最终写入的 Go 软目标，`effective_go_memory_limit_mb` 是运行时实际生效的值。三者不一致时，先检查是否设置了 `GOMEMLIMIT`。`resource_profile` 显示 `configured`，表示配置值保持不变：可能是 `resource_mode = "performance"` 主动关闭了自适应，也可能是自动内存探测没有取得有效上限。后一种情况可用 `KILN_RESOURCE_MEMORY_MB` 手动指定。
 
 ### 在本地复现某一档位
 

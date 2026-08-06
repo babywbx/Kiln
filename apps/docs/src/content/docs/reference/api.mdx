@@ -1,43 +1,43 @@
 ---
 title: API 参考
-description: Kiln HTTP API 的凭据模型、错误约定、限流规则与全部已注册路由。
+description: Kiln HTTP API 的完整参考，包含凭据、错误、限流规则和所有已注册路由。
 sidebar:
   order: 4
 ---
 
-Kiln 的完整版二进制共注册 69 条路由，按凭据划分为四类：公开端点、会话或 API Token 端点、仅会话端点、播放端点。本页逐条列出全部路由，包括管理控制台专用、README 概览表未展开的接口。
+完整版 Kiln 共注册 69 条路由，可按凭据分为四类：公开端点、会话或 API Token 端点、仅限会话的端点，以及播放端点。以下清单也包含 README 未展开的管理控制台接口。
 
 <Aside type="note" title="版本">
-本页描述完整版（`kiln`）的路由面。Lite 变体（`kiln-lite`）只暴露其中 7 条，详见本页末尾的「Lite 变体」一节。
+本页描述完整版（`kiln`）提供的全部路由。Lite 变体（`kiln-lite`）只提供其中 7 条，详见本页末尾的「Lite 变体」一节。
 </Aside>
 
 ## 凭据模型
 
 四种凭据各管一段职责，互不越权。
 
-| 凭据 | 形态 | 传递方式 | 用途 |
+| 凭据 | 格式 | 传递方式 | 用途 |
 | --- | --- | --- | --- |
 | 无 | 无 | 无 | 健康探针、指标、EPG、台标、登录 |
 | 会话 JWT | Ed25519（EdDSA）签名的 JWT | `Authorization: Bearer <jwt>`；播放端点也接受 `?token=` | 管理控制台与交互式操作 |
-| 管理员 API Token | `kiln_v1_` 前缀加 48 位 base62 字符 | `Authorization: Bearer kiln_v1_...` | 脚本与自动化 |
+| 管理员 API 令牌 | `kiln_v1_` 前缀加 48 位 base62 字符 | `Authorization: Bearer kiln_v1_...` | 脚本与自动化 |
 | 播放密钥 | `v1` 前缀加 126 位 base62 字符 | 路径式 `/p/{token}/...` | 面向播放器的分发链接 |
 
 ### 传递方式
 
-`Authorization: Bearer` 头同时承载会话 JWT 和管理员 API Token。服务端先按 `kiln_v1_` 的形状判定是否为 API Token，形状不匹配时再按会话 JWT 解析，因此不需要额外的头部或参数来区分。
+`Authorization: Bearer` 请求头同时承载会话 JWT 和管理员 API 令牌。服务端先检查值是否采用 `kiln_v1_` 格式，若不是，再按会话 JWT 解析，因此不需要额外的请求头或参数来区分。
 
 播放端点额外接受两种传递方式：
 
 - 查询参数 `?token=<jwt>`，优先级高于 `Authorization` 头。
-- 路径式 `/p/{token}/`，其中 `{token}` 是播放密钥。此形态不读取任何请求头，链接本身即凭据。
+- 路径式 `/p/{token}/`，其中 `{token}` 是播放密钥。这种格式不读取任何请求头，链接本身就是凭据。
 
 ### 会话 JWT
 
-`POST /v1/auth/login` 用用户名和口令换取 JWT。令牌用 Ed25519 签名，带 issuer、audience、`exp`、`iat`、`nbf`、`jti` 与 30 秒时钟容差；有效期由 `auth.token_ttl` 决定，默认 24 小时。令牌中携带 `role` 与 `channels`，并绑定账号的 `auth_revision`：修改登录凭据会使已签发的旧令牌全部失效。
+`POST /v1/auth/login` 使用用户名和密码换取 JWT。令牌由 Ed25519 签名，包含签发者、受众、`exp`、`iat`、`nbf` 和 `jti`，校验时允许 30 秒的时钟偏差。有效期由 `auth.token_ttl_hours` 决定，默认为 24 小时。令牌还包含 `role` 和 `channels`，并与账户的 `auth_revision` 绑定；修改登录凭据后，此前签发的所有令牌都会立即失效。
 
 管理端点在鉴权之后还会检查 `role` 必须为 `admin`，非管理员会话访问会得到 403 `forbidden`。
 
-### 管理员 API Token
+### 管理员 API 令牌
 
 明文只在创建和轮换时返回一次，服务端仅保存 SHA-256 摘要与显示前缀。Token 有四种权限：
 
@@ -68,7 +68,7 @@ API Token 只能访问**已登记**的路由。登记表共 43 条，就是本�
 
 ### 错误响应
 
-所有错误使用统一的 JSON 形态：
+所有错误都采用统一的 JSON 格式：
 
 ```json
 {
@@ -98,7 +98,7 @@ API Token 只能访问**已登记**的路由。登记表共 43 条，就是本�
 
 ### 请求与响应头
 
-每个响应都带 `X-Request-ID`。请求携带该头时原样回显，否则由服务端生成。此外统一附加 `X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`、`X-Frame-Options: DENY`、`Content-Security-Policy` 与 `Cache-Control: no-store, no-cache, must-revalidate`。
+每个响应都带 `X-Request-ID`。请求携带该头时原样返回，否则由服务端生成。默认响应还会附加 `X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`、`X-Frame-Options: DENY`、`Content-Security-Policy` 与 `Cache-Control: no-store, no-cache, must-revalidate`；EPG、台标和不可变媒体分片使用各自的缓存策略。
 
 `OPTIONS` 请求直接返回 204。跨域头按 `security.cors_origins` 配置附加，未配置时不下发任何 CORS 头。配置了 `security.public_hosts` 时，`Host` 不在白名单内的请求返回 403 `forbidden`；来自回环地址的 `/healthz` 与 `/readyz` 不受此限制。
 
@@ -108,7 +108,8 @@ API Token 只能访问**已登记**的路由。登记表共 43 条，就是本�
 
 | 端点 | `If-Match` |
 | --- | --- |
-| `PUT`、`DELETE /v1/admin/settings`、`/v1/admin/egress` 及其 `proxies`、`rules` 子资源 | 必填，缺失即 409 |
+| `PUT /v1/admin/settings`、`PUT /v1/admin/egress` | 必填，缺失即 409 |
+| `/v1/admin/egress/proxies/{id}` 与 `/v1/admin/egress/rules/{id}` 的 `PUT`、`DELETE` | 必填，缺失即 409 |
 | `PUT`、`DELETE /v1/admin/epg/sources/{id}` | 必填，缺失返回 428（预设源的删除除外） |
 | `/v1/admin/api-tokens/{id}` 的更新、轮换、撤销、删除 | 必填，缺失即 409 |
 | `POST`、`PUT`、`DELETE /v1/admin/channels` 系列 | 可选，提供则校验 |
@@ -194,7 +195,7 @@ API Token 只能访问**已登记**的路由。登记表共 43 条，就是本�
 
 ## 会话或 API Token 端点
 
-登录会话或带相应权限的管理员 API Token 均可访问，不要求管理员角色。
+登录会话或具有相应权限的管理员 API 令牌均可访问，不要求管理员角色。
 
 | 方法 | 路径 | 权限 | 说明 |
 | --- | --- | --- | --- |
@@ -230,14 +231,14 @@ API Token 只能访问**已登记**的路由。登记表共 43 条，就是本�
 
 ## 仅会话端点
 
-只接受登录会话。管理员 API Token 访问这些路由会被拒绝，其中 `/v1/me/credentials`、`/v1/admin/api-tokens/*` 与 `/v1/admin/api-token-logs` 的拒绝原因为 `session_required`，`/v1/playlist.m3u` 的拒绝原因为 `route_not_available`。这道边界保证 Token 无法自我提权。
+只接受登录会话。管理员 API 令牌访问这些路由会被拒绝，其中 `/v1/me/credentials`、`/v1/admin/api-tokens/*` 与 `/v1/admin/api-token-logs` 的拒绝原因为 `session_required`，`/v1/playlist.m3u` 的拒绝原因为 `route_not_available`。这一限制可防止令牌自行提升权限。
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `GET` | `/v1/playlist.m3u` | 带会话令牌的播放列表 |
 | `PUT` | `/v1/me/credentials` | 修改登录凭据 |
-| `GET` | `/v1/admin/api-tokens` | 列出管理员 API Token |
-| `POST` | `/v1/admin/api-tokens` | 创建管理员 API Token |
+| `GET` | `/v1/admin/api-tokens` | 列出管理员 API 令牌 |
+| `POST` | `/v1/admin/api-tokens` | 创建管理员 API 令牌 |
 | `PUT` | `/v1/admin/api-tokens/{id}` | 更新名称、备注、权限、启用状态、有效期 |
 | `POST` | `/v1/admin/api-tokens/{id}/rotate` | 轮换明文 |
 | `POST` | `/v1/admin/api-tokens/{id}/revoke` | 撤销 |
@@ -342,7 +343,7 @@ API Token 只能访问**已登记**的路由。登记表共 43 条，就是本�
 
 ## 播放端点
 
-播放端点有两条并行的路径族：面向会话与预览令牌的 `/v1/play/`，以及面向播放密钥的 `/p/{token}/`。两者的三种文件形态一一对应。
+播放端点分为两组路径：供会话与预览令牌使用的 `/v1/play/`，以及供播放密钥使用的 `/p/{token}/`。两组路径提供相同的三种文件格式。
 
 | 方法 | 路径 | 凭据 | 说明 |
 | --- | --- | --- | --- |
@@ -354,7 +355,7 @@ API Token 只能访问**已登记**的路由。登记表共 43 条，就是本�
 | `GET` | `/p/{token}/play/{id}/live/{file}` | 路径内的播放密钥 | 本地封装产物 |
 | `GET` | `/p/{token}/play/{id}/u/{upstream}` | 路径内的播放密钥 | 已签名的上游回源代理 |
 
-### 三种文件形态
+### 三种文件格式
 
 - `index.m3u8` 是入口。HLS 入流会拉取上游播放列表并改写地址；DASH 入流返回本地封装出的主播放列表。
 - `live/{file}` 提供本地封装产物，文件名不允许包含路径分隔符。发布代次变化时会带 `g` 查询参数做 307 跳转，代次已失效返回 410 并带 `Retry-After`。低延迟场景下 `_HLS_msn`、`_HLS_part`、`_HLS_skip` 指令会被解析并阻塞等待，最长 15 秒。不可变分片带 `Cache-Control: private, max-age=31536000, immutable`。
@@ -372,7 +373,7 @@ API Token 只能访问**已登记**的路由。登记表共 43 条，就是本�
 
 ## 管理端点
 
-以下路由全部位于 `/v1/admin` 之下，要求管理员角色。会话与管理员 API Token 均可访问，Token 需要表中标注的权限。
+以下路由全部位于 `/v1/admin` 之下，要求管理员角色。登录会话与管理员 API 令牌均可访问，令牌需要具备表中标注的权限。
 
 ### 频道
 
@@ -464,7 +465,7 @@ DASH 频道的探测返回 `{"ok": true, "dur_ms": 1200, "inspection": {...}}`�
 
 `GET /v1/admin/epg/sources` 返回 `{"sources": [...], "statuses": [...]}`。`sources` 中每项为 `{"source": {...}, "enabled": true, "revision": 1, "updated_at": 0}`；`statuses` 每项含 `source_id`、`last_attempt`、`last_success`、`stale`、`error`、`channel_count`、`programme_count`、`available` 与 `metadata`。
 
-源的写入体为 `{"id": "...", "name": "...", "url": "...", "timezone": "...", "proxy": "direct", "enabled": true}`，多余字段会被拒绝。`id` 必填；URL 必须是 http 或 https；`timezone` 必须是有效的 IANA 时区；`proxy` 为 `auto` 或某条已配置线路的 ID，缺省为 `direct`。预设源可只提交覆盖字段，其余回落到预设值。创建返回 201、更新返回 200，都带 `{"ok": true, "source": {...}}`。
+源的写入体为 `{"id": "...", "name": "...", "url": "...", "timezone": "...", "proxy": "direct", "enabled": true}`，多余字段会被拒绝。`id` 必填；URL 必须是 http 或 https；`timezone` 必须是有效的 IANA 时区；`proxy` 为 `auto` 或某条已配置线路的 ID，缺省为 `direct`。修改预设源时可以只提交需要覆盖的字段，其余仍使用预设值。创建返回 201、更新返回 200，都带 `{"ok": true, "source": {...}}`。
 
 `GET /v1/admin/epg/matches` 返回 `{"matches": [...]}`，每项含 `channel_id`、`status`，以及可选的 `match`、`candidates`、`logo_candidates`。
 
@@ -579,7 +580,7 @@ DASH 频道的探测返回 `{"ok": true, "dur_ms": 1200, "inspection": {...}}`�
 
 代理地址在响应中只保留协议与主机，凭据是否配置由 `credential_configured` 表示。写入时若地址的协议与主机未变且未带凭据，已保存的凭据会被保留。
 
-代理线路要求 `id` 与 `url`，协议限 `http`、`https`、`socks5`、`socks5h`，`id` 不能是保留值 `direct`。路由规则的 `kind` 取值为 `host_suffix`、`host_exact`、`channel`、`host_regex`、`url_regex`，正则类会在写入前编译校验；规则不能引用不存在或已停用的线路。`playlist_policy` 取值为 `rewrite`、`passthrough`、`auto`。删除线路时引用它的规则一并移除，默认线路回落为 `direct`。
+代理线路必须提供 `id` 和 `url`。地址协议仅支持 `http`、`https`、`socks5` 和 `socks5h`，且 `id` 不能使用保留值 `direct`。路由规则的 `kind` 可设为 `host_suffix`、`host_exact`、`channel_id`、`host_regex` 或 `url_regex`；保存正则规则前，Kiln 会先检查表达式是否有效。规则不能引用不存在或已停用的线路。`playlist_policy` 可设为 `rewrite`、`passthrough` 或 `auto`。删除线路时，引用它的规则也会一并删除；如果它是默认线路，默认出口会恢复为 `direct`。
 
 单条增删改在服务端读取当前配置、套用改动、整体校验后写回，因此同样受 `If-Match` 保护。
 

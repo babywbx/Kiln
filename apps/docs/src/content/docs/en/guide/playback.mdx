@@ -1,11 +1,11 @@
 ---
 title: Playback & distribution
-description: Playback URL shapes, authentication, the full playlist, path-based playback keys, and on-demand start and reclaim behaviour.
+description: Get playback URLs and the full playlist, choose the right credential, and understand how on-demand channels start and stop.
 sidebar:
   order: 3
 ---
 
-Once the channels are configured, only two questions remain: what the URLs look like, and who is allowed to fetch them. This page covers every playback-side surface.
+After you configure a channel, two questions remain: which URL should the player open, and which credential should it use? The sections below cover every playback endpoint.
 
 ## Playback URLs
 
@@ -66,7 +66,7 @@ Create and maintain keys under Playback Access Control in the admin console, or 
 
 - **Shown once**: the plaintext is returned only at creation. The server keeps a SHA-256 digest and the first ten characters as a prefix, so a lost key can only be replaced.
 - **Scopable**: a key covers every channel by default, or a chosen subset. Channels outside the scope return 403 and never appear in that key's playlist.
-- **Expiring**: an optional expiry invalidates the key automatically.
+- **Optional expiration**: an expiration date invalidates the key automatically.
 - **Revocable**: revoking or disabling takes effect immediately, with no restart.
 - **Auditable**: every use writes a playback access log entry.
 

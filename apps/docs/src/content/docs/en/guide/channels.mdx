@@ -1,17 +1,17 @@
 ---
 title: Channels & upstreams
-description: The channel model field by field, upstream definitions, config versus console ownership, and enable, import, and self-check operations.
+description: Configure channels and upstreams, understand each field, and manage enablement, import, export, and preflight checks.
 sidebar:
   order: 2
 ---
 
-A channel is the only real object in Kiln. It binds one upstream address, one ingress format, and one run policy together, and shows up externally as a single playback URL plus a line in the playlist. This page covers that model field by field.
+A channel is Kiln's core object. It combines an upstream address, an input format, and a run policy, then exposes one playback URL and one entry in the playlist. The sections below follow the order of the configuration fields.
 
 ## The channel model
 
 ### Identity and presentation
 
-- `id`: the unique identifier. It appears in playback URLs, in the playlist's `tvg-id` attribute, and in access logs. Changing it creates a different channel as far as players are concerned, so favourites and history on the client side are lost.
+- `id`: the unique identifier. It appears in playback URLs, in the playlist's `tvg-id` attribute, and in access logs. Changing it creates a different channel as far as players are concerned, so favorites and history on the client side are lost.
 - `title`: display name. Falls back to `id` when empty.
 - `group`: group name, written to the playlist's `group-title` attribute.
 - `logo_url`: logo address. When it is empty and a built-in logo candidate matches, the playlist points at `/v1/logo/{id}` instead and Kiln fetches the image for you.
@@ -33,13 +33,13 @@ There are two ways to point at a source, and you pick exactly one:
 
 - `on_demand`: release the upstream connection when nobody is watching. Enabling it puts the channel under idle reclamation.
 - `autostart`: pull the channel up when the process starts, without waiting for a viewer.
-- `idle_timeout_sec`: how long counts as nobody watching. Values of zero or below normalise to `90` seconds. Only applies to `on_demand` channels.
+- `idle_timeout_sec`: how long counts as nobody watching. Values of zero or below normalize to `90` seconds. Only applies to `on_demand` channels.
 - `max_viewers`: concurrent viewer ceiling. Above zero it enables viewer leases and returns 429 once the ceiling is hit; empty or zero means unlimited.
 - `restart_on_failure`: restart automatically after the upstream drops. Forced on for DASH channels at save time.
 
 The two switches combine into the three run modes shown in the admin console:
 
-| `autostart` | `on_demand` | Console label | Behaviour |
+| `autostart` | `on_demand` | Console label | Behavior |
 | --- | --- | --- | --- |
 | off | on | Start when viewed | The first viewer starts it, idle reclaims it |
 | on | on | Prewarm at startup | Started at boot, still reclaimed when idle |
@@ -57,8 +57,14 @@ These fields apply only to the DASH repackaging path. HLS channels are proxied s
 
 - `prefer_height`: target vertical resolution. Zero or empty falls back to `[ffmpeg].prefer_height`.
 - `preferred_audio_languages`: audio language codes in priority order, for example `["zh", "en"]`.
-- `selection`: finer-grained track selection with a separate mode and track for video, audio, and subtitles. See [Variants & tracks](/en/guide/variants/).
-- `packager`: a per-channel engine override taking the same values as `[packager].engine`. An invalid value is ignored and the global setting applies.
+- `selection`: finer-grained track selection with a separate mode and track for video, audio, and subtitles.
+- `packager`: sets the packaging engine for this channel and accepts the same values as `[packager].engine`. Leave it empty to use the global setting. Any other value fails configuration validation.
+
+#### Fine-grained track selection
+
+Video can be selected automatically, capped at a maximum resolution, or matched to one exact track. Audio can follow a language preference or accept only a specified track. Subtitles can also be turned off. Selectors can match `key`, language, role, codec, resolution, or DASH AdaptationSet and Representation IDs. The `exact` and `only` modes require at least one selector field.
+
+With the `ffmpeg` engine, subtitles support `auto` and `off` only. See the [channel configuration reference](/en/reference/config/#channelsselection) for every field and accepted value.
 
 ### Request headers
 
@@ -102,7 +108,7 @@ autostart = false
 
 ## Config file versus admin console
 
-The two are not the same store, and the boundary is worth memorising:
+The two are not the same store, so keep these boundaries in mind:
 
 - **Channels**: the `[[channels]]` blocks are written into SQLite only on first start, while the channel table is still empty. From then on the database is the single source of truth: editing the config file neither reseeds nor overwrites console changes. Bulk-adjust existing channels through the console or the admin API instead.
 - **Upstreams**: `[[upstreams]]` is always read from the configuration file, and the console cannot add or edit them. Saving a channel validates that the referenced `upstream` exists in the config, and rejects it otherwise.
@@ -115,8 +121,7 @@ The `lite` variant creates no database. Its channels come entirely from the conf
 
 - Individual channels toggle through the `disabled` field; both the console switch and the admin API write to it.
 - Bulk operations map to `POST /v1/admin/channels/enable-all` and `POST /v1/admin/channels/disable-all`, and require the `write` scope.
-- Disabling only hides the channel. It deletes nothing and does not disturb the channel's position in the list.
-- A running session is not torn down by disabling. Stop it explicitly with `DELETE /v1/admin/sessions/{id}` when you need to.
+- Disabling a channel does not delete its definition or change its position in the list. It does stop the current playback session immediately and removes the channel from public listings.
 
 ## M3U import and export
 

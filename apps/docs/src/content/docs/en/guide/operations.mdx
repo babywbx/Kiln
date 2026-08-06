@@ -1,11 +1,11 @@
 ---
 title: Operations
-description: Running Kiln for the long haul, covering systemd and Windows services, the data directory and backups, upgrades, logging, health checks, metrics, OTLP tracing, pprof, and resource adaptation.
+description: Run Kiln as a service, manage backups and upgrades, and configure logs, health checks, metrics, tracing, diagnostics, and resource limits.
 sidebar:
   order: 10
 ---
 
-This page covers everything that happens after Kiln is up: wiring it into the init system, knowing what lives in the data directory and how to back it up, upgrading safely, and configuring logs, health checks, metrics, traces, and the resource adaptation layer.
+Use this guide for day-to-day operation after Kiln is running: register a system service, back up data, upgrade safely, and configure logs, health checks, metrics, tracing, and resource adaptation.
 
 ## Running as a service
 
@@ -84,7 +84,7 @@ On Windows the built-in `kiln.exe service` subcommands register the service, so 
 | `epg/` | EPG disk cache, used when `epg.cache_dir` is empty | No, refetchable |
 | `sessions/<channel-id>/<generation>/` | Per-session media working directory, further split into `native/` and `ffmpeg/` | No, rebuilt on start |
 
-The simplest backup is to stop the process and copy the whole directory. For an online copy, always include `kiln.db-wal`, because grabbing only the main file loses everything not yet checkpointed. You can skip `sessions/` entirely; it is wiped and rebuilt whenever a session starts.
+The simplest reliable backup is to stop Kiln and copy the entire data directory. For an online backup, use the SQLite Backup API or a snapshot tool with equivalent consistency guarantees. Copying `kiln.db` and `kiln.db-wal` separately does not guarantee a point-in-time snapshot. You can skip `sessions/`; Kiln recreates it when a new session starts.
 
 <Aside type="caution" title="Losing the signing key">
   If `auth/ed25519.pem` is lost or regenerated, every issued session JWT becomes invalid immediately and both the admin UI and player clients have to log in again. To share one credential set across instances, inject the key explicitly with `auth.token_private_key_file` or `KILN_TOKEN_PRIVATE_KEY_FILE` instead of relying on auto-generation.
@@ -175,7 +175,7 @@ Neither endpoint requires credentials, and they mean different things. Do not us
 
 When `security.public_hosts` is set, requests whose `Host` header is not on the list are rejected with `403 host not allowed`. So that probes are not caught by this rule, `/healthz` and `/readyz` requests originating from a loopback address are explicitly exempt. If you probe from another machine, add that hostname or IP to `public_hosts`.
 
-The binary ships a health-check subcommand with a 3 second timeout. Exit code 0 on 2xx, 1 otherwise:
+The binary ships a health-check subcommand with a 3-second timeout. It exits with code 0 for a 2xx response and code 1 otherwise:
 
 ```bash
 kiln -healthcheck http://127.0.0.1:8080/healthz
@@ -323,7 +323,7 @@ start_segments=1 prefetch_segments=1
 epg_refresh_concurrency=1 epg_max_source_mb=4
 ```
 
-`effective_memory_mb` is what was detected, `memory_limit_mb` is the Go soft target that was written, and `effective_go_memory_limit_mb` is what the runtime actually applies. When the three disagree, check for `GOMEMLIMIT` first. A `resource_profile` of `configured` means memory detection returned nothing and profile selection was skipped entirely. Set `KILN_RESOURCE_MEMORY_MB` explicitly in that case.
+`effective_memory_mb` is the detected limit, `memory_limit_mb` is the Go soft target Kiln set, and `effective_go_memory_limit_mb` is the value the runtime applies. If they differ, check `GOMEMLIMIT` first. A `resource_profile` of `configured` means the configured values remained in effect, either because `resource_mode = "performance"` disabled adaptation or because automatic memory detection found no usable limit. In the latter case, set `KILN_RESOURCE_MEMORY_MB` explicitly.
 
 ### Reproducing a profile locally
 

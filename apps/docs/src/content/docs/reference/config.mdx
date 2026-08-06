@@ -1,11 +1,11 @@
 ---
 title: 配置参考
-description: Kiln 配置文件的全部配置节与键，含类型、默认值、约束与环境变量等价项。
+description: Kiln 配置文件的完整参考，包含每个配置节与键的类型、默认值、约束和对应环境变量。
 sidebar:
   order: 2
 ---
 
-本页按配置节逐键列出 Kiln 的配置文件格式。默认值一栏写的是源码中实际生效的值，可能与示例文件里写出的值不同：示例文件是一份可用的起点，不是默认值清单。
+以下内容按配置节列出所有键。表中的默认值来自实际代码，可能与示例文件中写出的值不同。示例文件可直接用作配置起点，但不代表所有内置默认值。
 
 ## 文件格式与加载
 
@@ -49,7 +49,7 @@ kiln -config /etc/kiln/kiln.toml
   </Step>
 </Steps>
 
-校验通过之后，资源自适应才开始工作：它会依据探测到的内存与 CPU 上限，**只下压不上调**地覆盖 `server.memory_limit_mb`、`packager.inflight_bytes`、`packager.max_segment_bytes`、`packager.start_segments`、`packager.prefetch_segments`、`epg.max_refresh_concurrency` 与 `epg.max_source_bytes`。启动日志会打印生效后的实际值。
+校验通过后，资源自适应会根据探测到的内存与 CPU 上限，降低 `server.memory_limit_mb`、`packager.inflight_bytes`、`packager.max_segment_bytes`、`packager.start_segments`、`packager.prefetch_segments`、`epg.max_refresh_concurrency` 与 `epg.max_source_bytes`，但不会提高配置中已经较低的值。启动日志会显示最终生效值。
 
 ### 配置与数据库的分工
 
@@ -74,13 +74,13 @@ kiln -config /etc/kiln/kiln.toml
 - `constrained`：跳过探测，直接套用最紧的 compact 预算。
 - `performance`：完全退出自适应，配置值原样生效。
 
-三种模式下的下压都是单向的：自适应只会把你配置的数值调小，不会把更小的数值调大。档位对应的具体预算、CPU 上限规则与 Lite 变体的固定档位见 [/guide/variants/](/guide/variants/)。
+三种模式的调整都是单向的：自适应只会降低配置值，不会调高更小的值。各档位预算、CPU 上限和 Lite 版固定预算见[资源自适应](/guide/operations/#资源自适应)。
 
 ## `[logging]`
 
 | 键 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `level` | string | `"info"` | 日志级别，识别 `debug`、`info`、`warn`、`error` 及其常见别名，无法识别的值回落到 `info`。等价环境变量 `KILN_LOG_LEVEL`。 |
+| `level` | string | `"info"` | 日志级别，识别 `debug`、`info`、`warn`、`error` 及其常见别名，无法识别时使用 `info`。等价环境变量 `KILN_LOG_LEVEL`。 |
 | `format` | string | `"text"` | 输出格式，`json` 走结构化 JSON 处理器，其余值都按控制台文本处理。等价环境变量 `KILN_LOG_FORMAT`。 |
 | `color` | string | `"auto"` | 着色策略，`always` 强制着色，`never` 关闭，其余值按 `auto` 处理，即输出为终端且未设 `NO_COLOR` 时着色。仅对 `text` 格式有意义。等价环境变量 `KILN_LOG_COLOR`。 |
 
@@ -225,10 +225,10 @@ pprof 使用独立的监听器与路由，永远不会挂到对外的 HTTP 服�
 
 | 键 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `id` | string | 必填 | 线路标识，被 `egress.default`、`[[egress.rules]]`、`[[upstreams]]` 与 `[[epg.sources]]` 引用。`direct` 是保留标识，代表直连。 |
+| `id` | string | 必填 | 线路标识，被 `egress.default`、`[[egress.rules]]` 与 `[[epg.sources]]` 引用。`direct` 是保留标识，代表直连。 |
 | `name` | string | `""` | 展示名称。 |
 | `url` | string | 必填 | 代理地址，协议限 `http`、`https`、`socks5`、`socks5h`，例如 `http://127.0.0.1:7890` 或 `socks5h://127.0.0.1:7891`。 |
-| `disabled` | bool | `false` | 是否停用。停用的线路不参与路由，引用它的决策会回落到直连。 |
+| `disabled` | bool | `false` | 是否停用。停用的线路不参与路由，引用它的决策会改用直连。 |
 
 ## `[egress]`
 
@@ -269,7 +269,7 @@ pprof 使用独立的监听器与路由，永远不会挂到对外的 HTTP 服�
 | `group` | string | `""` | 分组名称，用于播放列表与管理界面归类。 |
 | `logo_url` | string | `""` | 台标地址。 |
 | `epg_id` | string | `""` | 与 XMLTV 中频道 ID 精确匹配用的标识。 |
-| `epg_name` | string | `""` | 按名称匹配 XMLTV 频道时使用的名称，留空则回落到 `title`。 |
+| `epg_name` | string | `""` | 按名称匹配 XMLTV 频道时使用的名称，留空则使用 `title`。 |
 | `epg_source` | string | `""` | 限定只在某个 `[[epg.sources]].id` 中匹配。 |
 | `source_url` | string | `""` | 直接指定绝对源地址。非空时必须是 `http` 或 `https`、带主机名、不含 fragment，此时不再需要 `upstream` 与 `path`。 |
 | `upstream` | string | 条件必填 | 引用的 `[[upstreams]].id`。未填 `source_url` 时必填且必须存在，否则校验失败。 |
@@ -299,7 +299,7 @@ pprof 使用独立的监听器与路由，永远不会挂到对外的 HTTP 服�
 | `video.max_frame_rate` | string | `""` | 帧率上限。当前仅做长度与控制字符校验，尚未参与选轨。 |
 | `video.track` | table | `{}` | 视频轨选择器，字段见下表。 |
 | `audio.mode` | string | `""` | 取值 `auto`、`prefer`、`only`，留空等同 `auto`。`only` 要求 `audio.track` 至少填一项，否则校验失败。 |
-| `audio.preferred_languages` | array of string | `[]` | 音轨语言优先级，留空时回落到频道级 `preferred_audio_languages`。 |
+| `audio.preferred_languages` | array of string | `[]` | 音轨语言优先级，留空时使用频道级 `preferred_audio_languages`。 |
 | `audio.track` | table | `{}` | 音轨选择器。 |
 | `subtitles.mode` | string | `""` | 取值 `auto`、`off`、`prefer`、`only`，留空等同 `auto`。`prefer` 与 `only` 都要求 `subtitles.track` 至少填一项。 |
 | `subtitles.track` | table | `{}` | 字幕轨选择器。 |
@@ -317,4 +317,4 @@ pprof 使用独立的监听器与路由，永远不会挂到对外的 HTTP 服�
 | `height` | int | 视频高度，需为正数才视为已指定。 |
 | `frame_rate` | string | 帧率。 |
 
-所有字符串字段长度不得超过 512，且不得包含控制字符，否则校验失败。使用 `ffmpeg` 引擎时，`subtitles.mode` 取 `prefer` 或 `only` 会直接校验失败，只能用 `auto` 或 `off`。频道字段与选轨的实操说明见 [/guide/channels/](/guide/channels/)。
+所有字符串字段长度不得超过 512，且不得包含控制字符，否则校验失败。使用 `ffmpeg` 引擎时，`subtitles.mode` 取 `prefer` 或 `only` 会直接校验失败，只能用 `auto` 或 `off`。实际配置方法见 [精确选择轨道](/guide/channels/#精确选择轨道)。

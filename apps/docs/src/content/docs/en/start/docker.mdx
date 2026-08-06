@@ -5,7 +5,7 @@ sidebar:
   order: 3
 ---
 
-Kiln ships three image variants with explicit boundaries, sharing one configuration model and the same native media modules. Which one you want comes down to two questions: do you need the FFmpeg compatibility fallback, and do you need the database and admin console.
+Kiln provides three Docker images that use the same configuration model and native media modules. Choose based on two needs: the FFmpeg compatibility fallback, and the database and admin console.
 
 ## The three variants
 
@@ -103,7 +103,7 @@ Three details worth noting. Setting the log color to `never` keeps ANSI escapes 
 
 Neither `/healthz` nor `/readyz` requires credentials. `/healthz` means the process is alive; `/readyz` additionally verifies the compatibility engine, returning 503 only when the config contains a DASH channel resolving to the ffmpeg engine while ffmpeg is unavailable.
 
-Every image carries a `HEALTHCHECK`: a 30 second interval, a 3 second timeout, a 10 second start period, and three consecutive failures before the container is marked unhealthy. Core and full probe `/healthz` with `wget`. Lite is built on scratch and has no external commands at all, so it uses the binary's own `-healthcheck` subcommand for the same probe. That subcommand is useful on its own:
+Every image carries a `HEALTHCHECK`: a 30-second interval, a 3-second timeout, a 10-second start period, and three consecutive failures before the container is marked unhealthy. Core and Full probe `/healthz` with `wget`. Lite is built on scratch and has no external commands at all, so it uses the binary's own `-healthcheck` subcommand for the same probe. That subcommand is useful on its own:
 
 ```bash
 docker exec kiln /usr/local/bin/kiln -healthcheck http://127.0.0.1:8080/healthz

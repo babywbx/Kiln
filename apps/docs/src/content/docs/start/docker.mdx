@@ -1,11 +1,11 @@
 ---
 title: Docker 部署
-description: 三个镜像变体、拉取方式、最小运行命令与容器内的资源行为。
+description: 比较三个 Docker 镜像版本，并了解拉取、运行、健康检查、资源管理和数据持久化。
 sidebar:
   order: 3
 ---
 
-Kiln 发布三个镜像变体，边界明确，共用同一套配置模型和同一份原生媒体模块。选哪一个取决于是否需要 FFmpeg 兼容回退，以及是否需要数据库与管理控制台。
+Kiln 提供三个 Docker 镜像版本，它们使用相同的配置模型和原生媒体模块。选择时只需考虑两点：是否需要 FFmpeg 兼容回退，以及是否需要数据库和管理控制台。
 
 ## 三个变体
 
@@ -35,7 +35,7 @@ docker pull ghcr.io/babywbx/kiln:latest   # full，内置 ffmpeg
 
 正式版本会同时推出精确版本号与浮动标签：
 
-| 标签形态 | 含义 |
+| 标签格式 | 含义 |
 | --- | --- |
 | `:1.0.0-lite`、`:1.0-lite`、`:1-lite`、`:lite` | lite 变体的精确版本、次版本、主版本与最新版 |
 | `:1.0.0-core`、`:1.0-core`、`:1-core`、`:core` | core 变体的同一组标签 |
@@ -113,7 +113,7 @@ docker exec kiln /usr/local/bin/kiln -healthcheck http://127.0.0.1:8080/healthz
 
 `server.resource_mode` 默认为 `auto`。进程启动时会探测 cgroup 里的实际内存与 CPU 限制，据此收紧 Go 软内存目标、分片内存预算、单段上限与流水线并发。探测覆盖 cgroup v1 与 v2、嵌套 cgroup、父级继承的限制以及小数 CPU quota，也就是说 `docker run --cpus` 与 `--memory` 会被真实读到。
 
-自适应只下压、不上调：配置里已经写得更低的值不会被抬高。启动日志会打印探测结果、生效档位和全部预算，用来核对容器是否落在预期档位。
+资源自适应只会降低限制，不会提高配置中已经较低的值。启动日志会显示探测结果、当前档位和全部预算，便于确认容器是否使用了预期档位。
 
 ```bash
 # 复现低资源策略

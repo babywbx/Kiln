@@ -1,11 +1,11 @@
 ---
 title: 出站代理
-description: 用可复用的代理线路与按域名的路由规则，控制 Kiln 回源、抓取节目单与取台标时走哪条出口。
+description: 配置可复用的代理和路由规则，控制 Kiln 访问节目源、节目单和台标时使用的网络出口。
 sidebar:
   order: 8
 ---
 
-Kiln 的出站路由分两层：`[[proxies]]` 定义可复用的线路，`[egress]` 决定什么流量走哪条线路。频道、节目单源和台标抓取共用同一套路由，不需要各自配置代理。
+Kiln 用两层配置管理出站流量：`[[proxies]]` 定义可复用的代理，`[egress]` 决定哪些请求使用哪个出口。节目源、节目单和台标共用同一套路由，无需分别设置。
 
 ## 模型总览
 
@@ -15,7 +15,7 @@ Kiln 的出站路由分两层：`[[proxies]]` 定义可复用的线路，`[egres
   <Step title="按优先级匹配规则">
     规则按 `priority` 升序遍历，命中的第一条决定出口，后面的规则不再参与。
   </Step>
-  <Step title="回落到默认出口">
+  <Step title="使用默认出口">
     没有任何规则命中时使用 `egress.default`。
   </Step>
   <Step title="解析线路">
@@ -47,8 +47,8 @@ pattern = "example-cdn.com"
 proxy = "proxy-http"
 ```
 
-<Aside type="note" title="控制台是权威来源">
-  出站配置和频道一样保存在 SQLite 中。配置文件里的 `[[proxies]]` 与 `[[egress.rules]]` 只在数据库还没有任何线路记录时播种一次，`default`、`playlist_policy`、`docker_proxy_host` 也只在对应设置项尚不存在时写入。首次启动之后，请在 [管理控制台](/guide/admin/) 里修改。
+<Aside type="note" title="首次启动后请使用控制台">
+  出站配置和频道一样保存在 SQLite 中。只有数据库中还没有线路记录时，Kiln 才会写入配置文件里的 `[[proxies]]` 与 `[[egress.rules]]`；`default`、`playlist_policy`、`docker_proxy_host` 也只会在对应设置尚不存在时写入。首次启动后，请在 [管理控制台](/guide/admin/) 中修改。
 </Aside>
 
 ## 定义线路

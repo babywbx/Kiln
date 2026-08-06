@@ -1,11 +1,11 @@
 ---
 title: 快速开始
-description: 三条部署路径与最短验证流程。
+description: 选择安装方式，启动 Kiln，并用三条命令验证服务和播放。
 sidebar:
   order: 1
 ---
 
-Kiln 把上游的 HLS 与 DASH 频道收成一个入口，对外只暴露一份带鉴权的 M3U 播放列表和随取随用的 HLS 输出。整套服务是单个二进制，DASH 的解密与重封装由 Go 原生实现，默认不需要 FFmpeg。
+Kiln 将上游 HLS 与 DASH 频道汇集到一个入口，对外提供带鉴权的 M3U 播放列表和按需生成的 HLS。整个服务只有一个二进制，DASH 解密与重封装由 Go 原生实现，默认无需 FFmpeg。
 
 ## 三条部署路径
 

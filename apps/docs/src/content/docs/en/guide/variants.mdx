@@ -1,11 +1,11 @@
 ---
 title: Lite, Core & Full
-description: Capability boundaries of the three distribution variants, how they are built and shipped, Lite's fixed resource budget, controlled benchmark results, and how to pick one.
+description: Compare the features, size, resource budget, and distribution of Lite, Core, and Full, then choose the right build.
 sidebar:
   order: 6
 ---
 
-Kiln ships three variants. They share one configuration model and the same native media modules; what differs is how complete the control plane is, whether ffmpeg is bundled, and how tight the resource budget is.
+Kiln comes in Lite, Core, and Full builds. All three use the same configuration model and native media modules. They differ in management features, whether FFmpeg is included, and their resource budgets.
 
 ## The three variants
 
@@ -28,7 +28,7 @@ Kiln ships three variants. They share one configuration model and the same nativ
   Core does not strip the compatibility code at compile time; the official image simply does not contain an ffmpeg executable. Putting one into a Core container yourself moves that boundary. Lite is the variant that really is trimmed at compile time.
 </Aside>
 
-The default packager an image provides is injected through `KILN_DEFAULT_PACKAGER_ENGINE` and only applies when the config omits `[packager].engine`. The same config never changes behaviour just because the image tag changed — see [Media engine](/en/guide/media-engine/).
+The default packager an image provides is injected through `KILN_DEFAULT_PACKAGER_ENGINE` and only applies when the config omits `[packager].engine`. The same config never changes behavior just because the image tag changed. See [Media engine](/en/guide/media-engine/).
 
 ## How they are built and shipped
 

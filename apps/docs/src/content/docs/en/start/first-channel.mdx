@@ -1,17 +1,17 @@
 ---
 title: Your first channel
-description: From origin definition to verified playback, end to end.
+description: Define an upstream and channel, start Kiln, and verify playback.
 sidebar:
   order: 5
 ---
 
-A playable channel is two things: an `[[upstreams]]` entry saying where the origin is, and a `[[channels]]` entry saying which path to pull from it and in what format. Here is the whole flow.
+A playable channel needs two configuration entries: `[[upstreams]]` identifies the origin, and `[[channels]]` selects the path and format. Follow these steps to configure the channel and verify playback.
 
 ## From config to playback
 
 <Steps>
   <Step title="Define the origin">
-    An origin needs an id and a base URL. Channels reference it with `upstream` and append `path`, so moving the origin to another host or port is a one-line change.
+    An origin needs an ID and a base URL. Channels reference it with `upstream` and append `path`, so moving the origin to another host or port is a one-line change.
 
     ```toml title="kiln.toml"
     [[upstreams]]
@@ -59,7 +59,7 @@ A playable channel is two things: an `[[upstreams]]` entry saying where the orig
     on_demand = true
     ```
 
-    `keys_file` is a single global `kid:key` catalog shared by every DASH channel. One enabled DASH channel without it is enough to fail startup outright. Track and rendition selection is covered in [Variants and ABR](/en/guide/variants/).
+    `keys_file` is a single global `kid:key` catalog shared by every DASH channel. One enabled DASH channel without it is enough to fail startup outright. See [Fine-grained track selection](/en/guide/channels/#fine-grained-track-selection) for track and resolution controls.
   </Step>
 
   <Step title="Write the key file">
@@ -104,7 +104,7 @@ These two switches decide when the upstream connection is opened and when it is 
 
 With neither set, `on_demand` is turned on automatically, so on-demand pulling is the default.
 
-Reclamation is handled by a reaper that runs every 5 seconds: a channel untouched for longer than its `idle_timeout_sec` (90 seconds by default) is stopped, and the next request cold-starts it again. A cold start has to pull enough segments from the origin before the first playlist can be published, so an on-demand channel takes noticeably longer to produce its first frames than a resident one. That latency is governed by `start_segments` and `inflight_bytes` under `[packager]`; the trade-off is explained in [Media engine](/en/guide/media-engine/).
+Kiln checks for idle channels every 5 seconds. A channel with no viewers for longer than `idle_timeout_sec` (90 seconds by default) is stopped, and the next request starts it again. Startup must fetch enough segments before publishing the first playlist, so an on-demand channel takes longer to show its first frame than an always-running one. The delay is controlled by `start_segments` and `inflight_bytes` under `[packager]`; see [Media engine](/en/guide/media-engine/) for tuning guidance.
 
 A channel without `on_demand` is never reclaimed for idleness and stays connected once started. The switch also shapes restart behavior after an upstream failure: an on-demand channel that has already passed its idle window ends the session instead of restarting it.
 

@@ -1,11 +1,11 @@
 ---
 title: API reference
-description: Credential model, error contract, rate limits, and every registered route in the Kiln HTTP API.
+description: Complete reference for the Kiln HTTP API, including credentials, errors, rate limits, and every registered route.
 sidebar:
   order: 4
 ---
 
-The full Kiln binary registers 69 routes, split across four credential classes: public endpoints, session-or-token endpoints, session-only endpoints, and playback endpoints. This page lists all of them, including the admin-console-only routes the README overview table folds away.
+The full Kiln binary registers 69 routes in four credential classes: public endpoints, session-or-token endpoints, session-only endpoints, and playback endpoints. The list below also includes admin console routes that are not expanded in the README.
 
 <Aside type="note" title="Which build">
 This page covers the full build (`kiln`). The Lite variant (`kiln-lite`) exposes 7 of these routes; see the Lite variant section at the end.
@@ -33,7 +33,7 @@ Playback endpoints accept two additional forms:
 
 ### Session JWTs
 
-`POST /v1/auth/login` exchanges a username and password for a JWT. Tokens are Ed25519-signed and carry issuer, audience, `exp`, `iat`, `nbf`, and `jti`, validated with 30 seconds of clock leeway. Lifetime comes from `auth.token_ttl` and defaults to 24 hours. The token carries `role` and `channels` and is bound to the account's `auth_revision`, so changing login credentials invalidates every previously issued token.
+`POST /v1/auth/login` exchanges a username and password for a JWT. Tokens are signed with Ed25519 and include issuer, audience, `exp`, `iat`, `nbf`, and `jti`, with 30 seconds of clock leeway during validation. Lifetime comes from `auth.token_ttl_hours` and defaults to 24 hours. Each token also includes `role` and `channels` and is bound to the account's `auth_revision`, so changing login credentials invalidates every previously issued token.
 
 Admin endpoints additionally require `role` to be `admin`. A non-admin session gets 403 `forbidden`.
 
@@ -62,7 +62,7 @@ Every API token request is written to the audit log, allowed or denied. Read it 
 
 ### Playback keys
 
-Playback keys are created under Playback Access Control in the admin console. They can be scoped to all channels or an explicit channel ID list, given an expiry, and revoked at any time. Every use through `/p/{token}/` is recorded in the playback access log. The first 10 characters serve as the display prefix, and both the access log and the request log keep only that prefix.
+Playback keys are created under Playback Access Control in the admin console. They can cover all channels or a specific list of channel IDs, have an optional expiration date, and be revoked at any time. Every use through `/p/{token}/` is recorded in the playback access log. The first 10 characters serve as the display prefix, and both the access log and the request log keep only that prefix.
 
 ## Shared conventions
 
@@ -98,7 +98,7 @@ Every error uses the same JSON shape:
 
 ### Request and response headers
 
-Every response carries `X-Request-ID`, echoed from the request when present and generated otherwise. Responses also set `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, a `Content-Security-Policy`, and `Cache-Control: no-store, no-cache, must-revalidate`.
+Every response carries `X-Request-ID`, echoed from the request when present and generated otherwise. By default, responses also set `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, a `Content-Security-Policy`, and `Cache-Control: no-store, no-cache, must-revalidate`. EPG, logo, and immutable media endpoints use their own caching policies.
 
 `OPTIONS` requests return 204 immediately. CORS headers follow `security.cors_origins` and are omitted entirely when it is unset. When `security.public_hosts` is configured, requests whose `Host` is not on the list get 403 `forbidden`; `/healthz` and `/readyz` from a loopback address are exempt.
 
@@ -108,7 +108,8 @@ Resources that need concurrency safety use a revision number plus the `If-Match`
 
 | Endpoint | `If-Match` |
 | --- | --- |
-| `PUT` and `DELETE` on `/v1/admin/settings`, `/v1/admin/egress`, and its `proxies` and `rules` sub-resources | Required; missing means 409 |
+| `PUT /v1/admin/settings` and `PUT /v1/admin/egress` | Required; missing means 409 |
+| `PUT` and `DELETE` on `/v1/admin/egress/proxies/{id}` and `/v1/admin/egress/rules/{id}` | Required; missing means 409 |
 | `PUT` and `DELETE /v1/admin/epg/sources/{id}` | Required; missing returns 428 (except deleting a preset source) |
 | Update, rotate, revoke, and delete on `/v1/admin/api-tokens/{id}` | Required; missing means 409 |
 | `POST`, `PUT`, and `DELETE` on the `/v1/admin/channels` family | Optional; validated when supplied |
@@ -238,7 +239,7 @@ These accept a login session only. An admin API token is refused: `/v1/me/creden
 | `PUT` | `/v1/me/credentials` | Change login credentials |
 | `GET` | `/v1/admin/api-tokens` | List admin API tokens |
 | `POST` | `/v1/admin/api-tokens` | Create an admin API token |
-| `PUT` | `/v1/admin/api-tokens/{id}` | Update name, note, permissions, enabled state, expiry |
+| `PUT` | `/v1/admin/api-tokens/{id}` | Update name, note, permissions, enabled state, and expiration |
 | `POST` | `/v1/admin/api-tokens/{id}/rotate` | Issue new plaintext |
 | `POST` | `/v1/admin/api-tokens/{id}/revoke` | Revoke |
 | `DELETE` | `/v1/admin/api-tokens/{id}` | Delete |
@@ -287,7 +288,7 @@ At least one of `username` and `new_password` must be present. New passwords are
 
 ### `POST /v1/admin/api-tokens`
 
-Body: `{ "name": "ci", "note": "", "scopes": ["read"], "expires_in_sec": 0 }`. `name` is required, at least one permission must be granted, and `expires_in_sec` of 0 means no expiry, capped at 10 years. Returns 201:
+Body: `{ "name": "ci", "note": "", "scopes": ["read"], "expires_in_sec": 0 }`. `name` is required, at least one permission must be granted, and `expires_in_sec` of 0 means no expiration. The maximum is 10 years. Returns 201:
 
 ```json
 {
@@ -360,7 +361,7 @@ Playback has two parallel path families: `/v1/play/` for session and preview tok
 - `live/{file}` serves locally packaged output. File names may not contain path separators. When the publication generation changes, the request is redirected with a 307 carrying a `g` query parameter; a stale generation returns 410 with `Retry-After`. In low-latency mode the `_HLS_msn`, `_HLS_part`, and `_HLS_skip` directives are parsed and block for up to 15 seconds. Immutable segments carry `Cache-Control: private, max-age=31536000, immutable`.
 - `u/{upstream}` proxies an upstream fetch. The target URL is encoded and carries an HMAC `sig`; a mismatch returns 403, and the target host must also pass the egress allowlist. Playlist responses are rewritten further; everything else is streamed through untouched.
 
-### Authorization behaviour
+### Authorization behavior
 
 Whether `/v1/play/` requires a credential is controlled by `security.play_require_auth`, which defaults to on. The credential can arrive as `?token=` or as `Authorization: Bearer`, and both accept session JWTs and preview tokens. Preview tokens are issued only by `POST /v1/admin/channels/{id}/preview`, last 5 minutes, cover a single channel, and are rejected on every non-playback endpoint.
 
@@ -489,7 +490,7 @@ Returns `{"upstreams": [{"id": "main", "base_url": "https://example.com/live"}]}
 
 The list returns `{"access_tokens": [...]}` with `id`, `name`, `token_prefix`, `scope`, `enabled`, `note`, `created_at`, `last_used_at`, `revoked_at`, `expires_at`, and `revision`. Plaintext is never included.
 
-The create body is `{"name": "...", "note": "...", "channel_ids": ["demo-hls"], "expires_in_sec": 0}`. An empty `channel_ids` means all channels, and `expires_in_sec` of 0 means no expiry, capped at 10 years. Returns 201:
+The create body is `{"name": "...", "note": "...", "channel_ids": ["demo-hls"], "expires_in_sec": 0}`. An empty `channel_ids` means all channels, and `expires_in_sec` of 0 means no expiration. The maximum is 10 years. Returns 201:
 
 ```json
 {
@@ -579,7 +580,7 @@ The read returns:
 
 Proxy URLs are reduced to scheme and host in responses; whether credentials are stored is reported by `credential_configured`. On write, if the scheme and host are unchanged and no credentials are supplied, the stored credentials are preserved.
 
-A proxy profile needs an `id` and a `url`. Schemes are limited to `http`, `https`, `socks5`, and `socks5h`, and the `id` cannot be the reserved value `direct`. Rule `kind` is one of `host_suffix`, `host_exact`, `channel`, `host_regex`, or `url_regex`; regex kinds are compiled during validation. Rules cannot reference a missing or disabled profile. `playlist_policy` is `rewrite`, `passthrough`, or `auto`. Deleting a profile also drops the rules that reference it and resets the default to `direct`.
+A proxy profile needs an `id` and a `url`. Schemes are limited to `http`, `https`, `socks5`, and `socks5h`, and the `id` cannot be the reserved value `direct`. Rule `kind` is one of `host_suffix`, `host_exact`, `channel_id`, `host_regex`, or `url_regex`; regular expressions are validated before the rule is saved. Rules cannot reference a missing or disabled profile. `playlist_policy` is `rewrite`, `passthrough`, or `auto`. Deleting a profile also removes the rules that reference it and resets the default to `direct` when necessary.
 
 Single-item writes read the current configuration, apply the change, validate the whole document, and write it back, so they are covered by the same `If-Match` requirement.
 

@@ -5,18 +5,12 @@ sidebar:
   order: 2
 ---
 
-One command installs Kiln on Linux and macOS; run it again to upgrade. The script does four things: detect the platform, pick a working download source, verify `SHA256SUMS`, and swap the binary atomically. No sudo by default, and the full plan is printed before anything is written.
+Run one command to install Kiln on Linux or macOS, and run it again to upgrade. The script detects the platform, selects a working download source, verifies `SHA256SUMS`, and replaces the binary atomically. It does not require sudo by default, and it displays the complete plan before writing any files.
 
 ## One-line install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh | sh
-```
-
-If the download stalls or fails, prefix a mirror:
-
-```bash
-curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/babywbx/kiln/main/install.sh | sh
 ```
 
 <Aside type="note" title="Output language">
@@ -52,7 +46,7 @@ The plan looks like this:
 
 ```text
   About to run:
-     Version     v1.0.0 (latest)
+     Version     vX.Y.Z (latest)
      Variant     full
      Platform    linux/amd64
      Location    /usr/local/bin/kiln
@@ -60,7 +54,7 @@ The plan looks like this:
      Decoder     ffmpeg not found (native engine, nothing to install)
 ```
 
-The decoder line is an environment check, not a dependency: the native engine needs no ffmpeg, and the result never changes what gets installed. See [Media engine](/en/guide/media-engine/).
+The decoder line is an environment check, not a dependency: the native engine needs no FFmpeg, and the result never changes what gets installed. See [Media engine](/en/guide/media-engine/).
 
 ## State-aware by design
 
@@ -98,7 +92,7 @@ When an existing install is found in an interactive session, the script offers t
 
 Unknown options, options missing their value, an invalid `--lang` value, and `--mirror` combined with `--no-mirror` all exit 1 before anything else runs.
 
-Every option has an environment variable; command-line flags win over them.
+The following installation options can also be set with environment variables. Command-line flags take precedence.
 
 | Variable | Equivalent option |
 | --- | --- |
@@ -113,9 +107,9 @@ Every option has an environment variable; command-line flags win over them.
 
 ## Mirrors and download sources
 
-Three GitHub proxies are built in: `ghfast.top`, `ghproxy.net`, and `gh-proxy.com`.
+The installer can fall back to built-in GitHub proxies when a direct connection is unavailable.
 
-Without `--mirror`, the script sends HEAD probes to the direct URL and all three mirrors at once, each with a 3 second timeout, then takes the first reachable candidate in priority order. Direct comes first, mirrors follow in their built-in order. A reachable github.com therefore always wins, mirrors only come into play when the direct connection fails, and the output states plainly when a mirror is in use.
+Without `--mirror`, the script sends HEAD probes to the direct URL and all three mirrors at once, each with a 3-second timeout, then takes the first reachable candidate in priority order. Direct comes first, mirrors follow in their built-in order. A reachable github.com therefore always wins; mirrors only come into play when the direct connection fails, and the output states plainly when a mirror is in use.
 
 `--mirror` skips probing entirely and uses the given base. `--no-mirror` shrinks the candidate set to the direct connection alone and fails outright rather than falling back.
 
@@ -163,8 +157,6 @@ The lite variant is built for Linux only, so `--lite` on macOS exits 2. See [Lit
 curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh -o /tmp/kiln-install.sh
 sudo sh /tmp/kiln-install.sh --yes --service
 ```
-
-On a constrained network, swap the first line for a mirror URL and leave the second unchanged.
 
 Three preconditions are checked before anything is written:
 
@@ -256,7 +248,7 @@ It is the fastest way to confirm the chosen location, the selected source, and w
 
 ## Checksums and the atomic swap
 
-After the download, the script fetches `SHA256SUMS` (direct with a 5 second timeout, falling back to the active source with a 10 second one) and compares the line matching this artifact. A mismatch discards the downloaded file and exits 4 without touching the existing install.
+After the download, the script fetches `SHA256SUMS` (direct with a 5-second timeout, falling back to the active source with a 10-second timeout) and compares the line matching this artifact. A mismatch discards the downloaded file and exits 4 without touching the existing install.
 
 Only then is the archive unpacked, and the target file is never written in place:
 

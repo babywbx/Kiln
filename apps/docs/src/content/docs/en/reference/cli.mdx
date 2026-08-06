@@ -5,7 +5,7 @@ sidebar:
   order: 5
 ---
 
-Kiln is a single executable. There is no daemon wrapper and no hidden subprocess supervisor. The command line is four flags and one platform-specific subcommand.
+Kiln runs as a single executable with no daemon wrapper or separate process supervisor. It provides four flags and one platform-specific subcommand.
 
 ## Flags
 
@@ -56,7 +56,7 @@ A running instance also reports its version without a credential: `GET /` return
 
 ### `-healthcheck`
 
-Issues a single GET with a 3 second timeout. A 2xx response exits 0; anything else writes the error or status line to stderr and exits 1. It reads no config file and starts no server.
+Issues a single GET with a 3-second timeout. A 2xx response exits 0; anything else writes the error or status line to stderr and exits 1. It reads no config file and starts no server.
 
 ```bash
 kiln -healthcheck http://127.0.0.1:8080/healthz
@@ -116,7 +116,7 @@ With no subcommand, or one that is not recognized, usage goes to stderr and the 
 
 If the service is not installed, the Service Control Manager is unreachable, or the operation fails, the reason goes to stderr and the process exits with status 1.
 
-### Runtime behaviour under the service manager
+### Runtime behavior under the service manager
 
 The Service Control Manager starts processes in `system32`, so Kiln resolves `-config` to an absolute path and then switches the working directory to the folder holding the config. Relative paths such as `data_dir = "./data"` therefore still resolve against the config file.
 

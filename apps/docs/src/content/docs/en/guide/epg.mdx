@@ -1,11 +1,11 @@
 ---
 title: EPG
-description: Enable guide sources, pick a cache mode, tune refresh, size limits and time zones, and serve one merged XMLTV to players.
+description: Add and refresh guide sources, configure caching, size limits, and time zones, and serve a merged XMLTV document to players.
 sidebar:
   order: 7
 ---
 
-Kiln fetches the XMLTV sources you enable, matches them against your channels, and merges the hits into a single guide. Players only ever need `/v1/epg.xml.gz`; how many upstream sources sit behind it is Kiln's problem, not theirs.
+Kiln downloads the XMLTV sources you enable, matches their programs to your channels, and merges the results into one guide. Players only need `/v1/epg.xml.gz`, regardless of how many sources are behind it.
 
 ## How it works
 
@@ -30,7 +30,7 @@ serve_timezone = "keep"
     Turn on a preset, or add a custom source pointing at a reachable XMLTV URL. Both `.xml` and `.xml.gz` are supported.
   </Step>
   <Step title="Run the first refresh">
-    Click **Refresh now**. Kiln fetches every enabled source immediately and reports per-source channel counts, programme counts, and failures.
+    Select **Refresh now**. Kiln fetches every enabled source immediately and reports channel counts, program counts, and failures for each source.
   </Step>
   <Step title="Confirm the matches">
     On the channel pages, pick the guide channel for anything listed as suggested or unmatched. Only matched channels reach the published guide, see [Channels](/en/guide/channels/).
@@ -39,7 +39,7 @@ serve_timezone = "keep"
 
 ## Cache modes
 
-`cache` and `cache_dir` together select one of three behaviours for the raw XMLTV payloads.
+`cache` and `cache_dir` together select one of three behaviors for the raw XMLTV payloads.
 
 <Tabs>
   <TabItem label="Disk (default)">
@@ -83,7 +83,7 @@ For a manual run, call `POST /v1/admin/epg/refresh` with the `refresh` scope. It
 
 - Every source carries its own IANA time zone, used when parsing timestamps that lack an explicit offset. Custom sources created in the console default to `UTC`.
 - `default_timezone` is the fallback for sources that declare no zone. It must be a valid IANA name; an invalid value fails config validation at startup.
-- `serve_timezone` currently accepts only `keep`: the published guide preserves each programme's original UTC offset instead of converting everything to one serving zone. Any other value fails validation.
+- `serve_timezone` currently accepts only `keep`: the published guide preserves each program's original UTC offset instead of converting everything to one serving zone. Any other value fails validation.
 
 ## Per-source egress
 
@@ -107,14 +107,14 @@ Each source has its own egress setting that plugs into the global outbound routi
 | `GET /v1/epg.xml.gz` | None | The same document, gzipped |
 | `GET /v1/logo/{id}` | None | Channel logo, fetched upstream when the built-in logo table matches |
 
-- Only matched channels are published. Their channel ids are rewritten to Kiln's own channel ids, and the programmes follow, so `tvg-id` from the M3U lines up with the guide out of the box.
+- Only matched channels are published. Kiln rewrites their channel IDs and the associated programs to its own channel IDs, so `tvg-id` in the M3U matches the guide automatically.
 - `/v1/playlist.m3u` and the playlist behind an access token carry `x-tvg-url` on the `#EXTM3U` line, pointing at `/v1/epg.xml.gz`.
 - With no source enabled, both endpoints return a valid but empty XMLTV document rather than a 404.
 - The gzipped output is cached in memory and invalidated whenever source data or the channel list changes. Payloads larger than a quarter of `max_source_bytes` (capped at 8 MiB) are returned without being cached.
-- The logo endpoint normalises the channel's `epg_name` (falling back to its title), looks it up in the built-in logo table, and tries the candidate URLs in order. Images are capped at 2 MiB, served with a one-hour public cache and an `X-Kiln-Logo-Source` header naming the candidate that answered, and a miss is a 404. That fetch also follows the channel's outbound route.
+- The logo endpoint normalizes the channel's `epg_name` (or its title when empty), looks it up in the built-in logo table, and tries each candidate URL in order. Images are limited to 2 MiB and served with a one-hour public cache and an `X-Kiln-Logo-Source` header. The endpoint returns 404 when there is no candidate and 502 when candidates exist but every download fails. Logo requests follow the channel's outbound route.
 
 <Aside type="caution" title="These three endpoints are public">
-  The guide and logo endpoints are unauthenticated and unaffected by `security.play_require_auth`. They expose channel names, logos and programme data, never playback URLs. If even that is too much, gate them at your reverse proxy.
+  The guide and logo endpoints are unauthenticated and unaffected by `security.play_require_auth`. They expose channel names, logos, and program data, but never playback URLs. If you do not want this information to be public, add access control at the reverse proxy.
 </Aside>
 
 ## Admin endpoints

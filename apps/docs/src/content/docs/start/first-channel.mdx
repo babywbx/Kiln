@@ -1,11 +1,11 @@
 ---
 title: 第一个频道
-description: 从上游定义到播放验证的端到端流程。
+description: 定义上游和频道，启动 Kiln，再验证播放是否正常。
 sidebar:
   order: 5
 ---
 
-一个可播放的频道由两部分组成：一个 `[[upstreams]]` 描述上游在哪，一个 `[[channels]]` 描述从上游的哪条路径取什么格式。下面走一遍完整流程。
+一个可播放的频道需要两项配置：`[[upstreams]]` 指定上游位置，`[[channels]]` 指定要读取的路径和格式。按照以下步骤即可完成配置并验证播放。
 
 ## 配置到播放
 
@@ -59,7 +59,7 @@ sidebar:
     on_demand = true
     ```
 
-    `keys_file` 是全局的 `kid:key` 目录，所有 DASH 频道共用。只要存在一个启用的 DASH 频道而没有配置它，启动时就会直接失败。多轨道与清晰度选择见 [多轨与 ABR](/guide/variants/)。
+    `keys_file` 是全局的 `kid:key` 目录，所有 DASH 频道共用。只要存在一个启用的 DASH 频道而没有配置它，启动时就会直接失败。多轨道与清晰度选择见 [精确选择轨道](/guide/channels/#精确选择轨道)。
   </Step>
 
   <Step title="写好密钥文件">
@@ -104,7 +104,7 @@ sidebar:
 
 两个都不填时，`on_demand` 会被自动置为 `true`，也就是默认按需拉流。
 
-按需回收由一个每 5 秒执行一次的回收器完成：某个频道距上一次取用超过它的 `idle_timeout_sec`（默认 90 秒）就会被停掉，下一次取用重新冷启动。冷启动需要先从上游取到足够的分片才能产出第一份播放列表，所以按需频道的首帧会比常驻频道慢一些；这段延迟由 `[packager]` 的 `start_segments` 与 `inflight_bytes` 决定，权衡方式见 [媒体引擎](/guide/media-engine/)。
+Kiln 每 5 秒检查一次闲置频道。频道在 `idle_timeout_sec`（默认 90 秒）内无人观看，就会停止会话并释放上游连接；下一次播放请求会重新启动。启动时需要先从上游取得足够的分片，才能生成第一份播放列表，因此按需频道的首帧会比常驻频道稍慢。这段延迟由 `[packager]` 的 `start_segments` 与 `inflight_bytes` 决定，调节方法见 [媒体引擎](/guide/media-engine/)。
 
 没有开 `on_demand` 的频道不参与空闲回收，一旦拉起就会一直挂着。上游断流后的重启逻辑也受它影响：`on_demand` 频道在失败时若已经超过空闲时长，会直接结束会话而不是继续重启。
 

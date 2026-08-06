@@ -1,11 +1,11 @@
 ---
 title: 媒体引擎
-description: engine 的三种取值、原生 DASH 解密重封装的能力边界、密钥文件、LL-HLS 参数、内存与延迟权衡，以及 ffmpeg 兼容路径。
+description: 选择媒体引擎，了解原生 DASH 解密与重封装的支持范围，并配置密钥、LL-HLS 和 FFmpeg 兼容回退。
 sidebar:
   order: 5
 ---
 
-媒体引擎负责把 DASH 上游变成播放器可以直接消费的 HLS。原生引擎在 Kiln 进程内完成解密与重封装，不需要外部进程；ffmpeg 只作为兼容回退存在。
+媒体引擎将 DASH 上游转换成播放器可直接打开的 HLS。原生引擎在 Kiln 进程内完成解密与重封装，无需启动外部程序。FFmpeg 仅用于兼容回退。
 
 <Aside type="note" title="只作用于 DASH">
   `[packager].engine` 只决定 DASH 入站的处理方式。`ingress = "hls"` 的频道走播放列表改写与同源分片代理，不经过媒体引擎，参见 [播放](/guide/playback/)。
@@ -17,27 +17,27 @@ sidebar:
 
 | 取值 | 行为 |
 | --- | --- |
-| `auto` | 源能被原生引擎处理时走原生；不能处理且允许回退时改用 ffmpeg |
+| `auto` | 源能被原生引擎处理时走原生；不能处理且允许改用兼容引擎时交给 FFmpeg |
 | `native` | 只用原生引擎。源不被支持时直接失败，不会回退 |
-| `ffmpeg` | 跳过原生规划，始终交给 ffmpeg |
+| `ffmpeg` | 跳过原生规划，始终交给 FFmpeg |
 
 频道级的 `packager` 字段优先于全局 `[packager].engine`，两者都缺省时按 `auto` 处理。镜像通过 `KILN_DEFAULT_PACKAGER_ENGINE` 提供的默认值只在配置里没有写 `[packager].engine` 时生效，显式写出的取值永远优先。
 
 ### auto 并不总是回退
 
-`auto` 会在原生规划失败时评估这次失败能否安全交给 ffmpeg，答案是否定时宁可报错也不换引擎：
+`auto` 会在原生规划失败时判断是否可以安全交给 FFmpeg。如果不能，Kiln 会直接报错，不会更换引擎：
 
-- 一个源里出现多个 KID 时禁止回退。ffmpeg 路径只接受单个 CENC 密钥，交给它会解出错误的画面，此时返回 `502`。
+- 一个源里出现多个 KID 时不能使用兼容引擎。FFmpeg 路径只接受单个 CENC 密钥，否则会解出错误的画面，此时返回 `502`。
 - 频道显式选择了字幕轨（`subtitles.mode` 为 `prefer` 或 `only`）时，兼容引擎无法履行这个选择，请求被拒为 `400`。
-- 需要回退但运行环境里没有 ffmpeg 时返回 `503`。Lite 与 Core 镜像不含 ffmpeg，详见 [Lite、Core 与 Full](/guide/variants/)。
+- 需要兼容引擎但运行环境中没有 FFmpeg 时返回 `503`。Lite 与 Core 镜像不含 FFmpeg，详见 [Lite、Core 与 Full](/guide/variants/)。
 
 `/readyz` 会把这条边界前移：只要存在 `engine` 为 `ffmpeg` 的 DASH 频道而 ffmpeg 不可用，就返回 `503`，避免编排系统把流量导到一个注定失败的实例上。
 
 ## 原生引擎
 
-原生引擎读取 MPD，规划轨道，逐段下载、解密并重封装成 CMAF 分片，最后写出 HLS 播放列表。整条链路都在 Go 里完成，不落 ffmpeg，也不依赖任何外部二进制。
+原生引擎读取 MPD，规划轨道，逐段下载、解密并重封装成 CMAF 分片，最后写出 HLS 播放列表。整个过程都在 Go 中完成，不需要 FFmpeg 或其它外部二进制。
 
-### 支持的源形态
+### 支持的源类型
 
 | 维度 | 原生引擎支持的范围 |
 | --- | --- |
@@ -78,10 +78,10 @@ sidebar:
 | `no_video_representation` | 没有可用的视频表示 | 是 |
 | `no_audio_representation` | 没有可用的音频表示 | 是 |
 | `addressing_unsupported` | 分片寻址方式不在支持范围内 | 是 |
-| `manifest_codec_unsupported` | 编码或轨道形态不被原生支持 | 是 |
+| `manifest_codec_unsupported` | 编码或轨道格式不受原生引擎支持 | 是 |
 | `manifest_kid_conflicts_with_tenc` | manifest 的 `default_KID` 与 init 段的 `tenc` 不一致 | 是 |
 | `missing_key_for_kid` | 密钥表里没有这个 KID 对应的 key | 是 |
-| `multi_kid_cannot_fall_back` | 源使用多个 KID，交给单密钥的 ffmpeg 会解错 | 否 |
+| `multi_kid_cannot_fall_back` | 源使用多个 KID，交给仅支持单密钥的 FFmpeg 会解码错误 | 否 |
 | `native_start_failed` | 原生启动过程中出现其它错误 | 是 |
 
 init 段本身不合规时还有一组更细的原因码，例如 `not_fragmented_mp4`、`multi_track_init`、`encryption_scheme_unsupported`、`missing_track_kid`、`inband_parameter_sets`、`malformed_media`，含义与名字一致。排查方法见 [故障排查](/guide/troubleshooting/)。
@@ -152,15 +152,15 @@ key 不会出现在任何管理 API 的响应里，频道级的 `keys` 字段也
 - `stall_timeout_sec`，默认 `180`。manifest 一直在更新、却始终没有分片进入播放列表时，判定为自身故障并让这次发布失败，由重启重新规划。上游不可达不算这种情况，会继续重试。设为 `-1` 关闭。
 - `grace_sec`，默认 `30`，分片被移出播放列表之后仍然可以被取用的宽限时间，覆盖播放器读到旧播放列表的窗口。
 
-<Aside type="tip" title="资源自适应会下压这些值">
-  `server.resource_mode` 为 `auto` 或 `constrained` 时，运行时会按实际可用内存与 CPU 收紧 `inflight_bytes`、`max_segment_bytes`、`start_segments` 与 `prefetch_segments`，只下压、不上调。生效值会打印在启动日志里，参见 [运维](/guide/operations/)。
+<Aside type="tip" title="资源自适应会降低这些值">
+  `server.resource_mode` 为 `auto` 或 `constrained` 时，运行时会按实际可用内存与 CPU 收紧 `inflight_bytes`、`max_segment_bytes`、`start_segments` 与 `prefetch_segments`，但不会提高配置中已经较低的值。生效值会显示在启动日志中，参见 [运维](/guide/operations/)。
 </Aside>
 
-## ffmpeg 兼容路径
+## FFmpeg 兼容路径
 
 只有原生引擎处理不了、并且这次失败允许回退时才会走到这里。
 
-`[ffmpeg].mode` 决定 ffmpeg 怎么被执行：
+`[ffmpeg].mode` 决定如何运行 FFmpeg：
 
 - `native`：直接执行本机的 `[ffmpeg].binary`（默认 `ffmpeg`，从 `PATH` 查找）。
 - `docker`：由 Kiln 自己发起 `docker run --rm`，使用 `[ffmpeg].docker_image` 指定的镜像，把工作目录以 bind mount 挂进容器，以非 root 运行，并把出站代理环境变量透传进去。不需要额外写 wrapper 脚本。
@@ -173,13 +173,13 @@ key 不会出现在任何管理 API 的响应里，频道级的 `keys` 字段也
 | `hls_list_size` | `8` | 输出播放列表保留的分片数，`low_latency` 打开时默认降到 `4` |
 | `prefer_height` | 未设 | 目标分辨率上限，频道级 `prefer_height` 优先 |
 | `low_latency` | `false` | 决定 `hls_list_size` 的默认值：打开取 `4`，关闭取 `8`。显式写下的 `hls_list_size` 始终优先 |
-| `max_starts` | `1` | 并发启动 ffmpeg 的上限。它不覆盖就绪等待，所以一个慢源不会阻塞其它频道的冷启动 |
-| `log_level` | `error` | 传给 ffmpeg 的日志级别 |
+| `max_starts` | `1` | 并发启动 FFmpeg 的上限。它不包含就绪等待，因此一个较慢的源不会阻塞其它频道启动 |
+| `log_level` | `error` | 传给 FFmpeg 的日志级别 |
 
 兼容路径的能力明显窄于原生路径：它挑一路视频和一路音频，用 `-c copy` 流复制，输出 MPEG-TS 分片，只使用一个 CENC 密钥，不产出字幕、不做 ABR、也没有 LL-HLS 的 part。把它当作让频道先能播的兜底，而不是等价实现。
 
-<Aside type="caution" title="ffmpeg 的内存不在 Go 预算内">
-  资源自适应给出的是 Go 堆与媒体工作集的软预算。ffmpeg 是独立进程或独立容器，它的内存完全在预算之外。运行在受限档位、同时又可能启动 ffmpeg 时，启动日志会给出一条 advisory 警告。
+<Aside type="caution" title="FFmpeg 的内存不在 Go 预算内">
+  资源自适应给出的是 Go 堆与媒体工作集的软预算。FFmpeg 是独立进程或独立容器，其内存不计入这项预算。在受限档位中仍可能启动 FFmpeg 时，启动日志会显示提醒。
 </Aside>
 
 ## 字幕与时间元数据

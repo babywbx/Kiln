@@ -1,12 +1,12 @@
 ---
 title: 指南
-description: Kiln 的数据流、凭据模型与引擎变体总览，以及本区各专题页面的入口。
+description: 了解 Kiln 如何接收上游、处理媒体、生成播放地址，并为不同接口验证凭据。
 sidebar:
   label: 总览
   order: 1
 ---
 
-本区讲清楚 Kiln 运行时到底做了什么：上游从哪里进来，媒体在哪一步被打包，播放地址以什么形态发出去，以及每一段路由分别认哪种凭据。想先把服务跑起来，请从 [快速开始](/start/) 开始。
+这里介绍 Kiln 的完整数据流：如何接收上游、在何处封装媒体、怎样生成播放地址，以及每组接口接受哪类凭据。如果还没有运行服务，请先阅读[快速开始](/start/)。
 
 ## 数据流
 
@@ -33,7 +33,7 @@ sidebar:
 
 - **公开端点**：不需要凭据，覆盖 `/healthz`、`/readyz`、`/metrics`、`/v1/epg.xml`、`/v1/logo/{id}` 以及做了限流的 `POST /v1/auth/login`。
 - **登录会话 JWT**：口令登录换取的 Ed25519 签名令牌，服务管理控制台以及只认会话的 `/v1/playlist.m3u`。
-- **管理员 API Token**：给脚本和命令行用的长期凭据，明文只展示一次，按 `read`、`write`、`delete`、`refresh` 分权，且只能访问已登记的管理路由。
+- **管理员 API 令牌**：供脚本和命令行使用的长期凭据。明文只显示一次，可分别授予 `read`、`write`、`delete`、`refresh` 权限，并且只能访问已登记的管理路由。
 - **路径式播放密钥**：写在 URL 路径里的 `/p/{token}/...`，可限定频道范围、随时撤销，专门用来把播放列表交给播放器。
 
 完整的路由与权限矩阵见 [接口参考](/reference/api/)，凭据的签发与轮换见 [鉴权与凭据](/guide/auth/)。
@@ -51,16 +51,16 @@ sidebar:
     频道模型逐字段说明、上游定义、启停与批量导入导出。
   </Card>
   <Card title="播放与分发" icon="ph:monitor-play" href="/guide/playback/">
-    播放地址形态、鉴权方式、播放密钥与按需频道的冷启动行为。
+    播放地址格式、鉴权方式、播放密钥与按需频道的启动行为。
   </Card>
   <Card title="鉴权与凭据" icon="ph:key" href="/guide/auth/">
-    口令、会话 JWT、管理员 API Token 与播放密钥的签发和轮换。
+    口令、会话 JWT、管理员 API 令牌与播放密钥的签发和轮换。
   </Card>
   <Card title="媒体引擎" icon="ph:cpu" href="/guide/media-engine/">
     原生管线与兼容回退的取舍，以及打包相关的全部预算参数。
   </Card>
-  <Card title="变体与轨道" icon="ph:package" href="/guide/variants/">
-    发行变体的能力边界，以及分辨率、音轨与字幕的精确选择。
+  <Card title="发行变体" icon="ph:package" href="/guide/variants/">
+    Lite、Core 与 Full 的能力边界、镜像标签和升级方式。
   </Card>
   <Card title="节目单 EPG" icon="ph:calendar-blank" href="/guide/epg/">
     XMLTV 源、刷新策略、频道匹配与台标候选源。

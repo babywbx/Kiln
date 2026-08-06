@@ -5,7 +5,7 @@ sidebar:
   order: 2
 ---
 
-This page lists Kiln's configuration format section by section. The default column shows the value the code actually falls back to, which is not always the value the example files write out — the examples are a working starting point, not a list of defaults.
+The sections below list every configuration key. Values in the **Default** column come from the code and may differ from values written in the example files. The examples are ready-to-use starting points, not a record of every built-in default.
 
 ## File format and loading
 
@@ -36,7 +36,7 @@ Configuration is read once at startup and never reloaded; edits require a restar
     Parse by extension. Syntax errors fail immediately.
   </Step>
   <Step title="Apply environment overrides">
-    Apply the `KILN_*` overrides, which at this stage outrank the matching keys in the file. See [/en/reference/env/](/en/reference/env/).
+    Apply the `KILN_*` overrides, which at this stage outrank the matching keys in the file. See [Environment variables](/en/reference/env/).
   </Step>
   <Step title="Fill defaults">
     Fill in defaults for empty or non-positive values and normalize `[[channels]]`: lowercase `ingress`, force `restart_on_failure` for DASH channels, and set `on_demand` when neither `on_demand` nor `autostart` was set.
@@ -74,7 +74,7 @@ Resource adaptation runs after validation. Based on detected memory and CPU ceil
 - `constrained` skips detection and applies the tightest compact budget outright.
 - `performance` opts out of adaptation entirely; configured values are used as written.
 
-In every mode the adjustment is one-way: adaptation lowers what you configured and never raises a smaller value. Per-profile budgets, the CPU ceiling rules, and the fixed Lite profile are covered in [/en/guide/variants/](/en/guide/variants/).
+In every mode, adaptation only lowers configured values; it never raises a smaller value. See [Resource adaptation](/en/guide/operations/#resource-adaptation) for profile budgets, CPU ceilings, and the fixed Lite budget.
 
 ## `[logging]`
 
@@ -109,7 +109,7 @@ Signing keys are resolved in order: inline private key, private key file, `{data
 | `role` | string | Required | Role; empty fails validation. `admin` is the only privileged role and reaches every admin endpoint. Every other value is treated as a restricted role. |
 | `channel_ids` | array of string | `[]` | Channel allowlist for a restricted role. Empty means all channels. `admin` is not constrained by it. |
 
-Changing a username or password from the admin surface writes an override row keyed by the original config username; the config file itself is never rewritten. The full authentication model is in [/en/guide/auth/](/en/guide/auth/).
+Changing a username or password in the admin console writes an override row keyed by the original config username; the config file itself is never rewritten. See [Authentication](/en/guide/auth/) for the full model.
 
 ## `[security]`
 
@@ -160,7 +160,7 @@ This value is what decides peak memory. A single 4K segment is tens of megabytes
 - A repeated `kid` is ignored when the key matches and rejected when it does not.
 - The file must yield at least one pair.
 
-Both `kid` and `key` are normalized by removing dashes and lowercasing. Keys never appear in the admin API, and edits require a restart. Any DASH channel that is not disabled requires a non-empty global catalog, or validation fails. Engine selection and media handling are covered in [/en/guide/media-engine/](/en/guide/media-engine/).
+Both `kid` and `key` are normalized by removing dashes and lowercasing. Keys never appear in the admin API, and edits require a restart. Any DASH channel that is not disabled requires a non-empty global catalog, or validation fails. See [Media engine](/en/guide/media-engine/) for engine selection and media handling.
 
 ## `[ffmpeg]`
 
@@ -193,7 +193,7 @@ Both `kid` and `key` are normalized by removing dashes and lowercasing. Keys nev
 | `enabled` | bool | `false` | Whether the dedicated pprof server starts. When off, no listener is created at all. |
 | `listen` | string | `"127.0.0.1:6060"` | pprof listen address. When enabled it must parse as host and port, and the host must be a loopback IP, otherwise validation fails. |
 
-pprof uses its own listener and mux and is never mounted on the public server. Turn it on only while collecting CPU, heap, block, or mutex profiles. Diagnostic workflows live in [/en/guide/troubleshooting/](/en/guide/troubleshooting/).
+pprof uses its own listener and mux and is never mounted on the public server. Turn it on only while collecting CPU, heap, block, or mutex profiles. See [Troubleshooting](/en/guide/troubleshooting/) for diagnostic workflows.
 
 ## `[epg]`
 
@@ -219,13 +219,13 @@ pprof uses its own listener and mux and is never mounted on the public server. T
 | `proxy` | string | `"direct"` | Outbound route: `direct`, `auto`, or a `[[proxies]]` id. Unknown values fail validation. Empty is filled in as `direct`. |
 | `enabled` | bool | `false` | Whether the source participates in refreshes. |
 
-Channel matching and how built-in sources are handled are covered in [/en/guide/epg/](/en/guide/epg/).
+See [EPG](/en/guide/epg/) for channel matching and built-in source behavior.
 
 ## `[[proxies]]`
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `id` | string | Required | Route identifier, referenced by `egress.default`, `[[egress.rules]]`, `[[upstreams]]`, and `[[epg.sources]]`. `direct` is reserved and means no proxy. |
+| `id` | string | Required | Route identifier, referenced by `egress.default`, `[[egress.rules]]`, and `[[epg.sources]]`. `direct` is reserved and means no proxy. |
 | `name` | string | `""` | Display name. |
 | `url` | string | Required | Proxy address. Schemes are limited to `http`, `https`, `socks5`, `socks5h` — for example `http://127.0.0.1:7890` or `socks5h://127.0.0.1:7891`. |
 | `disabled` | bool | `false` | Whether the route is inactive. A disabled route takes no traffic, and decisions pointing at it fall back to direct. |
@@ -250,7 +250,7 @@ Channel matching and how built-in sources are handled are covered in [/en/guide/
 | `proxy` | string | Required | Route used on a match. Must be `direct` or a defined `[[proxies]]` id; empty or unknown fails validation. |
 | `disabled` | bool | `false` | Whether the rule is inactive. |
 
-Route selection, rewriting policies, and container scenarios are covered in [/en/guide/proxy/](/en/guide/proxy/).
+See [Outbound proxying](/en/guide/proxy/) for route selection, rewriting policies, and container scenarios.
 
 ## `[[upstreams]]`
 
@@ -317,4 +317,4 @@ All three selectors share the same fields, and any non-empty field counts as spe
 | `height` | int | Video height; only a positive value counts as specified. |
 | `frame_rate` | string | Frame rate. |
 
-Every string field is limited to 512 characters and must contain no control characters, otherwise validation fails. With the `ffmpeg` engine, a `subtitles.mode` of `prefer` or `only` fails validation outright — only `auto` and `off` are available there. Channel fields and selection in practice are covered in [/en/guide/channels/](/en/guide/channels/).
+Every string field is limited to 512 characters and must contain no control characters, otherwise validation fails. With the `ffmpeg` engine, a `subtitles.mode` of `prefer` or `only` fails validation outright; only `auto` and `off` are available. See [Fine-grained track selection](/en/guide/channels/#fine-grained-track-selection) for practical guidance.

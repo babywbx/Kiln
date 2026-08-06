@@ -1,11 +1,11 @@
 ---
 title: Outbound proxies
-description: Define reusable proxy routes and host-based rules that decide how Kiln reaches origins, guide sources and logo files.
+description: Configure reusable proxies and routing rules that control how Kiln connects to stream sources, guide sources, and logo files.
 sidebar:
   order: 8
 ---
 
-Outbound routing has two layers: `[[proxies]]` defines reusable routes, and `[egress]` decides which traffic takes which route. Channels, EPG sources and logo fetches all share the same routing table, so there is no per-feature proxy setting to keep in sync.
+Kiln uses two layers to manage outbound traffic: `[[proxies]]` defines reusable proxies, and `[egress]` decides which requests use each route. Stream sources, guide sources, and logo requests share one routing table, so you do not need to configure them separately.
 
 ## The model
 
@@ -19,7 +19,7 @@ Every outbound URL is resolved on its own:
     When nothing matches, `egress.default` applies.
   </Step>
   <Step title="Resolve the route">
-    `direct` connects directly. A proxy id uses that route. If the referenced route is missing or disabled, the request falls back to a direct connection.
+    `direct` connects directly. A proxy ID uses that route. If the referenced route is missing or disabled, the request falls back to a direct connection.
   </Step>
 </Steps>
 
@@ -53,7 +53,7 @@ proxy = "proxy-http"
 
 ## Defining a route
 
-- `id` must be unique and is what `egress.default`, rules and EPG sources reference. `name` is display only.
+- `id` must be unique and is what `egress.default`, rules, and EPG sources reference. `name` is for display only.
 - `url` accepts the `http`, `https`, `socks5` and `socks5h` schemes, for example `http://127.0.0.1:7890` or `socks5h://127.0.0.1:7891`.
 - Put credentials in the URL when the proxy needs them, for example `http://user:password@127.0.0.1:7890`. The console shows that a route has credentials without echoing the password back.
 - `socks5h` resolves hostnames at the proxy, `socks5` resolves them locally first. Prefer `socks5h` when the origin only resolves correctly from the proxy's network.
@@ -65,16 +65,16 @@ proxy = "proxy-http"
 
 ## Default egress and rules
 
-`egress.default` is either `direct` or the id of a route, and covers everything no rule matched.
+`egress.default` is either `direct` or the ID of a route, and covers everything no rule matched.
 
-A rule consists of `id`, `priority`, `kind`, `pattern` and `proxy`, and can be disabled individually. Lower `priority` numbers win. `proxy` may also be `direct`, which is how you punch a direct hole through a deployment that otherwise proxies everything.
+A rule consists of `id`, `priority`, `kind`, `pattern`, and `proxy`, and can be disabled individually. Lower `priority` numbers win. Set `proxy` to `direct` to create a direct exception in a deployment that otherwise proxies everything.
 
 | `kind` | Matches against |
 | --- | --- |
 | `host_suffix` | Hostname suffix. `example.com` matches `example.com` and `cdn.example.com`, but not `notexample.com` |
 | `host_exact` | The full hostname, exact comparison |
 | `host_regex` | A regular expression over the hostname |
-| `channel_id` | Exact channel id |
+| `channel_id` | Exact channel ID |
 | `url_regex` | A regular expression over the full URL |
 
 An omitted `kind` is treated as `host_suffix`. Regex rules are compiled before they are saved, and a rule that fails to compile never takes effect.
@@ -83,13 +83,13 @@ An omitted `kind` is treated as `host_suffix`. Regex rules are compiled before t
 
 `playlist_policy` controls how absolute origin URLs are presented to the player when Kiln relays an upstream HLS playlist.
 
-| Value | Behaviour |
+| Value | Behavior |
 | --- | --- |
 | `rewrite` (default) | Everything is rewritten back to Kiln; the player talks only to Kiln |
 | `passthrough` | Origin URLs are left untouched; the player connects to the origin |
 | `auto` | Only URLs that need a proxy are rewritten, the rest stay as origin URLs |
 
-Under `rewrite`, Kiln resolves every media line and every `URI="..."` attribute to an absolute URL, then replaces it with `/v1/play/<channel id>/u/<encoded url>?sig=...` on its own origin. Behind an access token the prefix becomes `/p/<token>/play/<channel id>/u/` instead. The URL is encoded with URL-safe Base64 and keeps a recognisable extension, and the signature is an HMAC over the channel id and target URL, keyed by a random value generated at process start, so rewritten URLs stop working after a restart. The player therefore only ever contacts Kiln, and Kiln performs the upstream fetch through whichever route the rules selected. Nested variant playlists are rewritten again as they are pulled.
+Under `rewrite`, Kiln resolves every media line and every `URI="..."` attribute to an absolute URL, then replaces it with `/v1/play/<channel id>/u/<encoded url>?sig=...` on its own origin. Behind an access token the prefix becomes `/p/<token>/play/<channel id>/u/` instead. The URL is encoded with URL-safe Base64 and keeps a recognizable extension, and the signature is an HMAC over the channel ID and target URL, keyed by a random value generated at process start, so rewritten URLs stop working after a restart. The player therefore only ever contacts Kiln, and Kiln performs the upstream fetch through whichever route the rules selected. Nested variant playlists are rewritten again as they are pulled.
 
 `passthrough` sends the player straight to the origin. Those requests bypass Kiln's proxy routes and never carry the channel's custom headers, so it only makes sense when the player itself can reach the origin. `auto` splits the difference: URLs that need a proxy come back through Kiln, everything else keeps its origin address and saves a hop.
 
@@ -106,8 +106,8 @@ Under `rewrite`, Kiln resolves every media line and every `URI="..."` attribute 
 | Traffic | Notes |
 | --- | --- |
 | Channel origin fetches | Playlists and segments, on both the native and the ffmpeg path |
-| EPG fetches | Routed by the rules only when the source's egress is `auto`; `direct` or a named route is honoured as configured, see [EPG](/en/guide/epg/) |
-| Channel logos | The upstream fetch behind `/v1/logo/{id}`, matched with the channel id in scope |
+| EPG fetches | Routed by the rules only when the source's egress is `auto`; `direct` or a named route is honored as configured, see [EPG](/en/guide/epg/) |
+| Channel logos | The upstream fetch behind `/v1/logo/{id}`, matched with the channel ID in scope |
 | Admin probes | Channel probe, preview, and the outbound connectivity test |
 
 `channel_id` rules can only match when the request carries a channel context. EPG fetches have none, so they are never selected by that rule kind.

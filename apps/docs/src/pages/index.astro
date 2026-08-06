@@ -4,11 +4,10 @@ import LandingPage from "../components/LandingPage.astro";
 
 <LandingPage
   title="Kiln"
-  description="自托管 HLS 与 DASH 频道网关：原生解密重封装、按需拉流、统一鉴权入口。"
-  badges={["v1.0.0", "MIT License", "单个二进制"]}
+  description="自托管 HLS 与 DASH 频道网关，原生解密并重封装，按需拉流，统一鉴权。"
   headingPre="自托管的 "
   headingEmber="HLS / DASH 频道网关"
-  sub="原生引擎在进程内解密并重封装 DASH 源，不依赖 ffmpeg；频道按需拉流、空闲自动回收；播放、管理与脚本访问各走各的凭据。Linux、macOS、Windows 全平台，单个二进制即可部署。"
+  sub="原生引擎直接在进程内解密并重封装 DASH 源，无需 FFmpeg。频道有人观看时才连接上游，空闲后自动回收。播放、管理和脚本访问各用独立凭据。一个二进制即可部署到 Linux、macOS 或 Windows。"
   install="curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh | sh -s -- --lang zh"
   installLabel="一行命令安装"
   ctaPrimary={{ label: "快速开始", href: "/start/" }}
@@ -18,7 +17,7 @@ import LandingPage from "../components/LandingPage.astro";
     {
       icon: "ph:fire",
       title: "原生媒体引擎",
-      body: "DASH 解密与重封装在进程内完成，不依赖 ffmpeg；需要兼容回退时也可以交给它。",
+      body: "直接在进程内解密并重封装 DASH 源，无需 FFmpeg；遇到不兼容的源时，也可自动回退。",
     },
     {
       icon: "ph:play-circle",
@@ -28,12 +27,12 @@ import LandingPage from "../components/LandingPage.astro";
     {
       icon: "ph:key",
       title: "统一鉴权入口",
-      body: "登录会话、管理员 API Token、路径式播放密钥与公开端点各管一段，互不越权。",
+      body: "登录会话、管理员 API Token、路径式播放密钥和公开端点各司其职，权限互不混用。",
     },
     {
       icon: "ph:lightning",
       title: "低延迟 HLS",
-      body: "原生支持 CMAF part、delta playlist 与 blocking reload。",
+      body: "原生支持 CMAF Part、增量播放列表和阻塞式重载。",
     },
     {
       icon: "ph:squares-four",

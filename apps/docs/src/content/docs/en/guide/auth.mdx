@@ -5,7 +5,7 @@ sidebar:
   order: 4
 ---
 
-Kiln answers "who is calling" with four credentials that never overlap. Public endpoints need none. Login sessions serve the admin console. Administrator API tokens serve scripts and automation. Path-based playback keys serve players and playlist distribution. None of them can promote itself into another.
+Kiln uses four credential types with separate responsibilities. Public endpoints require no credentials. Login sessions are for the admin console, administrator API tokens are for scripts and automation, and path-based playback keys are for players and playlist distribution. Their privileges do not overlap, and one credential type cannot become another.
 
 ## Credentials at a glance
 
@@ -13,8 +13,8 @@ Kiln answers "who is calling" with four credentials that never overlap. Public e
 | --- | --- | --- | --- |
 | Public endpoint | No credential | Health checks, metrics, EPG, logos | Not applicable |
 | Session JWT | `Authorization: Bearer <jwt>`, Ed25519 signed | Admin console, interactive debugging | `token_ttl_hours` (24 by default); invalidated when credentials change |
-| Administrator API token | `kiln_v1_` prefix plus 48 random characters | Scripts, CI, external tooling | Expiry set at creation; rotatable and revocable |
-| Playback key | `v1` prefix plus 126 random characters, carried in the URL path | Players and playlist distribution | Expiry set at creation; revocable |
+| Administrator API token | `kiln_v1_` prefix plus 48 random characters | Scripts, CI, external tooling | Expiration set at creation; rotatable and revocable |
+| Playback key | `v1` prefix plus 126 random characters, carried in the URL path | Players and playlist distribution | Expiration set at creation; revocable |
 
 <Aside type="note" title="The credential type is visible">
   `GET /v1/me` echoes back which credential served the request: a session reports `credential: "session"`, a token reports `credential: "api_token"` along with its granted scopes. Start there when a call unexpectedly returns 403.
@@ -56,7 +56,7 @@ Passwords are stored as bcrypt hashes, never in plaintext. To generate one:
 
 ## Session JWTs
 
-`POST /v1/auth/login` exchanges a username and password for an Ed25519-signed JWT. The response also carries the expiry, the username, and the role.
+`POST /v1/auth/login` exchanges a username and password for an Ed25519-signed JWT. The response also includes the expiration time, username, and role.
 
 ```bash
 curl -s http://127.0.0.1:8080/v1/auth/login \
@@ -94,7 +94,7 @@ go run scripts/gen-jwt-keys.go ./secrets   # writes ed25519.pem / ed25519.pub.pe
 
 ### Validation and rate limiting
 
-- Issued tokens carry `iss`, `aud`, `exp`, `iat`, `nbf`, `sub`, and a single-use `jti`. All time-based assertions are enforced on verification, with 30 seconds of clock skew allowed.
+- Issued tokens carry `iss`, `aud`, `exp`, `iat`, `nbf`, `sub`, and a unique random `jti`. All time-based assertions are enforced on verification, with 30 seconds of clock skew allowed.
 - `token_issuer` and `token_audience` both default to `kiln` and must match at verification time. Changing either invalidates every outstanding token.
 - `token_ttl_hours` defaults to 24 and falls back to 24 hours for any value at or below zero.
 - Login attempts are rate limited per client IP. `login_rate_per_min` defaults to 20 and excess attempts return 429. The credential-change endpoint has a separate limiter keyed by username and IP.
@@ -132,10 +132,10 @@ Scopes are independent, and none implies another. Grant only what the job needs:
   </Card>
 </CardGrid>
 
-### Expiry, rotation, revocation
+### Expiration, rotation, and revocation
 
-- Expiry is set at creation and can be adjusted later, up to ten years. Leave it unset for a token that never expires.
-- **Rotation** keeps the name, scopes, and expiry and replaces only the secret. The old value stops working immediately and the new plaintext is again shown once. Prefer rotation when replacing a leaked credential.
+- Expiration is set at creation and can be adjusted later, up to ten years. Leave it unset for a token that never expires.
+- **Rotation** keeps the name, scopes, and expiration and replaces only the secret. The old value stops working immediately, and the new plaintext value is shown once. Use rotation when replacing a leaked credential.
 - **Revocation** is permanent. Every subsequent request with that token returns 401.
 - Deleting the record invalidates the token and removes it from the list, but the prefix snapshots already written to the audit log are preserved.
 - Edit, rotate, revoke, and delete all require an `If-Match` header carrying the current `revision`. A missing or stale value returns 409, so two admin sessions cannot silently overwrite each other.
@@ -149,7 +149,7 @@ Denial reasons are a fixed set, which makes them easy to act on:
 | Reason | Status | Meaning |
 | --- | --- | --- |
 | `revoked` | 401 | The token was revoked or disabled |
-| `expired` | 401 | The token has passed its expiry |
+| `expired` | 401 | The token has passed its expiration date |
 | `session_required` | 403 | The route accepts login sessions only |
 | `route_not_available` | 403 | The route is not registered for API tokens |
 | `missing_scope` | 403 | The token lacks the scope this route requires |
@@ -191,11 +191,11 @@ max_body_bytes = 1048576
 | `max_playlist_bytes` | Read ceiling for a single upstream playlist, 8 MiB by default, so an oversized manifest cannot exhaust memory |
 | `max_body_bytes` | Read ceiling for admin request bodies, 1 MiB by default; import endpoints are allowed a multiple of it |
 
-On top of that, every response carries `X-Content-Type-Options`, `Referrer-Policy`, `X-Frame-Options: DENY`, a strict `Content-Security-Policy`, and `Cache-Control: no-store`, which also means the console cannot be embedded in a third-party page.
+Administrative responses carry `X-Content-Type-Options`, `Referrer-Policy`, `X-Frame-Options: DENY`, a strict `Content-Security-Policy`, and a no-store cache policy. EPG, logo, and immutable media responses use endpoint-specific caching. The frame policy prevents the console from being embedded in a third-party page.
 
 ## Playback keys
 
-A playback key is a separate credential meant for players and playlist distribution. It travels in the URL path (`/p/{token}/...`), can be scoped to a subset of channels with an expiry, can be revoked at any time, and every use is written to the playback access log with only the key prefix retained in the recorded path. It is fully isolated from login credentials, so handing a playback URL to a third-party device leaks no administrative access.
+A playback key is a separate credential for players and playlist distribution. It travels in the URL path (`/p/{token}/...`), can be limited to a subset of channels with an optional expiration date, and can be revoked at any time. Every use is written to the playback access log, with only the key prefix retained in the recorded path. Playback keys are isolated from login credentials, so sharing a playback URL does not grant administrative access.
 
 Creation, revocation, and the access log all live under Access Control in the console. See [Playback and distribution](/en/guide/playback/).
 
@@ -215,7 +215,7 @@ Creation, revocation, and the access log all live under Access Control in the co
     Use `public_hosts` to pin the domains served and `allowed_hosts` to pin the origins fetched. Leaving both empty means any `Host` reaches the service and the outbound surface is decided entirely by channel configuration.
   </Step>
   <Step title="Give automation its own token">
-    Scripts should always use an administrator API token with the minimum scopes for the job, a real expiry, periodic rotation, and the audit log as the record of who called what.
+    Scripts should always use an administrator API token with the minimum scopes for the job, an expiration date, periodic rotation, and audit logging.
   </Step>
 </Steps>
 

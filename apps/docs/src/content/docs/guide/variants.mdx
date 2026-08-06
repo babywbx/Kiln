@@ -1,11 +1,11 @@
 ---
 title: Lite、Core 与 Full
-description: 三个发行变体的能力边界、构建与分发形态、Lite 的固定资源预算、受控实测对比数据与选型指引。
+description: 比较 Lite、Core 和 Full 的功能、体积、资源预算与发布方式，选择适合的版本。
 sidebar:
   order: 6
 ---
 
-Kiln 发行三个变体。它们共用同一套配置模型和同一份原生媒体模块，区别在于控制面的完整度、是否携带 ffmpeg，以及资源预算的松紧。
+Kiln 提供 Lite、Core 和 Full 三个版本。三者使用相同的配置模型和原生媒体模块，区别在于管理功能、是否内置 FFmpeg，以及资源预算。
 
 ## 三个变体
 
@@ -30,7 +30,7 @@ Kiln 发行三个变体。它们共用同一套配置模型和同一份原生媒
 
 镜像提供的默认 packager 通过 `KILN_DEFAULT_PACKAGER_ENGINE` 注入，只在配置里没有写 `[packager].engine` 时生效。同一份配置不会因为换了镜像标签而悄悄改变行为，详见 [媒体引擎](/guide/media-engine/)。
 
-## 构建与分发形态
+## 构建与分发方式
 
 Core 与 Full 使用完全相同的标准构建入口和编译参数，产出的应用二进制大小一致，差别只有镜像里是否存在 ffmpeg 以及注入的环境变量。Lite 是唯一一个在编译期就不同的变体：
 

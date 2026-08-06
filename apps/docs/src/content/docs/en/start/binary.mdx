@@ -5,7 +5,7 @@ sidebar:
   order: 4
 ---
 
-When the [install script](/en/start/install-script/) is not an option, or the target is Windows, grab a release archive from GitHub. Every archive is one static binary plus the license and readme files: unpack and run, no runtime dependencies.
+If you cannot use the [install script](/en/start/install-script/), or you are installing on Windows, download a release archive from GitHub. Each archive contains one static binary plus license and readme files. Extract it and run, with no runtime to install.
 
 ## Release artifacts
 
@@ -162,9 +162,9 @@ Serving anything beyond localhost needs an inbound rule, since the Windows firew
 New-NetFirewallRule -DisplayName "Kiln" -Direction Inbound -LocalPort 8080 -Protocol TCP -Action Allow
 ```
 
-### About ffmpeg
+### About FFmpeg
 
-The Windows distribution ships without ffmpeg. With `[packager].engine` set to `auto`, the native engine is selected automatically and day-to-day use is unaffected. Install ffmpeg and add it to `PATH` only if the compatibility fallback is genuinely needed. See [Media engine](/en/guide/media-engine/).
+The Windows distribution ships without FFmpeg. With `[packager].engine` set to `auto`, the native engine is selected automatically and day-to-day use is unaffected. Install FFmpeg and add it to `PATH` only if the compatibility fallback is genuinely needed. See [Media engine](/en/guide/media-engine/).
 
 ### Uninstalling
 

@@ -4,11 +4,10 @@ import LandingPage from "../../components/LandingPage.astro";
 
 <LandingPage
   title="Kiln"
-  description="Self-hosted HLS & DASH channel gateway: native decrypt-and-remux, on-demand pulling, one authenticated entry point."
-  badges={["v1.0.0", "MIT License", "Single binary"]}
+  description="A self-hosted HLS and DASH channel gateway with native decryption, remuxing, on-demand streaming, and unified authentication."
   headingPre="The self-hosted "
   headingEmber="HLS / DASH channel gateway"
-  sub="The native engine decrypts and remuxes DASH sources in-process, with no ffmpeg required; channels pull on demand and are reclaimed when idle; playback, administration, and scripted access each use their own credentials. One binary for Linux, macOS, and Windows."
+  sub="The native engine decrypts and remuxes DASH sources in process, with no FFmpeg required. Channels connect upstream only when someone is watching and disconnect when idle. Playback, administration, and automation each use separate credentials. One binary runs on Linux, macOS, and Windows."
   install="curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh | sh"
   installLabel="Install with one command"
   ctaPrimary={{ label: "Quick start", href: "/en/start/" }}
@@ -18,7 +17,7 @@ import LandingPage from "../../components/LandingPage.astro";
     {
       icon: "ph:fire",
       title: "Native media engine",
-      body: "DASH decryption and remuxing happen in-process, no ffmpeg required; a compatibility fallback is there when you need it.",
+      body: "Decrypt and remux DASH sources in process with no FFmpeg required, with an automatic compatibility fallback when needed.",
     },
     {
       icon: "ph:play-circle",
@@ -28,12 +27,12 @@ import LandingPage from "../../components/LandingPage.astro";
     {
       icon: "ph:key",
       title: "One authenticated entry point",
-      body: "Login sessions, admin API tokens, path play keys, and public endpoints each cover their own slice, with no privilege crossover.",
+      body: "Login sessions, admin API tokens, path-based playback keys, and public endpoints have separate, clearly defined privileges.",
     },
     {
       icon: "ph:lightning",
       title: "Low-latency HLS",
-      body: "CMAF parts, delta playlists, and blocking reload, natively.",
+      body: "Native support for CMAF parts, delta playlists, and blocking reloads.",
     },
     {
       icon: "ph:squares-four",

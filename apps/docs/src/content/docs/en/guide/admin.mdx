@@ -1,13 +1,13 @@
 ---
 title: Admin console
-description: "A tour of Kiln's built-in admin UI: overview, channels, programme guide, network egress, access control, and system settings."
+description: Use Kiln's built-in admin console to monitor the service and manage channels, the program guide, network egress, access, and system settings.
 sidebar:
   order: 9
 ---
 
-Kiln ships a single-page admin UI inside the binary, so there is nothing extra to deploy. It covers the whole operational loop: configuring channels, importing and exporting playlists, managing guide sources, arranging outbound proxies, issuing playback keys and API tokens, and reading access records.
+The admin console is built into the Kiln binary, so there is nothing else to deploy. Use it to configure channels, import and export playlists, manage guide sources and outbound proxies, issue playback keys and API tokens, and review access logs.
 
-## Getting in
+## Sign in
 
 The console is served under `/admin`, and a browser hitting the root path is redirected there. Sign in with an account from the config file. Only `role = "admin"` accounts may enter; any other role is returned to the login page.
 
@@ -21,7 +21,7 @@ Navigation has six fixed sections: Overview, Channels, Programme Guide, Access C
 
 The landing screen answers one question: is anything wrong right now?
 
-Five metrics sit at the top: total channels, enabled channels, active sessions, guide coverage (matched over enabled), and loaded programmes.
+At the top, you can review total channels, enabled channels, active sessions, guide coverage (matched over enabled), and loaded programs.
 
 **Instance Health** reports HTTP reachability, the goroutine count, and the time of the last status refresh, polling once per second. When the service becomes unreachable the status dot turns red and retries continue in the background.
 
@@ -52,22 +52,20 @@ The detail view is a sectioned form, filled in order:
     The full HLS or DASH source URL, with an inline test that reports whether the address responds and which egress it connected through.
   </Step>
   <Step title="Run mode">
-    Stream format, start behaviour (prewarm at startup, always running, start on demand), idle-stop seconds, preferred video height, viewer cap, and related playback preferences. DASH channels can also choose a packaging engine here and run a track inspection that reads the MPD, enumerates the available video renditions, audio tracks, and subtitles, and confirms the chosen combination can be delivered together before you save it.
+    Stream format, start behavior (prewarm at startup, always running, start on demand), idle-stop seconds, preferred video height, viewer cap, and related playback preferences. DASH channels can also choose a packaging engine here and run a track inspection that reads the MPD, lists the available video renditions, audio tracks, and subtitles, and confirms the chosen combination can be delivered together before you save it.
   </Step>
   <Step title="Programme guide and logo">
     The channel's identity in XMLTV. Pick a candidate ID from the refreshed guide data, and optionally a logo; leaving the logo blank falls back to Kiln's logo proxy.
   </Step>
 </Steps>
 
-An **Advanced request settings** disclosure holds the user agent, extra request headers, and failure-recovery behaviour; sensitive headers are not echoed back after saving. **Network egress** lets a channel follow the global rules, force a direct connection, or pin one proxy, and a pasted proxy URL can be turned into a new proxy on the spot.
+Expand **Advanced request settings** to configure the user agent, extra request headers, and failure-recovery behavior. Sensitive headers are not shown again after saving. **Network egress** lets a channel follow the global rules, use a direct connection, or use a specific proxy. You can also paste a new proxy URL to create one from this page.
 
 The command bar at the top offers four immediate actions: probe the source, start now, open preview, and stop the current session. A **Channel Management** card at the bottom groups enable, disable, and permanent delete.
 
 ## Search with romanized matching
 
-The channel filter matches names, IDs, groups, and per-channel search aliases, and it carries a built-in mapping from Han characters to both Mandarin pinyin and Cantonese jyutping. You can type the characters themselves, the full romanization, or just the initials, and simplified and traditional forms are interchangeable. Longer queries also tolerate up to two character errors, so a typo or two still finds the channel.
-
-The mapping tables load on demand, the first time the filter is used, so they never sit in the critical path of the first paint.
+The channel filter matches names, IDs, and groups, with built-in mappings for Mandarin pinyin and Cantonese jyutping. Enter Han characters, full romanization, initials, or jyutping; simplified and traditional forms both match. Longer queries tolerate up to two character errors.
 
 ## M3U import and export
 
@@ -79,7 +77,7 @@ The mapping tables load on demand, the first time the filter is used, so they ne
 
 **Guide Sources** manages every XMLTV source. Built-in presets start disabled; enable, edit, or delete them as needed, or add a custom source pointing at any reachable `.xml` or `.xml.gz` URL. Each source carries its own ID, display name, time zone, and network egress, so a restricted source can simply be given a proxy.
 
-Once sources are enabled, **Refresh Now** downloads the data. The result reports how many programmes were loaded and how many sources failed, while the table shows per-source status (waiting for a first refresh, download failed, data out of date, or normal) along with channel and programme counts.
+After enabling sources, select **Refresh Now** to download the data. The result reports how many programs were loaded and how many sources failed. The table shows each source's status (waiting for a first refresh, download failed, data out of date, or normal), channel count, and program count.
 
 Below that, **Channel Matching** breaks channels into matched, review, and unmatched. Kiln will not guess which ID a same-named channel belongs to, so review and unmatched entries are resolved one by one on the channel detail page. The full workflow is in [Programme guide](/en/guide/epg/).
 
@@ -98,7 +96,7 @@ For choosing between policies and rules, see [Outbound proxies](/en/guide/proxy/
 
 This section has two tabs.
 
-**Playback Keys** lists every issued playback credential with its name, key prefix, channel scope, expiry, and status. At creation you choose the allowed channels and a validity period; the complete key is shown once, together with a ready-to-copy playlist URL. Existing keys can be revoked (effective immediately, audit record retained) or deleted outright.
+**Playback Keys** lists every issued playback credential with its name, key prefix, channel scope, expiration, and status. When you create a key, choose the allowed channels and an expiration date. The complete key is shown once with a ready-to-copy playlist URL. Existing keys can be revoked immediately while retaining the audit record, or deleted permanently.
 
 **Playback Access Log** records requests to playlists and playback endpoints: time, key prefix, request path, channel, status code, and client address. Only the key prefix survives in the recorded path. The log keeps at most 5,000 entries and is trimmed automatically according to the retention setting; it can also be cleared manually, which cannot be undone.
 
@@ -110,7 +108,7 @@ The settings page holds four cards, top to bottom.
 
 **Account and language** shows the signed-in account and interface language with entry points to change either. Changing the username or password requires the current password, and saving immediately invalidates sessions on other devices.
 
-**Administrator API tokens** issues dedicated credentials for scripts and automation. Pick the `read`, `write`, `delete`, and `refresh` scopes the job needs (presets are available as a starting point), set an expiry, and copy the plaintext, which is shown once and stored only as a SHA-256 digest. Existing tokens can be edited, rotated, or revoked. The invocation audit sits in the same card, listing recent allowed and denied calls. The rules behind it are in [Authentication](/en/guide/auth/).
+**Administrator API tokens** provides dedicated credentials for scripts and automation. Select the `read`, `write`, `delete`, and `refresh` scopes the job needs, set an expiration date, and copy the plaintext value when it appears. Kiln shows the value once and stores only a SHA-256 digest. Existing tokens can be edited, rotated, or revoked. The same card lists recent allowed and denied calls. See [Authentication](/en/guide/auth/) for details.
 
 **Playback URLs and access logs** carries two settings that take effect immediately: the public base URL used to build playback and playlist addresses, and access log retention in days (1 to 3650).
 

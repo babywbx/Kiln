@@ -21,7 +21,6 @@ interface Step {
 interface Props {
   title: string;
   description: string;
-  badges: string[];
   headingPre: string;
   headingEmber: string;
   sub: string;
@@ -40,7 +39,6 @@ interface Props {
 const {
   title,
   description,
-  badges,
   headingPre,
   headingEmber,
   sub,
@@ -62,14 +60,6 @@ const {
     <Header />
     <main class="flex-1 w-full">
       <section class="mx-auto max-w-3xl px-6 pt-20 pb-4 text-center">
-        <div class="mb-6 inline-flex items-center gap-2 rounded-full bg-card px-3.5 py-1.5 text-xs font-medium text-muted-foreground ring ring-border">
-          {badges.map((badge, i) => (
-            <>
-              {i > 0 && <span class="text-border-strong">·</span>}
-              <span>{badge}</span>
-            </>
-          ))}
-        </div>
         <h1 class="text-balance text-[2.75rem] font-bold leading-[1.15] tracking-tight text-foreground sm:text-[3.25rem]">
           {headingPre}
           <span class="bg-gradient-to-r from-primary to-primary-hover bg-clip-text text-transparent">

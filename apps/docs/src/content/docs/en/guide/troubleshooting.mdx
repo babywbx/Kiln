@@ -1,11 +1,11 @@
 ---
 title: Troubleshooting
-description: Diagnose Kiln by symptom, covering startup failures, playback auth, channels that will not start, stalled playback, high memory, stale EPG, proxies that do not apply, and container quirks.
+description: Diagnose common startup, authentication, channel, memory, guide, proxy, and container issues by symptom.
 sidebar:
   order: 11
 ---
 
-Every section here follows the same shape: symptom, how to tell, what to do. Each one quotes the real log keywords and API messages so you can grep for them directly. Configuration details live in [Operations](/en/guide/operations/).
+Find the section that matches what you see, then follow **Symptom**, **Diagnosis**, and **Fix** in order. Each section includes exact log keywords and API messages you can search for. Related configuration is covered in [Operations](/en/guide/operations/).
 
 <Aside type="tip" title="Start with two log lines">
   Most problems are answered by the startup logs. `listening` means the HTTP server bound successfully, and the `kiln starting` record prints the version, config path, channel count, resource profile, `packager_engine`, `ffmpeg_available`, proxy count, and database path. Confirm both are present before digging further.
@@ -232,7 +232,7 @@ Compare that against the profile table in [Operations](/en/guide/operations/). T
     An `EPG refresh failed` log whose `err` contains `EPG source exceeds decompressed size limit` means the decompressed XMLTV is larger than `epg.max_source_bytes`. The default cap is 64 MiB, but low-resource profiles pull it down to somewhere between 4 MiB and 64 MiB. The `epg_max_source_mb` field in the startup log is the value in force. Cached payloads over the limit are discarded the same way.
   </Step>
   <Step title="Proxy and network">
-    When the `err` on `EPG refresh failed` is a connection timeout or a TLS error, the source itself is unreachable. Each EPG source can name its own `proxy`; empty or `auto` means it follows the global egress rules.
+    A connection timeout or TLS error on `EPG refresh failed` means the guide source is unreachable. Each EPG source can set its own `proxy`. Use `auto` to follow the global egress rules. Leave it empty or set it to `direct` for a direct connection.
   </Step>
 </Steps>
 
@@ -280,7 +280,7 @@ The full routing model is documented in [Egress proxies](/en/guide/proxy/).
 
 **Symptom**: `resource_profile` in the startup log is not what you expected, or reads `configured`.
 
-**How to tell**: `configured` means memory detection returned nothing and profile selection was skipped entirely. Detection reads cgroup v2 `memory.max`, then cgroup v1 `memory.limit_in_bytes`, then `MemTotal` from `/proc/meminfo`, and takes the smallest positive value. Nested cgroups, unusual mount layouts, or simply not setting a memory limit can all leave it empty.
+**Diagnosis**: `configured` means the configured values remained in effect. This is expected when `resource_mode = "performance"` disables adaptation. In `auto` mode, it means memory detection found no usable limit. Detection reads cgroup v2 `memory.max`, cgroup v1 `memory.limit_in_bytes`, and `MemTotal` from `/proc/meminfo`, then uses the smallest positive value. Nested cgroups, unusual mount layouts, or an unset memory limit can produce an unexpected result.
 
 **Fix**: override detection directly and skip the guesswork:
 

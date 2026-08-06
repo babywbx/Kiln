@@ -1,11 +1,11 @@
 ---
 title: 手动安装与 Windows 服务
-description: 从 Releases 下载发行包、校验并运行，以及在 Windows 上注册系统服务。
+description: 下载并校验 Kiln 发行包，在 Linux、macOS 或 Windows 上手动安装，并注册 Windows 服务。
 sidebar:
   order: 4
 ---
 
-不想用[安装脚本](/start/install-script/)，或者要在 Windows 上部署时，直接从 GitHub Releases 取发行包。每个包都是一个静态二进制加上许可与说明文件，解压即用，不需要运行时依赖。
+如果不使用[安装脚本](/start/install-script/)，或需要在 Windows 上部署，可以直接从 GitHub Releases 下载发行包。每个包都包含一个静态二进制以及许可和说明文件，解压后即可运行，无需安装运行时。
 
 ## 发行产物
 
@@ -140,7 +140,7 @@ kiln.exe service start -name KilnEdge
 
 安装出来的服务启动类型是「自动」，随系统启动。同时注册了三级失败重启策略：第一次失败后 5 秒重启，第二次 15 秒，第三次 60 秒，失败计数在 24 小时后重置。
 
-服务接受标准的停止与关机请求，收到后走正常的优雅退出流程，不是被强杀。
+服务收到标准的停止或关机请求后，会先完成清理再正常退出，不会被直接终止。
 
 ### 工作目录与相对路径
 

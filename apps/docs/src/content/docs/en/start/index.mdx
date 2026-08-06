@@ -1,6 +1,6 @@
 ---
 title: Quick start
-description: Three deployment paths and the shortest path to a verified install.
+description: Choose an installation method, start Kiln, and verify the service and playback with three commands.
 sidebar:
   order: 1
 ---
@@ -25,7 +25,7 @@ All three run the same binary against the same configuration model, so moving be
 
 ## Try it from source first
 
-To see it working before installing anything, run the bundled example config. Requires Go 1.26 or newer. Native DASH needs no ffmpeg; only the compatibility fallback does.
+To see it working before installing anything, run the bundled example config. Requires Go 1.26 or newer. Native DASH needs no FFmpeg; only the compatibility fallback does.
 
 ```bash
 git clone https://github.com/babywbx/Kiln.git
@@ -55,7 +55,7 @@ curl -s http://127.0.0.1:8080/v1/playlist.m3u -H "authorization: Bearer $TOKEN"
 curl -s "http://127.0.0.1:8080/v1/play/hls-demo/index.m3u8?token=$TOKEN"
 ```
 
-`hls-demo` is the channel id from the example config; swap in your own. `/v1/playlist.m3u` accepts a login session only, while everything under `/v1/play/` takes either a `?token=` query parameter or an `Authorization` header. The full credential split is documented in the [API reference](/en/reference/api/).
+`hls-demo` is the channel ID from the example config; replace it with your own. `/v1/playlist.m3u` accepts a login session only, while everything under `/v1/play/` takes either a `?token=` query parameter or an `Authorization` header. The full credential split is documented in the [API reference](/en/reference/api/).
 
 ## Before you go live
 

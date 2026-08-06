@@ -42,7 +42,7 @@ The full route and permission matrix lives in the [API reference](/en/reference/
 
 The packager has three engines. `native` is pure Go with no external dependency, `ffmpeg` shells out to the binary, and `auto` prefers native and falls back only when the source is not supported natively. A channel's `packager` field overrides the global setting for that channel alone.
 
-Separately, the runtime ships as `lite`, `core`, and `full` variants. They differ in capability but share one configuration model: an engine written explicitly in the config always wins, so the same config never changes behaviour just because you swapped the image tag.
+Separately, the runtime ships as `lite`, `core`, and `full` variants. They differ in capability but share one configuration model: an engine written explicitly in the config always wins, so the same config never changes behavior just because you swapped the image tag.
 
 ## Keep reading
 
@@ -59,8 +59,8 @@ Separately, the runtime ships as `lite`, `core`, and `full` variants. They diffe
   <Card title="Media engine" icon="ph:cpu" href="/en/guide/media-engine/">
     The native pipeline, the compatibility fallback, and every packaging budget.
   </Card>
-  <Card title="Variants & tracks" icon="ph:package" href="/en/guide/variants/">
-    Capability boundaries per distribution variant, plus precise video, audio, and subtitle selection.
+  <Card title="Distribution variants" icon="ph:package" href="/en/guide/variants/">
+    Capability boundaries, image tags, and upgrade paths for Lite, Core, and Full.
   </Card>
   <Card title="EPG" icon="ph:calendar-blank" href="/en/guide/epg/">
     XMLTV sources, refresh policy, channel matching, and logo candidates.
