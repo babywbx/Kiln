@@ -85,7 +85,7 @@ Windows 不在脚本支持范围内，脚本检测到 Windows 环境会直接退
 | 选项 | 说明 | 默认 |
 | --- | --- | --- |
 | `--yes`、`-y` | 非交互模式，所有提示取默认值 | 交互确认 |
-| `--version <v>` | 固定版本，写不写前导 `v` 都行；必须是合法 semver，可带预发布标识符 | 最新 Release |
+| `--version <v>` | 固定版本，写不写前导 `v` 都行；支持 SemVer 核心版本和预发布标识符，不支持 `+build` 元数据 | 最新 Release |
 | `--lite` | 安装 lite 变体，仅 Linux 提供构建 | full |
 | `--dir <path>` | 指定安装目录；显式给出后不再回退到别处 | 见[安装位置](#安装位置与-path) |
 | `--mirror <base>` | 手动指定 GitHub 代理镜像，跳过探测；必须是 `https://` 开头且不含空白字符，结尾多余的斜杠会被去掉 | 自动探测 |
@@ -139,7 +139,7 @@ Windows 不在脚本支持范围内，脚本检测到 Windows 环境会直接退
 
 ## 版本选择与升级
 
-重复运行脚本就是升级。版本比较走完整 semver 规则，包含预发布标识符的逐段比较，因此 `1.0.0-rc.1` 会被正确判定为早于 `1.0.0`。
+重复运行脚本就是升级。版本比较覆盖 SemVer 核心版本和预发布标识符，因此 `1.0.0-rc.1` 会被正确判定为早于 `1.0.0`。
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh | sh -s -- --lang zh --version 1.0.0
@@ -237,7 +237,7 @@ curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh | sh -
 存在 systemd 服务时，卸载必须以 root 执行，脚本会先 `systemctl disable --now kiln`、删除 unit、`systemctl daemon-reload`，再删二进制。权限不足时不会删除任何东西，只提示手动执行：
 
 ```bash
-sudo systemctl disable --now kiln && sudo rm /etc/systemd/system/kiln.service
+sudo systemctl disable --now kiln && sudo rm /etc/systemd/system/kiln.service && sudo systemctl daemon-reload
 ```
 
 <Aside type="caution" title="配置与数据会保留">

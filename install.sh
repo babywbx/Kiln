@@ -17,6 +17,11 @@ NO_MIRROR="${KILN_NO_MIRROR:-0}"
 WITH_SERVICE=0
 DRY_RUN="${KILN_DRY_RUN:-0}"
 FORCE_LANG="${KILN_LANG:-}"
+SYSTEM_ROOT="${KILN_TEST_ROOT:-}"
+SERVICE_UNIT="${SYSTEM_ROOT}/etc/systemd/system/kiln.service"
+SERVICE_CONFIG_DIR="${SYSTEM_ROOT}/etc/kiln"
+SERVICE_CONFIG="${SERVICE_CONFIG_DIR}/kiln.toml"
+SERVICE_DATA="${SYSTEM_ROOT}/var/lib/kiln"
 BAD_ARG=""
 BAD_KIND=""
 
@@ -60,6 +65,7 @@ while [ $# -gt 0 ]; do
 	[ -n "$BAD_ARG" ] && break
 	shift
 done
+VERSION_INPUT="$VERSION_REQ"
 VERSION_REQ="${VERSION_REQ#v}"
 case "$VARIANT" in full | lite) ;; *) BAD_ARG="KILN_VARIANT=$VARIANT" && BAD_KIND="variant" ;; esac
 if [ -z "$BAD_ARG" ] && [ -n "$MIRROR_REQ" ] && [ "$NO_MIRROR" = 1 ]; then
@@ -120,6 +126,7 @@ if [ "$lang" = "zh" ]; then
 	T_CANCELLED="已取消，未对系统做任何修改。"
 	T_DIR_RO="安装目录不可写："
 	T_DIR_TYPE="安装位置不是目录："
+	T_BIN_DIR="目标二进制路径是目录："
 	T_HOME_MISS="HOME 未设置，无法选择用户安装目录。"
 	T_PATH_WARN="PATH 未包含 %s，执行下面这行加入："
 	L_DL="下载        "
@@ -146,11 +153,12 @@ if [ "$lang" = "zh" ]; then
 	T_SVC_ROOT="--service 需要 root 权限，请改用 sudo 运行本脚本。"
 	T_SVC_DIR="--service 要求绝对安装路径，且不能位于 home 或临时目录。"
 	T_SVC_FAIL="systemd 服务配置失败。"
-	T_RM_SVC_ROOT="检测到 systemd 服务，需 root 移除：sudo systemctl disable --now kiln && sudo rm /etc/systemd/system/kiln.service"
+	T_RM_SVC_ROOT="检测到 systemd 服务，需 root 移除：sudo systemctl disable --now kiln && sudo rm /etc/systemd/system/kiln.service && sudo systemctl daemon-reload"
 	T_SVC_CFG_MISS="未找到 /etc/kiln/kiln.toml，unit 已安装但未启用；创建配置后执行 systemctl enable --now kiln。"
 	T_RM_NONE="未检测到已安装的 kiln。"
 	T_RUN_FAIL="安装后的二进制无法执行，已保留现场。"
 	T_RUN_FAIL_HINT="可能原因：目标目录挂载为 noexec，或下载了错误架构的构建。"
+	T_ID_FAIL="下载的二进制版本或变体与请求不一致。"
 	T_INSTALL_FAIL="无法写入安装文件。"
 	T_RM_SVC="已停止并移除 systemd 服务（保留 /etc/kiln 配置与数据）。"
 	T_DONE="✓ 安装完成"
@@ -220,6 +228,7 @@ else
 	T_CANCELLED="Cancelled. Nothing was changed."
 	T_DIR_RO="Install directory is not writable: "
 	T_DIR_TYPE="Install location is not a directory: "
+	T_BIN_DIR="Target binary path is a directory: "
 	T_HOME_MISS="HOME is unset, so a user install directory cannot be selected."
 	T_PATH_WARN="%s is not in PATH. Add it with:"
 	L_DL="download    "
@@ -246,11 +255,12 @@ else
 	T_SVC_ROOT="--service needs root. Re-run this script with sudo."
 	T_SVC_DIR="--service requires an absolute install path outside home and temporary directories."
 	T_SVC_FAIL="Could not configure the systemd service."
-	T_RM_SVC_ROOT="systemd service found; remove it as root: sudo systemctl disable --now kiln && sudo rm /etc/systemd/system/kiln.service"
+	T_RM_SVC_ROOT="systemd service found; remove it as root: sudo systemctl disable --now kiln && sudo rm /etc/systemd/system/kiln.service && sudo systemctl daemon-reload"
 	T_SVC_CFG_MISS="/etc/kiln/kiln.toml not found; the unit was installed but left disabled. Create the config, then run systemctl enable --now kiln."
 	T_RM_NONE="No installed kiln found."
 	T_RUN_FAIL="The installed binary failed to execute."
 	T_RUN_FAIL_HINT="Likely causes: target directory mounted noexec, or a wrong-architecture build."
+	T_ID_FAIL="The downloaded binary version or variant does not match the request."
 	T_INSTALL_FAIL="Could not write the installation files."
 	T_RM_SVC="Stopped and removed the systemd service (kept /etc/kiln config and data)."
 	T_DONE="✓ Installed"
@@ -353,9 +363,42 @@ fi
 
 WORK=""
 STAGED=""
+BINARY_BACKUP=""
+UNIT_BACKUP=""
+SERVICE_ROLLBACK=0
+SERVICE_WAS_ACTIVE=0
+SERVICE_WAS_ENABLED=0
 cleanup() {
 	printf '%s' "$CURSOR_SHOW"
 	if [ -n "$STAGED" ] && [ -e "$STAGED" ]; then rm -f "$STAGED"; fi
+	if [ "$SERVICE_ROLLBACK" = 1 ]; then
+		if [ -n "$BINARY_BACKUP" ] && [ -e "$BINARY_BACKUP" ]; then
+			mv -f "$BINARY_BACKUP" "$target/kiln" 2>/dev/null || true
+		else
+			rm -f "$target/kiln" 2>/dev/null || true
+		fi
+		if [ -n "$UNIT_BACKUP" ] && [ -e "$UNIT_BACKUP" ]; then
+			mv -f "$UNIT_BACKUP" "$SERVICE_UNIT" 2>/dev/null || true
+		else
+			rm -f "$SERVICE_UNIT" 2>/dev/null || true
+		fi
+		if command -v systemctl >/dev/null 2>&1; then
+			systemctl daemon-reload >/dev/null 2>&1 || true
+			if [ "$SERVICE_WAS_ENABLED" = 1 ]; then
+				systemctl enable kiln >/dev/null 2>&1 || true
+			else
+				systemctl disable kiln >/dev/null 2>&1 || true
+			fi
+			if [ "$SERVICE_WAS_ACTIVE" = 1 ]; then
+				systemctl restart kiln >/dev/null 2>&1 || true
+			else
+				systemctl stop kiln >/dev/null 2>&1 || true
+			fi
+		fi
+	else
+		[ -z "$BINARY_BACKUP" ] || rm -f "$BINARY_BACKUP"
+		[ -z "$UNIT_BACKUP" ] || rm -f "$UNIT_BACKUP"
+	fi
 	if [ -n "$WORK" ]; then rm -rf "$WORK"; fi
 }
 trap cleanup EXIT
@@ -439,11 +482,19 @@ probe_ok() {
 
 valid_version() {
 	case "$1" in "" | *[!0-9A-Za-z.-]*) return 1 ;; esac
-	printf '%s\n' "$1" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$'
+	[ "${#1}" -le 123 ] || return 1
+	printf '%s\n' "$1" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$' || return 1
+	case "$1" in
+	*-*)
+		prerelease="${1#*-}"
+		! printf '%s\n' "$prerelease" | grep -Eq '(^|\.)0[0-9]+($|\.)'
+		;;
+	*) return 0 ;;
+	esac
 }
 
 semver_compare() {
-	awk -v a="$1" -v b="$2" '
+	LC_ALL=C awk -v a="$1" -v b="$2" '
 		function normalize(value) {
 			sub(/^0+/, "", value)
 			return value == "" ? "0" : value
@@ -463,20 +514,24 @@ semver_compare() {
 			if (a == b) return 0
 			return ("x" a) < ("x" b) ? -1 : 1
 		}
-		function compare(a, b, a_dash, b_dash, a_core, b_core, a_pre, b_pre, a_count, b_count, count, i, result) {
-			split(a, a_dash, "-")
-			split(b, b_dash, "-")
-			split(a_dash[1], a_core, ".")
-			split(b_dash[1], b_core, ".")
+		function compare(a, b, a_pos, b_pos, a_core_value, b_core_value, a_pre_value, b_pre_value, a_core, b_core, a_pre, b_pre, a_count, b_count, count, i, result) {
+			a_pos = index(a, "-")
+			b_pos = index(b, "-")
+			a_core_value = a_pos ? substr(a, 1, a_pos - 1) : a
+			b_core_value = b_pos ? substr(b, 1, b_pos - 1) : b
+			a_pre_value = a_pos ? substr(a, a_pos + 1) : ""
+			b_pre_value = b_pos ? substr(b, b_pos + 1) : ""
+			split(a_core_value, a_core, ".")
+			split(b_core_value, b_core, ".")
 			for (i = 1; i <= 3; i++) {
 				result = compare_number(a_core[i], b_core[i])
 				if (result != 0) return result
 			}
-			if (!(2 in a_dash) && !(2 in b_dash)) return 0
-			if (!(2 in a_dash)) return 1
-			if (!(2 in b_dash)) return -1
-			a_count = split(a_dash[2], a_pre, ".")
-			b_count = split(b_dash[2], b_pre, ".")
+			if (!a_pos && !b_pos) return 0
+			if (!a_pos) return 1
+			if (!b_pos) return -1
+			a_count = split(a_pre_value, a_pre, ".")
+			b_count = split(b_pre_value, b_pre, ".")
 			count = a_count < b_count ? a_count : b_count
 			for (i = 1; i <= count; i++) {
 				result = compare_identifier(a_pre[i], b_pre[i])
@@ -499,7 +554,6 @@ print_header() {
 
 uninstall_flow() {
 	installed_path=""
-	service_unit="/etc/systemd/system/kiln.service"
 	service_present=0
 	if [ "$DRY_RUN" = 1 ] && [ -n "${KILN_SIM_INSTALLED:-}" ]; then
 		installed_path="${DIR_REQ:-/usr/local/bin}/kiln"
@@ -511,7 +565,7 @@ uninstall_flow() {
 	elif [ -n "${HOME:-}" ] && [ -f "$HOME/.local/bin/kiln" ] && [ ! -L "$HOME/.local/bin/kiln" ]; then
 		installed_path="$HOME/.local/bin/kiln"
 	fi
-	[ -f "$service_unit" ] && service_present=1
+	[ -f "$SERVICE_UNIT" ] && service_present=1
 	[ "$DRY_RUN" = 1 ] && [ "${KILN_SIM_SERVICE:-0}" = 1 ] && service_present=1
 	if [ -z "$installed_path" ] && [ "$service_present" != 1 ]; then
 		printf '  %s%s%s\n\n' "$DIM" "$T_RM_NONE" "$RESET"
@@ -532,15 +586,17 @@ uninstall_flow() {
 		;;
 	esac
 	if [ "$DRY_RUN" != 1 ]; then
+		if [ "$service_present" = 1 ]; then
+			uid="$(id -u 2>/dev/null || true)"
+			[ "$uid" = 0 ] || die 1 "$T_RM_SVC_ROOT"
+			command -v systemctl >/dev/null 2>&1 || die 1 "$T_RM_SVC_FAIL"
+		fi
 		if [ -n "$installed_path" ] && [ ! -w "$(dirname "$installed_path")" ]; then
 			die 1 "$T_DIR_RO$(dirname "$installed_path")" "sudo rm -f $installed_path"
 		fi
 		if [ "$service_present" = 1 ]; then
-			command -v systemctl >/dev/null 2>&1 || die 1 "$T_RM_SVC_FAIL"
-			uid="$(id -u 2>/dev/null || true)"
-			[ "$uid" = 0 ] || die 1 "$T_RM_SVC_ROOT"
 			systemctl disable --now kiln >/dev/null 2>&1 || die 1 "$T_RM_SVC_FAIL"
-			rm -f "$service_unit" || die 1 "$T_RM_SVC_FAIL"
+			rm -f "$SERVICE_UNIT" || die 1 "$T_RM_SVC_FAIL"
 			systemctl daemon-reload >/dev/null 2>&1 || die 1 "$T_RM_SVC_FAIL"
 			warn "$T_RM_SVC"
 		fi
@@ -563,7 +619,9 @@ if [ "$ACTION" = "remove" ]; then
 	uninstall_flow
 fi
 
-[ -z "$VERSION_REQ" ] || valid_version "$VERSION_REQ" || die 1 "$T_BAD_VERSION$VERSION_REQ"
+if [ -n "$VERSION_INPUT" ] && ! valid_version "$VERSION_REQ"; then
+	die 1 "$T_BAD_VERSION$VERSION_INPUT"
+fi
 
 os="$(uname -s)"
 case "$os" in
@@ -640,9 +698,11 @@ if [ "$WITH_SERVICE" = 1 ]; then
 	/*) ;;
 	*) die 1 "$T_SVC_DIR" ;;
 	esac
-	case "$target" in
-	*[[:space:]]* | /home | /home/* | /root | /root/* | /tmp | /tmp/* | /var/tmp | /var/tmp/*) die 1 "$T_SVC_DIR" ;;
-	esac
+	if [ -z "$SYSTEM_ROOT" ]; then
+		case "$target" in
+			*[[:space:]]* | /home | /home/* | /root | /root/* | /tmp | /tmp/* | /var/tmp | /var/tmp/*) die 1 "$T_SVC_DIR" ;;
+		esac
+	fi
 	SERVICE_NOLOGIN=""
 	if [ "$DRY_RUN" != 1 ]; then
 		[ "$(id -u 2>/dev/null || true)" = 0 ] || die 1 "$T_SVC_ROOT"
@@ -662,6 +722,7 @@ print_header
 installed_version=""
 installed_variant=""
 installed_path="$target/kiln"
+[ ! -d "$installed_path" ] || die 1 "$T_BIN_DIR$installed_path"
 if [ "$DRY_RUN" = 1 ] && [ -n "${KILN_SIM_INSTALLED:-}" ]; then
 	installed_version="${KILN_SIM_INSTALLED#v}"
 	installed_variant="${KILN_SIM_VARIANT:-$VARIANT}"
@@ -797,7 +858,7 @@ if [ -n "$installed_version" ]; then
 		1) action="downgrade" ;;
 		esac
 	fi
-	if [ "$action" = "same" ] && [ "$ASSUME_YES" = 1 ]; then
+	if [ "$action" = "same" ] && [ "$ASSUME_YES" = 1 ] && [ "$WITH_SERVICE" != 1 ]; then
 		# shellcheck disable=SC2059
 		printf "  ${GREEN}✓${RESET} $T_SAME\n\n" "$installed_version"
 		exit 0
@@ -930,10 +991,30 @@ if [ "$DRY_RUN" != 1 ]; then
 	STAGED="$(mktemp "$target/.kiln.new.XXXXXX")" || die 1 "$T_INSTALL_FAIL"
 	cp "$WORK/unpack/$name" "$STAGED" || die 1 "$T_INSTALL_FAIL"
 	chmod 0755 "$STAGED" || die 1 "$T_INSTALL_FAIL"
-	if ! "$STAGED" -version >/dev/null 2>&1; then
+	if ! staged_info="$("$STAGED" -version 2>/dev/null)"; then
 		rm -f "$STAGED"
 		STAGED=""
 		die 1 "$T_RUN_FAIL" "$T_RUN_FAIL_HINT"
+	fi
+	staged_version="$(printf '%s\n' "$staged_info" | sed -n 's/.*version=\([^ ]*\).*/\1/p' | head -n 1)"
+	staged_variant="$(printf '%s\n' "$staged_info" | sed -n 's/.*variant=\([^ ]*\).*/\1/p' | head -n 1)"
+	if [ "$staged_version" != "$version" ] || [ "$staged_variant" != "$VARIANT" ]; then
+		rm -f "$STAGED"
+		STAGED=""
+		die 1 "$T_ID_FAIL"
+	fi
+	if [ "$WITH_SERVICE" = 1 ]; then
+		if [ -f "$target/kiln" ] || [ -L "$target/kiln" ]; then
+			BINARY_BACKUP="$(mktemp "$target/.kiln.old.XXXXXX")" || die 1 "$T_INSTALL_FAIL"
+			cp -p "$target/kiln" "$BINARY_BACKUP" || die 1 "$T_INSTALL_FAIL"
+		fi
+		if [ -f "$SERVICE_UNIT" ] || [ -L "$SERVICE_UNIT" ]; then
+			UNIT_BACKUP="$(mktemp "$(dirname "$SERVICE_UNIT")/.kiln.service.old.XXXXXX")" || die 1 "$T_SVC_FAIL"
+			cp -p "$SERVICE_UNIT" "$UNIT_BACKUP" || die 1 "$T_SVC_FAIL"
+		fi
+		systemctl is-active --quiet kiln >/dev/null 2>&1 && SERVICE_WAS_ACTIVE=1
+		systemctl is-enabled --quiet kiln >/dev/null 2>&1 && SERVICE_WAS_ENABLED=1
+		SERVICE_ROLLBACK=1
 	fi
 	mv -f "$STAGED" "$target/kiln" || die 1 "$T_INSTALL_FAIL"
 	STAGED=""
@@ -948,9 +1029,10 @@ if [ "$WITH_SERVICE" = 1 ]; then
 		fi
 		service_group="$(id -gn kiln 2>/dev/null || true)"
 		[ -n "$service_group" ] || die 1 "$T_SVC_FAIL"
-		mkdir -p /etc/kiln /var/lib/kiln || die 1 "$T_SVC_FAIL"
-		chown "kiln:$service_group" /var/lib/kiln || die 1 "$T_SVC_FAIL"
-		if ! cat >/etc/systemd/system/kiln.service <<EOF
+		mkdir -p "$SERVICE_CONFIG_DIR" "$SERVICE_DATA" || die 1 "$T_SVC_FAIL"
+		chown "kiln:$service_group" "$SERVICE_DATA" || die 1 "$T_SVC_FAIL"
+		STAGED="$(mktemp "$(dirname "$SERVICE_UNIT")/.kiln.service.new.XXXXXX")" || die 1 "$T_SVC_FAIL"
+		if ! cat >"$STAGED" <<EOF
 [Unit]
 Description=Kiln
 After=network-online.target
@@ -975,14 +1057,19 @@ EOF
 		then
 			die 1 "$T_SVC_FAIL"
 		fi
+		chmod 0644 "$STAGED" || die 1 "$T_SVC_FAIL"
+		mv -f "$STAGED" "$SERVICE_UNIT" || die 1 "$T_SVC_FAIL"
+		STAGED=""
 		systemctl daemon-reload >/dev/null 2>&1 || die 1 "$T_SVC_FAIL"
-		if [ -f /etc/kiln/kiln.toml ]; then
-			systemctl enable --now kiln >/dev/null 2>&1 || die 1 "$T_SVC_FAIL"
+		if [ -f "$SERVICE_CONFIG" ]; then
+			systemctl enable kiln >/dev/null 2>&1 || die 1 "$T_SVC_FAIL"
+			systemctl restart kiln >/dev/null 2>&1 || die 1 "$T_SVC_FAIL"
 			service_started=1
 		else
 			systemctl disable --now kiln >/dev/null 2>&1 || die 1 "$T_SVC_FAIL"
 			svc_note="$T_SVC_CFG_MISS"
 		fi
+		SERVICE_ROLLBACK=0
 	fi
 	step_done "4/$total" "$L_SERVICE" "kiln.service${mark}"
 	[ -n "$svc_note" ] && warn "$svc_note"

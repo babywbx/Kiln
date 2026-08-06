@@ -83,9 +83,41 @@ fake_wget() {
 	esac
 }
 
+fake_systemctl() {
+	[ -z "${KILN_TEST_SYSTEMCTL_LOG:-}" ] || printf '%s\n' "$*" >>"$KILN_TEST_SYSTEMCTL_LOG"
+	if [ -n "${KILN_TEST_SYSTEMCTL_FAIL:-}" ] && [ "$*" = "$KILN_TEST_SYSTEMCTL_FAIL" ]; then
+		if [ -z "${KILN_TEST_SYSTEMCTL_FAIL_MARKER:-}" ] || [ ! -e "$KILN_TEST_SYSTEMCTL_FAIL_MARKER" ]; then
+			[ -z "${KILN_TEST_SYSTEMCTL_FAIL_MARKER:-}" ] || : >"$KILN_TEST_SYSTEMCTL_FAIL_MARKER"
+			exit 1
+		fi
+	fi
+	case "${1:-}" in
+	is-enabled)
+		[ -z "${KILN_TEST_SYSTEMCTL_ENABLED_STATE:-}" ] || [ -e "$KILN_TEST_SYSTEMCTL_ENABLED_STATE" ]
+		exit
+		;;
+	enable)
+		[ -z "${KILN_TEST_SYSTEMCTL_ENABLED_STATE:-}" ] || : >"$KILN_TEST_SYSTEMCTL_ENABLED_STATE"
+		;;
+	disable)
+		[ -z "${KILN_TEST_SYSTEMCTL_ENABLED_STATE:-}" ] || rm -f "$KILN_TEST_SYSTEMCTL_ENABLED_STATE"
+		;;
+	esac
+	exit 0
+}
+
+fake_id() {
+	case "${1:-}" in
+	-u) printf '%s\n' "${KILN_TEST_UID:-0}" ;;
+	-gn) printf 'kiln\n' ;;
+	kiln) [ "${KILN_TEST_USER_EXISTS:-1}" = 1 ] ;;
+	*) exit 1 ;;
+	esac
+}
+
 fake_binary() {
-	version="${KILN_TEST_RELEASE_VERSION:-1.0.0}"
-	variant="${KILN_TEST_RELEASE_VARIANT:-full}"
+	version="${KILN_TEST_BINARY_VERSION:-${KILN_TEST_RELEASE_VERSION:-1.0.0}}"
+	variant="${KILN_TEST_BINARY_VARIANT:-${KILN_TEST_RELEASE_VARIANT:-full}}"
 	if [ -f "$0.meta" ]; then
 		read -r version variant <"$0.meta"
 	fi
@@ -98,11 +130,15 @@ case "$(basename -- "$0")" in
 curl) fake_curl "$@"; exit ;;
 uname) fake_uname "$@"; exit ;;
 wget) fake_wget "$@"; exit ;;
+systemctl) fake_systemctl "$@" ;;
+id) fake_id "$@"; exit ;;
+chown) exit ;;
 kiln | kiln-lite | .kiln.new.*) fake_binary "$@"; exit ;;
 esac
 
 HERE="$(dirname -- "$SELF")"
 INSTALLER="$HERE/../install.sh"
+RELEASE_WORKFLOW="$HERE/../.github/workflows/release.yml"
 TEST_SHELL="${TEST_SHELL:-/bin/sh}"
 TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/kiln-install-test.XXXXXX")"
 trap 'rm -rf "$TEST_ROOT"' EXIT HUP INT TERM
@@ -156,7 +192,7 @@ test_probe_waits_for_sources() {
 		>"$case_dir/output" 2>&1 || status=$?
 	[ "$status" = 0 ] || fail "installer returned $status before delayed probes completed"
 	[ -x "$case_dir/target/kiln" ] || fail "installer did not create the target binary"
-	printf 'ok 1 - waits for concurrent source probes\n'
+	printf 'ok - waits for concurrent source probes\n'
 }
 
 test_failed_binary_preserves_existing_target() {
@@ -181,7 +217,77 @@ test_failed_binary_preserves_existing_target() {
 	for staged in "$case_dir/target"/.kiln.new.*; do
 		[ ! -e "$staged" ] || fail "failed install left a staged binary"
 	done
-	printf 'ok 2 - preserves existing target when staged binary fails\n'
+	printf 'ok - preserves existing target when staged binary fails\n'
+}
+
+test_binary_directory_is_rejected() {
+	case_dir="$(make_case binary-directory)"
+	mkdir "$case_dir/target/kiln"
+	status=0
+	env \
+		HOME="$case_dir/home" \
+		PATH="$case_dir/fakebin:$BASE_PATH" \
+		TMPDIR="$case_dir/tmp" \
+		NO_COLOR=1 \
+		KILN_YES=1 \
+		KILN_TEST_ARCHIVE="$case_dir/kiln_1.2.3_linux_amd64.tar.gz" \
+		KILN_TEST_SUMS="$case_dir/SHA256SUMS" \
+		KILN_TEST_RELEASE_VERSION=1.2.3 \
+		KILN_TEST_RELEASE_VARIANT=full \
+		"$TEST_SHELL" "$INSTALLER" --version 1.2.3 --dir "$case_dir/target" \
+		>"$case_dir/output" 2>&1 || status=$?
+	[ "$status" = 1 ] || fail "installer accepted a directory as the target binary"
+	[ -d "$case_dir/target/kiln" ] || fail "installer replaced the target directory"
+	for staged in "$case_dir/target/kiln"/.kiln.new.*; do
+		[ ! -e "$staged" ] || fail "failed install moved a staged binary into the target directory"
+	done
+	printf 'ok - rejects a directory at the target binary path\n'
+}
+
+test_wrong_binary_version_preserves_existing_target() {
+	case_dir="$(make_case wrong-binary-version)"
+	printf 'old binary\n' >"$case_dir/target/kiln"
+	chmod 0755 "$case_dir/target/kiln"
+	status=0
+	env \
+		HOME="$case_dir/home" \
+		PATH="$case_dir/fakebin:$BASE_PATH" \
+		TMPDIR="$case_dir/tmp" \
+		NO_COLOR=1 \
+		KILN_YES=1 \
+		KILN_TEST_ARCHIVE="$case_dir/kiln_1.2.3_linux_amd64.tar.gz" \
+		KILN_TEST_SUMS="$case_dir/SHA256SUMS" \
+		KILN_TEST_RELEASE_VERSION=1.2.3 \
+		KILN_TEST_RELEASE_VARIANT=full \
+		KILN_TEST_BINARY_VERSION=9.9.9 \
+		"$TEST_SHELL" "$INSTALLER" --version 1.2.3 --dir "$case_dir/target" \
+		>"$case_dir/output" 2>&1 || status=$?
+	[ "$status" = 1 ] || fail "installer accepted a binary with the wrong version"
+	[ "$(sed -n '1p' "$case_dir/target/kiln")" = "old binary" ] || fail "wrong-version binary replaced the existing target"
+	printf 'ok - rejects a binary with the wrong version\n'
+}
+
+test_wrong_binary_variant_preserves_existing_target() {
+	case_dir="$(make_case wrong-binary-variant)"
+	printf 'old binary\n' >"$case_dir/target/kiln"
+	chmod 0755 "$case_dir/target/kiln"
+	status=0
+	env \
+		HOME="$case_dir/home" \
+		PATH="$case_dir/fakebin:$BASE_PATH" \
+		TMPDIR="$case_dir/tmp" \
+		NO_COLOR=1 \
+		KILN_YES=1 \
+		KILN_TEST_ARCHIVE="$case_dir/kiln_1.2.3_linux_amd64.tar.gz" \
+		KILN_TEST_SUMS="$case_dir/SHA256SUMS" \
+		KILN_TEST_RELEASE_VERSION=1.2.3 \
+		KILN_TEST_RELEASE_VARIANT=full \
+		KILN_TEST_BINARY_VARIANT=lite \
+		"$TEST_SHELL" "$INSTALLER" --version 1.2.3 --dir "$case_dir/target" \
+		>"$case_dir/output" 2>&1 || status=$?
+	[ "$status" = 1 ] || fail "installer accepted a binary with the wrong variant"
+	[ "$(sed -n '1p' "$case_dir/target/kiln")" = "old binary" ] || fail "wrong-variant binary replaced the existing target"
+	printf 'ok - rejects a binary with the wrong variant\n'
 }
 
 test_stable_release_upgrades_prerelease() {
@@ -199,7 +305,7 @@ test_stable_release_upgrades_prerelease() {
 		"$TEST_SHELL" "$INSTALLER" --version 1.0.0 --dir "$case_dir/target" \
 		>"$case_dir/output" 2>&1 || fail "stable release upgrade failed"
 	grep -q 'upgrading from v1.0.0-rc.1' "$case_dir/output" || fail "stable release was not treated as newer than its prerelease"
-	printf 'ok 3 - stable release upgrades prerelease\n'
+	printf 'ok - stable release upgrades prerelease\n'
 }
 
 test_same_version_switches_variant() {
@@ -217,7 +323,92 @@ test_same_version_switches_variant() {
 		"$TEST_SHELL" "$INSTALLER" --version 1.2.3 --lite --dir "$case_dir/target" \
 		>"$case_dir/output" 2>&1 || fail "same-version variant switch failed"
 	grep -q 'kiln-lite_1.2.3_linux_amd64.tar.gz' "$case_dir/output" || fail "same version with a different variant was skipped"
-	printf 'ok 4 - same version switches variant\n'
+	printf 'ok - same version switches variant\n'
+}
+
+test_same_version_still_configures_service() {
+	case_dir="$(make_case same-version-service)"
+	cp "$SELF" "$case_dir/target/kiln"
+	chmod 0755 "$case_dir/target/kiln"
+	printf '1.2.3 full\n' >"$case_dir/target/kiln.meta"
+	ln -s "$SELF" "$case_dir/fakebin/systemctl"
+	env \
+		HOME="$case_dir/home" \
+		PATH="$case_dir/fakebin:$BASE_PATH" \
+		TMPDIR="$case_dir/tmp" \
+		NO_COLOR=1 \
+		KILN_YES=1 \
+		KILN_DRY_RUN=1 \
+		KILN_TEST_ROOT="$case_dir/root" \
+		"$TEST_SHELL" "$INSTALLER" --version 1.2.3 --service --dir "$case_dir/target" \
+		>"$case_dir/output" 2>&1 || fail "same-version service setup failed"
+	grep -q 'kiln.service' "$case_dir/output" || fail "same-version install skipped service setup"
+	printf 'ok - configures service for an existing current binary\n'
+}
+
+test_service_upgrade_restarts_process() {
+	case_dir="$(make_case service-restart)"
+	cp "$SELF" "$case_dir/target/kiln"
+	chmod 0755 "$case_dir/target/kiln"
+	printf '1.0.0 full\n' >"$case_dir/target/kiln.meta"
+	mkdir -p "$case_dir/root/etc/systemd/system" "$case_dir/root/etc/kiln"
+	: >"$case_dir/root/etc/kiln/kiln.toml"
+	: >"$case_dir/systemctl.log"
+	for tool in systemctl id chown; do ln -s "$SELF" "$case_dir/fakebin/$tool"; done
+	env \
+		HOME="$case_dir/home" \
+		PATH="$case_dir/fakebin:$BASE_PATH" \
+		TMPDIR="$case_dir/tmp" \
+		NO_COLOR=1 \
+		KILN_YES=1 \
+		KILN_TEST_ROOT="$case_dir/root" \
+		KILN_TEST_SYSTEMCTL_LOG="$case_dir/systemctl.log" \
+		KILN_TEST_ARCHIVE="$case_dir/kiln_1.2.3_linux_amd64.tar.gz" \
+		KILN_TEST_SUMS="$case_dir/SHA256SUMS" \
+		KILN_TEST_RELEASE_VERSION=1.2.3 \
+		KILN_TEST_RELEASE_VARIANT=full \
+		"$TEST_SHELL" "$INSTALLER" --version 1.2.3 --service --dir "$case_dir/target" \
+		>"$case_dir/output" 2>&1 || fail "service upgrade failed"
+	grep -q '^restart kiln$' "$case_dir/systemctl.log" || fail "service upgrade did not restart the running process"
+	printf 'ok - restarts the service after an upgrade\n'
+}
+
+test_service_failure_restores_binary_and_unit() {
+	case_dir="$(make_case service-rollback)"
+	cp "$SELF" "$case_dir/target/kiln"
+	printf '\n# old binary marker\n' >>"$case_dir/target/kiln"
+	chmod 0755 "$case_dir/target/kiln"
+	cp "$case_dir/target/kiln" "$case_dir/old-kiln"
+	printf '1.0.0 full\n' >"$case_dir/target/kiln.meta"
+	mkdir -p "$case_dir/root/etc/systemd/system" "$case_dir/root/etc/kiln"
+	printf 'old unit\n' >"$case_dir/root/etc/systemd/system/kiln.service"
+	cp "$case_dir/root/etc/systemd/system/kiln.service" "$case_dir/old-unit"
+	: >"$case_dir/root/etc/kiln/kiln.toml"
+	: >"$case_dir/systemctl.log"
+	for tool in systemctl id chown; do ln -s "$SELF" "$case_dir/fakebin/$tool"; done
+	status=0
+	env \
+		HOME="$case_dir/home" \
+		PATH="$case_dir/fakebin:$BASE_PATH" \
+		TMPDIR="$case_dir/tmp" \
+		NO_COLOR=1 \
+		KILN_YES=1 \
+		KILN_TEST_ROOT="$case_dir/root" \
+		KILN_TEST_SYSTEMCTL_LOG="$case_dir/systemctl.log" \
+		KILN_TEST_SYSTEMCTL_ENABLED_STATE="$case_dir/systemctl.enabled" \
+		KILN_TEST_SYSTEMCTL_FAIL='restart kiln' \
+		KILN_TEST_SYSTEMCTL_FAIL_MARKER="$case_dir/restart.failed" \
+		KILN_TEST_ARCHIVE="$case_dir/kiln_1.2.3_linux_amd64.tar.gz" \
+		KILN_TEST_SUMS="$case_dir/SHA256SUMS" \
+		KILN_TEST_RELEASE_VERSION=1.2.3 \
+		KILN_TEST_RELEASE_VARIANT=full \
+		"$TEST_SHELL" "$INSTALLER" --version 1.2.3 --service --dir "$case_dir/target" \
+		>"$case_dir/output" 2>&1 || status=$?
+	[ "$status" = 1 ] || fail "service restart failure returned $status"
+	cmp -s "$case_dir/old-kiln" "$case_dir/target/kiln" || fail "service failure left the new binary installed"
+	cmp -s "$case_dir/old-unit" "$case_dir/root/etc/systemd/system/kiln.service" || fail "service failure left the new unit installed"
+	[ ! -e "$case_dir/systemctl.enabled" ] || fail "service failure left a previously disabled service enabled"
+	printf 'ok - restores binary, unit, and service state on failure\n'
 }
 
 test_invalid_values_are_rejected() {
@@ -232,7 +423,12 @@ test_invalid_values_are_rejected() {
 		"$TEST_SHELL" "$INSTALLER" --dry-run --version '1.2.3/../../escape' >"$case_dir/version-output" 2>&1 || status=$?
 	[ "$status" = 1 ] || fail "unsafe version string was accepted"
 	grep -q 'invalid version:' "$case_dir/version-output" || fail "invalid version was not explained"
-	printf 'ok 5 - rejects missing and unsafe option values\n'
+	status=0
+	env HOME="$case_dir/home" PATH="$case_dir/fakebin:$BASE_PATH" TMPDIR="$case_dir/tmp" NO_COLOR=1 KILN_YES=1 \
+		"$TEST_SHELL" "$INSTALLER" --dry-run --version v >"$case_dir/bare-v-output" 2>&1 || status=$?
+	[ "$status" = 1 ] || fail "bare v was treated as the latest version"
+	grep -q 'invalid version:' "$case_dir/bare-v-output" || fail "bare v was not explained"
+	printf 'ok - rejects missing and unsafe option values\n'
 }
 
 test_mirror_options_are_consistent() {
@@ -251,7 +447,7 @@ test_mirror_options_are_consistent() {
 		"$TEST_SHELL" "$INSTALLER" --dry-run --version 1.2.3 --mirror http://mirror.example \
 		>"$case_dir/http-output" 2>&1 || status=$?
 	[ "$status" = 1 ] || fail "insecure mirror URL was accepted"
-	printf 'ok 6 - keeps mirror options secure and consistent\n'
+	printf 'ok - keeps mirror options secure and consistent\n'
 }
 
 test_wget_resolves_latest_through_mirror() {
@@ -277,7 +473,7 @@ test_wget_resolves_latest_through_mirror() {
 	[ "$status" = 0 ] || fail "wget mirror install returned $status"
 	grep -q '^https://mirror.example/https://api.github.com/repos/babywbx/kiln/releases/latest$' "$case_dir/requests" || fail "wget resolved latest outside the manual mirror"
 	[ -x "$case_dir/target/kiln" ] || fail "wget mirror install did not create the target binary"
-	printf 'ok 7 - wget resolves latest through manual mirror\n'
+	printf 'ok - wget resolves latest through manual mirror\n'
 }
 
 test_uninstall_uses_explicit_dir_without_install_dependencies() {
@@ -302,7 +498,7 @@ test_uninstall_uses_explicit_dir_without_install_dependencies() {
 	fi
 	[ ! -e "$case_dir/target/kiln" ] || fail "custom uninstall left the requested target"
 	[ -e "$case_dir/fakebin/kiln" ] || fail "custom uninstall removed an unrelated PATH binary"
-	printf 'ok 8 - uninstalls explicit dir without install dependencies\n'
+	printf 'ok - uninstalls explicit dir without install dependencies\n'
 }
 
 test_uninstall_ignores_unknown_path_binary() {
@@ -312,7 +508,7 @@ test_uninstall_ignores_unknown_path_binary() {
 		"$TEST_SHELL" "$INSTALLER" --uninstall --yes >"$case_dir/output" 2>&1 || fail "safe default uninstall failed"
 	[ -e "$case_dir/fakebin/kiln" ] || fail "default uninstall removed an unknown PATH binary"
 	grep -q 'No installed kiln found.' "$case_dir/output" || fail "unknown PATH binary was treated as installer-owned"
-	printf 'ok 9 - ignores unknown PATH binary during uninstall\n'
+	printf 'ok - ignores unknown PATH binary during uninstall\n'
 }
 
 test_uninstall_handles_service_without_binary() {
@@ -320,7 +516,26 @@ test_uninstall_handles_service_without_binary() {
 	env HOME="$case_dir/home" PATH="$case_dir/fakebin:$BASE_PATH" NO_COLOR=1 KILN_DRY_RUN=1 KILN_SIM_SERVICE=1 \
 		"$TEST_SHELL" "$INSTALLER" --uninstall --yes >"$case_dir/output" 2>&1 || fail "service-only uninstall dry-run failed"
 	grep -q 'kiln.service' "$case_dir/output" || fail "service-only uninstall exited as if nothing were installed"
-	printf 'ok 10 - handles service-only uninstall\n'
+	printf 'ok - handles service-only uninstall\n'
+}
+
+test_uninstall_reports_service_privilege_first() {
+	case_dir="$(make_case uninstall-service-root)"
+	cp "$SELF" "$case_dir/target/kiln"
+	chmod 0555 "$case_dir/target"
+	mkdir -p "$case_dir/root/etc/systemd/system"
+	printf 'old unit\n' >"$case_dir/root/etc/systemd/system/kiln.service"
+	ln -s "$SELF" "$case_dir/fakebin/id"
+	status=0
+	env HOME="$case_dir/home" PATH="$case_dir/fakebin:$BASE_PATH" NO_COLOR=1 KILN_TEST_ROOT="$case_dir/root" KILN_TEST_UID=1000 \
+		"$TEST_SHELL" "$INSTALLER" --uninstall --yes --dir "$case_dir/target" \
+		>"$case_dir/output" 2>&1 || status=$?
+	chmod 0755 "$case_dir/target"
+	[ "$status" = 1 ] || fail "non-root service uninstall returned $status"
+	grep -q 'systemd service found' "$case_dir/output" || fail "non-root uninstall did not explain service removal first"
+	[ -f "$case_dir/target/kiln" ] || fail "non-root uninstall removed the binary"
+	[ -f "$case_dir/root/etc/systemd/system/kiln.service" ] || fail "non-root uninstall removed the unit"
+	printf 'ok - reports service privileges before binary permissions\n'
 }
 
 test_semver_order_and_exact_identity() {
@@ -338,17 +553,68 @@ test_semver_order_and_exact_identity() {
 	env HOME="$case_dir/home" PATH="$case_dir/fakebin:$BASE_PATH" TMPDIR="$case_dir/tmp" NO_COLOR=1 KILN_YES=1 KILN_DRY_RUN=1 \
 		"$TEST_SHELL" "$INSTALLER" --version 1.0.0 --dir "$case_dir/target" >"$case_dir/same-output" 2>&1 || fail "exact identity check failed"
 	grep -q 'already the latest installed version' "$case_dir/same-output" || fail "same version and variant did not exit early"
-	printf 'ok 11 - orders SemVer and skips exact identity\n'
+	printf 'ok - orders SemVer and skips exact identity\n'
+}
+
+test_prerelease_identifier_allows_hyphens() {
+	case_dir="$(make_case prerelease-hyphen)"
+	env HOME="$case_dir/home" PATH="$case_dir/fakebin:$BASE_PATH" TMPDIR="$case_dir/tmp" NO_COLOR=1 KILN_YES=1 \
+		"$TEST_SHELL" "$INSTALLER" --dry-run --version 1.0.0-alpha-beta --dir "$case_dir/target" \
+		>"$case_dir/output" 2>&1 || fail "valid prerelease identifier was rejected"
+	grep -q 'kiln_1.0.0-alpha-beta_linux_amd64.tar.gz' "$case_dir/output" || fail "prerelease artifact was not selected"
+	printf 'ok - accepts hyphens in prerelease identifiers\n'
+}
+
+test_unsupported_versions_are_rejected() {
+	case_dir="$(make_case unsupported-versions)"
+	long_version="1.0.0-$(printf '%0118d' 0 | tr '0' 'a')"
+	for version in 1.0.0-01 1.0.0-rc..1 1.0.0+build.1 "$long_version"; do
+		status=0
+		env HOME="$case_dir/home" PATH="$case_dir/fakebin:$BASE_PATH" TMPDIR="$case_dir/tmp" NO_COLOR=1 KILN_YES=1 \
+			"$TEST_SHELL" "$INSTALLER" --dry-run --version "$version" --dir "$case_dir/target" \
+			>"$case_dir/output" 2>&1 || status=$?
+		[ "$status" = 1 ] || fail "unsupported version was accepted: $version"
+	done
+	printf 'ok - rejects unsupported version syntax\n'
+}
+
+test_semver_orders_hyphenated_identifiers() {
+	case_dir="$(make_case semver-hyphen-order)"
+	cp "$SELF" "$case_dir/target/kiln"
+	chmod 0755 "$case_dir/target/kiln"
+	printf '1.0.0-alpha-beta full\n' >"$case_dir/target/kiln.meta"
+	env HOME="$case_dir/home" PATH="$case_dir/fakebin:$BASE_PATH" TMPDIR="$case_dir/tmp" NO_COLOR=1 KILN_YES=1 KILN_DRY_RUN=1 \
+		"$TEST_SHELL" "$INSTALLER" --version 1.0.0-alpha-gamma --dir "$case_dir/target" \
+		>"$case_dir/output" 2>&1 || fail "hyphenated prerelease comparison failed"
+	grep -q 'upgrading from v1.0.0-alpha-beta' "$case_dir/output" || fail "hyphenated prerelease identifiers compared as equal"
+	printf 'ok - orders hyphenated prerelease identifiers\n'
+}
+
+test_release_guard_runs_installer_contract() {
+	grep -q 'Run Installer Contract' "$RELEASE_WORKFLOW" || fail "release guard does not validate versions through the installer"
+	grep -q 'make test-install' "$RELEASE_WORKFLOW" || fail "release guard does not run installer tests"
+	printf 'ok - release guard runs the installer contract\n'
 }
 
 test_probe_waits_for_sources
 test_failed_binary_preserves_existing_target
+test_binary_directory_is_rejected
+test_wrong_binary_version_preserves_existing_target
+test_wrong_binary_variant_preserves_existing_target
 test_stable_release_upgrades_prerelease
 test_same_version_switches_variant
+test_same_version_still_configures_service
+test_service_upgrade_restarts_process
+test_service_failure_restores_binary_and_unit
 test_invalid_values_are_rejected
 test_mirror_options_are_consistent
 test_wget_resolves_latest_through_mirror
 test_uninstall_uses_explicit_dir_without_install_dependencies
 test_uninstall_ignores_unknown_path_binary
 test_uninstall_handles_service_without_binary
+test_uninstall_reports_service_privilege_first
 test_semver_order_and_exact_identity
+test_prerelease_identifier_allows_hyphens
+test_unsupported_versions_are_rejected
+test_semver_orders_hyphenated_identifiers
+test_release_guard_runs_installer_contract

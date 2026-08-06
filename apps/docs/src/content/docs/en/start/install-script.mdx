@@ -79,7 +79,7 @@ When an existing install is found in an interactive session, the script offers t
 | Option | Description | Default |
 | --- | --- | --- |
 | `--yes`, `-y` | Non-interactive, accept every default | Interactive |
-| `--version <v>` | Pin a version, with or without the leading `v`; must be valid semver and may carry a prerelease suffix | Latest release |
+| `--version <v>` | Pin a version, with or without the leading `v`; supports the SemVer core and prerelease identifiers, but not `+build` metadata | Latest release |
 | `--lite` | Install the lite variant, built for Linux only | full |
 | `--dir <path>` | Explicit install directory, with no fallback once given | See [Install location](#install-location-and-path) |
 | `--mirror <base>` | Use a specific GitHub proxy and skip probing; must start with `https://`, contain no whitespace, and trailing slashes are stripped | Auto-probe |
@@ -133,7 +133,7 @@ When the install directory is not on `PATH`, the script prints a ready-to-paste 
 
 ## Versions and upgrades
 
-Re-running the script is the upgrade path. Comparison follows full semver rules, including per-identifier prerelease ordering, so `1.0.0-rc.1` correctly sorts before `1.0.0`.
+Re-running the script is the upgrade path. Comparison covers the SemVer core and prerelease identifiers, so `1.0.0-rc.1` correctly sorts before `1.0.0`.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh | sh -s -- --version 1.0.0
@@ -229,7 +229,7 @@ If neither is found and no systemd unit exists, the script reports nothing to re
 When the systemd service is present, uninstalling requires root: the script runs `systemctl disable --now kiln`, deletes the unit, reloads the daemon, and only then removes the binary. Without root it removes nothing and prints the manual command:
 
 ```bash
-sudo systemctl disable --now kiln && sudo rm /etc/systemd/system/kiln.service
+sudo systemctl disable --now kiln && sudo rm /etc/systemd/system/kiln.service && sudo systemctl daemon-reload
 ```
 
 <Aside type="caution" title="Config and data survive">
