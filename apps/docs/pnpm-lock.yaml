@@ -26,9 +26,6 @@ importers:
       astro-icon:
         specifier: ^1.1.0
         version: 1.1.5(supports-color@10.2.2)
-      astro-og-canvas:
-        specifier: ^0.13.0
-        version: 0.13.0(astro@7.1.6(@astrojs/markdown-remark@7.2.2(supports-color@10.2.2))(@emnapi/core@2.0.0-alpha.3)(@emnapi/runtime@2.0.0-alpha.3)(@types/node@26.1.2)(jiti@2.7.0)(yaml@2.9.0))
       canvaskit-wasm:
         specifier: ^0.41.1
         version: 0.41.1
@@ -1461,11 +1458,6 @@ packages:
   astro-icon@1.1.5:
     resolution: {integrity: sha512-CJYS5nWOw9jz4RpGWmzNQY7D0y2ZZacH7atL2K9DeJXJVaz7/5WrxeyIxO8KASk1jCM96Q4LjRx/F3R+InjJrw==}
 
-  astro-og-canvas@0.13.0:
-    resolution: {integrity: sha512-jcIDhE9OGIbd7LstZQ4CyzOpbbEKAlxJqEgdkVu6r26m7yJKlQjKysszfDxlox717cnCLPXKivyFjsufcq8sYA==}
-    peerDependencies:
-      astro: ^5.0.0 || ^6.0.0 || ^7.0.0
-
   astro@7.1.6:
     resolution: {integrity: sha512-83x9rYbHazMaZkYrAFRVZXSQx2moFkz0F7cjTDUF3GWfS0a3p2vZXG1ZdhV86rStHApQCodBJW+XTD37xISIrQ==}
     engines: {node: '>=22.12.0', npm: '>=9.6.5', pnpm: '>=7.1.0'}
@@ -1482,9 +1474,6 @@ packages:
 
   bail@2.0.2:
     resolution: {integrity: sha512-0xO6mYd7JB2YesxDKplafRpsiOzPt9V02ddPCLbY1xYGPOX24NTyN50qnUxgCPcSoYMhKpAuBTjQoRZCAkUDRw==}
-
-  base-64@1.0.0:
-    resolution: {integrity: sha512-kwDPIFCGx0NZHog36dj+tHiwP4QMzsZ3AgMViUBKI0+V5n4U0ufTCUMhnQ04diaRI8EX/QcPfql7zlhZ7j4zgg==}
 
   blake3-wasm@2.1.5:
     resolution: {integrity: sha512-F1+K8EbfOZE49dtoPtmxUQrpXaBIl3ICvasLh+nJta0xkz+9kF/7uet9fLnwKqhDrmj6g+6K3Tw9yQPUg2ka5g==}
@@ -1631,10 +1620,6 @@ packages:
     resolution: {integrity: sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ==}
     engines: {node: '>=8'}
 
-  deterministic-object-hash@2.0.2:
-    resolution: {integrity: sha512-KxektNH63SrbfUyDiwXqRb1rLwKt33AmMv+5Nhsw1kqZ13SJBRTgZHtGbE+hH3a1mVW1cz+4pqSWVPAtLVXTzQ==}
-    engines: {node: '>=18'}
-
   devalue@5.9.0:
     resolution: {integrity: sha512-RWrqdArjvPbsATEhOPUo6Wndc/iWnkWKlhIrdlF3zMMYo/c3CVtoaVAyLtWxz5h8nSlkHzxnzV2uLydPXmtF+A==}
 
@@ -1689,10 +1674,6 @@ packages:
   entities@7.0.1:
     resolution: {integrity: sha512-TWrgLOFUQTH994YUyl1yT4uyavY5nNB5muff+RtWaqNVCAK408b5ZnnbNAUEWLTCpum9w6arT70i1XdQ4UeOPA==}
     engines: {node: '>=0.12'}
-
-  entities@8.0.0:
-    resolution: {integrity: sha512-zwfzJecQ/Uej6tusMqwAqU/6KL2XaB2VZ2Jg54Je6ahNBGNH6Ek6g3jjNCF0fG9EWQKGZNddNjU5F1ZQn/sBnA==}
-    engines: {node: '>=20.19.0'}
 
   error-stack-parser-es@1.0.5:
     resolution: {integrity: sha512-5qucVt2XcuGMcEGgWI7i+yZpmpByQ8J1lHhcL7PwqCwu9FPP3VUXzT4ltHe5i2z9dePwEHcDVOAfSnHsOlCXRA==}
@@ -4302,13 +4283,6 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  astro-og-canvas@0.13.0(astro@7.1.6(@astrojs/markdown-remark@7.2.2(supports-color@10.2.2))(@emnapi/core@2.0.0-alpha.3)(@emnapi/runtime@2.0.0-alpha.3)(@types/node@26.1.2)(jiti@2.7.0)(yaml@2.9.0)):
-    dependencies:
-      astro: 7.1.6(@astrojs/markdown-remark@7.2.2(supports-color@10.2.2))(@emnapi/core@2.0.0-alpha.3)(@emnapi/runtime@2.0.0-alpha.3)(@types/node@26.1.2)(jiti@2.7.0)(yaml@2.9.0)
-      canvaskit-wasm: 0.41.1
-      deterministic-object-hash: 2.0.2
-      entities: 8.0.0
-
   astro@7.1.6(@astrojs/markdown-remark@7.2.2(supports-color@10.2.2))(@emnapi/core@2.0.0-alpha.3)(@emnapi/runtime@2.0.0-alpha.3)(@types/node@26.1.2)(jiti@2.7.0)(yaml@2.9.0):
     dependencies:
       '@astrojs/compiler-rs': 0.3.2(@emnapi/core@2.0.0-alpha.3)(@emnapi/runtime@2.0.0-alpha.3)
@@ -4405,8 +4379,6 @@ snapshots:
   axobject-query@4.1.0: {}
 
   bail@2.0.2: {}
-
-  base-64@1.0.0: {}
 
   blake3-wasm@2.1.5: {}
 
@@ -4542,10 +4514,6 @@ snapshots:
 
   detect-libc@2.1.2: {}
 
-  deterministic-object-hash@2.0.2:
-    dependencies:
-      base-64: 1.0.0
-
   devalue@5.9.0: {}
 
   devlop@1.1.0:
@@ -4600,8 +4568,6 @@ snapshots:
   entities@6.0.1: {}
 
   entities@7.0.1: {}
-
-  entities@8.0.0: {}
 
   error-stack-parser-es@1.0.5: {}
 

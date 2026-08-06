@@ -1,28 +1,26 @@
+import type { APIRoute, GetStaticPaths } from "astro";
 import { getCollection } from "astro:content";
-import { OGImageRoute } from "astro-og-canvas";
-import { ogCardConfig } from "./_og-card-config";
-import { assertOgCovered } from "./_og-coverage";
+import { assertOgCovered, eyebrowFor, renderOgCard, type OgCard } from "./_og-card";
 
-const entries = await getCollection("docs", (entry) => !entry.data.draft);
-
-const pages = Object.fromEntries(
-  entries.map((entry) => [
-    entry.id,
-    {
-      title: entry.data.title,
-      description: entry.data.description ?? "",
+export const getStaticPaths: GetStaticPaths = async () => {
+  const entries = await getCollection("docs", (entry) => !entry.data.draft);
+  return entries.map((entry) => ({
+    params: { slug: `${entry.id}.png` },
+    props: {
+      card: {
+        eyebrow: eyebrowFor(entry.id),
+        title: entry.data.title,
+        description: entry.data.description ?? "",
+      },
+      context: entry.id,
     },
-  ]),
-);
+  }));
+};
 
-export const { getStaticPaths, GET } = await OGImageRoute({
-  pages,
-  getImageOptions: (path, page) => {
-    assertOgCovered(`${page.title}${page.description}`, path);
-    return {
-      title: page.title,
-      description: page.description,
-      ...ogCardConfig,
-    };
-  },
-});
+export const GET: APIRoute<{ card: OgCard; context: string }> = async ({ props }) => {
+  const { card, context } = props;
+  assertOgCovered(`${card.eyebrow ?? ""}${card.title}${card.description ?? ""}`, context);
+  return new Response(await renderOgCard(card), {
+    headers: { "Content-Type": "image/png" },
+  });
+};

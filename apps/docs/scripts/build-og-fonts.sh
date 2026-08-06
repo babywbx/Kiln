@@ -2,11 +2,12 @@
 # Regenerate the subset CJK font used by the Open Graph card renderer.
 # Run from apps/docs: `pnpm og:fonts`.
 #
-# OG cards only draw page titles and descriptions, so the subset is collected
-# exactly from every mdx frontmatter block plus the site strings in
-# astro.config.ts. The full Noto Sans CJK SC Bold source is fetched once from
-# the official notofonts release into src/fonts-src/ (gitignored) and reused
-# on later runs. Only the small subset in src/fonts/ is committed.
+# OG cards only draw section labels, page titles and descriptions, so the subset
+# is collected exactly from every mdx frontmatter block plus the strings in
+# astro.config.ts and the card renderer. The Noto Sans CJK SC Bold source is
+# fetched once from the official notofonts release into src/fonts-src/
+# (gitignored) and reused on later runs. Only the subset in src/fonts/ is
+# committed.
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -27,7 +28,10 @@ node --input-type=module - "$ROOT" "$CHARSET" <<'NODE'
 import { readFileSync, writeFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 const [root, out] = process.argv.slice(2);
-const texts = [readFileSync(join(root, "astro.config.ts"), "utf8")];
+const texts = [
+  readFileSync(join(root, "astro.config.ts"), "utf8"),
+  readFileSync(join(root, "src/pages/og/_og-card.ts"), "utf8"),
+];
 const walk = (dir) => {
   for (const name of readdirSync(dir)) {
     const path = join(dir, name);

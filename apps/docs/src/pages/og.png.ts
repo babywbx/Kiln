@@ -1,19 +1,13 @@
-import { generateOpenGraphImage } from "astro-og-canvas";
+import type { APIRoute } from "astro";
 import { config } from "virtual:nimbus/config";
-import { ogCardConfig } from "./og/_og-card-config";
-import { assertOgCovered } from "./og/_og-coverage";
+import { assertOgCovered, renderOgCard } from "./og/_og-card";
 
 export const prerender = true;
 
-export async function GET() {
-  assertOgCovered(`${config.title}${config.description ?? ""}`, "og.png");
-  const body = await generateOpenGraphImage({
-    title: config.title,
-    description: config.description ?? "",
-    ...ogCardConfig,
-  });
-
-  return new Response(body, {
+export const GET: APIRoute = async () => {
+  const card = { title: config.title, description: config.description ?? "" };
+  assertOgCovered(`${card.title}${card.description}`, "og.png");
+  return new Response(await renderOgCard(card), {
     headers: { "Content-Type": "image/png" },
   });
-}
+};
