@@ -40,9 +40,9 @@ expect_nonempty_label() {
 expect_label org.opencontainers.image.title "Kiln Lite"
 expect_label org.opencontainers.image.description \
   "Minimal high-performance native media server."
-expect_label org.opencontainers.image.url https://github.com/babywbx/kiln
-expect_label org.opencontainers.image.documentation https://github.com/babywbx/kiln#docker
-expect_label org.opencontainers.image.source https://github.com/babywbx/kiln
+expect_label org.opencontainers.image.url https://github.com/babywbx/Kiln
+expect_label org.opencontainers.image.documentation https://github.com/babywbx/Kiln#docker
+expect_label org.opencontainers.image.source https://github.com/babywbx/Kiln
 expect_label org.opencontainers.image.authors Babywbx
 expect_label org.opencontainers.image.vendor Babywbx
 expect_label org.opencontainers.image.licenses AGPL-3.0-only

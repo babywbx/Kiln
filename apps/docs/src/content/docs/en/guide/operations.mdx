@@ -14,7 +14,7 @@ Use this guide for day-to-day operation after Kiln is running: register a system
 Passing `--service` to the install script registers a systemd unit and enables it at boot. This step needs root and only works on Linux with systemd available.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh -o /tmp/kiln-install.sh
+curl -fsSL https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh -o /tmp/kiln-install.sh
 sudo sh /tmp/kiln-install.sh --yes --service
 ```
 
@@ -99,7 +99,7 @@ The media decryption keys in `packager.keys_file` live outside `data_dir`. Relat
     Re-running the install script is the upgrade. It detects the platform, picks a reachable download source, verifies `SHA256SUMS`, and atomically replaces the binary.
 
     ```bash
-    curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh | sh
+    curl -fsSL https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh | sh
     ```
 
     If Kiln runs as a systemd service, restart it once the binary is swapped:

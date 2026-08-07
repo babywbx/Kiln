@@ -37,9 +37,9 @@ expect_common_labels() {
   description="$3"
   expect_label "$image" org.opencontainers.image.title "$title"
   expect_label "$image" org.opencontainers.image.description "$description"
-  expect_label "$image" org.opencontainers.image.url https://github.com/babywbx/kiln
-  expect_label "$image" org.opencontainers.image.documentation https://github.com/babywbx/kiln#docker
-  expect_label "$image" org.opencontainers.image.source https://github.com/babywbx/kiln
+  expect_label "$image" org.opencontainers.image.url https://github.com/babywbx/Kiln
+  expect_label "$image" org.opencontainers.image.documentation https://github.com/babywbx/Kiln#docker
+  expect_label "$image" org.opencontainers.image.source https://github.com/babywbx/Kiln
   expect_label "$image" org.opencontainers.image.authors Babywbx
   expect_label "$image" org.opencontainers.image.vendor Babywbx
   expect_label "$image" org.opencontainers.image.licenses AGPL-3.0-only

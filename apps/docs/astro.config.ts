@@ -9,7 +9,7 @@ const nimbusConfig = defineNimbusConfig({
   title: "Kiln",
   description: "自托管 HLS 与 DASH 频道网关：原生解密重封装、按需拉流、统一鉴权入口。",
   locale: "zh-CN",
-  github: "https://github.com/babywbx/kiln",
+  github: "https://github.com/babywbx/Kiln",
   socialImageAlt: "Kiln 文档预览",
   sidebar: {
     items: [

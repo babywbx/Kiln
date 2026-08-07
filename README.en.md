@@ -139,7 +139,7 @@ curl -s http://127.0.0.1:8080/v1/admin/channels \
 One command installs it on Linux and macOS; run it again to upgrade:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh | sh
 ```
 
 The script does four things: detect your platform, pick a working download source, verify `SHA256SUMS`, and swap the binary atomically. No sudo needed by default, and it shows you the full plan before touching anything.
@@ -163,7 +163,7 @@ The script does four things: detect your platform, pick a working download sourc
 Install as a systemd service with autostart:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh -o /tmp/kiln-install.sh
+curl -fsSL https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh -o /tmp/kiln-install.sh
 sudo sh /tmp/kiln-install.sh --yes --service
 ```
 

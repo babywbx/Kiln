@@ -10,7 +10,7 @@ Run one command to install Kiln on Linux or macOS, and run it again to upgrade. 
 ## One-line install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh | sh
 ```
 
 <Aside type="note" title="Output language">
@@ -136,7 +136,7 @@ When the install directory is not on `PATH`, the script prints a ready-to-paste 
 Re-running the script is the upgrade path. Comparison covers the SemVer core and prerelease identifiers, so `1.0.0-rc.1` correctly sorts before `1.0.0`.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh | sh -s -- --version 1.0.0
+curl -fsSL https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh | sh -s -- --version 1.0.0
 ```
 
 A malformed version string exits 1. A well-formed version with no matching release gets as far as source probing and exits 3.
@@ -144,7 +144,7 @@ A malformed version string exits 1. A well-formed version with no matching relea
 For unattended upgrades, add `--yes`: when the installed build is already current, the script prints one line and exits 0, which makes it safe to run from a timer.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh | sh -s -- --yes
+curl -fsSL https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh | sh -s -- --yes
 ```
 
 The lite variant is built for Linux only, so `--lite` on macOS exits 2. See [Lite, Core and Full](/en/guide/variants/).
@@ -154,7 +154,7 @@ The lite variant is built for Linux only, so `--lite` on macOS exits 2. See [Lit
 `--service` registers a system service that starts at boot, right after installing the binary. It needs root, and elevating a piped command is awkward, so download first and run second:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh -o /tmp/kiln-install.sh
+curl -fsSL https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh -o /tmp/kiln-install.sh
 sudo sh /tmp/kiln-install.sh --yes --service
 ```
 
@@ -219,7 +219,7 @@ journalctl -u kiln -f
 ## Uninstall
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh | sh -s -- --uninstall
+curl -fsSL https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh | sh -s -- --uninstall
 ```
 
 Discovery order: with `--dir`, only that directory is checked; otherwise `/usr/local/bin/kiln` then `$HOME/.local/bin/kiln`, and only regular files count, so symlinks are skipped. A custom install directory therefore has to be named with `--dir`.
@@ -241,7 +241,7 @@ sudo systemctl disable --now kiln && sudo rm /etc/systemd/system/kiln.service &&
 `--dry-run` walks the full decision path and prints every step marked as simulated, but creates no temporary directory, downloads nothing, writes nothing, and skips the dependency check.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh | sh -s -- --dry-run --service
+curl -fsSL https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh | sh -s -- --dry-run --service
 ```
 
 It is the fastest way to confirm the chosen location, the selected source, and whether the systemd preconditions hold. Note that a dry run stays offline: without `--version`, the version shown in the plan is a placeholder rather than the real latest release.

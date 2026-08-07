@@ -23,7 +23,7 @@ fake_curl() {
 	done
 	case "$url" in
 	*/releases/latest)
-		printf 'https://github.com/babywbx/kiln/releases/tag/v%s' "$KILN_TEST_RELEASE_VERSION"
+		printf 'https://github.com/babywbx/Kiln/releases/tag/v%s' "$KILN_TEST_RELEASE_VERSION"
 		;;
 	*/SHA256SUMS)
 		cp "$KILN_TEST_SUMS" "$out"
@@ -471,7 +471,7 @@ test_wget_resolves_latest_through_mirror() {
 		"$TEST_SHELL" "$INSTALLER" --mirror https://mirror.example --dir "$case_dir/target" \
 		>"$case_dir/output" 2>&1 || status=$?
 	[ "$status" = 0 ] || fail "wget mirror install returned $status"
-	grep -q '^https://mirror.example/https://api.github.com/repos/babywbx/kiln/releases/latest$' "$case_dir/requests" || fail "wget resolved latest outside the manual mirror"
+	grep -q '^https://mirror.example/https://api.github.com/repos/babywbx/Kiln/releases/latest$' "$case_dir/requests" || fail "wget resolved latest outside the manual mirror"
 	[ -x "$case_dir/target/kiln" ] || fail "wget mirror install did not create the target binary"
 	printf 'ok - wget resolves latest through manual mirror\n'
 }

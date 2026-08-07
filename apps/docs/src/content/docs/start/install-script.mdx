@@ -10,13 +10,13 @@ sidebar:
 ## 一行安装
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh | sh -s -- --lang zh
+curl -fsSL https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh | sh -s -- --lang zh
 ```
 
 拉取超时或失败时，换镜像地址：
 
 ```bash
-curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/babywbx/kiln/main/install.sh | sh -s -- --lang zh
+curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh | sh -s -- --lang zh
 ```
 
 <Aside type="note" title="关于 --lang">
@@ -142,7 +142,7 @@ Windows 不在脚本支持范围内，脚本检测到 Windows 环境会直接退
 重复运行脚本就是升级。版本比较覆盖 SemVer 核心版本和预发布标识符，因此 `1.0.0-rc.1` 会被正确判定为早于 `1.0.0`。
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh | sh -s -- --lang zh --version 1.0.0
+curl -fsSL https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh | sh -s -- --lang zh --version 1.0.0
 ```
 
 版本号格式非法时以 1 退出；格式合法但没有对应 Release 时，探测阶段找不到产物，以 3 退出。
@@ -150,7 +150,7 @@ curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh | sh -
 想要静默升级，加 `--yes`：已经是最新版本时脚本打印一行提示并以 0 退出，适合放进定时任务。
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh | sh -s -- --lang zh --yes
+curl -fsSL https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh | sh -s -- --lang zh --yes
 ```
 
 lite 变体只有 Linux 构建，在 macOS 上加 `--lite` 会以 2 退出。变体差异见 [Lite、Core 与 Full](/guide/variants/)。
@@ -160,7 +160,7 @@ lite 变体只有 Linux 构建，在 macOS 上加 `--lite` 会以 2 退出。变
 `--service` 会在安装二进制之后注册一个开机自启的系统服务。它需要 root，而管道运行时不便于提权，所以推荐先下载再执行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh -o /tmp/kiln-install.sh
+curl -fsSL https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh -o /tmp/kiln-install.sh
 sudo sh /tmp/kiln-install.sh --yes --service --lang zh
 ```
 
@@ -227,7 +227,7 @@ journalctl -u kiln -f
 ## 卸载
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh | sh -s -- --lang zh --uninstall
+curl -fsSL https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh | sh -s -- --lang zh --uninstall
 ```
 
 查找顺序是：给了 `--dir` 就只看该目录下的 `kiln`；否则依次看 `/usr/local/bin/kiln` 与 `$HOME/.local/bin/kiln`，且只认普通文件，符号链接会被跳过。装在自定义目录时必须显式带上 `--dir`。
@@ -249,7 +249,7 @@ sudo systemctl disable --now kiln && sudo rm /etc/systemd/system/kiln.service &&
 `--dry-run` 会完整走一遍决策与展示，但不创建临时目录、不下载、不写入任何文件，也不检查依赖工具，每一步结尾都标注「（试运行）」。
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh | sh -s -- --lang zh --dry-run --service
+curl -fsSL https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh | sh -s -- --lang zh --dry-run --service
 ```
 
 它适合确认安装位置、下载源和 systemd 前置条件的判断结果。注意演练不联网：没有配合 `--version` 时，计划里的版本号是占位值而非真实的最新版本。

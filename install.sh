@@ -2,7 +2,7 @@
 
 set -eu
 
-REPO="babywbx/kiln"
+REPO="babywbx/Kiln"
 GITHUB="https://github.com"
 MIRRORS="https://ghfast.top https://ghproxy.net https://gh-proxy.com"
 PROBE_TIMEOUT=3
@@ -142,7 +142,7 @@ if [ "$lang" = "zh" ]; then
 	T_FAIL_SUM_2="可能是网络异常或产物损坏，请重试，或前往 GitHub Releases 手动下载。"
 	T_NET_FAIL="无法连接任何下载源。"
 	T_NET_HINT_1="请检查网络后重试；可用 --mirror <地址> 手动指定镜像，"
-	T_NET_HINT_2="或前往 https://github.com/babywbx/kiln/releases 手动下载。"
+	T_NET_HINT_2="或前往 https://github.com/babywbx/Kiln/releases 手动下载。"
 	T_VER_FAIL="无法解析版本 %s（对应 Release 不存在）。"
 	T_PLAT_WIN="Windows 请下载 zip 包并参阅 README 的 Windows 服务章节。"
 	T_PLAT_UNSUP="暂不支持当前平台："
@@ -244,7 +244,7 @@ else
 	T_FAIL_SUM_2="Possible network issue or corrupted artifact. Retry, or download manually from GitHub Releases."
 	T_NET_FAIL="Could not reach any download source."
 	T_NET_HINT_1="Check your network and retry; use --mirror <base> to set one manually,"
-	T_NET_HINT_2="or download manually from https://github.com/babywbx/kiln/releases."
+	T_NET_HINT_2="or download manually from https://github.com/babywbx/Kiln/releases."
 	T_VER_FAIL="Could not resolve version %s (no matching release)."
 	T_PLAT_WIN="On Windows, download the zip and see the Windows service section in the README."
 	T_PLAT_UNSUP="Unsupported platform: "

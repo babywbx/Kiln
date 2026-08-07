@@ -14,7 +14,7 @@ Kiln 上线后，可以在这里找到日常运维所需的信息：注册系统
 安装脚本带 `--service` 时会注册一个 systemd unit 并设为开机自启。这一步需要 root，且只支持带 systemd 的 Linux。
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh -o /tmp/kiln-install.sh
+curl -fsSL https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh -o /tmp/kiln-install.sh
 sudo sh /tmp/kiln-install.sh --yes --service --lang zh
 ```
 
@@ -99,7 +99,7 @@ Windows 用内置的 `kiln.exe service` 子命令注册服务，不需要额外�
     重新执行一次安装脚本就是升级。脚本会探测平台、选择可用下载源、校验 `SHA256SUMS`，然后原子替换二进制。
 
     ```bash
-    curl -fsSL https://raw.githubusercontent.com/babywbx/kiln/main/install.sh | sh -s -- --lang zh
+    curl -fsSL https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh | sh -s -- --lang zh
     ```
 
     装成了 systemd 服务的话，替换完二进制后重启一次即可：
