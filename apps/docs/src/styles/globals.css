@@ -283,20 +283,6 @@ body {
 	background: var(--nb-muted-foreground);
 }
 
-[data-nb-sidebar] a[aria-current="page"] {
-	position: relative;
-}
-[data-nb-sidebar] a[aria-current="page"]::before {
-	content: "";
-	position: absolute;
-	left: 0;
-	top: 15%;
-	height: 70%;
-	width: 3px;
-	border-radius: 0 2px 2px 0;
-	background: var(--nb-primary);
-}
-
 /* ---- Shiki code-block styling + copy button ---- */
 
 pre.astro-code {

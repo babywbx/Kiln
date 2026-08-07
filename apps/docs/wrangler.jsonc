@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "docs",
+  "name": "kiln-docs",
   "main": "worker/index.js",
   "compatibility_date": "2026-08-03",
   "assets": {
