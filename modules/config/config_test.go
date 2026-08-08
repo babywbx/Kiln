@@ -134,6 +134,60 @@ preferred_audio_languages = ["yue", "zh"]
 	}
 }
 
+func TestValidateRejectsFailOpenEgressRules(t *testing.T) {
+	base := File{
+		Server: Server{DataDir: t.TempDir()},
+		Auth: Auth{Users: []User{{
+			Username: "admin", PasswordHash: "hash", Role: "admin",
+		}}},
+	}
+	base.applyDefaults()
+
+	tests := []struct {
+		name string
+		cfg  File
+		want string
+	}{
+		{
+			name: "unknown kind",
+			cfg: func() File {
+				cfg := base
+				cfg.Egress.Rules = []EgressRule{{Kind: "typo", Pattern: "example.com", Proxy: "direct"}}
+				return cfg
+			}(),
+			want: "kind",
+		},
+		{
+			name: "invalid regex",
+			cfg: func() File {
+				cfg := base
+				cfg.Egress.Rules = []EgressRule{{Kind: "host_regex", Pattern: "[", Proxy: "direct"}}
+				return cfg
+			}(),
+			want: "pattern",
+		},
+		{
+			name: "disabled profile",
+			cfg: func() File {
+				cfg := base
+				cfg.Proxies = []ProxyProfile{{ID: "disabled", URL: "http://127.0.0.1:7890", Disabled: true}}
+				cfg.Egress.Rules = []EgressRule{{Kind: "host_exact", Pattern: "example.com", Proxy: "disabled"}}
+				return cfg
+			}(),
+			want: "disabled proxy",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.cfg.validate()
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("validate() error = %v, want substring %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestDefaultPackagerEngineOnlyFillsAnEmptyConfigValue(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "kiln.toml")
@@ -434,6 +488,24 @@ func TestAllowedHostSetIncludesConfiguredChannelSources(t *testing.T) {
 	}
 	if _, ok := allowed["playlist-only.example"]; ok {
 		t.Fatal("unconfigured playlist host was allowed")
+	}
+}
+
+func TestExplicitAllowedHostSetExcludesConfiguredOrigins(t *testing.T) {
+	cfg := File{
+		Security:  Security{AllowedHosts: []string{" Explicit.Example "}},
+		Upstreams: []Upstream{{BaseURL: "https://upstream.example/live"}},
+		Channels:  []Channel{{SourceURL: "http://channel-origin:8000/index.m3u8"}},
+	}
+
+	allowed := cfg.ExplicitAllowedHostSet()
+	if _, ok := allowed["explicit.example"]; !ok {
+		t.Fatal("explicit host is missing")
+	}
+	for _, host := range []string{"upstream.example", "channel-origin"} {
+		if _, ok := allowed[host]; ok {
+			t.Fatalf("configured origin %q bypasses private-address checks", host)
+		}
 	}
 }
 

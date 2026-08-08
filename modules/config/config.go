@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 	"unicode"
@@ -679,7 +680,7 @@ func (c File) validate() error {
 			return fmt.Errorf("channel %q selection: %w", ch.ID, err)
 		}
 	}
-	proxyIDs := map[string]struct{}{"direct": {}}
+	proxyDisabled := map[string]bool{"direct": false}
 	for _, p := range c.Proxies {
 		if p.ID == "" || p.URL == "" {
 			return fmt.Errorf("proxies require id and url")
@@ -690,10 +691,14 @@ func (c File) validate() error {
 				return fmt.Errorf("proxy %q url invalid: %v", p.ID, err)
 			}
 		}
-		proxyIDs[p.ID] = struct{}{}
+		proxyDisabled[p.ID] = p.Disabled
 	}
-	if _, ok := proxyIDs[c.Egress.Default]; !ok {
+	defaultDisabled, ok := proxyDisabled[c.Egress.Default]
+	if !ok {
 		return fmt.Errorf("egress.default unknown proxy %q", c.Egress.Default)
+	}
+	if defaultDisabled {
+		return fmt.Errorf("egress.default references disabled proxy %q", c.Egress.Default)
 	}
 	switch c.Egress.PlaylistPolicy {
 	case "rewrite", "passthrough", "auto":
@@ -704,8 +709,31 @@ func (c File) validate() error {
 		if rule.Proxy == "" {
 			return fmt.Errorf("egress rule requires proxy")
 		}
-		if _, ok := proxyIDs[rule.Proxy]; !ok {
+		disabled, ok := proxyDisabled[rule.Proxy]
+		if !ok {
 			return fmt.Errorf("egress rule references unknown proxy %q", rule.Proxy)
+		}
+		if rule.Disabled {
+			continue
+		}
+		if disabled {
+			return fmt.Errorf("egress rule references disabled proxy %q", rule.Proxy)
+		}
+		if strings.TrimSpace(rule.Pattern) == "" {
+			return fmt.Errorf("egress rule requires pattern")
+		}
+		kind := rule.Kind
+		if kind == "" {
+			kind = "host_suffix"
+		}
+		switch kind {
+		case "host_suffix", "host_exact", "channel_id":
+		case "host_regex", "url_regex":
+			if _, err := regexp.Compile(rule.Pattern); err != nil {
+				return fmt.Errorf("egress rule pattern: %w", err)
+			}
+		default:
+			return fmt.Errorf("egress rule has invalid kind %q", rule.Kind)
 		}
 	}
 	if c.EPG.ServeTimezone != "keep" {
@@ -747,7 +775,7 @@ func (c File) validate() error {
 			}
 		}
 		if source.Proxy != "auto" {
-			if _, ok := proxyIDs[source.Proxy]; !ok {
+			if _, ok := proxyDisabled[source.Proxy]; !ok {
 				return fmt.Errorf("epg source %q references unknown proxy %q", source.ID, source.Proxy)
 			}
 		}
@@ -877,13 +905,7 @@ func (c File) ActiveChannels() []Channel {
 }
 
 func (c File) AllowedHostSet() map[string]struct{} {
-	out := map[string]struct{}{}
-	for _, h := range c.Security.AllowedHosts {
-		h = strings.ToLower(strings.TrimSpace(h))
-		if h != "" {
-			out[h] = struct{}{}
-		}
-	}
+	out := c.ExplicitAllowedHostSet()
 	for _, u := range c.Upstreams {
 		pu, err := url.Parse(u.BaseURL)
 		if err != nil {
@@ -902,6 +924,17 @@ func (c File) AllowedHostSet() map[string]struct{} {
 		host := strings.ToLower(source.Hostname())
 		if host != "" {
 			out[host] = struct{}{}
+		}
+	}
+	return out
+}
+
+func (c File) ExplicitAllowedHostSet() map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, h := range c.Security.AllowedHosts {
+		h = strings.ToLower(strings.TrimSpace(h))
+		if h != "" {
+			out[h] = struct{}{}
 		}
 	}
 	return out
