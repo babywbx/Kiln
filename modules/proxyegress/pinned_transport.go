@@ -19,11 +19,24 @@ func NewPinnedTransport(
 	channelID string,
 	allowedPrivate map[string]struct{},
 ) http.RoundTripper {
+	return newPinnedTransport(base, router, channelID, allowedPrivate, security.PinPublicProbeURL)
+}
+
+type destinationPinner func(context.Context, string, map[string]struct{}) (*url.URL, error)
+
+func newPinnedTransport(
+	base *http.Transport,
+	router *Router,
+	channelID string,
+	allowedPrivate map[string]struct{},
+	pin destinationPinner,
+) http.RoundTripper {
 	return &pinnedTransport{
 		base:           base,
 		router:         router,
 		channelID:      channelID,
 		allowedPrivate: allowedPrivate,
+		pin:            pin,
 	}
 }
 
@@ -32,11 +45,12 @@ type pinnedTransport struct {
 	router         *Router
 	channelID      string
 	allowedPrivate map[string]struct{}
+	pin            destinationPinner
 }
 
 func (t *pinnedTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	originalURL := request.URL.String()
-	pinnedURL, err := security.PinPublicProbeURL(request.Context(), originalURL, t.allowedPrivate)
+	pinnedURL, err := t.pin(request.Context(), originalURL, t.allowedPrivate)
 	if err != nil {
 		return nil, err
 	}

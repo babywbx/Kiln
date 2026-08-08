@@ -9,6 +9,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -90,6 +91,45 @@ func TestPinnedTransportUsesSeparateTLSNamesForHTTPSProxyAndTarget(t *testing.T)
 	}
 	if string(body) != "ok" {
 		t.Fatalf("body = %q, want ok", body)
+	}
+}
+
+func TestPinnedTransportDialsTheValidatedAddress(t *testing.T) {
+	receivedHost := make(chan string, 1)
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedHost <- r.Host
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer origin.Close()
+
+	originURL, err := url.Parse(origin.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinnedAddress := net.JoinHostPort("192.0.2.10", originURL.Port())
+	transport := newPinnedTransport(&http.Transport{
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			if address != pinnedAddress {
+				return nil, fmt.Errorf("dialed %s instead of pinned address", address)
+			}
+			return (&net.Dialer{}).DialContext(ctx, network, origin.Listener.Addr().String())
+		},
+	}, nil, "", nil, func(_ context.Context, rawURL string, _ map[string]struct{}) (*url.URL, error) {
+		resolved, err := url.Parse(rawURL)
+		if err != nil {
+			return nil, err
+		}
+		resolved.Host = pinnedAddress
+		return resolved, nil
+	})
+	client := &http.Client{Transport: transport}
+	response, err := client.Get("http://rebind.invalid:" + originURL.Port() + "/asset")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if got, want := <-receivedHost, "rebind.invalid:"+originURL.Port(); got != want {
+		t.Fatalf("Host = %q, want %q", got, want)
 	}
 }
 
