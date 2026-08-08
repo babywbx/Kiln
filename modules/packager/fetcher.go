@@ -12,11 +12,12 @@ import (
 )
 
 type PullFetcher struct {
-	Client    *pull.Client
-	ChannelID string
-	UserAgent string
-	Headers   map[string]string
-	MaxBytes  int64
+	Client       *pull.Client
+	ChannelID    string
+	UserAgent    string
+	Headers      map[string]string
+	HeaderOrigin string
+	MaxBytes     int64
 }
 
 func (f *PullFetcher) FetchClock(ctx context.Context, url, method string) ([]byte, string, error) {
@@ -24,7 +25,8 @@ func (f *PullFetcher) FetchClock(ctx context.Context, url, method string) ([]byt
 		return nil, "", errors.New("packager: no upstream client")
 	}
 	res, err := f.Client.Do(ctx, method, pull.Request{
-		URL: url, UserAgent: version.UserAgent(f.UserAgent), Headers: f.Headers, ChannelID: f.ChannelID,
+		URL: url, UserAgent: version.UserAgent(f.UserAgent), Headers: f.Headers,
+		HeaderOrigin: f.HeaderOrigin, ChannelID: f.ChannelID,
 	})
 	if err != nil {
 		return nil, "", err
@@ -48,10 +50,11 @@ func (f *PullFetcher) Fetch(ctx context.Context, url string) ([]byte, string, er
 		return nil, "", errors.New("packager: no upstream client")
 	}
 	return f.Client.GetBytes(ctx, pull.Request{
-		URL:       url,
-		UserAgent: version.UserAgent(f.UserAgent),
-		Headers:   f.Headers,
-		ChannelID: f.ChannelID,
+		URL:          url,
+		UserAgent:    version.UserAgent(f.UserAgent),
+		Headers:      f.Headers,
+		HeaderOrigin: f.HeaderOrigin,
+		ChannelID:    f.ChannelID,
 	})
 }
 
@@ -60,10 +63,11 @@ func (f *PullFetcher) FetchManifestReserved(ctx context.Context, url string, res
 		return nil, "", errors.New("packager: no upstream client")
 	}
 	return f.Client.GetBytesReserve(ctx, pull.Request{
-		URL:       url,
-		UserAgent: version.UserAgent(f.UserAgent),
-		Headers:   f.Headers,
-		ChannelID: f.ChannelID,
+		URL:          url,
+		UserAgent:    version.UserAgent(f.UserAgent),
+		Headers:      f.Headers,
+		HeaderOrigin: f.HeaderOrigin,
+		ChannelID:    f.ChannelID,
 	}, reserve)
 }
 
@@ -72,21 +76,23 @@ func (f *PullFetcher) FetchReserved(ctx context.Context, url string, reserve fun
 		return nil, "", errors.New("packager: no upstream client")
 	}
 	return f.Client.GetBytesLimitReserve(ctx, pull.Request{
-		URL:       url,
-		UserAgent: version.UserAgent(f.UserAgent),
-		Headers:   f.Headers,
-		ChannelID: f.ChannelID,
+		URL:          url,
+		UserAgent:    version.UserAgent(f.UserAgent),
+		Headers:      f.Headers,
+		HeaderOrigin: f.HeaderOrigin,
+		ChannelID:    f.ChannelID,
 	}, f.MaxBytes, reserve)
 }
 
 func NewPullFetcher(client *pull.Client, maxBytes int64) func(req Request) Fetcher {
 	return func(req Request) Fetcher {
 		return &PullFetcher{
-			Client:    client,
-			ChannelID: req.ChannelID,
-			UserAgent: req.UserAgent,
-			Headers:   req.Headers,
-			MaxBytes:  maxBytes,
+			Client:       client,
+			ChannelID:    req.ChannelID,
+			UserAgent:    req.UserAgent,
+			Headers:      req.Headers,
+			HeaderOrigin: req.SourceURL,
+			MaxBytes:     maxBytes,
 		}
 	}
 }
