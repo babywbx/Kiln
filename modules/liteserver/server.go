@@ -52,9 +52,10 @@ func New(cfg config.File, log *slog.Logger) (*Server, error) {
 	}
 	metrics := observe.New()
 	allowed := cfg.AllowedHostSet()
+	allowedPrivate := cfg.ExplicitAllowedHostSet()
 	catalog := staticcatalog.New(cfg)
 	puller := pull.New(pull.Options{
-		Observe: metrics, Allowed: allowed, MaxPlaylist: cfg.Security.MaxPlaylistBytes, Router: router,
+		Observe: metrics, Allowed: allowedPrivate, MaxPlaylist: cfg.Security.MaxPlaylistBytes, Router: router,
 	})
 	sessions := session.NewNativeManager(
 		catalog, puller, metrics, cfg.Server.DataDir, cfg.FFmpeg, cfg.GlobalKeys(), log, router,
