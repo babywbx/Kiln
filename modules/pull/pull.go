@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/babywbx/kiln/modules/apperr"
@@ -62,19 +63,6 @@ func New(opt Options) *Client {
 		fallback: &http.Client{
 			Timeout:   opt.Timeout,
 			Transport: tr,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				if len(via) >= 8 {
-					return fmt.Errorf("too many redirects")
-				}
-				if err := security.HostAllowed(req.URL.String(), opt.Allowed); err != nil {
-					if len(opt.Allowed) > 0 {
-						if err2 := security.MediaHostOK(req.URL.String(), opt.Allowed); err2 != nil {
-							return err2
-						}
-					}
-				}
-				return nil
-			},
 		},
 		router:      opt.Router,
 		observe:     opt.Observe,
@@ -99,8 +87,10 @@ type Request struct {
 	URL            string
 	UserAgent      string
 	Headers        map[string]string
+	ForwardHeaders http.Header
+	HeaderOrigin   string
 	ChannelID      string
-	PinDestination bool
+	StopRedirect   bool
 }
 
 func (c *Client) Get(ctx context.Context, req Request) (Result, error) {
@@ -129,38 +119,30 @@ func (c *Client) Do(ctx context.Context, method string, req Request) (result Res
 	if req.UserAgent != "" {
 		httpReq.Header.Set("User-Agent", req.UserAgent)
 	}
-	for k, v := range req.Headers {
-		if k != "" && v != "" {
-			httpReq.Header.Set(k, v)
+	for name, values := range req.ForwardHeaders {
+		for _, value := range values {
+			if name != "" && value != "" {
+				httpReq.Header.Add(name, value)
+			}
+		}
+	}
+	headerOrigin := req.HeaderOrigin
+	if headerOrigin != "" && sameOrigin(req.URL, headerOrigin) {
+		for k, v := range req.Headers {
+			if k != "" && v != "" {
+				httpReq.Header.Set(k, v)
+			}
 		}
 	}
 	injectRequestTrace(ctx, httpReq.Header)
 
-	client := c.fallback
 	proxyID := proxyegress.Direct
 	reason := "fallback"
 	if c.router != nil {
 		d := c.router.Resolve(req.URL, req.ChannelID)
 		proxyID, reason = d.ProxyID, d.Reason
-		hc, err := c.router.ClientForChannel(d.ProxyID, req.ChannelID, c.timeout)
-		if err != nil {
-			return Result{}, apperr.Wrap(apperr.CodeUpstream, 502, "proxy client failed", err)
-		}
-		hc2 := *hc
-		hc2.CheckRedirect = func(r *http.Request, via []*http.Request) error {
-			if len(via) >= 8 {
-				return fmt.Errorf("too many redirects")
-			}
-			if err := security.MediaHostOK(r.URL.String(), c.allowed); err != nil {
-				return err
-			}
-			return nil
-		}
-		client = &hc2
 	}
-	if req.PinDestination {
-		client = c.pinnedClient(req.ChannelID)
-	}
+	client := c.pinnedClient(req.ChannelID, headerOrigin, req.Headers, req.StopRedirect)
 
 	resp, err := client.Do(httpReq)
 	if err != nil {
@@ -300,19 +282,73 @@ func confirmBodyEnd(body io.Reader, overflowMessage string) (bool, error) {
 
 func (c *Client) Router() *proxyegress.Router { return c.router }
 
-func (c *Client) pinnedClient(channelID string) *http.Client {
+func (c *Client) ExplicitlyAllowsURL(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+	_, ok := c.allowed[host]
+	return host != "" && ok
+}
+
+func (c *Client) PinURL(ctx context.Context, rawURL string) (*url.URL, error) {
+	return security.PinPublicProbeURL(ctx, rawURL, c.allowed)
+}
+
+func (c *Client) pinnedClient(
+	channelID, headerOrigin string,
+	customHeaders map[string]string,
+	stopRedirect bool,
+) *http.Client {
 	return &http.Client{
 		Timeout: c.timeout,
 		Transport: proxyegress.NewPinnedTransport(
 			c.fallback.Transport.(*http.Transport), c.router, channelID, c.allowed,
 		),
-		CheckRedirect: func(_ *http.Request, via []*http.Request) error {
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 8 {
 				return fmt.Errorf("too many redirects")
+			}
+			if !sameOrigin(req.URL.String(), headerOrigin) {
+				for name := range customHeaders {
+					req.Header.Del(name)
+				}
+				req.Header.Del("Referer")
+			}
+			if stopRedirect {
+				return http.ErrUseLastResponse
 			}
 			return nil
 		},
 	}
+}
+
+func sameOrigin(left, right string) bool {
+	a, err := url.Parse(left)
+	if err != nil || a.Hostname() == "" {
+		return false
+	}
+	b, err := url.Parse(right)
+	if err != nil || b.Hostname() == "" {
+		return false
+	}
+	return strings.EqualFold(a.Scheme, b.Scheme) &&
+		strings.EqualFold(strings.TrimSuffix(a.Hostname(), "."), strings.TrimSuffix(b.Hostname(), ".")) &&
+		originPort(a) == originPort(b)
+}
+
+func originPort(u *url.URL) string {
+	if port := u.Port(); port != "" {
+		return port
+	}
+	if strings.EqualFold(u.Scheme, "http") {
+		return "80"
+	}
+	if strings.EqualFold(u.Scheme, "https") {
+		return "443"
+	}
+	return ""
 }
 
 type countingReadCloser struct {

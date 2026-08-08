@@ -10,6 +10,7 @@ role = "admin"
 
 [security]
 play_require_auth = false
+allowed_hosts = ["kiln-origin"]
 
 [packager]
 keys_file = "/etc/kiln/kiln.keys"

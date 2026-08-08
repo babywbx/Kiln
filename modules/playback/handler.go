@@ -112,10 +112,11 @@ func (h *Handler) HandleIndex(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) serveHLSIndex(w http.ResponseWriter, r *http.Request, active *session.Session, viewerID string) {
 	channel, sourceURL, _, _ := active.SourceSnapshot()
 	body, finalURL, err := h.deps.Sessions.Pull().GetBytes(r.Context(), pull.Request{
-		URL:       mergeHLSDeliveryDirectives(sourceURL, r.URL.Query()),
-		UserAgent: version.UserAgent(channel.UserAgent),
-		Headers:   h.deps.Sessions.HeadersFor(channel),
-		ChannelID: channel.ID,
+		URL:          mergeHLSDeliveryDirectives(sourceURL, r.URL.Query()),
+		UserAgent:    version.UserAgent(channel.UserAgent),
+		Headers:      h.deps.Sessions.HeadersFor(channel),
+		HeaderOrigin: sourceURL,
+		ChannelID:    channel.ID,
 	})
 	if err != nil {
 		h.deps.Observe.IncError()
@@ -302,7 +303,8 @@ func (h *Handler) HandleUpstream(w http.ResponseWriter, r *http.Request) {
 		writeAppError(w, apperr.New(apperr.CodeForbidden, http.StatusForbidden, "invalid upstream signature"))
 		return
 	}
-	if err := security.MediaHostOK(absolute, h.deps.Allowed); err != nil {
+	allowedPrivate := h.deps.Cfg.ExplicitAllowedHostSet()
+	if err := security.MediaHostOK(absolute, allowedPrivate); err != nil {
 		writeAppError(w, apperr.New(apperr.CodeForbidden, http.StatusForbidden, "upstream host not allowed"))
 		return
 	}
@@ -316,7 +318,7 @@ func (h *Handler) HandleUpstream(w http.ResponseWriter, r *http.Request) {
 	if !h.refreshViewer(w, r, id) {
 		return
 	}
-	if err := security.PublicProbeURL(r.Context(), absolute, h.deps.Allowed); err != nil {
+	if err := security.PublicProbeURL(r.Context(), absolute, allowedPrivate); err != nil {
 		writeAppError(w, apperr.New(apperr.CodeForbidden, http.StatusForbidden, "upstream host not allowed"))
 		return
 	}
@@ -325,13 +327,15 @@ func (h *Handler) HandleUpstream(w http.ResponseWriter, r *http.Request) {
 		writeAppError(w, session.ErrNotFound)
 		return
 	}
-	if _, err := h.deps.Sessions.Acquire(id); err != nil {
+	active, err := h.deps.Sessions.Acquire(id)
+	if err != nil {
 		writeAppError(w, err)
 		return
 	}
+	_, sourceURL, _, _ := active.SourceSnapshot()
 	response, err := h.deps.Sessions.Pull().Get(r.Context(), pull.Request{
 		URL: absolute, UserAgent: version.UserAgent(channel.UserAgent),
-		Headers: h.deps.Sessions.HeadersFor(channel), ChannelID: id, PinDestination: true,
+		Headers: h.deps.Sessions.HeadersFor(channel), HeaderOrigin: sourceURL, ChannelID: id,
 	})
 	if err != nil {
 		h.deps.Observe.IncError()
@@ -660,7 +664,7 @@ func contentTypeFor(name string) string {
 }
 
 func appendTokenToPlaylistURLs(playlist, token string) string {
-	return appendQueryToPlaylistURLs(playlist, "token", token, false)
+	return appendQueryToPlaylistURLs(playlist, "token", token, true)
 }
 
 func appendViewerToPlaylistURLs(playlist, viewer string) string {
@@ -683,8 +687,7 @@ func appendQueryToPlaylistURLs(playlist, key, value string, localOnly bool) stri
 			}
 			continue
 		}
-		if strings.HasPrefix(trimmed, "/") ||
-			!localOnly && (strings.HasPrefix(trimmed, "http://") || strings.HasPrefix(trimmed, "https://")) {
+		if playlistQueryTarget(trimmed, localOnly) {
 			lines[index] = appendQuery(trimmed, key, value)
 		}
 	}
@@ -703,11 +706,20 @@ func injectQueryInURITag(tag, key, value string, localOnly bool) string {
 		return tag
 	}
 	uri := tag[start : start+end]
-	if strings.HasPrefix(uri, "/") ||
-		!localOnly && (strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://")) {
+	if playlistQueryTarget(uri, localOnly) {
 		uri = appendQuery(uri, key, value)
 	}
 	return tag[:start] + uri + tag[start+end:]
+}
+
+func playlistQueryTarget(raw string, localOnly bool) bool {
+	if strings.HasPrefix(raw, "//") {
+		return false
+	}
+	if strings.HasPrefix(raw, "/") {
+		return true
+	}
+	return !localOnly && (strings.HasPrefix(raw, "http://") || strings.HasPrefix(raw, "https://"))
 }
 
 func appendQuery(raw, key, value string) string {

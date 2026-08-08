@@ -114,6 +114,44 @@ func TestHandleUpstreamAcceptsURLSignedByRewrittenPlaylist(t *testing.T) {
 	}
 }
 
+func TestHandleUpstreamStripsChannelHeadersFromCrossOriginAssets(t *testing.T) {
+	receivedSecret := make(chan string, 1)
+	asset := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedSecret <- r.Header.Get("X-Channel-Secret")
+		_, _ = io.WriteString(w, "segment")
+	}))
+	defer asset.Close()
+
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+		_, _ = io.WriteString(w, "#EXTM3U\n"+asset.URL+"/segment.ts\n")
+	}))
+	defer origin.Close()
+
+	handler := newSecurityTestHandler(t, origin.URL, map[string]string{"X-Channel-Secret": "top-secret"}, 0)
+	indexRequest := httptest.NewRequest(http.MethodGet, "/v1/play/news/index.m3u8", nil)
+	indexRequest.SetPathValue("id", "news")
+	indexResponse := httptest.NewRecorder()
+	handler.HandleIndex(indexResponse, indexRequest)
+	if indexResponse.Code != http.StatusOK {
+		t.Fatalf("index status = %d, body = %s", indexResponse.Code, indexResponse.Body.String())
+	}
+	proxyURL := strings.TrimSpace(strings.Split(indexResponse.Body.String(), "\n")[1])
+	request := httptest.NewRequest(http.MethodGet, proxyURL, nil)
+	response := httptest.NewRecorder()
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/play/{id}/u/{upstream}", handler.HandleUpstream)
+
+	mux.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("signed proxy request status = %d, want 200: %s", response.Code, response.Body.String())
+	}
+	if secret := <-receivedSecret; secret != "" {
+		t.Fatalf("cross-origin asset received channel header %q", secret)
+	}
+}
+
 func TestHandleUpstreamRejectsSignedHostnameResolvingToPrivateAddress(t *testing.T) {
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
@@ -141,6 +179,41 @@ func TestHandleUpstreamRejectsSignedHostnameResolvingToPrivateAddress(t *testing
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("private DNS target status = %d, want 403: %s",
 			response.Code, response.Body.String())
+	}
+}
+
+func TestHandleIndexRejectsPrivateDNSWithoutExplicitAllowlist(t *testing.T) {
+	var reached atomic.Bool
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached.Store(true)
+		_, _ = io.WriteString(w, "#EXTM3U\n")
+	}))
+	defer origin.Close()
+
+	privateSource := strings.Replace(origin.URL, "127.0.0.1", "localhost", 1) + "/index.m3u8"
+	channel := config.Channel{ID: "news", Title: "News", Ingress: "hls", SourceURL: privateSource}
+	cfg := config.File{Channels: []config.Channel{channel}}
+	cat := catalog.New(cfg, nil)
+	obs := observe.New()
+	puller := pull.New(pull.Options{Observe: obs})
+	sessions := session.NewManager(
+		cat, puller, obs, t.TempDir(), config.FFmpeg{}, nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil)), nil,
+	)
+	handler := New(Deps{
+		Cfg: cfg, Catalog: cat, Sessions: sessions, Observe: obs, Allowed: cfg.AllowedHostSet(),
+	})
+	request := httptest.NewRequest(http.MethodGet, "/v1/play/news/index.m3u8", nil)
+	request.SetPathValue("id", "news")
+	response := httptest.NewRecorder()
+
+	handler.HandleIndex(response, request)
+
+	if response.Code != http.StatusBadGateway {
+		t.Fatalf("private HLS source status = %d, want 502: %s", response.Code, response.Body.String())
+	}
+	if reached.Load() {
+		t.Fatal("private HLS source received a request")
 	}
 }
 
@@ -251,6 +324,61 @@ func TestViewerLeaseOnlyTouchesLocalPlaybackURLs(t *testing.T) {
 	}
 }
 
+func TestSessionTokenDoesNotTouchProtocolRelativeURLs(t *testing.T) {
+	playlist := "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"//cdn.example/key.bin\"\n//cdn.example/segment.ts\n/v1/play/news/u/local\n"
+	got := appendTokenToPlaylistURLs(playlist, "session-secret")
+	if strings.Contains(got, "//cdn.example/key.bin?token=") || strings.Contains(got, "//cdn.example/segment.ts?token=") {
+		t.Fatalf("protocol-relative URL received session token: %s", got)
+	}
+	if !strings.Contains(got, "/v1/play/news/u/local?token=session-secret") {
+		t.Fatalf("local playback URL is missing session token: %s", got)
+	}
+}
+
+func TestHandleIndexNeverAddsSessionTokenToExternalPlaylistURLs(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+		_, _ = io.WriteString(w, "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"https://cdn.example/key.bin?sig=key\"\nhttps://cdn.example/segment.ts?sig=segment\n")
+	}))
+	defer origin.Close()
+
+	for _, policy := range []proxyegress.PlaylistPolicy{
+		proxyegress.PolicyAuto,
+		proxyegress.PolicyPassthrough,
+	} {
+		t.Run(string(policy), func(t *testing.T) {
+			handler := newSecurityTestHandler(t, origin.URL, nil, 0)
+			router, err := proxyegress.NewRouter(proxyegress.Config{PlaylistPolicy: policy})
+			if err != nil {
+				t.Fatal(err)
+			}
+			handler.deps.Egress = router
+			handler.deps.Token = func(r *http.Request) string { return r.URL.Query().Get("token") }
+
+			request := httptest.NewRequest(http.MethodGet, "/v1/play/news/index.m3u8?token=session-secret", nil)
+			request.SetPathValue("id", "news")
+			response := httptest.NewRecorder()
+			handler.HandleIndex(response, request)
+
+			if response.Code != http.StatusOK {
+				t.Fatalf("index status = %d, want 200: %s", response.Code, response.Body.String())
+			}
+			body := response.Body.String()
+			if strings.Contains(body, "session-secret") {
+				t.Fatalf("external playlist URL contains session token: %s", body)
+			}
+			for _, want := range []string{
+				`URI="https://cdn.example/key.bin?sig=key"`,
+				"https://cdn.example/segment.ts?sig=segment",
+			} {
+				if !strings.Contains(body, want) {
+					t.Fatalf("external URL changed, missing %q in %s", want, body)
+				}
+			}
+		})
+	}
+}
+
 func TestMaxViewersForcesPlaylistProxying(t *testing.T) {
 	handler := newSecurityTestHandler(t, "https://origin.example", nil, 1)
 	router, err := proxyegress.NewRouter(proxyegress.Config{
@@ -284,6 +412,7 @@ func newSecurityTestHandler(
 	if err != nil {
 		t.Fatal(err)
 	}
+	cfg.Security.AllowedHosts = []string{parsed.Hostname()}
 	allowed := map[string]struct{}{parsed.Hostname(): {}}
 	puller := pull.New(pull.Options{Observe: obs, Allowed: allowed})
 	sessions := session.NewManager(
