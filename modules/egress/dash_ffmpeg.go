@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -19,6 +18,7 @@ import (
 
 	"github.com/babywbx/kiln/modules/config"
 	"github.com/babywbx/kiln/modules/proxyegress"
+	"github.com/babywbx/kiln/modules/pull"
 )
 
 const (
@@ -65,8 +65,8 @@ type DashOptions struct {
 	AudioRepresentationID string
 	LowLatency            bool
 	Logger                *slog.Logger
-	OnBytesIn             func(n int64)
 	Egress                *proxyegress.Router
+	Pull                  *pull.Client
 	ChannelID             string
 	FFmpegMode            config.FFmpegMode
 	DockerImage           string
@@ -75,6 +75,7 @@ type DashOptions struct {
 
 var kidRe = regexp.MustCompile(`(?i)default_KID="([0-9a-fA-F-]{32,36})"`)
 var extinfRe = regexp.MustCompile(`(?i)#EXTINF:([0-9]+(?:\.[0-9]+)?)`)
+var logURLRe = regexp.MustCompile(`(?i)https?://[^\s"'<>]+`)
 
 func StartDashHLS(parent context.Context, opt DashOptions) (*DashJob, error) {
 	if err := os.MkdirAll(opt.WorkDir, 0o750); err != nil {
@@ -119,8 +120,11 @@ func StartDashHLS(parent context.Context, opt DashOptions) (*DashJob, error) {
 	if err != nil {
 		return nil, err
 	}
-	pick, err := PickStreamsWithSelection(mpdBody, opt.PreferHeight, opt.VideoRepresentationID, opt.AudioRepresentationID)
-	if err != nil {
+	ffmpegHeaders := opt.Headers
+	if !sameURLOrigin(resolvedURL, opt.SourceURL) {
+		ffmpegHeaders = nil
+	}
+	if err := validateFFmpegMPD(filtered, resolvedURL, opt.Pull, ffmpegHeaders); err != nil {
 		return nil, err
 	}
 	absWork, err := filepath.Abs(opt.WorkDir)
@@ -128,39 +132,26 @@ func StartDashHLS(parent context.Context, opt DashOptions) (*DashJob, error) {
 		return nil, err
 	}
 	localMPD := filepath.Join(absWork, "input.mpd")
-	if err := os.WriteFile(localMPD, []byte(filtered), 0o600); err != nil {
+	if err := writeFFmpegMPD(localMPD, []byte(filtered)); err != nil {
 		return nil, err
 	}
 
 	local := packAttempt{
-		mode:  "local_filtered",
-		input: localMPD,
-		vMap:  "0:v:0",
-		aMap:  "0:a:0?",
-		note:  note,
+		mode:            "local_filtered",
+		input:           localMPD,
+		vMap:            "0:v:0",
+		aMap:            "0:a:0?",
+		note:            note,
+		network:         opt.Pull != nil,
+		headers:         ffmpegHeaders,
+		refreshInterval: ffmpegMPDRefreshInterval(filtered),
 	}
-	var attempts []packAttempt
-	if pick.Dynamic && resolvedURL != "" {
-		aMap := "0:a:0?"
-		if pick.AudioIndex >= 0 {
-			aMap = fmt.Sprintf("0:a:%d", pick.AudioIndex)
-		}
-		attempts = append(attempts, packAttempt{
-			mode:  "remote_live",
-			input: resolvedURL,
-			vMap:  fmt.Sprintf("0:v:%d", pick.VideoIndex),
-			aMap:  aMap,
-			note: fmt.Sprintf("%s map_v=%d map_a=%d id=%s h=%d bw=%d",
-				note, pick.VideoIndex, pick.AudioIndex, pick.VideoID, pick.Height, pick.Bandwidth),
-			remote: true,
-		})
-	}
-	attempts = append(attempts, local)
+	attempts := []packAttempt{local}
 
 	var lastErr error
 	for i, att := range attempts {
 		cleanHLSArtifacts(absWork)
-		if err := os.WriteFile(localMPD, []byte(filtered), 0o600); err != nil {
+		if err := writeFFmpegMPD(localMPD, []byte(filtered)); err != nil {
 			return nil, err
 		}
 		log.Debug("dash ladder selected",
@@ -192,12 +183,15 @@ func StartDashHLS(parent context.Context, opt DashOptions) (*DashJob, error) {
 }
 
 type packAttempt struct {
-	mode   string
-	input  string
-	vMap   string
-	aMap   string
-	note   string
-	remote bool
+	mode            string
+	input           string
+	vMap            string
+	aMap            string
+	note            string
+	network         bool
+	headers         map[string]string
+	proxyURL        string
+	refreshInterval time.Duration
 }
 
 func cleanHLSArtifacts(work string) {
@@ -219,30 +213,37 @@ func startPackager(parent context.Context, opt DashOptions, log *slog.Logger, ab
 	stderrPath := filepath.Join(absWork, "ffmpeg.stderr.log")
 
 	ctx, cancel := context.WithCancel(parent)
-	args := buildPackagerArgs(opt, att, key, indexPath, segPattern)
-
 	stderrFile, err := os.OpenFile(stderrPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("open ffmpeg stderr log: %w", err)
 	}
 	var stderrBuf bytes.Buffer
-	proxyEnv := []string{}
-	if opt.Egress != nil {
-		proxyTarget := resolvedURL
-		if proxyTarget == "" {
-			proxyTarget = opt.SourceURL
-		}
-		if att.remote && att.input != "" {
-			proxyTarget = att.input
-		}
-		proxyEnv, err = opt.Egress.EnvForFFmpeg(proxyTarget, opt.ChannelID, opt.FFmpegMode.IsDocker())
+	var forwardProxy *ffmpegForwardProxy
+	proxyEnv := []string(nil)
+	if att.network {
+		forwardProxy, err = startFFmpegForwardProxy(ffmpegProxyOptions{
+			Client:       opt.Pull,
+			ChannelID:    opt.ChannelID,
+			HeaderOrigin: resolvedURL,
+			Headers:      att.headers,
+			UserAgent:    opt.UserAgent,
+			Docker:       opt.FFmpegMode.IsDocker(),
+		})
 		if err != nil {
 			_ = stderrFile.Close()
 			cancel()
 			return nil, err
 		}
+		att.proxyURL = forwardProxy.URL()
+		proxyEnv = forwardProxy.Env()
 	}
+	closeProxy := func() {
+		if forwardProxy != nil {
+			forwardProxy.Close()
+		}
+	}
+	args := buildPackagerArgs(opt, att, key, indexPath, segPattern)
 	containerName := ""
 	if opt.FFmpegMode.IsDocker() {
 		containerName = fmt.Sprintf("kiln-ff-%d-%d", os.Getpid(), time.Now().UnixNano())
@@ -251,6 +252,7 @@ func startPackager(parent context.Context, opt DashOptions, log *slog.Logger, ab
 	if err != nil {
 		_ = stderrFile.Close()
 		cancel()
+		closeProxy()
 		return nil, err
 	}
 	cmd := exec.CommandContext(ctx, plan.executable, plan.args...)
@@ -272,14 +274,19 @@ func startPackager(parent context.Context, opt DashOptions, log *slog.Logger, ab
 	if err := spawn(ctx, opt.SpawnGate, cmd); err != nil {
 		_ = stderrFile.Close()
 		cancel()
+		closeProxy()
 		reapDockerContainer(plan.containerName)
 		return nil, err
 	}
 	if cmd.Process != nil {
 		job.pid = cmd.Process.Pid
 	}
+	if att.refreshInterval > 0 {
+		go refreshFFmpegMPD(ctx, opt, att.input, resolvedURL, att.headers, att.refreshInterval, log)
+	}
 	go func() {
 		processErr := cmd.Wait()
+		cancel()
 		_ = stderrFile.Close()
 		job.mu.Lock()
 		if job.err == nil {
@@ -293,16 +300,17 @@ func startPackager(parent context.Context, opt DashOptions, log *slog.Logger, ab
 			log.Error("ffmpeg exited", "err", jobErr, "mode", att.mode, "stderr", msg)
 		}
 		reapDockerContainer(plan.containerName)
+		closeProxy()
 		close(job.done)
 	}()
 
 	timeout := readyTimeoutLocal
-	if att.remote {
+	if att.network {
 		timeout = readyTimeoutRemote
 	}
 	if opt.PreferHeight >= 2160 {
 		timeout = readyTimeoutLocal4K
-		if att.remote {
+		if att.network {
 			timeout = readyTimeoutRemote4K
 		}
 	}
@@ -315,24 +323,34 @@ func startPackager(parent context.Context, opt DashOptions, log *slog.Logger, ab
 }
 
 func buildPackagerArgs(opt DashOptions, att packAttempt, key, indexPath, segPattern string) []string {
+	protocols := "file,crypto"
+	if att.network {
+		protocols = "file,http,https,tcp,tls,crypto,httpproxy"
+	}
 	args := []string{
 		"-hide_banner",
 		"-loglevel", opt.LogLevel,
 		"-y",
-		"-protocol_whitelist", "file,http,https,tcp,tls,crypto,httpproxy",
+		"-protocol_whitelist", protocols,
 		"-fflags", "+genpts+discardcorrupt",
 	}
-	if att.remote {
+	if att.network {
 		args = append(args,
+			"-max_redirects", "0",
 			"-reconnect", "1",
 			"-reconnect_streamed", "1",
 			"-reconnect_delay_max", "5",
 		)
+		if att.proxyURL != "" {
+			args = append(args, "-http_proxy", att.proxyURL)
+		}
 		if opt.UserAgent != "" {
 			args = append(args, "-user_agent", opt.UserAgent)
 		}
-		if hdr := formatFFmpegHeaders(opt.Headers); hdr != "" {
-			args = append(args, "-headers", hdr)
+		if source, err := url.Parse(opt.SourceURL); err == nil && strings.EqualFold(source.Scheme, "https") {
+			if headers := formatFFmpegHeaders(att.headers); headers != "" {
+				args = append(args, "-headers", headers)
+			}
 		}
 	}
 	args = append(args,
@@ -368,21 +386,38 @@ func spawn(ctx context.Context, gate SpawnGate, cmd *exec.Cmd) error {
 	return nil
 }
 
-func formatFFmpegHeaders(h map[string]string) string {
-	if len(h) == 0 {
-		return ""
+func hasFFmpegCustomHeaders(headers map[string]string) bool {
+	for name, value := range headers {
+		if name != "" && value != "" && !strings.EqualFold(name, "User-Agent") {
+			return true
+		}
 	}
+	return false
+}
+
+func formatFFmpegHeaders(headers map[string]string) string {
 	var b strings.Builder
-	for k, v := range h {
-		if k == "" || v == "" || strings.EqualFold(k, "User-Agent") {
+	for name, value := range headers {
+		if name == "" || value == "" || strings.EqualFold(name, "User-Agent") {
 			continue
 		}
-		b.WriteString(k)
+		b.WriteString(name)
 		b.WriteString(": ")
-		b.WriteString(v)
+		b.WriteString(value)
 		b.WriteString("\r\n")
 	}
 	return b.String()
+}
+
+func remoteNetworkSource(rawURL string) bool {
+	if filepath.IsAbs(rawURL) {
+		return false
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return true
+	}
+	return u.Host != "" || u.Scheme != "" && !strings.EqualFold(u.Scheme, "file")
 }
 
 func redactURL(u string) string {
@@ -393,6 +428,19 @@ func redactURL(u string) string {
 		return u[:i] + "?…"
 	}
 	return u
+}
+
+func redactLogError(err error) string {
+	if err == nil {
+		return ""
+	}
+	return logURLRe.ReplaceAllStringFunc(err.Error(), func(raw string) string {
+		u, parseErr := url.Parse(raw)
+		if parseErr != nil || u.Scheme == "" || u.Hostname() == "" {
+			return "<redacted-url>"
+		}
+		return (&url.URL{Scheme: u.Scheme, Host: u.Host}).String()
+	})
 }
 
 func tailLog(buf *bytes.Buffer, path string) string {
@@ -585,163 +633,82 @@ func (j *DashJob) fail(err error) {
 }
 
 func resolveMPD(ctx context.Context, opt DashOptions) (string, string, error) {
-	cdnURL, directBody, err := resolveOriginToCDN(ctx, opt)
-	if err != nil {
-		return "", "", err
-	}
-	if directBody != "" {
-		return cdnURL, directBody, nil
-	}
+	return fetchPinnedMPD(ctx, opt)
+}
 
-	var lastErr error
-	for attempt := 1; attempt <= 6; attempt++ {
-		final, body, err := fetchMPD(ctx, opt, cdnURL)
+func refreshFFmpegMPD(
+	ctx context.Context,
+	opt DashOptions,
+	path string,
+	headerOrigin string,
+	headers map[string]string,
+	interval time.Duration,
+	log *slog.Logger,
+) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		resolvedURL, body, err := fetchPinnedMPD(ctx, opt)
+		if err == nil && hasFFmpegCustomHeaders(headers) && !sameURLOrigin(resolvedURL, headerOrigin) {
+			err = fmt.Errorf("dash manifest refresh crossed the authorized header origin")
+		}
 		if err == nil {
-			return final, body, nil
+			body, _, err = FilterMPDForPackWithSelection(
+				body,
+				resolvedURL,
+				opt.PreferHeight,
+				opt.VideoRepresentationID,
+				opt.AudioRepresentationID,
+			)
 		}
-		lastErr = err
-		if ctx.Err() != nil {
-			return "", "", err
+		if err == nil {
+			err = validateFFmpegMPD(body, resolvedURL, opt.Pull, headers)
 		}
-		if attempt < 6 {
-			select {
-			case <-ctx.Done():
-				return "", "", ctx.Err()
-			case <-time.After(time.Duration(attempt) * 300 * time.Millisecond):
-			}
+		if err == nil {
+			err = writeFFmpegMPD(path, []byte(body))
+		}
+		if err != nil && ctx.Err() == nil {
+			log.Warn("dash manifest refresh failed", "err", redactLogError(err))
 		}
 	}
-	return "", "", lastErr
 }
 
-func resolveOriginToCDN(ctx context.Context, opt DashOptions) (cdnURL string, body string, err error) {
-	client := &http.Client{
-		Timeout: 15 * time.Second,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-	if opt.Egress != nil {
-		d := opt.Egress.Resolve(opt.SourceURL, opt.ChannelID)
-		if hc, e := opt.Egress.ClientForChannel(d.ProxyID, opt.ChannelID, 15*time.Second); e == nil {
-			hc.CheckRedirect = client.CheckRedirect
-			hc.Timeout = 15 * time.Second
-			client = hc
-		}
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, opt.SourceURL, nil)
+func readLocalMPD(rawURL string) (string, string, error) {
+	u, err := url.Parse(rawURL)
 	if err != nil {
 		return "", "", err
 	}
-	applyMPDHeaders(req, opt)
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", "", fmt.Errorf("resolve origin: %w", err)
+	path := rawURL
+	if strings.EqualFold(u.Scheme, "file") {
+		path = u.Path
+	} else if u.Scheme != "" || u.Host != "" {
+		return "", "", fmt.Errorf("invalid local mpd path")
 	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
-	if opt.OnBytesIn != nil && len(raw) > 0 {
-		opt.OnBytesIn(int64(len(raw)))
-	}
-	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
-		loc := strings.TrimSpace(resp.Header.Get("Location"))
-		if loc == "" {
-			return "", "", fmt.Errorf("origin redirect missing location")
-		}
-		abs, e := url.Parse(loc)
-		if e != nil {
-			return "", "", fmt.Errorf("origin redirect url: %w", e)
-		}
-		if !abs.IsAbs() {
-			base, e2 := url.Parse(opt.SourceURL)
-			if e2 != nil {
-				return "", "", e2
-			}
-			abs = base.ResolveReference(abs)
-		}
-		return abs.String(), "", nil
-	}
-	if resp.StatusCode >= 400 {
-		return "", "", fmt.Errorf("resolve origin status %s: %s", resp.Status, string(raw[:min(len(raw), 200)]))
-	}
-	if strings.Contains(string(raw), "<MPD") || strings.Contains(string(raw), "<mpd") {
-		final := resp.Request.URL.String()
-		return final, string(raw), nil
-	}
-	return "", "", fmt.Errorf("origin did not return redirect or MPD")
-}
-
-func fetchMPD(ctx context.Context, opt DashOptions, mpdURL string) (string, string, error) {
-	final, body, err := fetchMPDOnce(ctx, opt, mpdURL)
-	if err == nil {
-		return final, body, nil
-	}
-	if u, e := url.Parse(mpdURL); e == nil && u.Scheme == "http" {
-		u.Scheme = "https"
-		f, b, e2 := fetchMPDOnce(ctx, opt, u.String())
-		if e2 == nil {
-			return f, b, nil
-		}
-		return "", "", fmt.Errorf("%w (https retry: %v)", err, e2)
-	}
-	return "", "", err
-}
-
-func fetchMPDOnce(ctx context.Context, opt DashOptions, mpdURL string) (string, string, error) {
-	client := &http.Client{
-		Timeout: 25 * time.Second,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 10 {
-				return fmt.Errorf("too many redirects")
-			}
-			return nil
-		},
-	}
-	if opt.Egress != nil {
-		d := opt.Egress.Resolve(mpdURL, opt.ChannelID)
-		if hc, err := opt.Egress.ClientForChannel(d.ProxyID, opt.ChannelID, 25*time.Second); err == nil {
-			hc.CheckRedirect = client.CheckRedirect
-			hc.Timeout = 25 * time.Second
-			client = hc
-		}
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, mpdURL, nil)
+	file, err := os.Open(path)
 	if err != nil {
 		return "", "", err
 	}
-	applyMPDHeaders(req, opt)
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", "", fmt.Errorf("resolve mpd: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return "", "", fmt.Errorf("resolve mpd status %s: %s", resp.Status, string(b))
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	defer file.Close()
+	body, err := io.ReadAll(io.LimitReader(file, (8<<20)+1))
 	if err != nil {
 		return "", "", err
 	}
-	if opt.OnBytesIn != nil && len(body) > 0 {
-		opt.OnBytesIn(int64(len(body)))
+	if len(body) > 8<<20 {
+		return "", "", fmt.Errorf("local mpd is too large")
 	}
-	final := resp.Request.URL.String()
 	if !strings.Contains(string(body), "<MPD") && !strings.Contains(string(body), "<mpd") {
-		return "", "", fmt.Errorf("resolved url did not return MPD")
+		return "", "", fmt.Errorf("local source did not return MPD")
 	}
-	return final, string(body), nil
-}
-
-func applyMPDHeaders(req *http.Request, opt DashOptions) {
-	if opt.UserAgent != "" {
-		req.Header.Set("User-Agent", opt.UserAgent)
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", "", err
 	}
-	for k, v := range opt.Headers {
-		if k != "" && v != "" {
-			req.Header.Set(k, v)
-		}
-	}
+	return (&url.URL{Scheme: "file", Path: absPath}).String(), string(body), nil
 }
 
 func selectKey(keys []config.KeyPair, mpd string) string {

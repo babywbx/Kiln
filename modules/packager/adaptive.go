@@ -239,7 +239,6 @@ func (a *AdaptivePackager) startFFmpeg(ctx context.Context, req Request, reason 
 	}
 	return job, nil
 }
-
 func cleanWorkDir(req Request, engine string) Request {
 	out := req
 	out.WorkDir = filepath.Join(req.WorkDir, engine)

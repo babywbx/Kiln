@@ -212,11 +212,7 @@ func (m *Manager) newPackager() packager.Packager {
 			"dependency", m.ffmpeg.Dependency(), "err", err)
 	} else {
 		m.ffmpegAvailable = true
-		ffmpeg = packager.NewFFmpegAdapter(m.ffmpeg, m.egress, m.spawn, func(n int64) {
-			if m.obs != nil {
-				m.obs.AddBytesIn(n)
-			}
-		})
+		ffmpeg = packager.NewFFmpegAdapter(m.ffmpeg, m.pull, m.egress, m.spawn)
 	}
 	return packager.NewAdaptivePackager(native, ffmpeg, m.log)
 }

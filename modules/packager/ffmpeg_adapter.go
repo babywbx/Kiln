@@ -11,6 +11,7 @@ import (
 	"github.com/babywbx/kiln/modules/config"
 	"github.com/babywbx/kiln/modules/egress"
 	"github.com/babywbx/kiln/modules/proxyegress"
+	"github.com/babywbx/kiln/modules/pull"
 	"github.com/babywbx/kiln/modules/version"
 )
 
@@ -28,14 +29,19 @@ func CheckFFmpegDependency(cfg config.FFmpeg) error {
 }
 
 type FFmpegAdapter struct {
-	cfg       config.FFmpeg
-	egress    *proxyegress.Router
-	spawn     egress.SpawnGate
-	onBytesIn func(int64)
+	cfg    config.FFmpeg
+	egress *proxyegress.Router
+	pull   *pull.Client
+	spawn  egress.SpawnGate
 }
 
-func NewFFmpegAdapter(cfg config.FFmpeg, router *proxyegress.Router, spawn egress.SpawnGate, onBytesIn func(int64)) *FFmpegAdapter {
-	return &FFmpegAdapter{cfg: cfg, egress: router, spawn: spawn, onBytesIn: onBytesIn}
+func NewFFmpegAdapter(
+	cfg config.FFmpeg,
+	pullClient *pull.Client,
+	router *proxyegress.Router,
+	spawn egress.SpawnGate,
+) *FFmpegAdapter {
+	return &FFmpegAdapter{cfg: cfg, egress: router, pull: pullClient, spawn: spawn}
 }
 
 func (a *FFmpegAdapter) Start(ctx context.Context, req Request) (Job, error) {
@@ -60,8 +66,8 @@ func (a *FFmpegAdapter) Start(ctx context.Context, req Request) (Job, error) {
 		AudioRepresentationID: req.Selection.Audio.Track.RepresentationID,
 		LowLatency:            a.cfg.LowLatency,
 		Logger:                req.Log,
-		OnBytesIn:             a.onBytesIn,
 		Egress:                a.egress,
+		Pull:                  a.pull,
 		ChannelID:             req.ChannelID,
 		SpawnGate:             a.spawn,
 	})

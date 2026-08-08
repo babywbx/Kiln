@@ -25,6 +25,39 @@ func TestBuildPackagerArgsUsesEpochMicrosecondStartNumber(t *testing.T) {
 	if !strings.Contains(joined, "-hls_start_number_source\x00epoch_us") {
 		t.Fatalf("ffmpeg args do not use a cross-restart start number: %q", args)
 	}
+	for i, arg := range args {
+		if arg == "-protocol_whitelist" && (i+1 >= len(args) || args[i+1] != "file,crypto") {
+			t.Fatalf("ffmpeg network protocols are enabled: %q", args)
+		}
+	}
+}
+
+func TestBuildPackagerArgsForcesGuardedNetworkProxy(t *testing.T) {
+	work := t.TempDir()
+	args := buildPackagerArgs(DashOptions{
+		HLSTime:     2,
+		HLSListSize: 6,
+		SourceURL:   "https://media.example/live.mpd",
+	}, packAttempt{
+		input:    "input.mpd",
+		vMap:     "0:v:0",
+		aMap:     "0:a:0?",
+		network:  true,
+		proxyURL: "http://kiln:secret@127.0.0.1:1234",
+		headers:  map[string]string{"Authorization": "Bearer secret"},
+	}, "00112233445566778899aabbccddeeff",
+		filepath.Join(work, "index.m3u8"), filepath.Join(work, "seg_%05d.ts"))
+	joined := strings.Join(args, "\x00")
+	for _, want := range []string{
+		"-protocol_whitelist\x00file,http,https,tcp,tls,crypto,httpproxy",
+		"-max_redirects\x000",
+		"-http_proxy\x00http://kiln:secret@127.0.0.1:1234",
+		"-headers\x00Authorization: Bearer secret\r\n",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("network args missing %q: %q", want, args)
+		}
+	}
 }
 
 func TestPlanFFmpegCommandNative(t *testing.T) {
@@ -63,6 +96,7 @@ func TestPlanFFmpegCommandDocker(t *testing.T) {
 	joined := strings.Join(plan.args, "\x00")
 	for _, want := range []string{
 		"run", "--rm", "--name", "kiln-ff-test",
+		"--add-host", "host.docker.internal:host-gateway",
 		"--entrypoint", "/usr/local/bin/ffmpeg",
 		"type=bind,source=" + work + ",target=/work",
 		"HTTP_PROXY=http://host.docker.internal:7890",

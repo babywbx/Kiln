@@ -38,6 +38,7 @@ func planFFmpegCommand(opt DashOptions, absWork string, ffmpegArgs, proxyEnv []s
 			"run", "--rm",
 			"--name", containerName,
 			"--label", "kiln.ffmpeg=1",
+			"--add-host", "host.docker.internal:host-gateway",
 			"--entrypoint", "/usr/local/bin/ffmpeg",
 			"--mount", "type=bind,source=" + absWork + ",target=/work",
 			"--workdir", "/work",

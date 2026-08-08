@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/babywbx/kiln/modules/config"
+	"github.com/babywbx/kiln/modules/pull"
 )
 
 const (
@@ -112,6 +113,7 @@ func TestSpawnGateDoesNotCoverReadinessWait(t *testing.T) {
 				Keys:       []config.KeyPair{{KID: "ffeeddccbbaa99887766554433221100", Key: "00112233445566778899aabbccddeeff"}},
 				WorkDir:    filepath.Join(t.TempDir(), "work"),
 				SpawnGate:  gate,
+				Pull:       pull.New(pull.Options{Allowed: map[string]struct{}{"127.0.0.1": {}}}),
 			})
 			took[i] = time.Since(began)
 		}()
