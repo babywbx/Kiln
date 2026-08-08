@@ -642,7 +642,7 @@ func (s *Server) handleAdminProbeChannel(w http.ResponseWriter, r *http.Request)
 		}
 		start := time.Now()
 		res, err := s.deps.Sessions.Pull().Get(r.Context(), pull.Request{
-			URL: src, ChannelID: ch.ID, UserAgent: version.UserAgent(ch.UserAgent), Headers: s.deps.Sessions.HeadersFor(ch),
+			URL: src, HeaderOrigin: src, ChannelID: ch.ID, UserAgent: version.UserAgent(ch.UserAgent), Headers: s.deps.Sessions.HeadersFor(ch),
 		})
 		if err != nil {
 			writeAppErr(w, apperr.Wrap(apperr.CodeUpstream, http.StatusBadGateway, "source check failed", err))
@@ -731,7 +731,7 @@ func (s *Server) pullForChannelEgressProbe(request *channelEgressRequest) (*pull
 		return nil, err
 	}
 	return pull.New(pull.Options{
-		Observe: s.deps.Observe, Allowed: s.deps.Allowed, MaxPlaylist: s.deps.Cfg.Security.MaxPlaylistBytes,
+		Observe: s.deps.Observe, Allowed: s.deps.Cfg.ExplicitAllowedHostSet(), MaxPlaylist: s.deps.Cfg.Security.MaxPlaylistBytes,
 		Router: router, Timeout: 15 * time.Second,
 	}), nil
 }
@@ -749,7 +749,7 @@ func (s *Server) probeSource(w http.ResponseWriter, r *http.Request, ch config.C
 	if ch.Ingress != "dash" {
 		start := time.Now()
 		res, err := testPull.Get(r.Context(), pull.Request{
-			URL: src, ChannelID: ch.ID, UserAgent: version.UserAgent(ch.UserAgent), Headers: s.deps.Sessions.HeadersFor(ch),
+			URL: src, HeaderOrigin: src, ChannelID: ch.ID, UserAgent: version.UserAgent(ch.UserAgent), Headers: s.deps.Sessions.HeadersFor(ch),
 		})
 		if err != nil {
 			writeAppErr(w, apperr.Wrap(apperr.CodeUpstream, http.StatusBadGateway, "source check failed", err))
@@ -775,11 +775,12 @@ func (s *Server) probeSource(w http.ResponseWriter, r *http.Request, ch config.C
 		return
 	}
 	fetcher := &packager.PullFetcher{
-		Client:    testPull,
-		ChannelID: ch.ID,
-		UserAgent: ch.UserAgent,
-		Headers:   s.deps.Sessions.HeadersFor(ch),
-		MaxBytes:  s.deps.Cfg.Packager.MaxSegmentBytes,
+		Client:       testPull,
+		ChannelID:    ch.ID,
+		UserAgent:    ch.UserAgent,
+		Headers:      s.deps.Sessions.HeadersFor(ch),
+		HeaderOrigin: src,
+		MaxBytes:     s.deps.Cfg.Packager.MaxSegmentBytes,
 	}
 	inspection, err := packager.InspectManifest(r.Context(), fetcher, src, ch.PreferHeight, ch.Selection, keys)
 	if err != nil {
@@ -1324,8 +1325,9 @@ func (s *Server) handleAdminEgressTest(w http.ResponseWriter, r *http.Request) {
 		writeAppErr(w, apperr.New(apperr.CodeInvalid, http.StatusBadRequest, "connection test target is invalid"))
 		return
 	}
+	allowedPrivate := s.deps.Cfg.ExplicitAllowedHostSet()
 	if req.Target == "source" || req.Target == "custom" {
-		if err := security.PublicProbeURL(r.Context(), req.URL, s.deps.Allowed); err != nil {
+		if err := security.PublicProbeURL(r.Context(), req.URL, allowedPrivate); err != nil {
 			writeAppErr(w, apperr.New(apperr.CodeForbidden, http.StatusForbidden, err.Error()))
 			return
 		}
@@ -1395,7 +1397,7 @@ func (s *Server) handleAdminEgressTest(w http.ResponseWriter, r *http.Request) {
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 		Transport: &publicProbeTransport{
-			router: testRouter, channelID: req.ChannelID, allowedPrivate: s.deps.Allowed,
+			router: testRouter, channelID: req.ChannelID, allowedPrivate: allowedPrivate,
 		},
 	}
 	client.CheckRedirect = func(redirect *http.Request, via []*http.Request) error {

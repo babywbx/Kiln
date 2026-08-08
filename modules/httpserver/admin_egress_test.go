@@ -166,7 +166,7 @@ func TestEgressTestPreservesHostWhenPinningAnAllowlistedName(t *testing.T) {
 	installRebindingResolver(t, [4]byte{127, 0, 0, 1}, [4]byte{127, 0, 0, 1})
 
 	server := &Server{deps: Deps{
-		Cfg: configForEgressTest(),
+		Cfg: configForEgressTest("probe.test"),
 		Allowed: map[string]struct{}{
 			"probe.test": {},
 		},
@@ -205,7 +205,7 @@ func TestEgressTestSendsPinnedAddressThroughProxy(t *testing.T) {
 	installRebindingResolver(t, [4]byte{127, 0, 0, 1}, [4]byte{127, 0, 0, 1})
 
 	server := &Server{deps: Deps{
-		Cfg: configForEgressTest(),
+		Cfg: configForEgressTest("probe.test"),
 		Allowed: map[string]struct{}{
 			"probe.test": {},
 		},
@@ -343,8 +343,9 @@ func startRebindingResolver() {
 	}
 }
 
-func configForEgressTest() config.File {
-	return config.File{Security: config.Security{MaxBodyBytes: 1 << 20}}
+func configForEgressTest(allowedHosts ...string) config.File {
+	allowedHosts = append([]string{"127.0.0.1"}, allowedHosts...)
+	return config.File{Security: config.Security{MaxBodyBytes: 1 << 20, AllowedHosts: allowedHosts}}
 }
 
 func TestChannelUpsertRequestKeepsFlatChannelAndEgressFields(t *testing.T) {

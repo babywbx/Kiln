@@ -396,6 +396,7 @@ func TestHLSPlayEndToEnd(t *testing.T) {
 		},
 		Security: config.Security{
 			PlayRequireAuth:  config.Bool(true),
+			AllowedHosts:     []string{"127.0.0.1"},
 			MaxPlaylistBytes: 1 << 20,
 			MaxBodyBytes:     1 << 20,
 		},
@@ -418,6 +419,7 @@ func TestHLSPlayEndToEnd(t *testing.T) {
 	}
 	cfg.Security.PlayRequireAuth = config.Bool(true)
 	allowed := cfg.AllowedHostSet()
+	allowedPrivate := cfg.ExplicitAllowedHostSet()
 
 	obs := observe.New()
 	authSvc, err := auth.New(cfg.Auth, time.Hour, auth.Options{DataDir: dir})
@@ -441,7 +443,7 @@ func TestHLSPlayEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	cat := catalog.New(cfg, db)
-	puller := pull.New(pull.Options{Observe: obs, Allowed: allowed, MaxPlaylist: cfg.Security.MaxPlaylistBytes})
+	puller := pull.New(pull.Options{Observe: obs, Allowed: allowedPrivate, MaxPlaylist: cfg.Security.MaxPlaylistBytes})
 	sessions := session.NewManager(cat, puller, obs, dir, cfg.FFmpeg, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 	sessions.Start(t.Context())
 
