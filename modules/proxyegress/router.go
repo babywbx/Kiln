@@ -95,17 +95,25 @@ func (r *Router) Reload(cfg Config) error {
 	if cfg.DockerProxyHost == "" {
 		cfg.DockerProxyHost = "host.docker.internal"
 	}
+	switch cfg.PlaylistPolicy {
+	case PolicyRewrite, PolicyPassthrough, PolicyAuto:
+	default:
+		return fmt.Errorf("invalid playlist policy %q", cfg.PlaylistPolicy)
+	}
 	profs := map[string]*url.URL{}
 	for _, p := range cfg.Profiles {
 		if p.Disabled {
 			continue
 		}
 		if p.ID == "" || p.URL == "" {
-			continue
+			return fmt.Errorf("proxy requires id and url")
 		}
 		u, err := url.Parse(p.URL)
 		if err != nil {
 			return fmt.Errorf("proxy %q url: %w", p.ID, err)
+		}
+		if u.Host == "" {
+			return fmt.Errorf("proxy %q url requires a host", p.ID)
 		}
 		switch strings.ToLower(u.Scheme) {
 		case "http", "https", "socks5", "socks5h":
@@ -120,6 +128,35 @@ func (r *Router) Reload(cfg Config) error {
 		}
 	}
 	rules := append([]Rule(nil), cfg.Rules...)
+	for i := range rules {
+		rule := &rules[i]
+		if rule.Disabled {
+			continue
+		}
+		if rule.Kind == "" {
+			rule.Kind = KindHostSuffix
+		}
+		if rule.Pattern == "" {
+			return fmt.Errorf("egress rule %q requires a pattern", rule.ID)
+		}
+		if rule.ProxyID == "" {
+			return fmt.Errorf("egress rule %q requires a proxy", rule.ID)
+		}
+		if rule.ProxyID != Direct {
+			if _, ok := profs[rule.ProxyID]; !ok {
+				return fmt.Errorf("egress rule %q references unknown or disabled proxy %q", rule.ID, rule.ProxyID)
+			}
+		}
+		switch rule.Kind {
+		case KindHostSuffix, KindHostExact, KindChannel:
+		case KindHostRegex, KindURLRegex:
+			if _, err := regexp.Compile(rule.Pattern); err != nil {
+				return fmt.Errorf("egress rule %q pattern: %w", rule.ID, err)
+			}
+		default:
+			return fmt.Errorf("egress rule %q has invalid kind %q", rule.ID, rule.Kind)
+		}
+	}
 	for i := 0; i < len(rules); i++ {
 		for j := i + 1; j < len(rules); j++ {
 			if rules[j].Priority < rules[i].Priority {
@@ -145,6 +182,10 @@ func (r *Router) Config() Config {
 func (r *Router) Resolve(targetURL, channelID string) Decision {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	return r.resolveLocked(targetURL, channelID)
+}
+
+func (r *Router) resolveLocked(targetURL, channelID string) Decision {
 	u, err := url.Parse(targetURL)
 	if err != nil || u.Host == "" {
 		return Decision{ProxyID: Direct, Reason: "invalid-url", Rewrite: r.cfg.PlaylistPolicy == PolicyRewrite}
@@ -332,7 +373,10 @@ func compatTLSForProxy(tr *http.Transport) {
 }
 
 func (r *Router) EnvForFFmpeg(targetURL, channelID string, forDocker bool) ([]string, error) {
-	d := r.Resolve(targetURL, channelID)
+	r.mu.RLock()
+	d := r.resolveLocked(targetURL, channelID)
+	dockerProxyHost := r.cfg.DockerProxyHost
+	r.mu.RUnlock()
 	if d.ProxyID == Direct || d.ProxyURL == nil {
 		return nil, nil
 	}
@@ -342,7 +386,7 @@ func (r *Router) EnvForFFmpeg(targetURL, channelID string, forDocker bool) ([]st
 	}
 	u := *d.ProxyURL
 	if forDocker {
-		u = rewriteProxyHostForDocker(u, r.cfg.DockerProxyHost)
+		u = rewriteProxyHostForDocker(u, dockerProxyHost)
 	}
 	proxyStr := u.String()
 	return []string{

@@ -2,9 +2,12 @@ package proxyegress
 
 import (
 	"crypto/tls"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -192,5 +195,110 @@ func TestEnvForFFmpegUsesCDNHostNotLANOrigin(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("cdn env=%v", env)
+	}
+}
+
+func TestNewRouterRejectsInvalidActiveRules(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  Config
+		want string
+	}{
+		{
+			name: "unknown kind",
+			cfg: Config{Rules: []Rule{{
+				ID: "bad-kind", Kind: RuleKind("typo"), Pattern: "example.com", ProxyID: Direct,
+			}}},
+			want: "invalid kind",
+		},
+		{
+			name: "invalid regex",
+			cfg: Config{Rules: []Rule{{
+				ID: "bad-regex", Kind: KindHostRegex, Pattern: "[", ProxyID: Direct,
+			}}},
+			want: "pattern",
+		},
+		{
+			name: "disabled profile",
+			cfg: Config{
+				Profiles: []Profile{{ID: "disabled", URL: "http://127.0.0.1:7890", Disabled: true}},
+				Rules: []Rule{{
+					ID: "disabled-profile", Kind: KindHostExact, Pattern: "example.com", ProxyID: "disabled",
+				}},
+			},
+			want: "unknown or disabled proxy",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := NewRouter(test.cfg)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("NewRouter() error = %v, want substring %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestEnvForFFmpegUsesOneReloadSnapshot(t *testing.T) {
+	configs := []Config{
+		{
+			Default: "p", Profiles: []Profile{{ID: "p", URL: "http://127.0.0.1:1001"}},
+			DockerProxyHost: "proxy-a",
+		},
+		{
+			Default: "p", Profiles: []Profile{{ID: "p", URL: "http://127.0.0.1:1002"}},
+			DockerProxyHost: "proxy-b",
+		},
+	}
+	router, err := NewRouter(configs[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const iterations = 5000
+	errors := make(chan error, 1)
+	report := func(err error) {
+		select {
+		case errors <- err:
+		default:
+		}
+	}
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			if err := router.Reload(configs[i%len(configs)]); err != nil {
+				report(err)
+				return
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			env, err := router.EnvForFFmpeg("https://example.com/live.mpd", "", true)
+			if err != nil {
+				report(err)
+				return
+			}
+			var proxy string
+			for _, value := range env {
+				if strings.HasPrefix(value, "HTTP_PROXY=") {
+					proxy = strings.TrimPrefix(value, "HTTP_PROXY=")
+					break
+				}
+			}
+			if proxy != "http://proxy-a:1001" && proxy != "http://proxy-b:1002" {
+				report(fmt.Errorf("mixed reload snapshot produced %q", proxy))
+				return
+			}
+		}
+	}()
+	wg.Wait()
+	close(errors)
+	if err := <-errors; err != nil {
+		t.Fatal(err)
 	}
 }
