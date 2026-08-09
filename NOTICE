@@ -10,7 +10,7 @@ FFmpeg binary. The core image does not contain FFmpeg. Kiln itself does not
 link against FFmpeg; the full variant invokes the binary as a separate
 process.
 
-  FFmpeg 8.1.2
+  FFmpeg 9.0
   https://ffmpeg.org
   Licensed under the GNU General Public License version 3 or later (GPLv3+),
   as the binary is built with --enable-gpl --enable-version3.
@@ -18,8 +18,8 @@ process.
   The binary is copied verbatim from the upstream multi-arch image pinned in
   deploy/docker/Dockerfile:
 
-    mwader/static-ffmpeg:8.1.2
-    sha256:33f770f812cbfc3de96c547157fc9faf8bd95a36481753439ffa761045167585
+    mwader/static-ffmpeg:9.0
+    sha256:b90574a4e2ae62b763c39c384526689e7eb435da6398f4fb3f6c3f1c6a14ce33
 
   The exact build configuration is embedded in the binary and can be printed
   with `ffmpeg -buildconf`. Corresponding source for this version of FFmpeg is

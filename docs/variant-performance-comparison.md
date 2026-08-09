@@ -43,7 +43,7 @@ FFmpeg 不会仅因存在于镜像中而持续占用进程内存。但本实验�
 |---|---|---|---|
 | 默认 packager | `native` | `native` | `auto` |
 | 原生 HLS/DASH | 是 | 是 | 是 |
-| FFmpeg | 不包含 | 不包含 | 内置 8.1.2 |
+| FFmpeg | 不包含 | 不包含 | 内置 9.0 |
 | 登录、M3U、播放 | 是 | 是 | 是 |
 | SQLite 数据库 | 否 | 是 | 是 |
 | 管理台与管理 API | 否 | 是 | 是 |
@@ -362,7 +362,7 @@ run_variant() {
   KILN_SMOKE_EXPECTED_GC_PERCENT="$gc" \
     sh deploy/docker/native-media-runtime-smoke.sh \
       "$image" \
-      busybox:1.38.0@sha256:fd8d9aa63ba2f0982b5304e1ee8d3b90a210bc1ffb5314d980eb6962f1a9715d
+      busybox:1.38.0@sha256:dc2d74b28e4cf8984fa52af1f39bc7c3d9c73760b41a74d629f5d11b1ab28616
 }
 
 run_variant lite kiln:lite-local

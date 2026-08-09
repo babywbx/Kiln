@@ -185,8 +185,8 @@ Three images with explicit boundaries, sharing one configuration model and the s
 | --- | --- | --- | --- | --- |
 | `kiln:lite` | Config, login, M3U, playback | `native` | Not included | Minimal scratch runtime, 3.8 MB, no database |
 | `kiln:core` | Full | `native` | Not included | Complete management and observability, natively only |
-| `kiln:full` | Full | `auto` | Bundled | Native first, falls back when needed |
-| `kiln:latest` | Full | `auto` | Bundled | Alias for `full` |
+| `kiln:full` | Full | `auto` | Bundled, 9.0 | Native first, falls back when needed |
+| `kiln:latest` | Full | `auto` | Bundled, 9.0 | Alias for `full` |
 
 ```bash
 docker build --target full -f deploy/docker/Dockerfile -t kiln:full .

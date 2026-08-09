@@ -191,8 +191,8 @@ Windows 从 [Releases][github-release-link] 下载 zip 包，参阅 [Windows 服
 | --- | --- | --- | --- | --- |
 | `kiln:lite` | 配置、登录、M3U、播放 | `native` | 不包含 | scratch 极简运行时，3.8 MB，无数据库 |
 | `kiln:core` | 完整 | `native` | 不包含 | 完整管理与观测，纯原生 |
-| `kiln:full` | 完整 | `auto` | 内置 | 优先原生，必要时回退 |
-| `kiln:latest` | 完整 | `auto` | 内置 | `full` 的别名 |
+| `kiln:full` | 完整 | `auto` | 内置 9.0 | 优先原生，必要时回退 |
+| `kiln:latest` | 完整 | `auto` | 内置 9.0 | `full` 的别名 |
 
 ```bash
 docker build --target full -f deploy/docker/Dockerfile -t kiln:full .
