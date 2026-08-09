@@ -10,7 +10,7 @@ run_audit() {
   shift
   local report="$work/$mode.json"
   for attempt in 1 2 3; do
-    pnpm dlx lighthouse@13.4.0 "$url" \
+    pnpm dlx lighthouse@13.4.1 "$url" \
       --only-categories=performance,accessibility,best-practices \
       --output=json \
       --output-path="$report" \

@@ -139,6 +139,7 @@ esac
 HERE="$(dirname -- "$SELF")"
 INSTALLER="$HERE/../install.sh"
 RELEASE_WORKFLOW="$HERE/../.github/workflows/release.yml"
+CI_WORKFLOW="$HERE/../.github/workflows/ci.yml"
 TEST_SHELL="${TEST_SHELL:-/bin/sh}"
 TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/kiln-install-test.XXXXXX")"
 trap 'rm -rf "$TEST_ROOT"' EXIT HUP INT TERM
@@ -592,7 +593,8 @@ test_semver_orders_hyphenated_identifiers() {
 
 test_release_guard_runs_installer_contract() {
 	grep -q 'Run Installer Contract' "$RELEASE_WORKFLOW" || fail "release guard does not validate versions through the installer"
-	grep -q 'make test-install' "$RELEASE_WORKFLOW" || fail "release guard does not run installer tests"
+	grep -q 'uses: ./.github/workflows/ci.yml' "$RELEASE_WORKFLOW" || fail "release guard does not call full CI"
+	grep -q 'make test-install' "$CI_WORKFLOW" || fail "full CI does not run installer tests"
 	printf 'ok - release guard runs the installer contract\n'
 }
 
