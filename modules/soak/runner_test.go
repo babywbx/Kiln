@@ -14,6 +14,14 @@ import (
 	"time"
 )
 
+type failingWriter struct {
+	err error
+}
+
+func (w failingWriter) Write([]byte) (int, error) {
+	return 0, w.err
+}
+
 func TestRunnerTracksPlaylistProgressAndEndpoints(t *testing.T) {
 	t.Parallel()
 	var sequence atomic.Int64
@@ -68,6 +76,33 @@ func TestRunnerTracksPlaylistProgressAndEndpoints(t *testing.T) {
 		t.Fatalf("optional endpoints not checked: %+v", report)
 	}
 	assertFinalJSONL(t, output.String(), false, false)
+}
+
+func TestRunnerReturnsOutputWriteErrors(t *testing.T) {
+	t.Parallel()
+	server := staticHLSServer()
+	defer server.Close()
+
+	writeErr := errors.New("output unavailable")
+	runner, err := New(Config{
+		BaseURL:        server.URL,
+		Channels:       []string{"news"},
+		Duration:       15 * time.Millisecond,
+		Interval:       5 * time.Millisecond,
+		StallTimeout:   time.Second,
+		RequestTimeout: time.Second,
+	}, WithOutput(failingWriter{err: writeErr}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := runner.Run(context.Background())
+	if !errors.Is(err, writeErr) {
+		t.Fatalf("Run() error = %v, want output error", err)
+	}
+	if !report.Failed {
+		t.Fatalf("output failure missing from final report: %+v", report)
+	}
 }
 
 func TestRunnerAllowsEmptySparseSubtitleRenditions(t *testing.T) {

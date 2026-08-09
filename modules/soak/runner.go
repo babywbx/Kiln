@@ -235,7 +235,9 @@ func (r *Runner) Run(ctx context.Context) (Report, error) {
 		})
 	}
 	r.copyChannelReports(&report, states)
-	r.writeSnapshot(startedAt, report, process)
+	if err := r.writeSnapshot(startedAt, report, process); err != nil {
+		return r.finish(report, process, startedAt, fmt.Errorf("write snapshot: %w", err))
+	}
 
 	deadline := time.NewTimer(r.cfg.Duration)
 	defer deadline.Stop()
@@ -245,7 +247,9 @@ func (r *Runner) Run(ctx context.Context) (Report, error) {
 	for {
 		cycleErr := r.runCycle(ctx, states, &report, &process)
 		r.copyChannelReports(&report, states)
-		r.writeSnapshot(startedAt, report, process)
+		if err := r.writeSnapshot(startedAt, report, process); err != nil {
+			cycleErr = errors.Join(cycleErr, fmt.Errorf("write snapshot: %w", err))
+		}
 		if cycleErr != nil {
 			return r.finish(report, process, startedAt, cycleErr)
 		}
@@ -585,7 +589,7 @@ func (r *Runner) copyChannelReports(report *Report, states []*channelState) {
 	}
 }
 
-func (r *Runner) writeSnapshot(startedAt time.Time, report Report, process ProcessSnapshot) {
+func (r *Runner) writeSnapshot(startedAt time.Time, report Report, process ProcessSnapshot) error {
 	snapshot := Snapshot{
 		Type:            "snapshot",
 		At:              time.Now().UTC(),
@@ -595,7 +599,7 @@ func (r *Runner) writeSnapshot(startedAt time.Time, report Report, process Proce
 		StatusRequests:  report.StatusRequests,
 		MetricsRequests: report.MetricsRequests,
 	}
-	r.writeJSON(snapshot)
+	return r.writeJSON(snapshot)
 }
 
 func (r *Runner) finish(report Report, process ProcessSnapshot, startedAt time.Time, runErr error) (Report, error) {
@@ -608,7 +612,14 @@ func (r *Runner) finish(report Report, process ProcessSnapshot, startedAt time.T
 		report.Failed = true
 		report.Failure = redactError(runErr)
 	}
-	r.writeJSON(report)
+	if err := r.writeJSON(report); err != nil {
+		writeErr := fmt.Errorf("write final report: %w", err)
+		if runErr == nil {
+			report.Failed = true
+			report.Failure = redactError(writeErr)
+		}
+		return report, errors.Join(runErr, writeErr)
+	}
 	return report, runErr
 }
 
@@ -623,10 +634,10 @@ func cloneProcess(process ProcessSnapshot) ProcessSnapshot {
 	return process
 }
 
-func (r *Runner) writeJSON(value any) {
+func (r *Runner) writeJSON(value any) error {
 	r.writeMu.Lock()
 	defer r.writeMu.Unlock()
-	_ = json.NewEncoder(r.output).Encode(value)
+	return json.NewEncoder(r.output).Encode(value)
 }
 
 type parsedPlaylist struct {
