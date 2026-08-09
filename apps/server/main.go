@@ -134,6 +134,7 @@ func runServer(cfgPath string) int {
 
 	obs := observe.New()
 	allowed := cfg.AllowedHostSet()
+	allowedPrivate := cfg.ExplicitAllowedHostSet()
 	authSvc, err := auth.New(cfg.Auth, cfg.TokenTTL(), auth.Options{DataDir: cfg.Server.DataDir})
 	if err != nil {
 		log.Error("auth init failed", "err", err)
@@ -142,7 +143,7 @@ func runServer(cfgPath string) int {
 	cat := catalog.New(cfg, db)
 	puller := pull.New(pull.Options{
 		Observe:     obs,
-		Allowed:     allowed,
+		Allowed:     allowedPrivate,
 		MaxPlaylist: cfg.Security.MaxPlaylistBytes,
 		Router:      egressRouter,
 	})
@@ -169,18 +170,17 @@ func runServer(cfgPath string) int {
 		Tracing:  tracingReady,
 	})
 
+	type serverResult struct {
+		name string
+		err  error
+	}
+	serverErrors := make(chan serverResult, 2)
 	go func() {
-		if err := srv.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Error("http server stopped", "err", err)
-			cancel()
-		}
+		serverErrors <- serverResult{name: "http", err: srv.Start()}
 	}()
 	if debugServer != nil {
 		go func() {
-			if err := debugServer.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				log.Error("pprof server stopped", "err", err)
-				cancel()
-			}
+			serverErrors <- serverResult{name: "pprof", err: debugServer.Start()}
 		}()
 	}
 
@@ -234,12 +234,18 @@ func runServer(cfgPath string) int {
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+	exitCode := 0
 	select {
 	case sig := <-sigCh:
 		log.Info("signal received", "signal", sig.String())
 	case <-platformShutdown():
 		log.Info("service stop requested")
-	case <-ctx.Done():
+	case result := <-serverErrors:
+		if result.err != nil && !errors.Is(result.err, http.ErrServerClosed) {
+			log.Error(result.name+" server stopped", "err", result.err)
+			exitCode = 1
+		}
 	}
 
 	shctx, shcancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -254,7 +260,7 @@ func runServer(cfgPath string) int {
 	cancel()
 	sessions.Shutdown()
 	log.Info("shutting down")
-	return 0
+	return exitCode
 }
 
 func effectiveGoMemoryLimitMB() uint64 {

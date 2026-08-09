@@ -4,14 +4,17 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/babywbx/kiln/modules/config"
 	"github.com/babywbx/kiln/modules/proxyegress"
@@ -174,5 +177,47 @@ func TestFFmpegMemoryAdvisoryRequiresAConstrainedSelectableEngine(t *testing.T) 
 		ID: "compat", Packager: config.EngineFFmpeg,
 	}}) {
 		t.Fatal("channel FFmpeg override did not request the memory advisory")
+	}
+}
+
+func TestRunReturnsFailureWhenListenAddressIsUnavailable(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = listener.Close() }()
+	t.Setenv("KILN_PLAY_OPEN", "1")
+
+	directory := t.TempDir()
+	configPath := filepath.Join(directory, "kiln.toml")
+	configText := fmt.Sprintf(`
+[server]
+listen = %q
+data_dir = %q
+
+[auth]
+[[auth.users]]
+username = "admin"
+password_hash = "$2a$10$8JxhvnpdTX/TrOTi1XaYWuPlrZK1aw3ANgGIWpTO6KtD2M432w7Ie"
+role = "admin"
+
+[packager]
+engine = "native"
+`, listener.Addr().String(), directory)
+	if err := os.WriteFile(configPath, []byte(configText), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan int, 1)
+	go func() {
+		done <- run([]string{"-config", configPath})
+	}()
+	select {
+	case code := <-done:
+		if code == 0 {
+			t.Fatal("run succeeded with an unavailable listen address")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("run waited for a signal after listen failed")
 	}
 }
