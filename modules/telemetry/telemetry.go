@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"context"
+	"net/url"
 
 	"github.com/babywbx/kiln/modules/config"
 	"go.opentelemetry.io/otel"
@@ -19,6 +20,9 @@ func Setup(ctx context.Context, cfg config.Observe, serviceVersion string) (Shut
 		return func(context.Context) error { return nil }, nil
 	}
 	exporterOptions := []otlptracehttp.Option{otlptracehttp.WithEndpointURL(cfg.OTLPEndpoint)}
+	if endpoint, err := url.Parse(cfg.OTLPEndpoint); err == nil && (endpoint.Path == "" || endpoint.Path == "/") {
+		exporterOptions = append(exporterOptions, otlptracehttp.WithURLPath("/v1/traces"))
+	}
 	if cfg.OTLPInsecure {
 		exporterOptions = append(exporterOptions, otlptracehttp.WithInsecure())
 	}
