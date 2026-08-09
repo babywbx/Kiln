@@ -19,11 +19,11 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
-  BUSYBOX_IMAGE: busybox:1.38.0@sha256:fd8d9aa63ba2f0982b5304e1ee8d3b90a210bc1ffb5314d980eb6962f1a9715d
+  BUSYBOX_IMAGE: busybox:1.38.0@sha256:dc2d74b28e4cf8984fa52af1f39bc7c3d9c73760b41a74d629f5d11b1ab28616
 
 jobs:
   guard:
-    name: Guard / Verify Tagged Tree
+    name: Guard / Release Identity
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.identity.outputs.tag }}
@@ -55,247 +55,86 @@ jobs:
             echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Checkout Repository
+      - name: Resolve Remote Tag
+        id: commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.identity.outputs.tag }}
+        run: |
+          set -euo pipefail
+          resolve_tag_commit() {
+            object=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG")
+            object_type=$(jq -er '.object.type' <<<"$object")
+            object_sha=$(jq -er '.object.sha' <<<"$object")
+            depth=0
+            while [ "$object_type" = tag ]; do
+              depth=$((depth + 1))
+              if [ "$depth" -gt 8 ]; then
+                echo "refusing deeply nested tag $TAG" >&2
+                return 1
+              fi
+              object=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$object_sha")
+              object_type=$(jq -er '.object.type' <<<"$object")
+              object_sha=$(jq -er '.object.sha' <<<"$object")
+            done
+            if [ "$object_type" != commit ]; then
+              echo "tag $TAG resolves to $object_type, not a commit" >&2
+              return 1
+            fi
+            printf '%s\n' "$object_sha"
+          }
+          echo "sha=$(resolve_tag_commit)" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout Tagged Commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ steps.identity.outputs.tag }}
+          ref: ${{ steps.commit.outputs.sha }}
 
       - name: Run Installer Contract
         env:
+          EXPECTED_SHA: ${{ steps.commit.outputs.sha }}
           VERSION: ${{ steps.identity.outputs.version }}
-        run: >-
-          sh install.sh --dry-run --yes --version "$VERSION" --no-mirror
-          --dir "$RUNNER_TEMP/kiln-version-check" >/dev/null
-
-      - name: Pin Commit Under Test
-        id: commit
         run: |
           set -euo pipefail
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          sh install.sh --dry-run --yes --version "$VERSION" --no-mirror \
+            --dir "$RUNNER_TEMP/kiln-version-check" >/dev/null
 
-      - name: Setup Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
+      - name: Validate Release Slot
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.identity.outputs.tag }}
+          PRERELEASE: ${{ steps.identity.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          if release=$(gh release view "$TAG" --json isDraft,isPrerelease 2>/dev/null); then
+            if [ "$(jq -r '.isDraft' <<<"$release")" != true ]; then
+              echo "refusing to replace published release $TAG" >&2
+              exit 1
+            fi
+            if [ "$(jq -r '.isPrerelease' <<<"$release")" != "$PRERELEASE" ]; then
+              echo "draft release $TAG has an unexpected prerelease state" >&2
+              exit 1
+            fi
+          fi
 
-      - name: Run Installer Tests
-        run: make test-install
-
-      - name: Check Formatting
-        run: make fmt
-
-      - name: Vet Sources
-        run: make vet
-
-      - name: Run Tests
-        run: make test
-
-      - name: Run Lite Tests
-        run: make test-lite
-
-  images:
-    name: Publish / Container Images
-    runs-on: ubuntu-latest
+  full-ci:
+    name: Guard / Full CI
     needs: guard
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ needs.guard.outputs.sha }}
     permissions:
       contents: read
-      packages: write
-      id-token: write
-      attestations: write
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ needs.guard.outputs.sha }}
 
-      - name: Setup QEMU
-        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
-
-      - name: Setup Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
-
-      - name: Resolve Image Tags
-        id: tags
-        env:
-          VERSION: ${{ needs.guard.outputs.version }}
-          PRERELEASE: ${{ needs.guard.outputs.prerelease }}
-        run: |
-          set -euo pipefail
-          base="${REGISTRY}/$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
-          major="${VERSION%%.*}"
-          rest="${VERSION#*.}"
-          minor="${rest%%.*}"
-          emit() {
-            variant="$1"
-            suffix=""
-            [ "$variant" != "full" ] && suffix="-$variant"
-            list="${base}:${VERSION}${suffix}"
-            if [ "$PRERELEASE" = "false" ]; then
-              list="${list},${base}:${major}.${minor}${suffix}"
-              list="${list},${base}:${major}${suffix}"
-              if [ "$variant" = "full" ]; then
-                list="${list},${base}:latest"
-              else
-                list="${list},${base}:${variant}"
-              fi
-            fi
-            echo "${variant}=${list}" >> "$GITHUB_OUTPUT"
-          }
-          emit full
-          emit core
-          emit lite
-          echo "base=$base" >> "$GITHUB_OUTPUT"
-
-      - name: Build Core Image (amd64)
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
-        with:
-          context: .
-          file: deploy/docker/Dockerfile
-          target: core
-          platforms: linux/amd64
-          load: true
-          tags: kiln:release-core-amd64
-          build-args: |
-            VERSION=${{ needs.guard.outputs.version }}
-            COMMIT=${{ needs.guard.outputs.sha }}
-            BUILT_AT=${{ needs.guard.outputs.built_at }}
-          cache-from: type=gha,scope=core-amd64
-          cache-to: type=gha,mode=max,scope=core-amd64
-
-      - name: Build Full Image (amd64)
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
-        with:
-          context: .
-          file: deploy/docker/Dockerfile
-          target: full
-          platforms: linux/amd64
-          load: true
-          tags: kiln:release-full-amd64
-          build-args: |
-            VERSION=${{ needs.guard.outputs.version }}
-            COMMIT=${{ needs.guard.outputs.sha }}
-            BUILT_AT=${{ needs.guard.outputs.built_at }}
-          cache-from: type=gha,scope=full-amd64
-          cache-to: type=gha,mode=max,scope=full-amd64
-
-      - name: Build Lite Image (amd64)
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
-        with:
-          context: .
-          file: deploy/docker/Dockerfile
-          target: lite
-          platforms: linux/amd64
-          load: true
-          tags: kiln:release-lite-amd64
-          build-args: |
-            VERSION=${{ needs.guard.outputs.version }}
-            COMMIT=${{ needs.guard.outputs.sha }}
-            BUILT_AT=${{ needs.guard.outputs.built_at }}
-          cache-from: type=gha,scope=lite-amd64
-          cache-to: type=gha,mode=max,scope=lite-amd64
-
-      - name: Verify Core and Full Image Contracts
-        run: deploy/docker/verify-images.sh kiln:release-core-amd64 kiln:release-full-amd64
-
-      - name: Verify Lite Image Contract
-        run: deploy/docker/verify-lite.sh kiln:release-lite-amd64
-
-      - name: Verify Full Image Constrained-Memory Advisory
-        run: deploy/docker/full-resource-smoke.sh kiln:release-full-amd64
-
-      - name: Smoke Test Core Compact Media Path
-        run: deploy/docker/core-media-smoke.sh kiln:release-core-amd64 "$BUSYBOX_IMAGE"
-
-      - name: Smoke Test Lite Native Media Runtime
-        run: deploy/docker/native-media-runtime-smoke.sh kiln:release-lite-amd64 "$BUSYBOX_IMAGE"
-
-      - name: Log In To Registry
-        env:
-          REGISTRY_USER: ${{ github.actor }}
-          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          printf '%s' "$REGISTRY_TOKEN" \
-            | docker login "$REGISTRY" -u "$REGISTRY_USER" --password-stdin
-
-      - name: Push Core Image
-        id: push-core
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
-        with:
-          context: .
-          file: deploy/docker/Dockerfile
-          target: core
-          platforms: linux/amd64,linux/arm64,linux/arm/v7,linux/arm/v6
-          push: true
-          tags: ${{ steps.tags.outputs.core }}
-          build-args: |
-            VERSION=${{ needs.guard.outputs.version }}
-            COMMIT=${{ needs.guard.outputs.sha }}
-            BUILT_AT=${{ needs.guard.outputs.built_at }}
-          cache-from: type=gha,scope=core-release
-          cache-to: type=gha,mode=max,scope=core-release
-
-      - name: Attest Core Image Provenance
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
-        with:
-          subject-name: ${{ steps.tags.outputs.base }}
-          subject-digest: ${{ steps.push-core.outputs.digest }}
-          push-to-registry: true
-
-      - name: Push Full Image
-        id: push-full
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
-        with:
-          context: .
-          file: deploy/docker/Dockerfile
-          target: full
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.tags.outputs.full }}
-          build-args: |
-            VERSION=${{ needs.guard.outputs.version }}
-            COMMIT=${{ needs.guard.outputs.sha }}
-            BUILT_AT=${{ needs.guard.outputs.built_at }}
-          cache-from: type=gha,scope=full-release
-          cache-to: type=gha,mode=max,scope=full-release
-
-      - name: Attest Full Image Provenance
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
-        with:
-          subject-name: ${{ steps.tags.outputs.base }}
-          subject-digest: ${{ steps.push-full.outputs.digest }}
-          push-to-registry: true
-
-      - name: Push Lite Image
-        id: push-lite
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
-        with:
-          context: .
-          file: deploy/docker/Dockerfile
-          target: lite
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.tags.outputs.lite }}
-          build-args: |
-            VERSION=${{ needs.guard.outputs.version }}
-            COMMIT=${{ needs.guard.outputs.sha }}
-            BUILT_AT=${{ needs.guard.outputs.built_at }}
-          cache-from: type=gha,scope=lite-release
-          cache-to: type=gha,mode=max,scope=lite-release
-
-      - name: Attest Lite Image Provenance
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
-        with:
-          subject-name: ${{ steps.tags.outputs.base }}
-          subject-digest: ${{ steps.push-lite.outputs.digest }}
-          push-to-registry: true
-
-  release:
-    name: Publish / Binaries And Draft Release
+  artifacts:
+    name: Build / Release Assets
     runs-on: ubuntu-latest
-    needs: [guard, images]
+    needs: [guard, full-ci]
     permissions:
-      contents: write
+      contents: read
       id-token: write
       attestations: write
     steps:
@@ -324,13 +163,13 @@ jobs:
           package() {
             name="$1" goos="$2" goarch="$3" goarm="$4" tags="$5" label="$6"
             binary="$name"
-            [ "$goos" = "windows" ] && binary="${name}.exe"
+            [ "$goos" = windows ] && binary="${name}.exe"
             rm -rf stage && mkdir -p stage
             env CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" GOARM="$goarm" \
               go build -tags="$tags" -trimpath -ldflags="$ldflags" -o "stage/${binary}" ./apps/server
             cp LICENSE NOTICE README.md README.en.md stage/
             archive="${name}_${VERSION}_${goos}_${label}"
-            if [ "$goos" = "windows" ]; then
+            if [ "$goos" = windows ]; then
               (cd stage && zip -qr "../dist/${archive}.zip" .)
             else
               tar -czf "dist/${archive}.tar.gz" -C stage .
@@ -356,33 +195,626 @@ jobs:
           ls -lh dist
 
       - name: Attest Binary Provenance
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: dist/kiln*.tar.gz,dist/kiln*.zip
 
-      - name: Create Draft Release
+      - name: Store Release Assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-assets
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 1
+
+  images:
+    name: Build / Candidate Images
+    runs-on: ubuntu-latest
+    needs: [guard, full-ci]
+    outputs:
+      base: ${{ steps.refs.outputs.base }}
+      core_digest: ${{ steps.push-core.outputs.digest }}
+      full_digest: ${{ steps.push-full.outputs.digest }}
+      lite_digest: ${{ steps.push-lite.outputs.digest }}
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.guard.outputs.sha }}
+
+      - name: Setup QEMU
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+
+      - name: Setup Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Resolve Candidate Image Tags
+        id: refs
+        env:
+          SHA: ${{ needs.guard.outputs.sha }}
+        run: |
+          set -euo pipefail
+          base="${REGISTRY}/$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          candidate_id="${SHA:0:12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          {
+            echo "base=$base"
+            echo "core=${base}:candidate-${candidate_id}-core"
+            echo "full=${base}:candidate-${candidate_id}-full"
+            echo "lite=${base}:candidate-${candidate_id}-lite"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Log In To Registry
+        env:
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$REGISTRY_TOKEN" \
+            | docker login "$REGISTRY" -u "$REGISTRY_USER" --password-stdin
+
+      - name: Build Core Candidate
+        id: push-core
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          target: core
+          platforms: linux/amd64,linux/arm64,linux/arm/v7,linux/arm/v6
+          push: true
+          tags: ${{ steps.refs.outputs.core }}
+          build-args: |
+            VERSION=${{ needs.guard.outputs.version }}
+            COMMIT=${{ needs.guard.outputs.sha }}
+            BUILT_AT=${{ needs.guard.outputs.built_at }}
+          cache-from: type=gha,scope=core-release
+          cache-to: type=gha,mode=max,scope=core-release
+
+      - name: Build Full Candidate
+        id: push-full
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          target: full
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.refs.outputs.full }}
+          build-args: |
+            VERSION=${{ needs.guard.outputs.version }}
+            COMMIT=${{ needs.guard.outputs.sha }}
+            BUILT_AT=${{ needs.guard.outputs.built_at }}
+          cache-from: type=gha,scope=full-release
+          cache-to: type=gha,mode=max,scope=full-release
+
+      - name: Build Lite Candidate
+        id: push-lite
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          target: lite
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.refs.outputs.lite }}
+          build-args: |
+            VERSION=${{ needs.guard.outputs.version }}
+            COMMIT=${{ needs.guard.outputs.sha }}
+            BUILT_AT=${{ needs.guard.outputs.built_at }}
+          cache-from: type=gha,scope=lite-release
+          cache-to: type=gha,mode=max,scope=lite-release
+
+      - name: Pull Advertised Candidate Platforms
+        env:
+          BASE: ${{ steps.refs.outputs.base }}
+          CORE_DIGEST: ${{ steps.push-core.outputs.digest }}
+          FULL_DIGEST: ${{ steps.push-full.outputs.digest }}
+          LITE_DIGEST: ${{ steps.push-lite.outputs.digest }}
+        run: |
+          set -euo pipefail
+          pull_platform() {
+            list_ref="$1"
+            arch="$2"
+            variant="$3"
+            local_tag="$4"
+            digest=$(docker buildx imagetools inspect "$list_ref" --raw |
+              jq -re --arg arch "$arch" --arg variant "$variant" '
+                [.manifests[]
+                  | select(.platform.os == "linux" and .platform.architecture == $arch)
+                  | select((.platform.variant // "") == $variant or ($arch == "arm64" and $variant == ""))]
+                | first | .digest')
+            docker pull "${list_ref%%@*}@$digest"
+            docker image tag "${list_ref%%@*}@$digest" "$local_tag"
+          }
+
+          pull_platform "$BASE@$CORE_DIGEST" amd64 "" kiln:release-core-amd64
+          pull_platform "$BASE@$CORE_DIGEST" arm64 "" kiln:release-core-arm64
+          pull_platform "$BASE@$CORE_DIGEST" arm v7 kiln:release-core-armv7
+          pull_platform "$BASE@$CORE_DIGEST" arm v6 kiln:release-core-armv6
+          pull_platform "$BASE@$FULL_DIGEST" amd64 "" kiln:release-full-amd64
+          pull_platform "$BASE@$FULL_DIGEST" arm64 "" kiln:release-full-arm64
+          pull_platform "$BASE@$LITE_DIGEST" amd64 "" kiln:release-lite-amd64
+          pull_platform "$BASE@$LITE_DIGEST" arm64 "" kiln:release-lite-arm64
+
+      - name: Verify Core and Full Image Contracts
+        run: deploy/docker/verify-images.sh kiln:release-core-amd64 kiln:release-full-amd64
+
+      - name: Verify Lite Image Contract
+        run: deploy/docker/verify-lite.sh kiln:release-lite-amd64
+
+      - name: Verify Arm64 Core and Full Image Contracts
+        run: deploy/docker/verify-images.sh kiln:release-core-arm64 kiln:release-full-arm64
+
+      - name: Verify Arm64 Lite Image Contract
+        run: deploy/docker/verify-lite.sh kiln:release-lite-arm64
+
+      - name: Verify 32-bit Arm Core Image Contracts
+        run: |
+          set -euo pipefail
+          verify_core() {
+            image="$1"
+            platform="$2"
+            variant=$(docker image inspect "$image" \
+              --format '{{ index .Config.Labels "io.kiln.variant" }}')
+            if [ "$variant" != core ]; then
+              echo "$image has variant label $variant, want core" >&2
+              return 1
+            fi
+            version_output=$(docker run --rm --platform "$platform" "$image" -version)
+            case "$version_output" in
+              *"variant=full"*) ;;
+              *)
+                echo "$image did not report the shared full binary variant: $version_output" >&2
+                return 1
+                ;;
+            esac
+          }
+          verify_core kiln:release-core-armv7 linux/arm/v7
+          verify_core kiln:release-core-armv6 linux/arm/v6
+
+      - name: Verify Full Image Constrained-Memory Advisory
+        run: deploy/docker/full-resource-smoke.sh kiln:release-full-amd64
+
+      - name: Smoke Test Core Compact Media Path
+        run: deploy/docker/core-media-smoke.sh kiln:release-core-amd64 "$BUSYBOX_IMAGE"
+
+      - name: Smoke Test Lite Native Media Runtime
+        run: deploy/docker/native-media-runtime-smoke.sh kiln:release-lite-amd64 "$BUSYBOX_IMAGE"
+
+      - name: Attest Core Image Provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.refs.outputs.base }}
+          subject-digest: ${{ steps.push-core.outputs.digest }}
+          push-to-registry: true
+
+      - name: Attest Full Image Provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.refs.outputs.base }}
+          subject-digest: ${{ steps.push-full.outputs.digest }}
+          push-to-registry: true
+
+      - name: Attest Lite Image Provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.refs.outputs.base }}
+          subject-digest: ${{ steps.push-lite.outputs.digest }}
+          push-to-registry: true
+
+  draft:
+    name: Publish / Draft Release
+    runs-on: ubuntu-latest
+    needs: [guard, artifacts, images]
+    permissions:
+      contents: write
+    steps:
+      - name: Download Release Assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-assets
+          path: dist
+
+      - name: Create Or Update Draft Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.guard.outputs.tag }}
+          SHA: ${{ needs.guard.outputs.sha }}
           VERSION: ${{ needs.guard.outputs.version }}
           PRERELEASE: ${{ needs.guard.outputs.prerelease }}
         run: |
           set -euo pipefail
+          (cd dist && sha256sum --check SHA256SUMS)
+
+          resolve_tag_commit() {
+            object=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG")
+            object_type=$(jq -er '.object.type' <<<"$object")
+            object_sha=$(jq -er '.object.sha' <<<"$object")
+            depth=0
+            while [ "$object_type" = tag ]; do
+              depth=$((depth + 1))
+              [ "$depth" -le 8 ] || return 1
+              object=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$object_sha")
+              object_type=$(jq -er '.object.type' <<<"$object")
+              object_sha=$(jq -er '.object.sha' <<<"$object")
+            done
+            [ "$object_type" = commit ] || return 1
+            printf '%s\n' "$object_sha"
+          }
+          if [ "$(resolve_tag_commit)" != "$SHA" ]; then
+            echo "tag $TAG moved after validation" >&2
+            exit 1
+          fi
+
           image="${REGISTRY}/$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          changelog=$(gh api --method POST \
+            "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
+            -f tag_name="$TAG" -f target_commitish="$SHA" --jq '.body')
           notes=$(printf '%s\n' \
             "## Container Images" \
             "" \
-            '```' \
+            '~~~' \
             "docker pull ${image}:${VERSION}        # full, includes ffmpeg" \
             "docker pull ${image}:${VERSION}-core   # native packager, no ffmpeg" \
             "docker pull ${image}:${VERSION}-lite   # stateless low-memory variant" \
-            '```' \
+            '~~~' \
             "" \
-            "Verify binaries against \`SHA256SUMS\`.")
-          flags=(--draft --title "Kiln ${VERSION}" --notes "$notes")
-          [ "$PRERELEASE" = "true" ] && flags+=(--prerelease)
-          if gh release view "$TAG" >/dev/null 2>&1; then
+            "Verify binaries against SHA256SUMS." \
+            "" \
+            "$changelog")
+          flags=(--draft --verify-tag --title "$TAG" --notes "$notes")
+          [ "$PRERELEASE" = true ] && flags+=(--prerelease)
+          if release=$(gh release view "$TAG" --json isDraft,isPrerelease 2>/dev/null); then
+            if [ "$(jq -r '.isDraft' <<<"$release")" != true ]; then
+              echo "refusing to replace published release $TAG" >&2
+              exit 1
+            fi
+            if [ "$(jq -r '.isPrerelease' <<<"$release")" != "$PRERELEASE" ]; then
+              echo "draft release $TAG has an unexpected prerelease state" >&2
+              exit 1
+            fi
+            gh release edit "$TAG" --title "$TAG" --notes "$notes"
             gh release upload "$TAG" dist/* --clobber
           else
             gh release create "$TAG" "${flags[@]}" dist/*
           fi
+
+  version-images:
+    name: Publish / Version Image Tags
+    runs-on: ubuntu-latest
+    needs: [guard, images, draft]
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - name: Setup Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log In To Registry
+        env:
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$REGISTRY_TOKEN" \
+            | docker login "$REGISTRY" -u "$REGISTRY_USER" --password-stdin
+
+      - name: Revalidate Tag And Draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.guard.outputs.tag }}
+          SHA: ${{ needs.guard.outputs.sha }}
+        run: |
+          set -euo pipefail
+          resolve_tag_commit() {
+            object=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG")
+            object_type=$(jq -er '.object.type' <<<"$object")
+            object_sha=$(jq -er '.object.sha' <<<"$object")
+            depth=0
+            while [ "$object_type" = tag ]; do
+              depth=$((depth + 1))
+              [ "$depth" -le 8 ] || return 1
+              object=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$object_sha")
+              object_type=$(jq -er '.object.type' <<<"$object")
+              object_sha=$(jq -er '.object.sha' <<<"$object")
+            done
+            [ "$object_type" = commit ] || return 1
+            printf '%s\n' "$object_sha"
+          }
+          if [ "$(resolve_tag_commit)" != "$SHA" ]; then
+            echo "tag $TAG moved before version image promotion" >&2
+            exit 1
+          fi
+          release=$(gh release view "$TAG" --json isDraft)
+          if [ "$(jq -r '.isDraft' <<<"$release")" != true ]; then
+            echo "release $TAG must remain a draft during image promotion" >&2
+            exit 1
+          fi
+
+      - name: Promote Version Image Tags
+        env:
+          BASE: ${{ needs.images.outputs.base }}
+          CORE_DIGEST: ${{ needs.images.outputs.core_digest }}
+          FULL_DIGEST: ${{ needs.images.outputs.full_digest }}
+          LITE_DIGEST: ${{ needs.images.outputs.lite_digest }}
+          VERSION: ${{ needs.guard.outputs.version }}
+        run: |
+          set -euo pipefail
+          promote() {
+            digest="$1"
+            shift
+            args=()
+            for image_tag in "$@"; do
+              args+=(--tag "$image_tag")
+            done
+            docker buildx imagetools create "${args[@]}" "$BASE@$digest"
+          }
+          verify_ref() {
+            image_ref="$1"
+            expected="$2"
+            actual=$(docker buildx imagetools inspect "$image_ref" \
+              --format '{{json .Manifest.Digest}}' | jq -r .)
+            if [ "$actual" != "$expected" ]; then
+              echo "$image_ref resolved to $actual, want $expected" >&2
+              return 1
+            fi
+          }
+
+          for digest in "$CORE_DIGEST" "$FULL_DIGEST" "$LITE_DIGEST"; do
+            verify_ref "$BASE@$digest" "$digest"
+          done
+
+          promote "$FULL_DIGEST" "$BASE:$VERSION"
+          promote "$CORE_DIGEST" "$BASE:$VERSION-core"
+          promote "$LITE_DIGEST" "$BASE:$VERSION-lite"
+          verify_ref "$BASE:$VERSION" "$FULL_DIGEST"
+          verify_ref "$BASE:$VERSION-core" "$CORE_DIGEST"
+          verify_ref "$BASE:$VERSION-lite" "$LITE_DIGEST"
+
+  publish:
+    name: Publish / GitHub Release
+    runs-on: ubuntu-latest
+    needs: [guard, version-images]
+    permissions:
+      contents: write
+    steps:
+      - name: Publish Validated Draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.guard.outputs.tag }}
+          SHA: ${{ needs.guard.outputs.sha }}
+          PRERELEASE: ${{ needs.guard.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          resolve_tag_commit() {
+            object=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG")
+            object_type=$(jq -er '.object.type' <<<"$object")
+            object_sha=$(jq -er '.object.sha' <<<"$object")
+            depth=0
+            while [ "$object_type" = tag ]; do
+              depth=$((depth + 1))
+              [ "$depth" -le 8 ] || return 1
+              object=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$object_sha")
+              object_type=$(jq -er '.object.type' <<<"$object")
+              object_sha=$(jq -er '.object.sha' <<<"$object")
+            done
+            [ "$object_type" = commit ] || return 1
+            printf '%s\n' "$object_sha"
+          }
+          if [ "$(resolve_tag_commit)" != "$SHA" ]; then
+            echo "tag $TAG moved before release publication" >&2
+            exit 1
+          fi
+
+          release=$(gh release view "$TAG" --json isDraft,isPrerelease)
+          if [ "$(jq -r '.isDraft' <<<"$release")" != true ]; then
+            echo "release $TAG must be a draft before publication" >&2
+            exit 1
+          fi
+          if [ "$(jq -r '.isPrerelease' <<<"$release")" != "$PRERELEASE" ]; then
+            echo "release $TAG prerelease state changed" >&2
+            exit 1
+          fi
+          gh release edit "$TAG" --draft=false --verify-tag
+
+  floating-images:
+    name: Publish / Floating Image Tags
+    if: needs.guard.outputs.prerelease == 'false'
+    runs-on: ubuntu-latest
+    needs: [guard, images, publish]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Setup Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log In To Registry
+        env:
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$REGISTRY_TOKEN" \
+            | docker login "$REGISTRY" -u "$REGISTRY_USER" --password-stdin
+
+      - name: Revalidate Published Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.guard.outputs.tag }}
+          SHA: ${{ needs.guard.outputs.sha }}
+        run: |
+          set -euo pipefail
+          resolve_tag_commit() {
+            object=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG")
+            object_type=$(jq -er '.object.type' <<<"$object")
+            object_sha=$(jq -er '.object.sha' <<<"$object")
+            depth=0
+            while [ "$object_type" = tag ]; do
+              depth=$((depth + 1))
+              [ "$depth" -le 8 ] || return 1
+              object=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$object_sha")
+              object_type=$(jq -er '.object.type' <<<"$object")
+              object_sha=$(jq -er '.object.sha' <<<"$object")
+            done
+            [ "$object_type" = commit ] || return 1
+            printf '%s\n' "$object_sha"
+          }
+          if [ "$(resolve_tag_commit)" != "$SHA" ]; then
+            echo "tag $TAG moved before floating image promotion" >&2
+            exit 1
+          fi
+          release=$(gh release view "$TAG" --json isDraft,isPrerelease)
+          if [ "$(jq -r '.isDraft' <<<"$release")" != false ] || \
+             [ "$(jq -r '.isPrerelease' <<<"$release")" != false ]; then
+            echo "release $TAG must be a published stable release" >&2
+            exit 1
+          fi
+
+      - name: Promote Floating Image Tags
+        env:
+          BASE: ${{ needs.images.outputs.base }}
+          CORE_DIGEST: ${{ needs.images.outputs.core_digest }}
+          FULL_DIGEST: ${{ needs.images.outputs.full_digest }}
+          LITE_DIGEST: ${{ needs.images.outputs.lite_digest }}
+          VERSION: ${{ needs.guard.outputs.version }}
+        run: |
+          set -euo pipefail
+          promote() {
+            digest="$1"
+            shift
+            args=()
+            for image_tag in "$@"; do
+              args+=(--tag "$image_tag")
+            done
+            docker buildx imagetools create "${args[@]}" "$BASE@$digest"
+          }
+          verify_ref() {
+            image_ref="$1"
+            expected="$2"
+            actual=$(docker buildx imagetools inspect "$image_ref" \
+              --format '{{json .Manifest.Digest}}' | jq -r .)
+            if [ "$actual" != "$expected" ]; then
+              echo "$image_ref resolved to $actual, want $expected" >&2
+              return 1
+            fi
+          }
+
+          verify_ref "$BASE:$VERSION" "$FULL_DIGEST"
+          verify_ref "$BASE:$VERSION-core" "$CORE_DIGEST"
+          verify_ref "$BASE:$VERSION-lite" "$LITE_DIGEST"
+
+          major="${VERSION%%.*}"
+          rest="${VERSION#*.}"
+          minor="${rest%%.*}"
+          promote "$FULL_DIGEST" "$BASE:$major.$minor" "$BASE:$major" "$BASE:latest"
+          promote "$CORE_DIGEST" "$BASE:$major.$minor-core" "$BASE:$major-core" "$BASE:core"
+          promote "$LITE_DIGEST" "$BASE:$major.$minor-lite" "$BASE:$major-lite" "$BASE:lite"
+          verify_ref "$BASE:$major.$minor" "$FULL_DIGEST"
+          verify_ref "$BASE:$major" "$FULL_DIGEST"
+          verify_ref "$BASE:latest" "$FULL_DIGEST"
+          verify_ref "$BASE:$major.$minor-core" "$CORE_DIGEST"
+          verify_ref "$BASE:$major-core" "$CORE_DIGEST"
+          verify_ref "$BASE:core" "$CORE_DIGEST"
+          verify_ref "$BASE:$major.$minor-lite" "$LITE_DIGEST"
+          verify_ref "$BASE:$major-lite" "$LITE_DIGEST"
+          verify_ref "$BASE:lite" "$LITE_DIGEST"
+
+  cleanup:
+    name: Publish / Discard Candidate Images
+    if: always() && needs.images.result != 'skipped'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    needs: [guard, images, draft, version-images, publish, floating-images]
+    permissions:
+      packages: write
+    steps:
+      - name: Discard Unpromoted Candidates
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ needs.guard.outputs.sha }}
+        run: |
+          set -euo pipefail
+          package=$(printf '%s' "${GITHUB_REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')
+          prefix="candidate-${SHA:0:12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-"
+
+          api=""
+          for owner_scope in "users/$GITHUB_REPOSITORY_OWNER" "orgs/$GITHUB_REPOSITORY_OWNER"; do
+            path="$owner_scope/packages/container/$package/versions"
+            if gh api "$path" --jq 'length' >/dev/null 2>&1; then
+              api="$path"
+              break
+            fi
+          done
+          if [ -z "$api" ]; then
+            echo "::warning::cannot read $package versions, candidate tags left in place"
+            exit 0
+          fi
+
+          mapfile -t rows < <(gh api --paginate "$api" \
+            --jq '.[] | [(.id | tostring), .name, ((.metadata.container.tags // []) | join(","))] | @tsv')
+          version_id() {
+            printf '%s\n' "${rows[@]}" | awk -F'\t' -v d="$1" '$2 == d {print $1; exit}'
+          }
+          version_digest() {
+            printf '%s\n' "${rows[@]}" | awk -F'\t' -v i="$1" '$1 == i {print $2; exit}'
+          }
+
+          repository=$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')
+          registry_token=$(curl -fsSL -u "$GITHUB_ACTOR:$GH_TOKEN" \
+            "https://$REGISTRY/token?scope=repository:$repository:pull&service=$REGISTRY" \
+            | jq -r '.token')
+          child_digests() {
+            curl -fsSL -H "Authorization: Bearer $registry_token" \
+              -H 'Accept: application/vnd.oci.image.index.v1+json' \
+              -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json' \
+              "https://$REGISTRY/v2/$repository/manifests/$1" \
+              | jq -r '(.manifests // [])[].digest'
+          }
+
+          discard=""
+          for row in "${rows[@]}"; do
+            IFS=$'\t' read -r id digest tags <<<"$row"
+            case ",$tags," in
+              *",$prefix"*) ;;
+              *) continue ;;
+            esac
+            promoted=""
+            for entry in ${tags//,/ }; do
+              case "$entry" in
+                "$prefix"*) ;;
+                *) promoted="$entry" ;;
+              esac
+            done
+            if [ -n "$promoted" ]; then
+              echo "keeping $digest: promoted as $promoted, shares a manifest with the release"
+              continue
+            fi
+            for child in $(child_digests "$digest" || true); do
+              child_id=$(version_id "$child")
+              [ -n "$child_id" ] && discard="$discard $child_id"
+            done
+            discard="$discard $id"
+          done
+
+          if [ -z "$discard" ]; then
+            echo "no unpromoted candidate images to discard"
+            exit 0
+          fi
+
+          for id in $discard; do
+            digest=$(version_digest "$id")
+            if gh api --method DELETE "$api/$id" --silent 2>/dev/null; then
+              echo "discarded $digest"
+            else
+              echo "::warning::could not discard $digest"
+            fi
+          done
