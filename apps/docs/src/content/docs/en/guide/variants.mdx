@@ -111,6 +111,36 @@ What the run supports:
   The experiment used small deterministic fixtures, not real bitrates. It cannot support 1080p or 4K throughput rankings, multi-channel concurrency limits, CPU efficiency, time to first frame, or long-run memory stability, and it does not cover the memory and CPU cost of Full actually launching an ffmpeg fallback. Real deployments should run their own end-to-end acceptance and soak tests against the target channels.
 </Aside>
 
+### Environment and method
+
+The host was an Apple M1 Max with 10 cores and 64 GiB, running containers on OrbStack under `linux/arm64`. Each Kiln container was limited to 1 CPU and 128 MiB with swap equal to memory, a read-only root filesystem, all Linux capabilities dropped, and `no-new-privileges` enabled. The three variants ran in interleaved order so a fixed sequence could not bias the caches.
+
+The workload used the deterministic media fixtures in the repository rather than an external origin: a 320×180, 25 fps, 4 second H.264 test pattern at roughly 120 kbit/s paired with a 32 kbit/s stereo AAC tone. Every iteration fetched the master, media, init and segment of the encrypted DASH to HLS chain, plus the playlist, init and segment of the HLS proxy chain. Full defaults to `auto`, but the native engine handles this fixture end to end; the logs confirmed the native path and no ffmpeg child process appeared in the process table, so these numbers isolate the cost of the variant itself.
+
+Memory is the `VmRSS` of PID 1 sampled after the 20th iteration of each round. The cgroup `memory.peak` accounts for file page cache alongside anonymous memory and swings much more between rounds, so it is used only to confirm the container boundary and OOM safety, never to rank the variants. Each metric reports the median and range across 5 rounds; the sample is small, so the comparison is descriptive only.
+
+### Reproducing it
+
+Build and verify the images from the target revision first. The check covers variant labels, the default packager, the non-root user, the ffmpeg boundary, and Lite's dependency closure and size ceiling:
+
+```bash
+make docker-images docker-verify-images
+```
+
+A single comparison round runs through `deploy/docker/native-media-runtime-smoke.sh`, with environment variables pinning the container limits, the iteration count and the expected resource profile:
+
+```bash
+KILN_SMOKE_CHECK_RESOURCES=1 \
+KILN_SMOKE_CPUS=1 \
+KILN_SMOKE_MEMORY=128m \
+KILN_SMOKE_ITERATIONS=20 \
+KILN_SMOKE_VARIANT=lite \
+KILN_SMOKE_EXPECTED_PROFILE=lite \
+  sh deploy/docker/native-media-runtime-smoke.sh kiln:lite-local
+```
+
+For Core and Full, swap `KILN_SMOKE_VARIANT` and `KILN_SMOKE_EXPECTED_PROFILE` for `core` / `full` and `compact`. A serious re-run should repeat at least 5 rounds and rotate the order, and comparisons across commits should hold the Docker version, host load, container limits, fixture and iteration count constant. Acceptance against real channels is a separate script, `scripts/live-performance.sh`, which measures cold start, first manifest, throughput ratio, RSS and CPU.
+
 ## Picking one
 
 <CardGrid>

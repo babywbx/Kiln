@@ -409,12 +409,12 @@ soak harness 持续拉取每个频道的主播放列表、媒体播放列表与�
 ## 📁 项目结构
 
 ```text
+apps/docs/         文档站点
 apps/server/       服务入口
 apps/soak/         长稳测试 harness
 modules/           领域模块（packager、pull、auth、epg、egress……）
 configs/examples/  示例配置与密钥文件
 deploy/docker/     Dockerfile、Compose 模板与验证脚本
-docs/              设计与实测文档
 scripts/           口令哈希、密钥生成、索引表生成与控制台测试
 ```
 
@@ -449,4 +449,4 @@ Copyright © 2026-present [Babywbx][profile-link].<br/>
 [go-version-link]: https://github.com/babywbx/Kiln/blob/main/go.mod
 [go-version-shield]: https://img.shields.io/github/go-mod/go-version/babywbx/Kiln?color=369eff&labelColor=black&style=flat-square
 [profile-link]: https://github.com/babywbx
-[variant-doc]: ./docs/variant-performance-comparison.md
+[variant-doc]: https://kiln.wbxdocs.com/guide/variants/

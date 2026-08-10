@@ -218,7 +218,7 @@ It creates no SQLite database; `data_dir` only holds the auto-generated login ke
 > \[!NOTE\]
 > Image defaults apply only when `[packager].engine` is absent from the config. An explicit `auto`, `native`, or `ffmpeg` always wins, so the same config never changes behavior because of an image tag.
 
-`core` builds for `linux/amd64`, `linux/arm64`, `linux/arm/v7`, and `linux/arm/v6`. Capability boundaries, image sizes, and constrained-container measurements are documented in [Lite, Core and Full performance comparison][variant-doc] (Chinese), and `deploy/docker/compose.example.yaml` provides a Compose template.
+`core` builds for `linux/amd64`, `linux/arm64`, `linux/arm/v7`, and `linux/arm/v6`. Capability boundaries, image sizes, and constrained-container measurements are documented in [Lite, Core and Full performance comparison][variant-doc], and `deploy/docker/compose.example.yaml` provides a Compose template.
 
 <div align="right">
 
@@ -403,12 +403,12 @@ Live-stream testing reads its sources only from the gitignored `configs/local.to
 ## 📁 Project Structure
 
 ```text
+apps/docs/         Documentation site
 apps/server/       Service entry point
 apps/soak/         Long-running soak harness
 modules/           Domain modules (packager, pull, auth, epg, egress, …)
 configs/examples/  Sample configuration and key files
 deploy/docker/     Dockerfile, Compose template, verification scripts
-docs/              Design notes and measurements
 scripts/           Password hashing, key generation, table generation, console tests
 ```
 
@@ -443,4 +443,4 @@ This project is licensed under [AGPL-3.0-only](./LICENSE).
 [go-version-link]: https://github.com/babywbx/Kiln/blob/main/go.mod
 [go-version-shield]: https://img.shields.io/github/go-mod/go-version/babywbx/Kiln?color=369eff&labelColor=black&style=flat-square
 [profile-link]: https://github.com/babywbx
-[variant-doc]: ./docs/variant-performance-comparison.md
+[variant-doc]: https://kiln.wbxdocs.com/en/guide/variants/
