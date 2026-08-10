@@ -59,8 +59,8 @@ proxy = "proxy-http"
 - `socks5h` 由代理侧解析域名，`socks5` 先在本机解析再连接。回源地址依赖境外 DNS 时优先选 `socks5h`。
 - 线路可以停用而不删除。被 `egress.default` 或启用中的规则引用的线路不允许处于停用状态。
 
-<Aside type="caution" title="ffmpeg 只认 HTTP 代理">
-  ffmpeg 引擎只能通过环境变量接收 `http` 或 `https` 代理。如果某个频道最终由 ffmpeg 处理，而它的地址被路由到 SOCKS 线路，这次发布会直接失败并提示改用 HTTP 代理或直连。原生引擎没有这个限制，参见 [媒体引擎](/guide/media-engine/)。
+<Aside type="note" title="两种引擎都支持全部四种 scheme">
+  ffmpeg 引擎不直接使用你配置的线路，它通过 Kiln 在本地开的一次性 HTTP 代理取数据，出站仍由 Kiln 按路由完成，因此线路是 HTTP 还是 SOCKS 对它同样透明。频道走哪个引擎见 [媒体引擎](/guide/media-engine/)。
 </Aside>
 
 ## 默认出口与规则
@@ -97,9 +97,112 @@ proxy = "proxy-http"
   设置了 `max_viewers` 的频道无论采用哪种策略都会被改写，否则 Kiln 无法统计并发观看数。
 </Aside>
 
-## 容器内访问宿主代理
+## 在容器里访问代理
 
-`docker_proxy_host` 默认 `host.docker.internal`，只在 `ffmpeg.mode = "docker"` 时生效。Kiln 给 ffmpeg 容器注入代理环境变量时，会把代理地址中的 `127.0.0.1`、`localhost`、`::1` 替换成这个主机名并保留端口，因为容器里的回环地址指向的是容器自己。线路本身仍然按原样填写宿主机上的地址。
+Kiln 不会改写线路里的地址。在容器里运行时，`url` 必须是**从 Kiln 容器内部**连得上的地址：宿主机上好用的 `127.0.0.1` 在容器里指向容器自己，直接照抄会连不通。
+
+### 代理跑在宿主机上
+
+用 `host.docker.internal` 回连宿主机。这个名字在 Docker Desktop 上自带，Linux 上需要显式映射到网关：
+
+```yaml title="compose.yaml" ins={6,7}
+services:
+  kiln:
+    image: ghcr.io/babywbx/kiln:core
+    ports:
+      - "8080:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./kiln.toml:/etc/kiln/kiln.toml:ro
+      - kiln-data:/var/lib/kiln/data
+    restart: unless-stopped
+
+volumes:
+  kiln-data:
+```
+
+线路填这个主机名，端口用代理在宿主机上监听的端口：
+
+```toml title="kiln.toml"
+[[proxies]]
+id = "proxy-host"
+name = "宿主机代理"
+url = "http://host.docker.internal:7890"
+```
+
+<Aside type="caution" title="宿主机代理必须允许局域网连接">
+  这个场景最常见的失败原因不在 Kiln：代理只监听 `127.0.0.1` 时收不到来自容器的连接。请把它改为监听 `0.0.0.0` 或网桥地址，多数代理程序里对应「允许局域网连接」一类的开关。
+</Aside>
+
+### 代理是另一个容器
+
+两个容器接在同一个 Docker 网络上时，直接用服务名寻址，代理不需要把端口映射到宿主机：
+
+```yaml title="compose.yaml"
+services:
+  proxy:
+    image: your-proxy-image
+    container_name: proxy
+    volumes:
+      - ./proxy-config:/etc/proxy:ro
+    restart: unless-stopped
+    networks: [kiln-net]
+
+  kiln:
+    image: ghcr.io/babywbx/kiln:core
+    depends_on: [proxy]
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./kiln.toml:/etc/kiln/kiln.toml:ro
+      - kiln-data:/var/lib/kiln/data
+    restart: unless-stopped
+    networks: [kiln-net]
+
+networks:
+  kiln-net:
+
+volumes:
+  kiln-data:
+```
+
+线路用服务名加代理在**容器内**监听的端口，这里不是它映射到宿主机的那个端口：
+
+```toml title="kiln.toml"
+[[proxies]]
+id = "proxy-sidecar"
+name = "代理容器"
+url = "http://proxy:7890"
+
+[[proxies]]
+id = "proxy-sidecar-socks"
+name = "代理容器 SOCKS"
+url = "socks5h://proxy:7891"
+```
+
+同一个网络内的流量不出宿主机，所以代理容器不必对外暴露端口，也不需要 `extra_hosts`。
+
+### 代理在局域网另一台机器上
+
+这种情况不需要任何 Docker 侧的特殊配置。容器默认的 bridge 网络本来就能访问宿主机所在的局域网，把线路填成那台机器的地址即可：
+
+```toml title="kiln.toml"
+[[proxies]]
+id = "proxy-lan"
+name = "局域网代理"
+url = "http://192.168.1.100:7890"
+```
+
+既不需要 `extra_hosts`，也不需要和谁共享网络，写法与 Kiln 直接跑在宿主机上时完全一致。要求同样是那台机器上的代理必须监听 `0.0.0.0` 或对应网卡，并且防火墙放行该端口。
+
+### `docker_proxy_host` 不参与这件事
+
+`docker_proxy_host` 只在 `ffmpeg.mode = "docker"` 时生效，作用是告诉 Kiln 拉起的 ffmpeg 子容器怎么回连 Kiln 进程自己，与线路地址无关。上面两种拓扑都不需要动它。
+
+### 验证
+
+控制台的「出站代理」页要求线路先通过一次连通性测试才允许应用，这次测试正是从 Kiln 容器内部发起的，通过即说明地址在容器视角可达。测试失败时按这个顺序排查：代理是否允许非本机连接、容器是否解析得到那个主机名或服务名、端口填的是不是容器视角的端口。
 
 ## 受路由控制的流量
 
@@ -134,8 +237,11 @@ proxy = "proxy-http"
   <Card title="默认代理，个别域直连" icon="ph:shuffle">
     `default = "proxy-http"`，再为内网或本地源加一条 `proxy = "direct"` 的规则。局域网上游不必绕出去，也避免代理看到内网地址。
   </Card>
-  <Card title="容器内 ffmpeg 走宿主代理" icon="ph:cube">
-    线路填宿主机上的 `http://127.0.0.1:7890`，保持 `docker_proxy_host` 为默认值，Kiln 会在注入容器时自动换成可达的主机名。
+  <Card title="Kiln 在容器里，代理在宿主机" icon="ph:cube">
+    线路填 `http://host.docker.internal:7890`，并给 Kiln 容器加上 `host.docker.internal:host-gateway` 映射。见 [在容器里访问代理](#在容器里访问代理)。
+  </Card>
+  <Card title="Kiln 与代理各在一个容器" icon="ph:graph">
+    两者接同一个 Docker 网络，线路填 `http://<服务名>:<容器内端口>`，代理无需对外映射端口。见 [在容器里访问代理](#在容器里访问代理)。
   </Card>
 </CardGrid>
 

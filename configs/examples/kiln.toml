@@ -117,7 +117,9 @@ max_source_bytes = 67108864
 default_timezone = "UTC"
 serve_timezone = "keep"
 
-# Optional outbound proxies
+# Optional outbound proxies. The url is never rewritten, so inside a container
+# it must be reachable from there: host.docker.internal for a proxy on the host
+# (needs extra_hosts on Linux), or the service name of a sibling container.
 # [[proxies]]
 # id = "proxy-http"
 # name = "HTTP Proxy"
@@ -131,6 +133,8 @@ serve_timezone = "keep"
 [egress]
 default = "direct"
 playlist_policy = "rewrite"
+# Only used when ffmpeg.mode = "docker": how the spawned ffmpeg container
+# reaches this process. Unrelated to the proxy urls above.
 # docker_proxy_host = "host.docker.internal"
 
 # [[egress.rules]]

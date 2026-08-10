@@ -256,14 +256,6 @@ inflight_mb=64 max_segment_mb=32 gc_percent=100 drop_file_cache=true
 
 **处理**：检查 `[[proxies]]` 里的 `id` 是否拼写一致，以及该线路是否被停用。
 
-### ffmpeg 用不了 SOCKS 代理
-
-**症状**：保存频道的代理绑定时被拒绝，消息为 `FFmpeg cannot use a SOCKS proxy; choose HTTP, direct, or the native DASH engine`；或者会话启动时报 `CONNECT tunnel cannot use socks5 proxy`。
-
-**判断**：兼容引擎的全部网络请求会先经过 Kiln 的本地安全代理，再接入频道的出站线路。这个转接只支持 `http` 与 `https` 两种 scheme。原生引擎则四种都支持（`http`、`https`、`socks5`、`socks5h`）。
-
-**处理**：给该频道换成 HTTP 代理，或者改用原生引擎。
-
 ### FFmpeg 容器连不上 Kiln
 
 **症状**：`[ffmpeg].mode = "docker"` 时，FFmpeg 容器无法连接 Kiln 启动的本地安全代理。

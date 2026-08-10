@@ -236,7 +236,7 @@ See [EPG](/en/guide/epg/) for channel matching and built-in source behavior.
 | --- | --- | --- | --- |
 | `default` | string | `"direct"` | Route used when no rule matches. Must be `direct` or a defined `[[proxies]]` id, otherwise validation fails. |
 | `playlist_policy` | string | `"rewrite"` | Playlist URL rewriting policy; one of `rewrite`, `passthrough`, `auto`. Anything else fails validation. `rewrite` always rewrites to a Kiln-relative URL, `passthrough` always keeps the original, `auto` rewrites only when a proxy was actually used. |
-| `docker_proxy_host` | string | `"host.docker.internal"` | Hostname substituted when a container reaches a proxy on the host. |
+| `docker_proxy_host` | string | `"host.docker.internal"` | Applies only when `ffmpeg.mode = "docker"`; the hostname the spawned ffmpeg container uses to reach the Kiln process. It does not affect `[[proxies]].url` — Kiln never rewrites a route address. |
 | `rules` | array | `[]` | Routing rules, see `[[egress.rules]]` below. |
 
 ## `[[egress.rules]]`

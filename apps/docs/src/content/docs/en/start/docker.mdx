@@ -124,9 +124,11 @@ docker run --rm --cpus=1 --memory=192m --memory-swap=192m \
 
 When host detection is wrong, override it with `KILN_RESOURCE_MEMORY_MB` and `KILN_RESOURCE_CPUS`; to opt out entirely, set `resource_mode = "performance"`. Profile tables and tuning advice live in [Operations](/en/guide/operations/).
 
-## Outbound proxies and docker_proxy_host
+## Outbound proxies
 
-`[egress].docker_proxy_host` defaults to `host.docker.internal` and applies only when `[ffmpeg].mode = "docker"`. In that mode Kiln injects proxy environment variables into the ffmpeg container, and if the proxy URL's host is `127.0.0.1`, `localhost`, or `::1`, it is rewritten to `docker_proxy_host` with the port preserved. Without that rewrite, the loopback address inside the child container would point at the child itself. Routes, host-based rules, and connectivity testing are covered in [Outbound proxies](/en/guide/proxy/).
+Kiln never rewrites the address on a route, so an address configured inside a container has to be reachable from inside it. For a proxy on the host, use `host.docker.internal` and give the container the matching `extra_hosts` mapping; for a proxy running as another container on the same Docker network, use its service name. Both topologies are written out in [Outbound proxies](/en/guide/proxy/#reaching-a-proxy-from-inside-a-container).
+
+`[egress].docker_proxy_host` is a separate thing: it applies only when `[ffmpeg].mode = "docker"`, where it tells the ffmpeg container Kiln spawns how to reach the Kiln process itself. It has nothing to do with route addresses, and Kiln maps its default `host.docker.internal` to the gateway when it creates that container.
 
 ## Persistent data
 

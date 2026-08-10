@@ -124,9 +124,11 @@ docker run --rm --cpus=1 --memory=192m --memory-swap=192m \
 
 宿主机探测不准时，用 `KILN_RESOURCE_MEMORY_MB` 与 `KILN_RESOURCE_CPUS` 覆盖探测结果；完全退出自适应用 `resource_mode = "performance"`。档位表与调优建议见 [运维与调优](/guide/operations/)。
 
-## 出站代理与 docker_proxy_host
+## 出站代理
 
-`[egress].docker_proxy_host` 默认是 `host.docker.internal`，只在 `[ffmpeg].mode = "docker"` 时生效。此时 Kiln 会为 ffmpeg 容器注入代理环境变量，如果代理 URL 的主机是 `127.0.0.1`、`localhost` 或 `::1`，就把主机名替换成 `docker_proxy_host` 并保留端口，否则子容器里的回环地址指向的是它自己。代理线路、按域名路由与连通性测试见 [出站代理](/guide/proxy/)。
+Kiln 不会改写线路里的代理地址，容器里填的地址必须从容器内部连得上。代理在宿主机上时用 `host.docker.internal`，并给容器加 `extra_hosts` 映射；代理是同一个 Docker 网络里的另一个容器时直接用服务名。两种拓扑的完整配置见 [出站代理](/guide/proxy/#在容器里访问代理)。
+
+`[egress].docker_proxy_host` 是另一回事：它只在 `[ffmpeg].mode = "docker"` 时生效，告诉 Kiln 拉起的 ffmpeg 子容器怎么回连 Kiln 进程自己，与线路地址无关。默认值 `host.docker.internal` 由 Kiln 在创建子容器时自动映射到网关。
 
 ## 数据持久化
 

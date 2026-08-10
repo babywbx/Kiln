@@ -256,14 +256,6 @@ Compare that against the profile table in [Operations](/en/guide/operations/). T
 
 **Fix**: check that the `id` under `[[proxies]]` matches exactly and that the profile is not disabled.
 
-### ffmpeg cannot use a SOCKS proxy
-
-**Symptom**: saving a channel's proxy binding is rejected with `FFmpeg cannot use a SOCKS proxy; choose HTTP, direct, or the native DASH engine`, or a session fails with `CONNECT tunnel cannot use socks5 proxy`.
-
-**How to tell**: every compatibility-engine network request first passes through Kiln's local guarded proxy and then enters the channel's outbound route. That handoff supports `http` and `https` profiles. The native engine supports all four (`http`, `https`, `socks5`, `socks5h`).
-
-**Fix**: give that channel an HTTP proxy, or switch it to the native engine.
-
 ### FFmpeg container cannot reach Kiln
 
 **Symptom**: under `[ffmpeg].mode = "docker"`, the FFmpeg container cannot reach the short-lived guarded proxy started by Kiln.

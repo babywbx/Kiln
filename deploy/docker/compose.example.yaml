@@ -19,6 +19,10 @@ services:
     #   KILN_LOG_LEVEL: "info"
     #   KILN_LOG_FORMAT: "text"
     #   KILN_LOG_COLOR: "never"
+    # Lets a proxy route use http://host.docker.internal:PORT to reach the host.
+    # Provided automatically by Docker Desktop; required on Linux.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./kiln.toml:/etc/kiln/kiln.toml:ro
       - ./kiln.keys:/etc/kiln/kiln.keys:ro
@@ -26,7 +30,8 @@ services:
       - kiln-data:/var/lib/kiln/data
     restart: unless-stopped
     # If origin is another docker service on the same network, set base_url to
-    # http://service-name:port and attach both to the same network.
+    # http://service-name:port and attach both to the same network. A proxy
+    # running as a sibling container is addressed the same way.
 
 volumes:
   kiln-data:
