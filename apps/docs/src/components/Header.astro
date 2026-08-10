@@ -7,10 +7,6 @@ import { SearchTrigger } from "./ui/search";
 import { config } from "virtual:nimbus/config";
 
 interface Props {
-  /** Astro collection id for the current page, forwarded from DocsLayout. */
-  collection?: string;
-  /** Astro entry id for the current page, forwarded from DocsLayout. */
-  entryId?: string;
   /**
    * Whether the page has a sidebar to open. When `false`, the mobile
    * menu button is hidden — pages that opted out via `sidebar: false`
@@ -19,9 +15,6 @@ interface Props {
   showSidebar?: boolean;
 }
 
-// `entryId` and `collection` are part of Props as forward-compat hooks (the
-// version-switcher recipe reads them) but the base Header doesn't use them —
-// leave them off the destructure to avoid unused-var warnings.
 const { showSidebar = true } = Astro.props;
 
 // Normalize trailing slash so isActive matches sidebar hrefs.
@@ -58,7 +51,8 @@ const sections = [
 <header class="sticky top-0 z-30 border-b border-border bg-card/80 backdrop-blur-lg">
   <div class="mx-auto flex items-center justify-between h-14 px-4 lg:px-6">
     <div class="flex items-center gap-3">
-      <a href="/" class="group">
+      <a href="/" class="group flex items-center gap-2 no-underline">
+        <img src="/icon.webp" alt="" width="22" height="22" class="h-[22px] w-[22px]" />
         <span class="font-semibold text-sm text-foreground group-hover:text-primary transition-colors">
           {config.title}
         </span>

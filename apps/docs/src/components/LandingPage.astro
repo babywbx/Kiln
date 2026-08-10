@@ -58,8 +58,16 @@ const {
 <BaseLayout title={title} description={description}>
   <div class="flex min-h-screen flex-col">
     <Header />
-    <main class="flex-1 w-full">
-      <section class="mx-auto max-w-3xl px-6 pt-20 pb-4 text-center">
+    <main id="main-content" class="flex-1 w-full">
+      <section class="mx-auto max-w-3xl px-6 pt-16 pb-4 text-center">
+        <img
+          src="/icon.webp"
+          alt=""
+          width="96"
+          height="96"
+          fetchpriority="high"
+          class="mx-auto mb-5 h-20 w-20 sm:h-24 sm:w-24"
+        />
         <h1 class="text-balance text-[2.75rem] font-bold leading-[1.15] tracking-tight text-foreground sm:text-[3.25rem]">
           {headingPre}
           <span class="bg-gradient-to-r from-primary to-primary-hover bg-clip-text text-transparent">

@@ -1,11 +1,13 @@
 <div align="center"><a name="readme-top"></a>
 
+<img src="./apps/docs/public/icon.webp" alt="Kiln" width="152" height="152" />
+
 # Kiln
 
 A lightweight streaming aggregation gateway that turns self-hosted HLS and DASH<br/>
 channels into one authenticated M3U playlist and on-demand HLS output.
 
-[简体中文](./README.md) · [Report Issue][github-issues-link] · [Changelog][github-release-link]
+[简体中文](./README.md) · [Documentation][docs-link] · [Report Issue][github-issues-link] · [Changelog][github-release-link]
 
 <!-- SHIELD GROUP -->
 
@@ -88,6 +90,8 @@ DASH decryption and repackaging are implemented natively in Go, so FFmpeg is not
 </div>
 
 ## 🚀 Quick Start
+
+This is the shortest path; see the [documentation site][docs-link] for full configuration, deployment options and API details.
 
 Requires Go 1.26+. Native DASH needs no ffmpeg; only the compatibility fallback does.
 
@@ -422,6 +426,7 @@ This project is licensed under [AGPL-3.0-only](./LICENSE).
 <!-- LINK GROUP -->
 
 [back-to-top]: https://img.shields.io/badge/-BACK_TO_TOP-151515?style=flat-square
+[docs-link]: https://kiln.wbxdocs.com
 [github-contributors-link]: https://github.com/babywbx/Kiln/graphs/contributors
 [github-contributors-shield]: https://img.shields.io/github/contributors/babywbx/Kiln?color=c4f042&labelColor=black&style=flat-square
 [github-forks-link]: https://github.com/babywbx/Kiln/network/members

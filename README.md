@@ -1,11 +1,13 @@
 <div align="center"><a name="readme-top"></a>
 
+<img src="./apps/docs/public/icon.webp" alt="Kiln" width="152" height="152" />
+
 # Kiln
 
 轻量的流媒体汇聚网关，把自建上游的 HLS 与 DASH 频道<br/>
 统一成一份带鉴权的 M3U 播放列表和随取随用的 HLS 输出。
 
-[English](./README.en.md) · [报告问题][github-issues-link] · [更新日志][github-release-link]
+[English](./README.en.md) · [在线文档][docs-link] · [报告问题][github-issues-link] · [更新日志][github-release-link]
 
 <!-- SHIELD GROUP -->
 
@@ -88,6 +90,8 @@ DASH 的解密与重封装由 Go 原生实现，默认不需要 FFmpeg。整套�
 </div>
 
 ## 🚀 快速开始
+
+下面是最短路径，逐项配置、部署方案和 API 细节见[在线文档][docs-link]。
 
 需要 Go 1.26+。原生 DASH 不需要 ffmpeg，只有兼容回退才需要。
 
@@ -428,6 +432,7 @@ Copyright © 2026-present [Babywbx][profile-link].<br/>
 <!-- LINK GROUP -->
 
 [back-to-top]: https://img.shields.io/badge/-BACK_TO_TOP-151515?style=flat-square
+[docs-link]: https://kiln.wbxdocs.com
 [github-contributors-link]: https://github.com/babywbx/Kiln/graphs/contributors
 [github-contributors-shield]: https://img.shields.io/github/contributors/babywbx/Kiln?color=c4f042&labelColor=black&style=flat-square
 [github-forks-link]: https://github.com/babywbx/Kiln/network/members

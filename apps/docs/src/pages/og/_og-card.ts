@@ -1,17 +1,19 @@
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import type { CanvasKit, FontMgr, TextStyle } from "canvaskit-wasm/full";
+import type { CanvasKit, FontMgr, Image, TextStyle } from "canvaskit-wasm/full";
 import charsetText from "../../fonts/og-charset.txt?raw";
 
 const nodeRequire = createRequire(import.meta.url);
 
 const FONT_FILES = ["./public/fonts/Inter-Bold.ttf", "./src/fonts/NotoSansSC-Bold-subset.otf"];
 const FAMILIES = ["Inter", "Noto Sans CJK SC"];
+const LOGO_FILE = "./public/icon.webp";
 
 const WIDTH = 1200;
 const HEIGHT = 630;
 const PADDING = 88;
 const MEASURE = 900;
+const LOGO_SIZE = 100;
 
 const SECTIONS: Record<string, { zh: string; en: string }> = {
   start: { zh: "入门", en: "Getting started" },
@@ -54,6 +56,7 @@ export function assertOgCovered(text: string, context: string): void {
 interface Renderer {
   ck: CanvasKit;
   fonts: FontMgr;
+  logo: Image;
 }
 
 let renderer: Promise<Renderer> | undefined;
@@ -72,7 +75,9 @@ function load(): Promise<Renderer> {
     );
     const fonts = ck.FontMgr.FromData(...files);
     if (!fonts) throw new Error("OG card fonts failed to load");
-    return { ck, fonts };
+    const logo = ck.MakeImageFromEncoded(await readFile(LOGO_FILE));
+    if (!logo) throw new Error(`OG card logo failed to decode (${LOGO_FILE})`);
+    return { ck, fonts, logo };
   })();
   return renderer;
 }
@@ -88,7 +93,7 @@ export async function renderOgCard({
   title,
   description = "",
 }: OgCard): Promise<Uint8Array<ArrayBuffer>> {
-  const { ck, fonts } = await load();
+  const { ck, fonts, logo } = await load();
 
   const textStyle = (
     color: [number, number, number],
@@ -124,6 +129,14 @@ export async function renderOgCard({
   edge.setStrokeWidth(4);
   canvas.drawLine(0, 0, 0, HEIGHT, edge);
 
+  canvas.drawImageRectOptions(
+    logo,
+    ck.XYWHRect(0, 0, logo.width(), logo.height()),
+    ck.XYWHRect(PADDING, PADDING, LOGO_SIZE, LOGO_SIZE),
+    ck.FilterMode.Linear,
+    ck.MipmapMode.Linear,
+  );
+
   const builder = ck.ParagraphBuilder.Make(
     new ck.ParagraphStyle({
       textAlign: ck.TextAlign.Left,
@@ -151,7 +164,7 @@ export async function renderOgCard({
 
   const paragraph = builder.build();
   paragraph.layout(MEASURE);
-  const top = Math.max(PADDING, HEIGHT - PADDING - paragraph.getHeight());
+  const top = Math.max(PADDING + LOGO_SIZE + 28, HEIGHT - PADDING - paragraph.getHeight());
   canvas.drawParagraph(paragraph, PADDING, top);
 
   const bytes = surface.makeImageSnapshot().encodeToBytes(ck.ImageFormat.PNG, 100);
