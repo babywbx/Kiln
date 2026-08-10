@@ -25,7 +25,12 @@ const {
   entryId,
 } = Astro.props;
 
-const lang = isEnglishPath(Astro.url.pathname) ? "en" : (config.locale ?? "en");
+const pagePath = Astro.url.pathname;
+const isEnglishPage = isEnglishPath(pagePath);
+const lang = isEnglishPage ? "en" : (config.locale ?? "en");
+const socialImageAlt = isEnglishPage
+  ? "Kiln documentation preview"
+  : (config.socialImageAlt ?? "Kiln 文档预览");
 // Per-page agent-index pointer. For pages in non-primary or version
 // collections, this resolves to `/<prefix>/llms.txt` (e.g. `/v0/llms.txt`
 // for a v0 docs page, `/blog/llms.txt` for a blog post). Falls back to
@@ -41,8 +46,6 @@ const llmsUrl = Astro.site
   ? new URL(llmsIndexPath, Astro.site).href
   : llmsIndexPath;
 
-const pagePath = Astro.url.pathname;
-const isEnglishPage = isEnglishPath(pagePath);
 const zhPath = isEnglishPage ? (pagePath === "/en/" || pagePath === "/en" ? "/" : pagePath.slice(3)) : pagePath;
 const enPath = isEnglishPage ? pagePath : pagePath === "/" ? "/en/" : `/en${pagePath}`;
 const hreflangs =
@@ -103,6 +106,8 @@ const hreflangs =
     <NimbusHead
       title={title}
       description={description}
+      locale={lang}
+      socialImageAlt={socialImageAlt}
       noindex={noindex}
       markdownUrl={markdownUrl}
       socialImage={socialImage}

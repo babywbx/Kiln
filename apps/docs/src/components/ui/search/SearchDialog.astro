@@ -20,13 +20,14 @@ const hintClose = isEnglish ? "close" : "关闭";
         <input
           data-search-input
           role="combobox"
+          aria-label={searchAria}
           aria-expanded="false"
           aria-haspopup="listbox"
           aria-autocomplete="list"
           aria-controls="search-listbox"
           type="text"
           placeholder={searchPlaceholder}
-          class="min-w-0 flex-1 border-0 bg-transparent text-base text-foreground placeholder:text-muted-foreground focus:outline-none"
+          class="min-w-0 flex-1 border-0 bg-transparent text-base text-foreground placeholder:text-muted-foreground focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2"
           autocomplete="off"
           spellcheck="false"
           autocorrect="off"
@@ -44,7 +45,13 @@ const hintClose = isEnglish ? "close" : "关闭";
         aria-orientation="vertical"
         class="min-h-96 max-h-[65vh] overflow-y-auto p-2"
       >
-        <p data-search-empty class="py-8 text-center text-sm text-muted-foreground">
+        <p
+          data-search-empty
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+          class="py-8 text-center text-sm text-muted-foreground"
+        >
           {searchHint}
         </p>
       </div>

@@ -1,6 +1,10 @@
 # Declines install scripts for esbuild and sharp (they ship prebuilds),
 # clearing pnpm's build-scripts gate. Adding a package here lets it run scripts.
 packages: []
+overrides:
+  nanoid: 3.3.17
+patchedDependencies:
+  "@cloudflare/nimbus-docs@0.9.0": patches/cloudflare-nimbus-docs@0.9.0.patch
 allowBuilds: # pnpm 11
   esbuild: false
   sharp: false

@@ -1,0 +1,50 @@
+diff --git a/src/components/NimbusHead.astro b/src/components/NimbusHead.astro
+--- a/src/components/NimbusHead.astro
++++ b/src/components/NimbusHead.astro
+@@ -41,6 +41,10 @@ export interface Props {
+   title: string;
+   /** Falls back to `config.description` when absent. */
+   description?: string;
++  /** Per-page locale override for social metadata and JSON-LD. */
++  locale?: string;
++  /** Per-page social image alt text override. */
++  socialImageAlt?: string;
+   /** Emit `<meta name="robots" content="noindex">`. */
+   noindex?: boolean;
+   /** Absolute or site-relative URL for the markdown variant of this page. */
+@@ -70,6 +74,8 @@ export interface Props {
+ const {
+   title,
+   description,
++  locale,
++  socialImageAlt,
+   noindex,
+   markdownUrl,
+   socialImage,
+@@ -125,7 +131,7 @@ const llmsIndexUrl =
+     ? new URL(llmsIndexPath, Astro.site).href
+     : llmsIndexPath;
+ 
+-const canonical = Astro.site
++const canonical = Astro.site && !noindex
+   ? versionCanonicalPath
+     ? new URL(versionCanonicalPath, Astro.site).href
+     : new URL(Astro.url.pathname, Astro.site).href
+@@ -133,7 +139,7 @@ const canonical = Astro.site
+ 
+ const fullTitle = title !== config.title ? `${title} | ${config.title}` : title;
+ const resolvedDescription = description ?? config.description;
+-const lang = config.locale ?? "en";
++const lang = locale ?? config.locale ?? "en";
+ 
+ const isHomePage = Astro.url.pathname === "/";
+ const ogType = isHomePage ? "website" : "article";
+@@ -172,7 +178,7 @@ const ogImage = socialImagePath
+     ? new URL(socialImagePath, Astro.site).href
+     : socialImagePath
+   : null;
+-const ogImageAlt = config.socialImageAlt;
++const ogImageAlt = socialImageAlt ?? config.socialImageAlt;
+ 
+ const structuredData = canonical
+   ? JSON.stringify({
