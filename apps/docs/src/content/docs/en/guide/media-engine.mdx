@@ -13,6 +13,17 @@ The media engine converts a DASH upstream into HLS that players can open directl
 
 ## Choosing an engine
 
+The difference between the two paths comes down to this table. Read it first, then pick a value:
+
+| Capability | Native engine | FFmpeg compatibility path |
+| --- | --- | --- |
+| Tracks and bitrates | Multi-bitrate ABR, up to 8 video, 16 audio, 16 subtitle tracks | One video plus one audio track, a single bitrate |
+| Subtitles | TTML converted to WebVTT tracks | None produced |
+| LL-HLS | Supported | Not supported |
+| Decryption | `cenc` and `cbcs`, multiple KIDs allowed | A single CENC key |
+| Output segments | CMAF | MPEG-TS |
+| External dependency | None; everything runs inside the Go process | An ffmpeg binary or container |
+
 `[packager].engine` takes three values, and they do not overlap:
 
 | Value | Behavior |
