@@ -196,6 +196,25 @@ h1, h2, h3, p { margin: 0; }
 .button-small { min-height: 32px; padding: 5px 12px; font-size: 13px; }
 .button-wide { width: 100%; min-height: 40px; justify-content: space-between; padding-inline: 16px; }
 
+.file-dropzone {
+  display: grid;
+  place-items: center;
+  gap: 10px;
+  min-height: 180px;
+  padding: 24px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--surface-soft);
+  text-align: center;
+  cursor: pointer;
+  transition: background 130ms var(--ease), border-color 130ms var(--ease);
+}
+.file-dropzone:hover, .file-dropzone.is-dragging { border-color: var(--accent); background: var(--surface-hover); }
+.file-dropzone:focus-within { outline: 2px solid var(--ring); outline-offset: 2px; }
+.file-dropzone > .icon { color: var(--accent); }
+.file-dropzone-copy { display: grid; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+.file-dropzone-copy > span { color: var(--muted); font-size: 13px; }
+
 .icon-button {
   display: inline-grid;
   place-items: center;
@@ -760,6 +779,7 @@ tbody tr:hover td { background: color-mix(in srgb, var(--surface-soft) 60%, tran
 td .empty-state { min-height: 200px; }
 
 .row-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; white-space: nowrap; }
+
 
 .identity { display: flex; align-items: center; gap: 11px; min-width: 0; }
 .identity-copy { display: grid; min-width: 0; }

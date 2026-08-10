@@ -1,4 +1,4 @@
-import { frag, h } from "/admin/assets/core/dom.js";
+import { frag, h, icon } from "/admin/assets/core/dom.js";
 import { endpoints } from "/admin/assets/core/api.js";
 import { egressOutcomeMessage } from "/admin/assets/core/egress-status.js";
 import { i18n } from "/admin/assets/core/i18n.js";
@@ -323,7 +323,7 @@ export async function renderEgress(ctx) {
             button(i18n.t("egress.transfer.import"), {
               size: "small",
               iconName: "file-up",
-              onClick: () => importBundle("proxies", (items) => {
+              onClick: () => openImportModal("proxies", (items) => {
                 const summary = mergeProxies(draft, items);
                 touch();
                 drawDefaults();
@@ -346,7 +346,7 @@ export async function renderEgress(ctx) {
             button(i18n.t("egress.transfer.import"), {
               size: "small",
               iconName: "file-up",
-              onClick: () => importBundle("rules", (items) => {
+              onClick: () => openImportModal("rules", (items) => {
                 const summary = mergeRules(draft, items);
                 touch();
                 drawRules();
@@ -526,26 +526,62 @@ function exportBundle(kind, items) {
   toast(i18n.t("egress.transfer.exported", { count: items.length }));
 }
 
-function importBundle(kind, apply) {
-  const picker = h("input", { type: "file", accept: ".json,application/json" });
-  picker.addEventListener("change", async () => {
-    const file = picker.files?.[0];
-    if (!file) return;
-    let items = null;
-    try {
-      const data = JSON.parse(await file.text());
-      if (data?.kiln === `egress-${kind}` && Array.isArray(data[kind])) items = data[kind];
-    } catch {
-      items = null;
-    }
-    if (!items) {
-      toast(i18n.t("egress.transfer.invalid"), i18n.t("egress.transfer.invalidHint"), "danger");
-      return;
-    }
-    const summary = apply(items);
-    toast(i18n.t("egress.transfer.imported"), i18n.t("egress.transfer.importedDetail", summary), summary.added || summary.replaced ? "success" : "warning");
+function openImportModal(kind, apply) {
+  let selectedFile = null;
+  const filename = h("strong", { text: i18n.t("egress.transfer.drop") });
+  const picker = h("input", { type: "file", accept: ".json,application/json", class: "sr-only" });
+  const submit = button(i18n.t("egress.transfer.import"), {
+    kind: "primary",
+    iconName: "file-up",
+    disabled: true,
+    onClick: async () => {
+      let items = null;
+      try {
+        const data = JSON.parse(await selectedFile.text());
+        if (data?.kiln === `egress-${kind}` && Array.isArray(data[kind])) items = data[kind];
+      } catch {
+        items = null;
+      }
+      if (!items) {
+        toast(i18n.t("egress.transfer.invalid"), i18n.t("egress.transfer.invalidHint"), "danger");
+        return;
+      }
+      const summary = apply(items);
+      closeModal();
+      toast(i18n.t("egress.transfer.imported"), i18n.t("egress.transfer.importedDetail", summary), summary.added || summary.replaced ? "success" : "warning");
+    },
   });
-  picker.click();
+  const selectFile = (file) => {
+    if (!file) return;
+    selectedFile = file;
+    filename.textContent = file.name;
+    submit.disabled = false;
+  };
+  picker.addEventListener("change", () => selectFile(picker.files?.[0]));
+  const dropzone = h(
+    "label",
+    {
+      class: "file-dropzone",
+      onDragOver: (event) => {
+        event.preventDefault();
+        dropzone.classList.add("is-dragging");
+      },
+      onDragLeave: () => dropzone.classList.remove("is-dragging"),
+      onDrop: (event) => {
+        event.preventDefault();
+        dropzone.classList.remove("is-dragging");
+        selectFile(event.dataTransfer?.files?.[0]);
+      },
+    },
+    picker,
+    icon("file-up", 28),
+    h("span", { class: "file-dropzone-copy" }, filename, h("span", { text: i18n.t("egress.transfer.invalidHint") })),
+  );
+  openModal({
+    title: i18n.t("egress.transfer.import"),
+    body: dropzone,
+    actions: [button(i18n.t("shared.cancel"), { onClick: closeModal }), submit],
+  });
 }
 
 function mergeProxies(draft, items) {
