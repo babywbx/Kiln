@@ -4,7 +4,7 @@ import { egressOutcomeMessage } from "/admin/assets/core/egress-status.js";
 import { i18n } from "/admin/assets/core/i18n.js";
 import { loadCatalog, sourceURL, store } from "/admin/assets/core/store.js";
 import { badge, button, card, emptyState, field, input, notice, pageHead, select, setBusy, table } from "/admin/assets/ui/kit.js";
-import { closeModal, openModal, toast, toastError } from "/admin/assets/ui/overlay.js";
+import { closeModal, confirmDialog, openModal, toast, toastError } from "/admin/assets/ui/overlay.js";
 
 const POLICY_LABELS = {
   rewrite: "egress.policy.rewrite",
@@ -132,7 +132,15 @@ export async function renderEgress(ctx) {
                 button(i18n.t("egress.remove"), {
                   kind: "danger",
                   size: "small",
-                  onClick: () => {
+                  onClick: async () => {
+                    const linked = draft.rules.filter((rule) => (rule.proxy || rule.proxy_id) === proxy.id).length;
+                    const accepted = await confirmDialog({
+                      title: i18n.t("egress.proxy.removeTitle"),
+                      description: i18n.t("egress.proxy.removeDescription", { name: proxy.name || proxy.id }),
+                      warning: linked ? i18n.t("egress.proxy.removeWarning", { count: linked }) : "",
+                      confirmLabel: i18n.t("egress.remove"),
+                    });
+                    if (!accepted) return;
                     draft.proxies = draft.proxies.filter((item) => item.id !== proxy.id);
                     draft.rules = draft.rules.filter((rule) => (rule.proxy || rule.proxy_id) !== proxy.id);
                     if (draft.default === proxy.id) draft.default = "direct";
@@ -192,7 +200,13 @@ export async function renderEgress(ctx) {
                 button(i18n.t("egress.remove"), {
                   kind: "danger",
                   size: "small",
-                  onClick: () => {
+                  onClick: async () => {
+                    const accepted = await confirmDialog({
+                      title: i18n.t("egress.rule.removeTitle"),
+                      description: i18n.t("egress.rule.removeDescription", { id: rule.id }),
+                      confirmLabel: i18n.t("egress.remove"),
+                    });
+                    if (!accepted) return;
                     draft.rules = draft.rules.filter((item) => item.id !== rule.id);
                     touch();
                     drawRules();
