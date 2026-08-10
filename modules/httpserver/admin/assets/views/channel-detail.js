@@ -567,7 +567,7 @@ function buildEditor(ctx, channel, revision, isNew, epg, egress) {
     ),
     formSection("2", vt("channel.source"), vt("channel.sourceDesc"),
       h("div", { class: "form-grid" },
-        h("div", { class: "span-all" },
+        h("div", { class: "span-all stack" },
           field(vt("channel.sourceURL"), sourceInput, vt("channel.sourceHint")),
           h("div", { class: "panel egress-picker" },
             h("div", { class: "form-grid" },

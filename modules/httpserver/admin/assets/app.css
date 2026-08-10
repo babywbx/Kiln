@@ -854,7 +854,6 @@ td .empty-state { min-height: 200px; }
 .track-discovery {
   display: grid;
   gap: 16px;
-  margin-top: 14px;
   padding: 16px;
   border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
   border-radius: var(--r-md);
