@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -99,11 +100,27 @@ func TestDialPinnedChainsThroughHTTPProxy(t *testing.T) {
 	}
 }
 
-func TestDialPinnedRejectsSOCKSProxy(t *testing.T) {
+func TestDialPinnedChainsThroughSOCKSProxy(t *testing.T) {
+	target, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = target.Close() }()
+	go func() {
+		connection, err := target.Accept()
+		if err != nil {
+			return
+		}
+		defer func() { _ = connection.Close() }()
+		_, _ = io.Copy(connection, connection)
+	}()
+
+	connectTarget := make(chan string, 1)
+	socksAddr := startTestSOCKS5(t, connectTarget)
 	router, err := proxyegress.NewRouter(proxyegress.Config{
 		Default: "socks",
 		Profiles: []proxyegress.Profile{{
-			ID: "socks", URL: "socks5://127.0.0.1:1080",
+			ID: "socks", URL: "socks5h://" + socksAddr,
 		}},
 	})
 	if err != nil {
@@ -113,7 +130,88 @@ func TestDialPinnedRejectsSOCKSProxy(t *testing.T) {
 		Allowed: map[string]struct{}{"127.0.0.1": {}},
 		Router:  router,
 	})
-	if _, err := client.DialPinned(context.Background(), "https://127.0.0.1:443", "channel"); err == nil {
-		t.Fatal("SOCKS route was accepted for an FFmpeg CONNECT tunnel")
+	connection, err := client.DialPinned(context.Background(), "https://"+target.Addr().String(), "channel")
+	if err != nil {
+		t.Fatal(err)
 	}
+	defer func() { _ = connection.Close() }()
+	if _, err := connection.Write([]byte("ping")); err != nil {
+		t.Fatal(err)
+	}
+	response := make([]byte, 4)
+	if _, err := io.ReadFull(connection, response); err != nil {
+		t.Fatal(err)
+	}
+	if string(response) != "ping" {
+		t.Fatalf("tunnel response = %q, want ping", response)
+	}
+	if got := <-connectTarget; got != target.Addr().String() {
+		t.Fatalf("socks CONNECT target = %q, want pinned IP %q", got, target.Addr())
+	}
+}
+
+func TestDialPinnedRejectsUnsupportedProxyScheme(t *testing.T) {
+	_, err := dialPinnedTarget(
+		context.Background(),
+		&url.URL{Scheme: "quic", Host: "127.0.0.1:1080"},
+		"127.0.0.1:443",
+	)
+	if err == nil || !strings.Contains(err.Error(), "CONNECT tunnel cannot use quic proxy") {
+		t.Fatalf("unsupported scheme error = %v", err)
+	}
+}
+
+// Minimal SOCKS5 CONNECT server: no auth, IPv4 targets only.
+func startTestSOCKS5(t *testing.T, connectTarget chan<- string) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	go func() {
+		client, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer func() { _ = client.Close() }()
+		greeting := make([]byte, 2)
+		if _, err := io.ReadFull(client, greeting); err != nil {
+			return
+		}
+		if _, err := io.ReadFull(client, make([]byte, greeting[1])); err != nil {
+			return
+		}
+		if _, err := client.Write([]byte{0x05, 0x00}); err != nil {
+			return
+		}
+		request := make([]byte, 4)
+		if _, err := io.ReadFull(client, request); err != nil {
+			return
+		}
+		if request[1] != 0x01 || request[3] != 0x01 {
+			return
+		}
+		destination := make([]byte, 6)
+		if _, err := io.ReadFull(client, destination); err != nil {
+			return
+		}
+		address := net.JoinHostPort(
+			net.IP(destination[:4]).String(),
+			strconv.Itoa(int(destination[4])<<8|int(destination[5])),
+		)
+		connectTarget <- address
+		upstream, err := net.Dial("tcp", address)
+		if err != nil {
+			_, _ = client.Write([]byte{0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+			return
+		}
+		defer func() { _ = upstream.Close() }()
+		if _, err := client.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0}); err != nil {
+			return
+		}
+		go func() { _, _ = io.Copy(upstream, client) }()
+		_, _ = io.Copy(client, upstream)
+	}()
+	return listener.Addr().String()
 }

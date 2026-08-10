@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/babywbx/kiln/modules/security"
+	"golang.org/x/net/proxy"
 )
 
 func (c *Client) DialPinned(ctx context.Context, rawURL, channelID string) (net.Conn, error) {
@@ -46,7 +47,11 @@ func dialPinnedTarget(ctx context.Context, proxyURL *url.URL, address string) (n
 		return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "tcp", address)
 	}
 	scheme := strings.ToLower(proxyURL.Scheme)
-	if scheme != "http" && scheme != "https" {
+	switch scheme {
+	case "http", "https":
+	case "socks5", "socks5h":
+		return dialPinnedThroughSOCKS(ctx, proxyURL, address)
+	default:
 		return nil, fmt.Errorf("CONNECT tunnel cannot use %s proxy", scheme)
 	}
 	proxyAddress := proxyURL.Host
@@ -100,6 +105,20 @@ func dialPinnedTarget(ctx context.Context, proxyURL *url.URL, address string) (n
 	_ = connection.SetDeadline(time.Time{})
 	failed = false
 	return &bufferedConn{Conn: connection, reader: reader}, nil
+}
+
+// address is already a pinned IP, so socks5 and socks5h behave identically.
+func dialPinnedThroughSOCKS(ctx context.Context, proxyURL *url.URL, address string) (net.Conn, error) {
+	u := *proxyURL
+	u.Scheme = "socks5"
+	dialer, err := proxy.FromURL(&u, &net.Dialer{Timeout: 10 * time.Second})
+	if err != nil {
+		return nil, err
+	}
+	if contextDialer, ok := dialer.(proxy.ContextDialer); ok {
+		return contextDialer.DialContext(ctx, "tcp", address)
+	}
+	return dialer.Dial("tcp", address)
 }
 
 type bufferedConn struct {
