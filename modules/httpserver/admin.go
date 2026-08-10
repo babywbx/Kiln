@@ -193,7 +193,7 @@ func (s *Server) handleAdminUpsertChannel(w http.ResponseWriter, r *http.Request
 			writeAppErr(w, apperr.New(apperr.CodeInvalid, http.StatusBadRequest, prepareErr.Error()))
 			return
 		}
-		binding, bindingErr := s.prepareChannelEgress(prepared, *request.Egress)
+		binding, bindingErr := s.prepareChannelEgress(*request.Egress)
 		if bindingErr != nil {
 			writeAppErr(w, apperr.New(apperr.CodeInvalid, http.StatusBadRequest, bindingErr.Error()))
 			return
@@ -228,7 +228,7 @@ func (s *Server) handleAdminUpsertChannel(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": ch.ID, "egress_profile_id": effectiveProfileID})
 }
 
-func (s *Server) prepareChannelEgress(ch config.Channel, request channelEgressRequest) (store.ChannelEgressBinding, error) {
+func (s *Server) prepareChannelEgress(request channelEgressRequest) (store.ChannelEgressBinding, error) {
 	mode := strings.ToLower(strings.TrimSpace(request.Mode))
 	if mode == "" {
 		mode = "auto"
@@ -254,7 +254,6 @@ func (s *Server) prepareChannelEgress(ch config.Channel, request channelEgressRe
 		if err := validateProxyProfile(profile); err != nil {
 			return store.ChannelEgressBinding{}, err
 		}
-		profileURL = profile.URL
 		binding.NewProfile = &profile
 		binding.ProfileID = profile.ID
 	} else if mode == "profile" {
@@ -274,9 +273,6 @@ func (s *Server) prepareChannelEgress(ch config.Channel, request channelEgressRe
 		if profileURL == "" {
 			return store.ChannelEgressBinding{}, fmt.Errorf("proxy profile %q is unavailable", binding.ProfileID)
 		}
-	}
-	if ch.Ingress == "dash" && s.deps.Cfg.EngineFor(ch) == config.EngineFFmpeg && strings.HasPrefix(strings.ToLower(profileURL), "socks") {
-		return store.ChannelEgressBinding{}, errors.New("FFmpeg cannot use a SOCKS proxy; choose HTTP, direct, or the native DASH engine")
 	}
 	return binding, nil
 }

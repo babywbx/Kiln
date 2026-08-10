@@ -154,7 +154,6 @@ const zhHans = {
   "channel.egressQuickNamePlaceholder": "例如：代理 1", "channel.egressURLRequired": "请粘贴代理链接",
   "channel.egressURLRequiredHint": "快速添加至少需要一个完整的 HTTP 或 SOCKS5 代理链接。", "channel.egressTesting": "正在通过所选出口检查公网连通性…",
   "channel.egressTestOK": "连接成功 · 出口 {via} · HTTP {status} · {duration} ms", "channel.egressTestFailed": "连接失败 · {reason}",
-  "channel.egressFFmpegSOCKS": "这个运行引擎无法使用 SOCKS", "channel.egressFFmpegSOCKSHint": "FFmpeg 兼容引擎只支持 HTTP/HTTPS 代理。请选择 HTTP 代理、直连或原生 DASH。",
   "channel.sourceTestDraft": "测试当前源地址", "channel.sourceAvailable": "源地址可用", "channel.sourceConnectedVia": "已通过 {via} 连接节目源",
 
   "apiToken.title": "管理员 API 令牌", "apiToken.description": "为命令行、自动化和外部管理工具签发独立凭证；完整令牌只显示一次。",
@@ -212,7 +211,6 @@ Object.assign(zhHant, {
   "channel.egressQuickNamePlaceholder": "例如：代理 1", "channel.egressURLRequired": "請貼上代理連結",
   "channel.egressURLRequiredHint": "快速新增至少需要完整的 HTTP 或 SOCKS5 代理連結。", "channel.egressTesting": "正在透過所選出口檢查公網連線…",
   "channel.egressTestOK": "連線成功 · 出口 {via} · HTTP {status} · {duration} ms", "channel.egressTestFailed": "連線失敗 · {reason}",
-  "channel.egressFFmpegSOCKS": "此執行引擎無法使用 SOCKS", "channel.egressFFmpegSOCKSHint": "FFmpeg 相容引擎僅支援 HTTP/HTTPS 代理。請選擇 HTTP 代理、直接連線或原生 DASH。",
   "channel.sourceTestDraft": "測試目前來源位址", "channel.sourceAvailable": "來源位址可用", "channel.sourceConnectedVia": "已透過 {via} 連線節目來源",
 
   "apiToken.title": "管理員 API 權杖", "apiToken.description": "為命令列、自動化與外部管理工具簽發獨立憑證；完整權杖僅顯示一次。",
@@ -368,7 +366,6 @@ Object.assign(en, {
   "channel.egressQuickNamePlaceholder": "For example: Proxy 1", "channel.egressURLRequired": "Paste a proxy URL",
   "channel.egressURLRequiredHint": "Quick add requires a complete HTTP or SOCKS5 proxy URL.", "channel.egressTesting": "Checking public connectivity through the selected egress…",
   "channel.egressTestOK": "Connected · Egress {via} · HTTP {status} · {duration} ms", "channel.egressTestFailed": "Connection failed · {reason}",
-  "channel.egressFFmpegSOCKS": "This engine cannot use SOCKS", "channel.egressFFmpegSOCKSHint": "The FFmpeg compatibility engine supports only HTTP/HTTPS proxies. Choose HTTP, direct, or native DASH.",
   "channel.sourceTestDraft": "Test current source", "channel.sourceAvailable": "Source available", "channel.sourceConnectedVia": "Connected to the source through {via}",
 
   "apiToken.title": "Administrator API tokens", "apiToken.description": "Issue separate credentials for command-line tools, automation, and external administration. Full tokens are shown once.",

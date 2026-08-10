@@ -192,11 +192,6 @@ function buildEditor(ctx, channel, revision, isNew, epg, egress) {
     }
     return { mode: "profile", profile_id: egressSelect.value.replace(/^profile:/, "") };
   };
-  const selectedProxyURL = () => {
-    if (egressSelect.value === "quick") return quickProxyURL.value.trim();
-    if (!egressSelect.value.startsWith("profile:")) return "";
-    return egress.profiles.find((profile) => profile.id === egressSelect.value.slice(8))?.url || "";
-  };
   const syncEgress = () => {
     quickProxyPanel.hidden = egressSelect.value !== "quick";
     egressStatus.textContent = egressSelect.value === "auto"
@@ -312,13 +307,6 @@ function buildEditor(ctx, channel, revision, isNew, epg, egress) {
       subtitleSelect.setAttribute("aria-invalid", "true");
       subtitleSelect.focus();
       toast(vt("channel.trackCompatibilitySubtitle"), vt("channel.trackCompatibilitySubtitleHint"), "danger");
-      return false;
-    }
-    const scheme = proxyKind(selectedProxyURL()).toLowerCase();
-    if (ingressSelect.value === "dash" && compatibilityRequired && scheme.startsWith("socks")) {
-      egressSelect.setAttribute("aria-invalid", "true");
-      egressSelect.focus();
-      toast(vt("channel.egressFFmpegSOCKS"), vt("channel.egressFFmpegSOCKSHint"), "danger");
       return false;
     }
     return true;
