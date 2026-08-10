@@ -185,7 +185,7 @@ max_body_bytes = 1048576
 | Key | Effect |
 | --- | --- |
 | `play_require_auth` | Whether playback endpoints require a credential. On by default; turning it off makes everything under `/v1/play/` world-readable and is for local debugging only. `KILN_PLAY_OPEN=1` is the same switch |
-| `allowed_hosts` | Outbound allowlist of origin hosts Kiln may fetch from. Hosts already declared by upstreams and channel source URLs are merged in automatically, so this usually only needs the extra domains that redirects land on |
+| `allowed_hosts` | Explicit outbound exemptions for origin hostnames and IPs that resolve to loopback or private addresses. Upstream and channel declarations do not grant this exemption |
 | `public_hosts` | Inbound allowlist matched against the request `Host` header. When non-empty, anything outside the list gets 403, except loopback health checks. Empty means unrestricted |
 | `cors_origins` | Origins allowed to call the API cross-origin. Empty means same-origin only, and no CORS headers are emitted at all |
 | `max_playlist_bytes` | Read ceiling for a single upstream playlist, 8 MiB by default, so an oversized manifest cannot exhaust memory |
@@ -212,7 +212,7 @@ Creation, revocation, and the access log all live under Access Control in the co
     Make sure no stray `KILN_PLAY_OPEN=1` survives in the environment. Distribute playback keys instead of disabling playback authentication.
   </Step>
   <Step title="Tighten the host allowlists">
-    Use `public_hosts` to pin the domains served and `allowed_hosts` to pin the origins fetched. Leaving both empty means any `Host` reaches the service and the outbound surface is decided entirely by channel configuration.
+    Use `public_hosts` to pin the domains served. Add a hostname or IP to `allowed_hosts` only when Kiln must reach a loopback or private origin; channel configuration does not replace this step.
   </Step>
   <Step title="Give automation its own token">
     Scripts should always use an administrator API token with the minimum scopes for the job, an expiration date, periodic rotation, and audit logging.

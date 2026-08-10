@@ -141,9 +141,9 @@ ss -ltnp | grep 8080
 
 **症状**：`403`，消息为 `upstream host not allowed`，`err` 里是 `private host not allowlisted: 192.168.1.10`。
 
-**判断**：出站请求会做 SSRF 校验。公网主机默认放行，但回环地址和私有网段必须出现在允许列表里；云元数据地址（例如 `169.254.169.254`）和链路本地地址一律拒绝。允许列表由 `security.allowed_hosts` 加上配置文件里 `upstreams` 与 `channels` 声明过的主机名共同组成。
+**判断**：出站请求会做 SSRF 校验。公网主机默认放行，但回环地址和私有网段只有在 `security.allowed_hosts` 中显式列出才放行；云元数据地址（例如 `169.254.169.254`）和链路本地地址一律拒绝。在 `upstreams` 或 `channels` 中声明主机不会获得私网豁免。
 
-**处理**：把内网源站的主机名或 IP 写进 `security.allowed_hosts`，然后重启。通过管理界面新增的内网上游不会自动进入这个集合。
+**处理**：把内网源站的主机名或 IP 写进 `security.allowed_hosts`，然后重启。无论通过配置文件还是管理界面创建上游或频道，都不会自动加入。
 
 ### 引擎不支持这个源
 
@@ -252,25 +252,25 @@ inflight_mb=64 max_segment_mb=32 gc_percent=100 drop_file_cache=true
 
 ### 线路不存在或已停用
 
-**判断**：命中的规则指向了一个不存在或已停用的线路时，决策会静默降级为直连，`reason` 变成 `host_suffix:example.com|missing-profile`。启动时如果 `egress.default` 指向未知线路，会直接报 `egress.default references unknown proxy "x"` 并退出。
+**判断**：活动规则指向不存在或已停用的线路时，配置加载与热更新都会直接失败，不会静默改成直连。错误会指出规则引用了 `unknown or disabled proxy`；`egress.default` 引用未知线路也会拒绝启动。
 
 **处理**：检查 `[[proxies]]` 里的 `id` 是否拼写一致，以及该线路是否被停用。
 
 ### ffmpeg 用不了 SOCKS 代理
 
-**症状**：保存频道的代理绑定时被拒绝，消息为 `FFmpeg cannot use a SOCKS proxy; choose HTTP, direct, or the native DASH engine`；或者会话启动时报 `proxy "x" uses socks5, which ffmpeg cannot use`。
+**症状**：保存频道的代理绑定时被拒绝，消息为 `FFmpeg cannot use a SOCKS proxy; choose HTTP, direct, or the native DASH engine`；或者会话启动时报 `CONNECT tunnel cannot use socks5 proxy`。
 
-**判断**：兼容引擎是通过 `HTTP_PROXY` 系列环境变量把代理传给 ffmpeg 的，只支持 `http` 与 `https` 两种 scheme。原生引擎则四种都支持（`http`、`https`、`socks5`、`socks5h`）。
+**判断**：兼容引擎的全部网络请求会先经过 Kiln 的本地安全代理，再接入频道的出站线路。这个转接只支持 `http` 与 `https` 两种 scheme。原生引擎则四种都支持（`http`、`https`、`socks5`、`socks5h`）。
 
 **处理**：给该频道换成 HTTP 代理，或者改用原生引擎。
 
-### 容器里连不上宿主机代理
+### FFmpeg 容器连不上 Kiln
 
-**症状**：Kiln 跑在容器里、代理跑在宿主机上，兼容引擎报连接失败。
+**症状**：`[ffmpeg].mode = "docker"` 时，FFmpeg 容器无法连接 Kiln 启动的本地安全代理。
 
-**判断**：把代理写成 `http://127.0.0.1:7890` 时，容器内的 `127.0.0.1` 指向容器自己。`[ffmpeg].mode = "docker"` 下，Kiln 会自动把代理地址里的 `127.0.0.1`、`localhost`、`::1` 替换成 `egress.docker_proxy_host`（默认 `host.docker.internal`），端口保持不变。传给 ffmpeg 的环境变量里还会带上 `NO_PROXY=localhost,127.0.0.1`。
+**判断**：Kiln 会让 FFmpeg 容器通过 `egress.docker_proxy_host`（默认 `host.docker.internal`）访问这个短期代理，并为默认主机名自动加入 `host-gateway` 映射。上游代理由 Kiln 自己连接，不会把凭据直接交给 FFmpeg。
 
-**处理**：确认 `docker_proxy_host` 在当前环境下可解析。Linux 上的 Docker 需要显式加 `--add-host=host.docker.internal:host-gateway`，或者把它改成宿主机在 docker 网桥上的地址。
+**处理**：确认 `docker_proxy_host` 能从 FFmpeg 容器访问到 Kiln 进程；非标准 Docker 网络可以把它改成宿主机或 Kiln 所在网络的可达地址。
 
 更完整的路由模型见[出站代理](/guide/proxy/)。
 

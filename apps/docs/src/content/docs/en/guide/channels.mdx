@@ -71,6 +71,8 @@ With the `ffmpeg` engine, subtitles support `auto` and `off` only. See the [chan
 - `user_agent`: the User-Agent used when fetching this channel.
 - `headers`: extra request headers for this channel. Merged with the upstream-level `headers`, with the channel winning on duplicate keys.
 
+Fixed headers are sent only to requests on the source origin. Cross-origin redirects and external playlist resources do not receive them. The HTTPS FFmpeg compatibility path rejects a request when it cannot preserve that origin boundary, preventing credential leakage.
+
 ### Disabling
 
 A channel with `disabled` set does not appear in the channel list or the playlist, and playback requests are answered as not found. A disabled DASH channel can be saved even before the global key file exists, which makes it easy to land the definition first and supply keys later.

@@ -116,7 +116,7 @@ Changing a username or password in the admin console writes an override row keye
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `play_require_auth` | bool | `true` | Whether playback endpoints require credentials. The key is optional; omitting it means `true`. |
-| `allowed_hosts` | array of string | `[]` | Extra hosts allowed for outbound fetches. Hosts from upstream `base_url` and channel `source_url` are added automatically, so this only needs hosts the config does not already imply. |
+| `allowed_hosts` | array of string | `[]` | Explicit exemptions for outbound hosts that resolve to loopback or private addresses. Upstream and channel declarations do not add entries; list each private hostname or IP here. |
 | `public_hosts` | array of string | `[]` | Inbound `Host` allowlist. Empty means no restriction; `*` allows everything. `/healthz` and `/readyz` from a loopback client are always exempt. |
 | `cors_origins` | array of string | `[]` | Allowed cross-origin origins. Empty means no CORS headers are emitted at all. `*` is echoed back literally only when it is the single entry; otherwise the matched origin is echoed with `Vary: Origin`. |
 | `max_playlist_bytes` | int64 | `8388608` | Byte ceiling for a fetched playlist. Non-positive values fall back to the default. |
@@ -126,7 +126,7 @@ Changing a username or password in the admin console writes an override row keye
   An explicit `play_require_auth = false` disables playback authentication on its own; no environment variable is needed. `KILN_PLAY_OPEN` still outranks the file: `1`, `true`, or `TRUE` forces authentication off, while `0`, `false`, or `FALSE` forces it on. Never turn it off on a deployment reachable from anywhere else.
 </Aside>
 
-The outbound allowlist sits on top of a fixed guard that no configuration relaxes: link-local, unspecified, multicast, and cloud metadata addresses are always refused, and loopback or private addresses must appear in the allowlist to be reachable.
+Outbound requests also pass a fixed guard: link-local, unspecified, multicast, and cloud metadata addresses are always refused, while loopback or private addresses are reachable only when explicitly listed in `security.allowed_hosts`.
 
 ## `[packager]`
 
@@ -257,7 +257,7 @@ See [Outbound proxying](/en/guide/proxy/) for route selection, rewriting policie
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `id` | string | Required | Upstream identifier referenced by a channel's `upstream`. Empty fails validation. |
-| `base_url` | string | Required | Upstream base address. Must parse as an absolute URL; empty or malformed fails validation. Its hostname joins the outbound allowlist automatically. |
+| `base_url` | string | Required | Upstream base address. Must parse as an absolute URL; empty or malformed fails validation. A host that resolves to a loopback or private address must also be listed explicitly in `security.allowed_hosts`. |
 | `headers` | table | `{}` | Fixed headers added to requests toward this upstream. |
 
 ## `[[channels]]`

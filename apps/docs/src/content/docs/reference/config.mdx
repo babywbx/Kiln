@@ -116,7 +116,7 @@ kiln -config /etc/kiln/kiln.toml
 | 键 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `play_require_auth` | bool | `true` | 播放接口是否要求鉴权。可选键，不写即为 `true`。 |
-| `allowed_hosts` | array of string | `[]` | 出站抓取的额外主机白名单。上游 `base_url` 与频道 `source_url` 的主机会自动并入，因此这里只需补充配置未覆盖的主机。 |
+| `allowed_hosts` | array of string | `[]` | 出站抓取的私网主机豁免列表。解析到回环或私有地址的主机名与 IP 必须显式写在此处；上游和频道声明不会自动加入。 |
 | `public_hosts` | array of string | `[]` | 入站请求的 `Host` 白名单，留空表示不限制，`*` 表示全部放行。来自回环地址的 `/healthz` 与 `/readyz` 不受限制。 |
 | `cors_origins` | array of string | `[]` | 允许的跨域来源，留空表示不下发任何 CORS 响应头。仅当列表恰好是单个 `*` 时才回显 `*`，否则回显匹配到的具体来源并附带 `Vary: Origin`。 |
 | `max_playlist_bytes` | int64 | `8388608` | 单个播放列表抓取的字节上限，非正数按默认值处理。 |
@@ -126,7 +126,7 @@ kiln -config /etc/kiln/kiln.toml
   显式写 `play_require_auth = false` 即可关闭播放鉴权，不再需要额外的环境变量。环境变量 `KILN_PLAY_OPEN` 的优先级高于配置文件：取 `1`、`true`、`TRUE` 强制关闭，取 `0`、`false`、`FALSE` 强制要求鉴权。任何对外可达的部署都不要关掉它。
 </Aside>
 
-出站白名单还有一层与配置无关的固定防护：链路本地地址、未指定地址、组播地址与云元数据地址始终被拒绝，回环与私有地址必须出现在白名单里才允许访问。
+出站请求还有一层固定防护：链路本地地址、未指定地址、组播地址与云元数据地址始终被拒绝，回环与私有地址只有在 `security.allowed_hosts` 中显式列出才允许访问。
 
 ## `[packager]`
 
@@ -257,7 +257,7 @@ pprof 使用独立的监听器与路由，永远不会挂到对外的 HTTP 服�
 | 键 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `id` | string | 必填 | 上游标识，频道通过 `upstream` 引用，为空校验失败。 |
-| `base_url` | string | 必填 | 上游基础地址，必须是可解析的绝对 URL，为空或非法都会校验失败。其主机名自动进入出站白名单。 |
+| `base_url` | string | 必填 | 上游基础地址，必须是可解析的绝对 URL，为空或非法都会校验失败。若主机解析到回环或私有地址，还必须显式加入 `security.allowed_hosts`。 |
 | `headers` | table | `{}` | 请求该上游时附加的固定请求头。 |
 
 ## `[[channels]]`

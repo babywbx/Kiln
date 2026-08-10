@@ -141,9 +141,9 @@ First confirm which credential you are using. Four credential types cover four s
 
 **Symptom**: `403` with `upstream host not allowed`, and an `err` like `private host not allowlisted: 192.168.1.10`.
 
-**How to tell**: outbound requests go through an SSRF check. Public hosts pass by default, but loopback and private-range addresses must be on the allow list, and cloud metadata addresses (`169.254.169.254`, for example) and link-local addresses are always rejected. The allow list is `security.allowed_hosts` plus every hostname declared under `upstreams` and `channels` in the config file.
+**How to tell**: outbound requests go through an SSRF check. Public hosts pass by default, but loopback and private-range addresses pass only when explicitly listed in `security.allowed_hosts`; cloud metadata addresses (`169.254.169.254`, for example) and link-local addresses are always rejected. Declaring a host under `upstreams` or `channels` does not grant a private-network exemption.
 
-**Fix**: add the LAN origin's hostname or IP to `security.allowed_hosts` and restart. Private upstreams added later through the admin UI do not enter this set automatically.
+**Fix**: add the LAN origin's hostname or IP to `security.allowed_hosts` and restart. Upstreams and channels do not enter this list automatically, whether they come from the config file or the admin UI.
 
 ### The engine cannot handle this source
 
@@ -252,25 +252,25 @@ Compare that against the profile table in [Operations](/en/guide/operations/). T
 
 ### The profile is missing or disabled
 
-**How to tell**: when a matched rule names a profile that does not exist or is disabled, the decision silently degrades to direct and `reason` becomes something like `host_suffix:example.com|missing-profile`. At startup, an `egress.default` pointing at an unknown profile fails hard with `egress.default references unknown proxy "x"`.
+**How to tell**: an active rule that names a missing or disabled profile now fails both configuration loading and hot reload instead of silently becoming direct. The error identifies an `unknown or disabled proxy`; an unknown `egress.default` also prevents startup.
 
 **Fix**: check that the `id` under `[[proxies]]` matches exactly and that the profile is not disabled.
 
 ### ffmpeg cannot use a SOCKS proxy
 
-**Symptom**: saving a channel's proxy binding is rejected with `FFmpeg cannot use a SOCKS proxy; choose HTTP, direct, or the native DASH engine`, or a session fails to start with `proxy "x" uses socks5, which ffmpeg cannot use`.
+**Symptom**: saving a channel's proxy binding is rejected with `FFmpeg cannot use a SOCKS proxy; choose HTTP, direct, or the native DASH engine`, or a session fails with `CONNECT tunnel cannot use socks5 proxy`.
 
-**How to tell**: the compatibility engine passes the proxy to ffmpeg through the `HTTP_PROXY` family of environment variables, which only supports the `http` and `https` schemes. The native engine supports all four (`http`, `https`, `socks5`, `socks5h`).
+**How to tell**: every compatibility-engine network request first passes through Kiln's local guarded proxy and then enters the channel's outbound route. That handoff supports `http` and `https` profiles. The native engine supports all four (`http`, `https`, `socks5`, `socks5h`).
 
 **Fix**: give that channel an HTTP proxy, or switch it to the native engine.
 
-### Container cannot reach a proxy on the host
+### FFmpeg container cannot reach Kiln
 
-**Symptom**: Kiln runs in a container, the proxy runs on the host, and the compatibility engine cannot connect.
+**Symptom**: under `[ffmpeg].mode = "docker"`, the FFmpeg container cannot reach the short-lived guarded proxy started by Kiln.
 
-**How to tell**: `http://127.0.0.1:7890` means the container's own loopback. Under `[ffmpeg].mode = "docker"`, Kiln rewrites `127.0.0.1`, `localhost`, and `::1` in the proxy URL to `egress.docker_proxy_host` (default `host.docker.internal`), preserving the port. The environment passed to ffmpeg also carries `NO_PROXY=localhost,127.0.0.1`.
+**How to tell**: Kiln advertises the guarded proxy to the FFmpeg container through `egress.docker_proxy_host` (default `host.docker.internal`) and automatically adds the default `host-gateway` mapping. Kiln itself connects to any configured upstream proxy, so those credentials are never handed directly to FFmpeg.
 
-**Fix**: make sure `docker_proxy_host` resolves in your environment. Docker on Linux needs `--add-host=host.docker.internal:host-gateway`, or set the value to the host's address on the bridge network.
+**Fix**: make sure `docker_proxy_host` reaches the Kiln process from the FFmpeg container. On a non-standard Docker network, set it to a reachable host or Kiln network address.
 
 The full routing model is documented in [Egress proxies](/en/guide/proxy/).
 
