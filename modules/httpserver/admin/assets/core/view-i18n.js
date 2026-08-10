@@ -1,6 +1,12 @@
 import { i18n } from "./i18n.js";
 
 const zhHans = {
+  "error.code.invalid_request": "请求参数有误", "error.code.unauthorized": "登录状态已失效，请重新登录",
+  "error.code.forbidden": "没有执行该操作的权限", "error.code.not_found": "目标不存在或已被删除",
+  "error.code.conflict": "数据已被其他会话修改，请刷新后重试", "error.code.upstream_error": "上游服务器返回了错误",
+  "error.code.unavailable": "服务暂时不可用，请稍后重试", "error.code.internal": "服务器内部错误",
+  "error.code.too_many_requests": "操作过于频繁，请稍后再试", "error.code.not_ready": "服务尚未就绪，请稍后重试",
+  "error.code.http_error": "网络请求失败",
   "common.cancel": "取消", "common.close": "关闭", "common.copy": "复制", "common.copied": "已复制",
   "common.copyFailed": "复制失败", "common.copyDenied": "浏览器拒绝了剪贴板访问，请手动复制。",
   "common.actionFailed": "操作失败", "common.never": "从未", "common.use": "使用", "common.delete": "删除",
@@ -188,6 +194,12 @@ const zhHans = {
 
 const zhHant = Object.fromEntries(Object.entries(zhHans));
 Object.assign(zhHant, {
+  "error.code.invalid_request": "請求參數有誤", "error.code.unauthorized": "登入狀態已失效，請重新登入",
+  "error.code.forbidden": "沒有執行該操作的權限", "error.code.not_found": "目標不存在或已被刪除",
+  "error.code.conflict": "資料已被其他工作階段修改，請重新整理後再試", "error.code.upstream_error": "上游伺服器回應錯誤",
+  "error.code.unavailable": "服務暫時無法使用，請稍後再試", "error.code.internal": "伺服器內部錯誤",
+  "error.code.too_many_requests": "操作過於頻繁，請稍後再試", "error.code.not_ready": "服務尚未就緒，請稍後再試",
+  "error.code.http_error": "網路請求失敗",
 
   "channel.egress": "網路出口", "channel.egressHint": "自動模式沿用進階路由規則；也可以為此頻道固定直接連線或指定代理。",
   "channel.egressAuto": "智慧自動（依網路出口規則）", "channel.egressDirect": "一律直接連線（不使用代理）",
@@ -338,6 +350,12 @@ Object.assign(zhHant, {
 
 const en = Object.fromEntries(Object.keys(zhHans).map((key) => [key, key]));
 Object.assign(en, {
+  "error.code.invalid_request": "The request was not valid", "error.code.unauthorized": "The session has expired. Sign in again",
+  "error.code.forbidden": "This account cannot perform that action", "error.code.not_found": "The target no longer exists",
+  "error.code.conflict": "Another session changed this data. Reload and try again", "error.code.upstream_error": "The upstream server returned an error",
+  "error.code.unavailable": "The service is temporarily unavailable. Try again shortly", "error.code.internal": "The server hit an internal error",
+  "error.code.too_many_requests": "Too many attempts. Try again shortly", "error.code.not_ready": "The service is not ready yet. Try again shortly",
+  "error.code.http_error": "The request could not be completed",
 
   "channel.egress": "Network egress", "channel.egressHint": "Automatic follows advanced routing rules; this channel can also be pinned to direct or one proxy.",
   "channel.egressAuto": "Smart automatic (follow egress rules)", "channel.egressDirect": "Always direct (no proxy)",
@@ -503,6 +521,13 @@ const messages = { "zh-Hans": zhHans, "zh-Hant": zhHant, en };
 export function vt(key, values = {}) {
   const template = messages[i18n.locale]?.[key] ?? zhHans[key] ?? key;
   return template.replace(/\{([A-Za-z0-9_]+)\}/g, (match, name) => (name in values ? String(values[name]) : match));
+}
+
+export function apiErrorMessage(error) {
+  if (!error?.code) return error?.message || "";
+  const key = `error.code.${error.code}`;
+  const message = vt(key);
+  return message === key ? error.message || "" : message;
 }
 
 export function viewMessageKeys(locale) {

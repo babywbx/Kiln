@@ -2,7 +2,7 @@ import { frag, h } from "/admin/assets/core/dom.js";
 import { endpoints, remembersSession, saveSession } from "/admin/assets/core/api.js";
 import { LOCALE_OPTIONS, i18n, localeLabel } from "/admin/assets/core/i18n.js";
 import { store } from "/admin/assets/core/store.js";
-import { badge, button, card, field, input, notice, pageHead, select } from "/admin/assets/ui/kit.js";
+import { badge, button, card, field, input, notice, pageHead, select, setBusy } from "/admin/assets/ui/kit.js";
 import { closeModal, openModal, toast } from "/admin/assets/ui/overlay.js";
 import { adminAPITokensCard } from "/admin/assets/views/api-tokens.js";
 
@@ -41,7 +41,7 @@ export async function renderSettings(ctx) {
   retentionInput.addEventListener("input", touch);
 
   saveButton.addEventListener("click", async () => {
-    saveButton.disabled = true;
+    setBusy(saveButton, true);
     try {
       await endpoints.saveSettings(
         {
@@ -55,7 +55,7 @@ export async function renderSettings(ctx) {
       await ctx.reload();
     } catch (error) {
       toast(i18n.t("error.saveFailed"), errorDetail(error), "danger");
-      saveButton.disabled = false;
+      setBusy(saveButton, false);
     }
   });
 

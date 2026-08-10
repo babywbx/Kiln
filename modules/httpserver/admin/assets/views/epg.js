@@ -1,7 +1,7 @@
 import { formatBytes, formatISOTime, formatNumber, frag, h } from "/admin/assets/core/dom.js";
 import { endpoints } from "/admin/assets/core/api.js";
 import { i18n } from "/admin/assets/core/i18n.js";
-import { badge, button, card, emptyState, field, iconButton, input, notice, pageHead, select, table } from "/admin/assets/ui/kit.js";
+import { badge, button, card, emptyState, field, iconButton, input, notice, pageHead, select, setBusy, table } from "/admin/assets/ui/kit.js";
 import { closeModal, confirmDialog, openModal, toast, toastError } from "/admin/assets/ui/overlay.js";
 
 const ID_KINDS = {
@@ -69,7 +69,7 @@ export async function renderEPG(ctx) {
     iconName: "refresh-cw",
     disabled: enabledCount === 0,
     onClick: async () => {
-      refreshButton.disabled = true;
+      setBusy(refreshButton, true);
       toast(i18n.t("epg.refreshing"), i18n.t("epg.refreshingDescription"), "info");
       try {
         const result = await endpoints.refreshEPG();
@@ -81,7 +81,7 @@ export async function renderEPG(ctx) {
         await ctx.reload();
       } catch (error) {
         toastError(error, i18n.t("epg.refreshFailed"));
-        refreshButton.disabled = false;
+        setBusy(refreshButton, false);
       }
     },
   });
@@ -302,6 +302,26 @@ function proxyChoices(proxies) {
   ];
 }
 
+let timezoneCache = { locale: "", choices: [] };
+
+function zoneLabelPart(locale, timeZone, timeZoneName) {
+  return new Intl.DateTimeFormat(locale, { timeZone, timeZoneName })
+    .formatToParts(new Date())
+    .find((part) => part.type === "timeZoneName")?.value || "";
+}
+
+function timezoneChoices() {
+  if (timezoneCache.locale === i18n.locale) return timezoneCache.choices;
+  const zones = Intl.supportedValuesOf ? Intl.supportedValuesOf("timeZone") : [];
+  const choices = zones.map((zone) => {
+    const name = zoneLabelPart(i18n.locale, zone, "longGeneric");
+    const offset = zoneLabelPart(i18n.locale, zone, "shortOffset");
+    return [zone, [name, offset].filter(Boolean).join(" · ")];
+  });
+  timezoneCache = { locale: i18n.locale, choices };
+  return choices;
+}
+
 function openSourceModal({ presets, proxies, configured = null, existing = [], after }) {
   const isNew = !configured;
   const source = configured?.source || {};
@@ -312,6 +332,7 @@ function openSourceModal({ presets, proxies, configured = null, existing = [], a
   const nameInput = input("name", source.name || "", { placeholder: i18n.t("epg.form.namePlaceholder") });
   const urlInput = input("url", source.url || "", { type: "url", required: true, placeholder: "https://example.com/epg.xml.gz" });
   const timezoneInput = input("timezone", source.timezone || "", { placeholder: "UTC" });
+  timezoneInput.setAttribute("list", "epg-timezones");
   const proxySelect = select("proxy", proxyChoices(proxies), source.proxy || "direct");
   const enabledToggle = h("input", { type: "checkbox", id: "epg-source-enabled", checked: isNew ? true : Boolean(configured.enabled) });
 
@@ -340,7 +361,7 @@ function openSourceModal({ presets, proxies, configured = null, existing = [], a
         return;
       }
 
-      submit.disabled = true;
+      setBusy(submit, true);
       try {
         await persistSource(
           {
@@ -358,7 +379,7 @@ function openSourceModal({ presets, proxies, configured = null, existing = [], a
         await after();
       } catch (error) {
         toastError(error, i18n.t("epg.form.saveFailed"));
-        submit.disabled = false;
+        setBusy(submit, false);
       }
     },
   });
@@ -373,6 +394,7 @@ function openSourceModal({ presets, proxies, configured = null, existing = [], a
       field(i18n.t("epg.form.name"), nameInput),
       h("div", { class: "span-all" }, field(i18n.t("epg.form.url"), urlInput, preset ? i18n.t("epg.form.presetDefault", { url: preset.url }) : "")),
       field(i18n.t("epg.form.timezone"), timezoneInput, i18n.t("epg.form.timezoneHint")),
+      h("datalist", { id: "epg-timezones" }, timezoneChoices().map(([value, label]) => h("option", { value, label }))),
       field(i18n.t("epg.form.egress"), proxySelect, i18n.t("epg.form.egressHint")),
       h(
         "div",

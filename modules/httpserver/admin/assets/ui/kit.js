@@ -11,11 +11,29 @@ export function button(label, options = {}) {
       disabled,
       onClick,
       "aria-label": options.ariaLabel,
+      dataset: iconName ? { icon: iconName } : null,
     },
     iconName ? icon(iconName, 16) : null,
     label ? h("span", { text: label }) : null,
     trailingIcon ? icon(trailingIcon, 16) : null,
   );
+}
+
+export function setBusy(control, busy) {
+  control.disabled = busy;
+  control.setAttribute("aria-busy", String(busy));
+  const name = control.dataset.icon;
+  const spinning = control.querySelector(".is-spinning");
+  if (busy === Boolean(spinning)) return;
+  if (busy) {
+    const spinner = icon("loader-circle", 16);
+    spinner.classList.add("is-spinning");
+    if (name) control.firstElementChild.replaceWith(spinner);
+    else control.prepend(spinner);
+    return;
+  }
+  if (name) spinning.replaceWith(icon(name, 16));
+  else spinning.remove();
 }
 
 export function linkButton(label, href, options = {}) {

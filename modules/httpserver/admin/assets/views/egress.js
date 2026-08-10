@@ -1,8 +1,9 @@
 import { frag, h } from "/admin/assets/core/dom.js";
 import { endpoints } from "/admin/assets/core/api.js";
+import { egressOutcomeMessage } from "/admin/assets/core/egress-status.js";
 import { i18n } from "/admin/assets/core/i18n.js";
 import { loadCatalog, sourceURL, store } from "/admin/assets/core/store.js";
-import { badge, button, card, emptyState, field, input, notice, pageHead, select, table } from "/admin/assets/ui/kit.js";
+import { badge, button, card, emptyState, field, input, notice, pageHead, select, setBusy, table } from "/admin/assets/ui/kit.js";
 import { closeModal, openModal, toast, toastError } from "/admin/assets/ui/overlay.js";
 
 const POLICY_LABELS = {
@@ -127,7 +128,7 @@ export async function renderEgress(ctx) {
                   size: "small",
                   onClick: () => openProxyModal(draft, () => { touch(); drawDefaults(); drawProxies(); }, proxy),
                 }),
-                button(i18n.t("egress.test"), { size: "small", onClick: () => testProxy(proxy) }),
+                button(i18n.t("egress.test"), { size: "small", onClick: (event) => testProxy(proxy, event.currentTarget) }),
                 button(i18n.t("egress.remove"), {
                   kind: "danger",
                   size: "small",
@@ -227,7 +228,7 @@ export async function renderEgress(ctx) {
     testURL.value = channel.source_url || sourceURL(channel.upstream, channel.path);
   });
 
-  const testProxy = async (proxy) => {
+  const testProxy = async (proxy, trigger) => {
     if (testTarget.value === "source" && !testURL.value.trim()) {
       testURL.setAttribute("aria-invalid", "true");
       testURL.focus();
@@ -235,11 +236,14 @@ export async function renderEgress(ctx) {
       return;
     }
     const proxyDraft = { ...draft, default: proxy.id, rules: [], proxies: draft.proxies.map((item) => ({ ...item, disabled: item.id === proxy.id ? false : item.disabled })) };
+    setBusy(trigger, true);
     try {
       const result = await endpoints.testEgress({ target: testTarget.value, url: testTarget.value === "source" ? testURL.value.trim() : "", channel_id: "", draft: proxyDraft });
       testResult.replaceChildren(resultNotice(result, proxy.id));
     } catch (error) {
       toastError(error, i18n.t("egress.test.proxyFailed"));
+    } finally {
+      setBusy(trigger, false);
     }
   };
 
@@ -252,7 +256,7 @@ export async function renderEgress(ctx) {
         return;
       }
       testURL.removeAttribute("aria-invalid");
-      testButton.disabled = true;
+      setBusy(testButton, true);
       try {
         const result = await endpoints.testEgress({
           target: testTarget.value,
@@ -267,14 +271,14 @@ export async function renderEgress(ctx) {
       } catch (error) {
         toastError(error, i18n.t("egress.test.routeFailed"));
       } finally {
-        testButton.disabled = false;
+        setBusy(testButton, false);
       }
     },
   });
 
   applyButton.addEventListener("click", async () => {
     if (!tested) return;
-    applyButton.disabled = true;
+    setBusy(applyButton, true);
     try {
       await endpoints.saveEgress(draft, revision);
       ctx.markDirty(false);
@@ -282,7 +286,7 @@ export async function renderEgress(ctx) {
       await ctx.reload();
     } catch (error) {
       toastError(error, i18n.t("egress.applyFailed"));
-      applyButton.disabled = false;
+      setBusy(applyButton, false);
     }
   });
 
@@ -313,13 +317,45 @@ export async function renderEgress(ctx) {
           title: i18n.t("egress.proxy.title"),
           body: proxyBody,
           flush: true,
-          action: button(i18n.t("egress.proxy.add"), { size: "small", iconName: "plus", onClick: () => openProxyModal(draft, () => { touch(); drawDefaults(); drawProxies(); }) }),
+          action: h(
+            "div",
+            { class: "row-actions" },
+            button(i18n.t("egress.transfer.import"), {
+              size: "small",
+              iconName: "file-up",
+              onClick: () => importBundle("proxies", (items) => {
+                const summary = mergeProxies(draft, items);
+                touch();
+                drawDefaults();
+                drawProxies();
+                drawRules();
+                return summary;
+              }),
+            }),
+            button(i18n.t("egress.transfer.export"), { size: "small", iconName: "download", onClick: () => exportBundle("proxies", draft.proxies.map(exportableProxy)) }),
+            button(i18n.t("egress.proxy.add"), { size: "small", iconName: "plus", onClick: () => openProxyModal(draft, () => { touch(); drawDefaults(); drawProxies(); }) }),
+          ),
         }),
         card({
           title: i18n.t("egress.rule.title"),
           body: ruleBody,
           flush: true,
-          action: button(i18n.t("egress.rule.add"), { size: "small", iconName: "plus", onClick: () => openRuleModal(draft, () => { touch(); drawRules(); }) }),
+          action: h(
+            "div",
+            { class: "row-actions" },
+            button(i18n.t("egress.transfer.import"), {
+              size: "small",
+              iconName: "file-up",
+              onClick: () => importBundle("rules", (items) => {
+                const summary = mergeRules(draft, items);
+                touch();
+                drawRules();
+                return summary;
+              }),
+            }),
+            button(i18n.t("egress.transfer.export"), { size: "small", iconName: "download", onClick: () => exportBundle("rules", draft.rules.map(exportableRule)) }),
+            button(i18n.t("egress.rule.add"), { size: "small", iconName: "plus", onClick: () => openRuleModal(draft, () => { touch(); drawRules(); }) }),
+          ),
         }),
       ),
       card({
@@ -451,7 +487,7 @@ function openRuleModal(draft, after, existing = null) {
 }
 
 function resultNotice(result, expectedProxy = "") {
-  if (!result.ok) return notice(i18n.t("egress.result.failed", { error: result.error || i18n.t("shared.unknown") }), "danger", "circle-alert");
+  if (!result.ok) return notice(i18n.t("egress.result.failed", { error: egressOutcomeMessage(result) }), "danger", "circle-alert");
   const via = result.via_proxy || result.proxy_id || "direct";
   if (expectedProxy && via !== expectedProxy) {
     return notice(i18n.t("egress.result.wrongProxy", { expected: expectedProxy, actual: via }), "danger", "circle-alert");
@@ -460,4 +496,100 @@ function resultNotice(result, expectedProxy = "") {
   const playlist = i18n.t(result.rewrite ? "egress.policy.rewrite" : "egress.policy.passthrough");
   const finalURL = result.final_url ? i18n.t("egress.result.finalURL", { url: result.final_url }) : "";
   return notice(i18n.t("egress.result.success", { route, via, playlist, status: result.status, duration: result.dur_ms, finalURL }), "success", "circle-check");
+}
+
+function exportableProxy(proxy) {
+  return { id: proxy.id, name: proxy.name || "", url: proxy.url || "", disabled: Boolean(proxy.disabled) };
+}
+
+function exportableRule(rule) {
+  return {
+    id: rule.id,
+    kind: rule.kind,
+    pattern: rule.pattern || "",
+    proxy: rule.proxy || rule.proxy_id || "direct",
+    priority: Number(rule.priority) || 100,
+    disabled: Boolean(rule.disabled),
+  };
+}
+
+function exportBundle(kind, items) {
+  if (!items.length) {
+    toast(i18n.t("egress.transfer.empty"), i18n.t("egress.transfer.emptyHint"), "warning");
+    return;
+  }
+  const payload = { kiln: `egress-${kind}`, version: 1, [kind]: items };
+  const url = URL.createObjectURL(new Blob([`${JSON.stringify(payload, null, 2)}\n`], { type: "application/json" }));
+  const anchor = h("a", { href: url, download: `kiln-egress-${kind}.json` });
+  anchor.click();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+  toast(i18n.t("egress.transfer.exported", { count: items.length }));
+}
+
+function importBundle(kind, apply) {
+  const picker = h("input", { type: "file", accept: ".json,application/json" });
+  picker.addEventListener("change", async () => {
+    const file = picker.files?.[0];
+    if (!file) return;
+    let items = null;
+    try {
+      const data = JSON.parse(await file.text());
+      if (data?.kiln === `egress-${kind}` && Array.isArray(data[kind])) items = data[kind];
+    } catch {
+      items = null;
+    }
+    if (!items) {
+      toast(i18n.t("egress.transfer.invalid"), i18n.t("egress.transfer.invalidHint"), "danger");
+      return;
+    }
+    const summary = apply(items);
+    toast(i18n.t("egress.transfer.imported"), i18n.t("egress.transfer.importedDetail", summary), summary.added || summary.replaced ? "success" : "warning");
+  });
+  picker.click();
+}
+
+function mergeProxies(draft, items) {
+  const summary = { added: 0, replaced: 0, skipped: 0 };
+  for (const item of items) {
+    const id = String(item?.id || "").trim();
+    const url = String(item?.url || "").trim();
+    if (!id || !url) {
+      summary.skipped += 1;
+      continue;
+    }
+    const entry = { id, name: String(item.name || ""), url, disabled: Boolean(item.disabled) };
+    const at = draft.proxies.findIndex((proxy) => proxy.id === id);
+    if (at >= 0) {
+      draft.proxies[at] = { ...draft.proxies[at], ...entry };
+      summary.replaced += 1;
+    } else {
+      draft.proxies.push(entry);
+      summary.added += 1;
+    }
+  }
+  return summary;
+}
+
+function mergeRules(draft, items) {
+  const summary = { added: 0, replaced: 0, skipped: 0 };
+  const known = new Set(["direct", "", ...draft.proxies.map((proxy) => proxy.id)]);
+  for (const item of items) {
+    const id = String(item?.id || "").trim();
+    const pattern = String(item?.pattern || "").trim();
+    const proxy = String(item?.proxy || item?.proxy_id || "direct").trim();
+    if (!id || !pattern || !RULE_KINDS[item?.kind] || !known.has(proxy)) {
+      summary.skipped += 1;
+      continue;
+    }
+    const entry = { id, kind: item.kind, pattern, proxy, priority: Number(item.priority) || 100, disabled: Boolean(item.disabled) };
+    const at = draft.rules.findIndex((rule) => rule.id === id);
+    if (at >= 0) {
+      draft.rules[at] = { ...draft.rules[at], ...entry };
+      summary.replaced += 1;
+    } else {
+      draft.rules.push(entry);
+      summary.added += 1;
+    }
+  }
+  return summary;
 }

@@ -1,7 +1,7 @@
 import { formatTime, h } from "/admin/assets/core/dom.js";
 import { endpoints } from "/admin/assets/core/api.js";
 import { vt } from "/admin/assets/core/view-i18n.js";
-import { badge, button, card, emptyState, field, input, notice, select, table } from "/admin/assets/ui/kit.js";
+import { badge, button, card, emptyState, field, input, notice, select, setBusy, table } from "/admin/assets/ui/kit.js";
 import { closeModal, confirmDialog, copyText, openModal, toast, toastError } from "/admin/assets/ui/overlay.js";
 
 const SCOPES = ["read", "write", "delete", "refresh"];
@@ -123,7 +123,7 @@ function openTokenEditor(ctx, existing, publicBase) {
         toast(vt("apiToken.invalid"), vt("apiToken.invalidHint"), "danger");
         return;
       }
-      submit.disabled = true;
+      setBusy(submit, true);
       try {
         if (existing) {
           await endpoints.updateAdminAPIToken(existing.id, {
@@ -144,7 +144,7 @@ function openTokenEditor(ctx, existing, publicBase) {
         }
       } catch (error) {
         toastError(error, vt("apiToken.saveFailed"));
-        submit.disabled = false;
+        setBusy(submit, false);
       }
     },
   });

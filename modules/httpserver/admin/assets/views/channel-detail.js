@@ -1,10 +1,11 @@
 import { frag, h, icon } from "/admin/assets/core/dom.js";
 import { endpoints } from "/admin/assets/core/api.js";
+import { egressOutcomeMessage } from "/admin/assets/core/egress-status.js";
 import { isValidSourceURL, resolveSourceFields } from "/admin/assets/core/source-url.js";
 import { audioTrackLabel, choiceFromSelection, customSelector, selectorForTrack, subtitleTrackLabel, trackSummary, videoTrackLabel } from "/admin/assets/core/track-options.js";
 import { invalidateCatalog, loadCatalog, refreshStatus, sessionFor, sourceURL, store } from "/admin/assets/core/store.js";
-import { vt } from "/admin/assets/core/view-i18n.js";
-import { badge, button, card, channelAvatar, emptyState, field, formSection, iconButton, input, linkButton, pageHead, select, stateBadge } from "/admin/assets/ui/kit.js";
+import { apiErrorMessage, vt } from "/admin/assets/core/view-i18n.js";
+import { badge, button, card, channelAvatar, emptyState, field, formSection, iconButton, input, linkButton, pageHead, select, setBusy, stateBadge } from "/admin/assets/ui/kit.js";
 import { closeModal, confirmDialog, openModal, toast, toastError } from "/admin/assets/ui/overlay.js";
 import { matchesQuery } from "/admin/assets/views/channels.js";
 import { matchBadge } from "/admin/assets/views/epg.js";
@@ -214,7 +215,7 @@ function buildEditor(ctx, channel, revision, isNew, epg, egress) {
       return;
     }
     quickProxyURL.removeAttribute("aria-invalid");
-    egressTestButton.disabled = true;
+    setBusy(egressTestButton, true);
     egressStatus.textContent = vt("channel.egressTesting");
     try {
       const result = await endpoints.testEgress({
@@ -226,13 +227,13 @@ function buildEditor(ctx, channel, revision, isNew, epg, egress) {
       const via = result.via_proxy || result.proxy_id || "direct";
       egressStatus.textContent = result.ok
         ? vt("channel.egressTestOK", { via, status: result.status, duration: result.dur_ms })
-        : vt("channel.egressTestFailed", { reason: result.error || result.outcome || vt("common.unknown") });
+        : vt("channel.egressTestFailed", { reason: egressOutcomeMessage(result) });
       egressStatus.className = `field-hint ${result.ok ? "text-success" : "text-danger"}`;
     } catch (error) {
-      egressStatus.textContent = error.message || vt("channel.egressTestFailed", { reason: vt("common.unknown") });
+      egressStatus.textContent = apiErrorMessage(error) || vt("channel.egressTestFailed", { reason: vt("common.unknown") });
       egressStatus.className = "field-hint text-danger";
     } finally {
-      egressTestButton.disabled = false;
+      setBusy(egressTestButton, false);
     }
   });
 
@@ -459,7 +460,7 @@ function buildEditor(ctx, channel, revision, isNew, epg, egress) {
     if (!validateCustomSelection() || !validateEngineSelection()) return;
     probeController?.abort();
     probeController = new AbortController();
-    probeButton.disabled = true;
+    setBusy(probeButton, true);
     probeBadge.className = "badge badge-info";
     probeBadge.replaceChildren(h("span", { text: vt("channel.trackInspecting") }));
     probeSummary.textContent = vt("channel.trackReading");
@@ -482,9 +483,9 @@ function buildEditor(ctx, channel, revision, isNew, epg, egress) {
       probeBadge.className = "badge badge-danger";
       probeBadge.replaceChildren(h("span", { text: vt("channel.trackFailed") }));
       probeSummary.textContent = vt("channel.trackUnreadable");
-      probeDetail.textContent = error.message || vt("channel.noValidResponse");
+      probeDetail.textContent = apiErrorMessage(error) || vt("channel.noValidResponse");
     } finally {
-      probeButton.disabled = false;
+      setBusy(probeButton, false);
     }
   });
 
@@ -525,7 +526,7 @@ function buildEditor(ctx, channel, revision, isNew, epg, egress) {
     }
     if (!validateCustomSelection() || !validateFreshInspection() || !validateEngineSelection()) return;
 
-    saveButton.disabled = true;
+    setBusy(saveButton, true);
     try {
       if (isNew) await endpoints.createChannel(body);
       else await endpoints.updateChannel(channel.id, body, revision);
@@ -536,7 +537,7 @@ function buildEditor(ctx, channel, revision, isNew, epg, egress) {
       if (!isNew) await ctx.reload();
     } catch (error) {
       toastError(error, vt("channel.saveFailed"));
-      saveButton.disabled = false;
+      setBusy(saveButton, false);
     }
   });
 

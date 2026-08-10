@@ -1,5 +1,5 @@
 import { h, icon } from "/admin/assets/core/dom.js";
-import { vt } from "/admin/assets/core/view-i18n.js";
+import { apiErrorMessage, vt } from "/admin/assets/core/view-i18n.js";
 import { button } from "/admin/assets/ui/kit.js";
 
 const TOAST_MS = 4200;
@@ -24,35 +24,41 @@ export function toast(title, message = "", tone = "success") {
 }
 
 export function toastError(error, fallback = "") {
-  const detail = [error?.message, error?.detail].filter(Boolean).join(" · ");
+  const detail = [apiErrorMessage(error), error?.detail].filter(Boolean).join(" · ");
   toast(fallback || vt("common.actionFailed"), detail, "danger");
 }
 
 const dialog = () => document.getElementById("modal");
 
-export function openModal({ title, description, body, actions = [], onClose }) {
+let modalGeneration = 0;
+
+export function openModal({ title, description, body, actions = [], onClose, compact = false }) {
   const el = dialog();
   const content = document.getElementById("modal-content");
+  const generation = ++modalGeneration;
+  el.classList.toggle("modal-compact", compact);
   content.replaceChildren(
-    h(
-      "div",
-      { class: "modal-head" },
+    ...[
       h(
         "div",
-        { class: "modal-title" },
-        h("h2", { id: "modal-title", text: title }),
-        description ? h("p", { id: "modal-desc", text: description }) : null,
+        { class: "modal-head" },
+        h(
+          "div",
+          { class: "modal-title" },
+          h("h2", { id: "modal-title", text: title }),
+          description ? h("p", { id: "modal-desc", text: description }) : null,
+        ),
+        h("button", { class: "icon-button", type: "button", "aria-label": vt("common.close"), onClick: closeModal }, icon("x", 18)),
       ),
-      h("button", { class: "icon-button", type: "button", "aria-label": vt("common.close"), onClick: closeModal }, icon("x", 18)),
-    ),
-    h("div", { class: "modal-body" }, body),
-    actions.length ? h("div", { class: "modal-actions" }, actions) : null,
+      body ? h("div", { class: "modal-body" }, body) : null,
+      actions.length ? h("div", { class: "modal-actions" }, actions) : null,
+    ].filter(Boolean),
   );
   el.setAttribute("aria-labelledby", "modal-title");
   if (description) el.setAttribute("aria-describedby", "modal-desc");
   else el.removeAttribute("aria-describedby");
   el.returnValue = "";
-  el.addEventListener("close", () => content.replaceChildren(), { once: true });
+  el.addEventListener("close", () => { if (generation === modalGeneration) content.replaceChildren(); }, { once: true });
   if (onClose) el.addEventListener("close", onClose, { once: true });
   if (!el.open) el.showModal();
   return el;
@@ -105,12 +111,15 @@ export function confirmDialog({ title, description, confirmLabel, tone = "danger
     openModal({
       title,
       description,
-      body: h(
-        "div",
-        { class: "stack" },
-        warning ? h("div", { class: `notice notice-${tone}` }, icon("triangle-alert", 18), h("span", { text: warning })) : null,
-        field,
-      ),
+      compact: true,
+      body: warning || field
+        ? h(
+            "div",
+            { class: "stack" },
+            warning ? h("div", { class: `notice notice-${tone}` }, icon("triangle-alert", 18), h("span", { text: warning })) : null,
+            field,
+          )
+        : null,
       actions: [button(vt("common.cancel"), { onClick: closeModal }), confirmButton],
       onClose: () => settle(false),
     });
@@ -119,11 +128,12 @@ export function confirmDialog({ title, description, confirmLabel, tone = "danger
 
 let menuSeq = 0;
 
-export function attachMenu(anchor, items) {
+export function attachMenu(anchor, items, options = {}) {
+  const { mount = document.body, label = "" } = options;
   const id = `menu-${++menuSeq}`;
   const menu = h(
     "div",
-    { class: "menu", id, role: "menu", popover: "auto" },
+    { class: "menu", id, role: "menu", "aria-label": label || null, popover: "auto" },
     items.map((item) =>
       h(
         "button",
@@ -142,7 +152,7 @@ export function attachMenu(anchor, items) {
       ),
     ),
   );
-  document.body.append(menu);
+  mount.append(menu);
 
   const entries = () => [...menu.querySelectorAll(".menu-item")];
   const dismiss = () => {
@@ -194,7 +204,7 @@ export function attachMenu(anchor, items) {
     else if (event.key === "Escape" || event.key === "Tab") dismiss();
   });
 
-  return { close: () => menu.hidePopover(), dispose: () => menu.remove() };
+  return { menu, close: () => menu.hidePopover(), dispose: () => menu.remove() };
 }
 
 export async function copyText(value, message = "") {

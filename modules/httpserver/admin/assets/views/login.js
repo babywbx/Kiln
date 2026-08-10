@@ -1,8 +1,9 @@
 import { h } from "/admin/assets/core/dom.js";
 import { clearSession, endpoints, remembersSession, saveSession } from "/admin/assets/core/api.js";
-import { LOCALE_OPTIONS } from "/admin/assets/core/i18n.js";
+import { LOCALE_OPTIONS, localeLabel } from "/admin/assets/core/i18n.js";
 import { store } from "/admin/assets/core/store.js";
 import { button } from "/admin/assets/ui/kit.js";
+import { attachMenu } from "/admin/assets/ui/overlay.js";
 import { classifyLoginError, validateCredentials } from "/admin/assets/views/login-model.js";
 
 export function renderLogin(onSuccess, options) {
@@ -33,12 +34,9 @@ export function renderLogin(onSuccess, options) {
   submit.classList.add("button-wide");
   const submitLabel = submit.querySelector("span");
 
-  const language = h(
-    "select",
-    { class: "login-language-select", id: "login-language" },
-    LOCALE_OPTIONS.map(({ value, label }) => h("option", { value, text: label })),
-  );
-  language.value = i18n.locale;
+  const language = button(localeLabel(i18n.locale), { kind: "ghost", size: "small", trailingIcon: "chevron-down" });
+  language.classList.add("login-language");
+  const languageLabel = language.querySelector("span");
 
   const eyebrow = h("p", { class: "eyebrow" });
   const title = h("h1");
@@ -59,7 +57,12 @@ export function renderLogin(onSuccess, options) {
   );
 
   function paint() {
-    language.setAttribute("aria-label", i18n.t("login.language"));
+    languageLabel.textContent = localeLabel(i18n.locale);
+    languageMenu.menu.setAttribute("aria-label", i18n.t("login.language"));
+    for (const [index, item] of [...languageMenu.menu.children].entries()) {
+      item.setAttribute("role", "menuitemradio");
+      item.setAttribute("aria-checked", String(LOCALE_OPTIONS[index].value === i18n.locale));
+    }
     eyebrow.textContent = i18n.t("login.eyebrow");
     title.textContent = i18n.t("login.title");
     description.textContent = i18n.t("login.description");
@@ -109,12 +112,6 @@ export function renderLogin(onSuccess, options) {
 
   username.addEventListener("input", () => clearErrorFor("username"));
   password.addEventListener("input", () => clearErrorFor("password"));
-  language.addEventListener("change", () => {
-    i18n.setLocale(language.value);
-    paint();
-    onLocaleChange();
-  });
-
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (submitting) return;
@@ -176,11 +173,26 @@ export function renderLogin(onSuccess, options) {
     ),
   );
 
+  const languageMenu = attachMenu(
+    language,
+    LOCALE_OPTIONS.map(({ value, label }) => ({
+      label,
+      icon: "check",
+      onSelect: () => {
+        if (value === i18n.locale) return;
+        i18n.setLocale(value);
+        paint();
+        onLocaleChange();
+      },
+    })),
+    { mount: view, label: i18n.t("login.language") },
+  );
+
   paint();
   requestAnimationFrame(() => username.focus());
   return view;
 }
 
 export function brandMark() {
-  return h("span", { class: "brand-mark", "aria-hidden": "true" }, h("i"), h("i"), h("i"));
+  return h("img", { class: "brand-mark", src: "/admin/assets/icon.webp", alt: "", width: "32", height: "32" });
 }

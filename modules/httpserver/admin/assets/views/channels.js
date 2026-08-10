@@ -2,7 +2,7 @@ import { frag, h, icon } from "/admin/assets/core/dom.js";
 import { endpoints } from "/admin/assets/core/api.js";
 import { invalidateCatalog, loadCatalog, refreshStatus, sessionFor, sourceURL, store } from "/admin/assets/core/store.js";
 import { vt } from "/admin/assets/core/view-i18n.js";
-import { badge, button, card, channelCell, emptyState, field, iconButton, input, linkButton, notice, pageHead, runModeLabel, stateBadge } from "/admin/assets/ui/kit.js";
+import { badge, button, card, channelCell, emptyState, field, iconButton, input, linkButton, notice, pageHead, runModeLabel, setBusy, stateBadge } from "/admin/assets/ui/kit.js";
 import { closeModal, confirmDialog, openModal, toast, toastError } from "/admin/assets/ui/overlay.js";
 import { matchBadge, matchMap } from "/admin/assets/views/epg.js";
 import { previewChannel } from "/admin/assets/views/preview.js";
@@ -306,7 +306,7 @@ function openImportModal(ctx) {
     disabled: true,
     onClick: async () => {
       if (!previewedContent) return;
-      applyButton.disabled = true;
+      setBusy(applyButton, true);
       try {
         const revisions = Object.fromEntries(store.channels.map((channel) => [channel.id, channel.revision]));
         const data = await endpoints.importM3U({
@@ -320,6 +320,7 @@ function openImportModal(ctx) {
         await ctx.reload();
       } catch (error) {
         toastError(error, vt("import.failed"));
+        setBusy(applyButton, false);
         applyButton.disabled = !previewEntries.some((entry) => entry.action === "create" || entry.action === "update");
       }
     },

@@ -8,7 +8,7 @@ const kit = await readFile("modules/httpserver/admin/assets/ui/kit.js", "utf8");
 test("card actions wrap without squeezing button labels outside their bounds", () => {
   assert.match(kit, /action \? h\("div", \{ class: "card-action" \}, action\) : null/);
   assert.match(css, /\.card-head\s*\{[^}]*flex-wrap:\s*wrap/);
-  assert.match(css, /\.card-title\s*\{[^}]*flex:\s*1 1 240px[^}]*overflow-wrap:\s*anywhere/);
+  assert.match(css, /\.card-title\s*\{[^}]*flex:\s*1 1 auto[^}]*overflow-wrap:\s*anywhere/);
   assert.match(css, /\.card-action\s*\{[^}]*flex:\s*0 0 auto/);
   assert.match(css, /\.button > span\s*\{[^}]*overflow:\s*hidden[^}]*text-overflow:\s*ellipsis/);
 });
