@@ -372,33 +372,6 @@ func compatTLSForProxy(tr *http.Transport) {
 	tr.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 }
 
-func (r *Router) EnvForFFmpeg(targetURL, channelID string, forDocker bool) ([]string, error) {
-	r.mu.RLock()
-	d := r.resolveLocked(targetURL, channelID)
-	dockerProxyHost := r.cfg.DockerProxyHost
-	r.mu.RUnlock()
-	if d.ProxyID == Direct || d.ProxyURL == nil {
-		return nil, nil
-	}
-	if s := strings.ToLower(d.ProxyURL.Scheme); s != "http" && s != "https" {
-		return nil, fmt.Errorf("proxy %q uses %s, which ffmpeg cannot use; route %s through an http proxy or direct",
-			d.ProxyID, s, targetURL)
-	}
-	u := *d.ProxyURL
-	if forDocker {
-		u = rewriteProxyHostForDocker(u, dockerProxyHost)
-	}
-	proxyStr := u.String()
-	return []string{
-		"HTTP_PROXY=" + proxyStr,
-		"HTTPS_PROXY=" + proxyStr,
-		"http_proxy=" + proxyStr,
-		"https_proxy=" + proxyStr,
-		"NO_PROXY=localhost,127.0.0.1",
-		"no_proxy=localhost,127.0.0.1",
-	}, nil
-}
-
 func matchHostSuffix(host, pattern string) bool {
 	host = strings.ToLower(strings.TrimSpace(host))
 	pattern = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(pattern, ".")))
@@ -406,19 +379,6 @@ func matchHostSuffix(host, pattern string) bool {
 		return false
 	}
 	return host == pattern || strings.HasSuffix(host, "."+pattern)
-}
-
-func rewriteProxyHostForDocker(u url.URL, dockerHost string) url.URL {
-	h := strings.ToLower(u.Hostname())
-	if h == "127.0.0.1" || h == "localhost" || h == "::1" {
-		port := u.Port()
-		if port == "" {
-			u.Host = dockerHost
-		} else {
-			u.Host = dockerHost + ":" + port
-		}
-	}
-	return u
 }
 
 func (r *Router) ShouldRewriteURL(abs, channelID string) bool {

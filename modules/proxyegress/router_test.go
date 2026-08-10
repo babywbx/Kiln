@@ -151,21 +151,7 @@ func TestClientForProxyForcesDirectOrNamedProfile(t *testing.T) {
 	}
 }
 
-func TestEnvForFFmpegRejectsSocksRoute(t *testing.T) {
-	r, _ := NewRouter(Config{
-		Default:  "p1",
-		Profiles: []Profile{{ID: "p1", URL: "socks5h://127.0.0.1:6153"}},
-	})
-	env, err := r.EnvForFFmpeg("http://example.com/", "", true)
-	if err == nil {
-		t.Fatalf("want error for socks route, got env=%v", env)
-	}
-	if env != nil {
-		t.Fatalf("no env may be emitted for an unusable route, got %v", env)
-	}
-}
-
-func TestEnvForFFmpegUsesCDNHostNotLANOrigin(t *testing.T) {
+func TestResolveUsesCDNRouteNotLANOrigin(t *testing.T) {
 	r, err := NewRouter(Config{
 		Default:        Direct,
 		PlaylistPolicy: PolicyRewrite,
@@ -174,27 +160,16 @@ func TestEnvForFFmpegUsesCDNHostNotLANOrigin(t *testing.T) {
 			{Priority: 5, Kind: KindHostExact, Pattern: "origin.example.com", ProxyID: Direct},
 			{Priority: 10, Kind: KindHostSuffix, Pattern: "edge.media.example", ProxyID: "local-http"},
 		},
-		DockerProxyHost: "host.docker.internal",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	env, err := r.EnvForFFmpeg("http://origin.example.com:8000/live/uhd", "channel-uhd", true)
-	if err != nil || len(env) != 0 {
-		t.Fatalf("lan origin env=%v err=%v", env, err)
+	if d := r.Resolve("http://origin.example.com:8000/live/uhd", "channel-uhd"); d.ProxyID != Direct {
+		t.Fatalf("lan origin proxy = %q, want direct", d.ProxyID)
 	}
-	env, err = r.EnvForFFmpeg("https://primary.edge.media.example/session/x/index.mpd", "channel-uhd", true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	found := false
-	for _, e := range env {
-		if e == "HTTP_PROXY=http://host.docker.internal:7890" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("cdn env=%v", env)
+	d := r.Resolve("https://primary.edge.media.example/session/x/index.mpd", "channel-uhd")
+	if d.ProxyID != "local-http" || d.ProxyURL == nil || d.ProxyURL.String() != "http://127.0.0.1:7890" {
+		t.Fatalf("cdn decision = %+v", d)
 	}
 }
 
@@ -240,16 +215,10 @@ func TestNewRouterRejectsInvalidActiveRules(t *testing.T) {
 	}
 }
 
-func TestEnvForFFmpegUsesOneReloadSnapshot(t *testing.T) {
+func TestResolveUsesOneReloadSnapshot(t *testing.T) {
 	configs := []Config{
-		{
-			Default: "p", Profiles: []Profile{{ID: "p", URL: "http://127.0.0.1:1001"}},
-			DockerProxyHost: "proxy-a",
-		},
-		{
-			Default: "p", Profiles: []Profile{{ID: "p", URL: "http://127.0.0.1:1002"}},
-			DockerProxyHost: "proxy-b",
-		},
+		{Default: "p", Profiles: []Profile{{ID: "p", URL: "http://proxy-a:1001"}}},
+		{Default: "p", Profiles: []Profile{{ID: "p", URL: "http://proxy-b:1002"}}},
 	}
 	router, err := NewRouter(configs[0])
 	if err != nil {
@@ -278,18 +247,12 @@ func TestEnvForFFmpegUsesOneReloadSnapshot(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < iterations; i++ {
-			env, err := router.EnvForFFmpeg("https://example.com/live.mpd", "", true)
-			if err != nil {
-				report(err)
+			d := router.Resolve("https://example.com/live.mpd", "")
+			if d.ProxyURL == nil {
+				report(fmt.Errorf("mixed reload snapshot produced no proxy"))
 				return
 			}
-			var proxy string
-			for _, value := range env {
-				if strings.HasPrefix(value, "HTTP_PROXY=") {
-					proxy = strings.TrimPrefix(value, "HTTP_PROXY=")
-					break
-				}
-			}
+			proxy := d.ProxyURL.String()
 			if proxy != "http://proxy-a:1001" && proxy != "http://proxy-b:1002" {
 				report(fmt.Errorf("mixed reload snapshot produced %q", proxy))
 				return
