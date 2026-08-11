@@ -37,6 +37,7 @@ channels into one authenticated M3U playlist and on-demand HLS output.
 - [🔌 API](#-api)
 - [🧪 Development](#-development)
 - [📁 Project Structure](#-project-structure)
+- [🤝 Contributing](#-contributing)
 - [📝 License](#-license)
 
 ####
@@ -418,6 +419,20 @@ scripts/           Password hashing, key generation, table generation, console t
 
 </div>
 
+## 🤝 Contributing
+
+Changes start as an issue, and whether a pull request follows is decided there. It keeps you from writing two hundred lines in the wrong direction. The development environment, the `make ci` bar and the commit message format are in the [contributing guide][contributing-link].
+
+Never open a public issue for a security problem. Use the private channel described in the [security policy][security-link].
+
+Taking part means accepting the [code of conduct][coc-link].
+
+<div align="right">
+
+[![][back-to-top]](#readme-top)
+
+</div>
+
 ## 📝 License
 
 Copyright © 2026-present [Babywbx][profile-link].<br/>
@@ -426,6 +441,8 @@ This project is licensed under [AGPL-3.0-only](./LICENSE).
 <!-- LINK GROUP -->
 
 [back-to-top]: https://img.shields.io/badge/-BACK_TO_TOP-151515?style=flat-square
+[coc-link]: ./.github/CODE_OF_CONDUCT.en.md
+[contributing-link]: ./.github/CONTRIBUTING.en.md
 [docs-link]: https://kiln.wbxdocs.com
 [github-contributors-link]: https://github.com/babywbx/Kiln/graphs/contributors
 [github-contributors-shield]: https://img.shields.io/github/contributors/babywbx/Kiln?color=c4f042&labelColor=black&style=flat-square
@@ -443,4 +460,5 @@ This project is licensed under [AGPL-3.0-only](./LICENSE).
 [go-version-link]: https://github.com/babywbx/Kiln/blob/main/go.mod
 [go-version-shield]: https://img.shields.io/github/go-mod/go-version/babywbx/Kiln?color=369eff&labelColor=black&style=flat-square
 [profile-link]: https://github.com/babywbx
+[security-link]: ./.github/SECURITY.en.md
 [variant-doc]: https://kiln.wbxdocs.com/en/guide/variants/

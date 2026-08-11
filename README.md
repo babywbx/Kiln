@@ -37,6 +37,7 @@
 - [🔌 API](#-api)
 - [🧪 开发](#-开发)
 - [📁 项目结构](#-项目结构)
+- [🤝 参与贡献](#-参与贡献)
 - [📝 许可证](#-许可证)
 
 ####
@@ -424,6 +425,20 @@ scripts/           口令哈希、密钥生成、索引表生成与控制台测�
 
 </div>
 
+## 🤝 参与贡献
+
+改动都从一个 issue 开始，要不要提 PR 在 issue 里再定。这样能避免你写完两百行才发现方向不对。开发环境、`make ci` 门槛与提交信息规范见[贡献指南][contributing-link]。
+
+发现安全问题请不要开公开 issue，走[安全策略][security-link]里的私密报告渠道。
+
+参与本项目即表示你接受[行为准则][coc-link]。
+
+<div align="right">
+
+[![][back-to-top]](#readme-top)
+
+</div>
+
 ## 📝 许可证
 
 Copyright © 2026-present [Babywbx][profile-link].<br/>
@@ -432,6 +447,8 @@ Copyright © 2026-present [Babywbx][profile-link].<br/>
 <!-- LINK GROUP -->
 
 [back-to-top]: https://img.shields.io/badge/-BACK_TO_TOP-151515?style=flat-square
+[coc-link]: ./.github/CODE_OF_CONDUCT.md
+[contributing-link]: ./.github/CONTRIBUTING.md
 [docs-link]: https://kiln.wbxdocs.com
 [github-contributors-link]: https://github.com/babywbx/Kiln/graphs/contributors
 [github-contributors-shield]: https://img.shields.io/github/contributors/babywbx/Kiln?color=c4f042&labelColor=black&style=flat-square
@@ -449,4 +466,5 @@ Copyright © 2026-present [Babywbx][profile-link].<br/>
 [go-version-link]: https://github.com/babywbx/Kiln/blob/main/go.mod
 [go-version-shield]: https://img.shields.io/github/go-mod/go-version/babywbx/Kiln?color=369eff&labelColor=black&style=flat-square
 [profile-link]: https://github.com/babywbx
+[security-link]: ./.github/SECURITY.md
 [variant-doc]: https://kiln.wbxdocs.com/guide/variants/

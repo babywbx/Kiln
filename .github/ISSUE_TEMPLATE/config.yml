@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 文档 / Documentation
+    url: https://kiln.wbxdocs.com
+    about: 部署、配置与故障排查请先查文档。Check the docs first for deployment, configuration and troubleshooting.
+  - name: 安全漏洞 / Security vulnerability
+    url: https://github.com/babywbx/Kiln/security/advisories/new
+    about: 请勿公开报告安全问题，改用私密安全公告。Never report a vulnerability publicly, open a private advisory instead.

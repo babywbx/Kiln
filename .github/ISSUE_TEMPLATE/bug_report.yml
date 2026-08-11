@@ -1,0 +1,115 @@
+name: 缺陷报告 / Bug report
+description: 报告一个可复现的问题 / Report something that reproduces
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请先移除口令、API Token、播放密钥、解密密钥与真实源站地址再提交。
+        Remove passwords, API tokens, play keys, decryption keys and real upstream addresses before submitting.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: 提交前确认 / Before submitting
+      options:
+        - label: 我搜索过现有 issue，没有重复 / I searched the existing issues and found no duplicate
+          required: true
+        - label: 我已升级到最新版本，问题仍然存在 / I upgraded to the latest release and it still reproduces
+          required: true
+        - label: 这不是安全漏洞，安全问题走私密公告 / This is not a vulnerability; those go through a private advisory
+          required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本 / Version
+      description: '`kiln -version` 的完整输出 / The full output of `kiln -version`'
+      placeholder: kiln version=1.0.0 commit=… built_at=… variant=full
+    validations:
+      required: true
+
+  - type: dropdown
+    id: variant
+    attributes:
+      label: 变体 / Variant
+      options:
+        - Full
+        - Core
+        - Lite
+        - Windows
+        - 不确定 / Not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: 部署方式 / Deployment
+      options:
+        - Docker
+        - 安装脚本 / Install script
+        - 二进制手动安装 / Manual binary
+        - Windows 服务 / Windows service
+        - 从源码构建 / Built from source
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: 平台与架构 / Platform and architecture
+      placeholder: linux/arm64, Debian 13
+    validations:
+      required: true
+
+  - type: dropdown
+    id: engine
+    attributes:
+      label: packager 引擎 / Packager engine
+      description: 配置里 `[packager].engine` 的取值 / The value of `[packager].engine`
+      options:
+        - 未设置，使用镜像默认 / Unset, image default
+        - native
+        - auto
+        - ffmpeg
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤 / Steps to reproduce
+      placeholder: |
+        1. …
+        2. …
+        3. …
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望结果与实际结果 / Expected versus actual
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志 / Logs
+      description: 出问题前后的服务端日志 / Server logs from around the failure
+      render: text
+
+  - type: textarea
+    id: config
+    attributes:
+      label: 相关配置 / Relevant configuration
+      description: 请先脱敏 / Redact secrets first
+      render: toml
+
+  - type: textarea
+    id: context
+    attributes:
+      label: 补充信息 / Anything else
+      description: 上游类型、是否加密、代理链路、播放器等 / Upstream type, encryption, proxy path, player

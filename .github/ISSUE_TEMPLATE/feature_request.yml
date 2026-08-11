@@ -1,0 +1,64 @@
+name: 功能建议 / Feature request
+description: 提出一个想法，先在这里对齐再写代码 / Propose an idea and align here before writing code
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        本项目的改动都从 issue 开始，谈定之后再决定要不要提 PR。
+        Changes here start as an issue; whether a pull request follows is decided after we agree.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: 提交前确认 / Before submitting
+      options:
+        - label: 我搜索过现有 issue，没有重复 / I searched the existing issues and found no duplicate
+          required: true
+        - label: 我确认文档里没有已经支持的做法 / I checked the docs and this is not already supported
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 要解决的问题 / The problem
+      description: 描述你遇到的实际情况，而不是直接给方案 / Describe the situation you hit, not the solution you have in mind
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 设想的方案 / Proposed approach
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 考虑过的其它做法 / Alternatives considered
+      description: 包括现有功能的组合能否绕过 / Including whether existing features can already work around it
+
+  - type: dropdown
+    id: variants
+    attributes:
+      label: 涉及的变体 / Affected variants
+      multiple: true
+      options:
+        - Full
+        - Core
+        - Lite
+        - Windows
+        - 文档站 / Documentation site
+
+  - type: dropdown
+    id: willing
+    attributes:
+      label: 你愿意实现吗 / Would you implement it
+      description: 回答不影响这个想法是否被接受 / Your answer does not affect whether the idea is accepted
+      options:
+        - 愿意，方案谈定后我来提 PR / Yes, I will send a pull request once we agree
+        - 愿意，但需要一些指引 / Yes, with some guidance
+        - 不，只是提出需求 / No, just raising the need
+    validations:
+      required: true
