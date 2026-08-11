@@ -119,6 +119,9 @@ func TestPlaylistRewritePolicy(t *testing.T) {
 	if !d.Rewrite || d.ProxyURL == nil {
 		t.Fatalf("%+v", d)
 	}
+	if ProxyResolvesHostname(&url.URL{Scheme: "socks5"}) || !ProxyResolvesHostname(d.ProxyURL) {
+		t.Fatal("SOCKS5 must resolve locally and SOCKS5H at the proxy")
+	}
 }
 
 func TestClientForProxyForcesDirectOrNamedProfile(t *testing.T) {

@@ -56,8 +56,10 @@ func (t *pinnedTransport) RoundTrip(request *http.Request) (*http.Response, erro
 	}
 
 	base := t.base
+	proxyResolvesHostname := false
 	if t.router != nil {
 		decision := t.router.Resolve(originalURL, t.channelID)
+		proxyResolvesHostname = ProxyResolvesHostname(decision.ProxyURL)
 		client, err := t.router.ClientForProxy(decision.ProxyID, 10*time.Second)
 		if err != nil {
 			return nil, err
@@ -79,6 +81,7 @@ func (t *pinnedTransport) RoundTrip(request *http.Request) (*http.Response, erro
 		if err != nil {
 			return nil, err
 		}
+		proxyResolvesHostname = proxyURL != nil
 	}
 	if request.URL.Scheme == "https" {
 		if transport.TLSClientConfig == nil {
@@ -105,12 +108,9 @@ func (t *pinnedTransport) RoundTrip(request *http.Request) (*http.Response, erro
 	}
 
 	pinnedRequest := request.Clone(request.Context())
-	pinnedRequest.URL = pinnedURL
-	pinnedRequest.Host = request.URL.Host
-	if request.URL.Scheme == "http" && transport.Proxy != nil {
-		if proxyURL != nil {
-			pinnedRequest.URL.Opaque = "//" + pinnedURL.Host + pinnedURL.RequestURI()
-		}
+	if !proxyResolvesHostname {
+		pinnedRequest.URL = pinnedURL
+		pinnedRequest.Host = request.URL.Host
 	}
 	response, err := transport.RoundTrip(pinnedRequest)
 	if response != nil {

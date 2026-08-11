@@ -59,6 +59,10 @@ proxy = "proxy-http"
 - `socks5h` resolves hostnames at the proxy, `socks5` resolves them locally first. Prefer `socks5h` when the origin only resolves correctly from the proxy's network.
 - Routes can be disabled instead of deleted. A route referenced by `egress.default` or by an enabled rule cannot be left disabled.
 
+<Aside type="caution" title="Proxy-side DNS is a trust boundary">
+  Kiln rejects destinations that resolve locally to private or special addresses before proxying. HTTP, HTTPS, and `socks5h` proxies resolve the hostname again, and Kiln cannot inspect that result. Use trusted proxies and enforce private-destination blocking on the proxy when fetched URLs are not fully controlled.
+</Aside>
+
 <Aside type="note" title="Both engines support all four schemes">
   The ffmpeg engine never touches your routes directly; it reads through a short-lived HTTP proxy Kiln opens locally, and Kiln still performs the egress according to the rules. Whether a route is HTTP or SOCKS is therefore equally transparent to it. See [Media engine](/en/guide/media-engine/) for which engine a channel uses.
 </Aside>

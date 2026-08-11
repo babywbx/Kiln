@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -161,4 +162,129 @@ func testCertificate(t *testing.T, host string) (tls.Certificate, *x509.Certific
 		t.Fatal(err)
 	}
 	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: leaf}, leaf
+}
+
+func TestPinnedTransportSendsHostnameThroughHTTPProxy(t *testing.T) {
+	connectTarget := make(chan string, 1)
+	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		connectTarget <- request.Host
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer proxyServer.Close()
+	proxyURL, err := url.Parse(proxyServer.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := newPinnedTransport(&http.Transport{
+		Proxy: http.ProxyURL(proxyURL),
+	}, nil, "", nil, func(_ context.Context, rawURL string, _ map[string]struct{}) (*url.URL, error) {
+		resolved, err := url.Parse(rawURL)
+		if err != nil {
+			return nil, err
+		}
+		resolved.Host = "198.18.5.255:443"
+		return resolved, nil
+	})
+	client := &http.Client{Timeout: 5 * time.Second, Transport: transport}
+	response, err := client.Get("https://cdn.example.com/manifest.mpd")
+	if response != nil {
+		_ = response.Body.Close()
+	}
+	_ = err
+
+	select {
+	case got := <-connectTarget:
+		if got != "cdn.example.com:443" {
+			t.Fatalf("CONNECT target = %q, want cdn.example.com:443; a locally resolved address is meaningless to a remote proxy", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("proxy never received a CONNECT request")
+	}
+}
+
+func TestPinnedTransportSendsHostnameThroughSOCKS5HProxy(t *testing.T) {
+	connectTarget := make(chan string, 1)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = listener.Close() }()
+	go func() {
+		connection, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer func() { _ = connection.Close() }()
+		greeting := make([]byte, 2)
+		if _, err := io.ReadFull(connection, greeting); err != nil {
+			return
+		}
+		if _, err := io.ReadFull(connection, make([]byte, greeting[1])); err != nil {
+			return
+		}
+		if _, err := connection.Write([]byte{0x05, 0x00}); err != nil {
+			return
+		}
+		header := make([]byte, 5)
+		if _, err := io.ReadFull(connection, header); err != nil {
+			return
+		}
+		if header[3] != 0x03 {
+			connectTarget <- fmt.Sprintf("unexpected address type %d", header[3])
+			return
+		}
+		destination := make([]byte, int(header[4])+2)
+		if _, err := io.ReadFull(connection, destination); err != nil {
+			return
+		}
+		port := int(destination[len(destination)-2])<<8 | int(destination[len(destination)-1])
+		connectTarget <- net.JoinHostPort(string(destination[:len(destination)-2]), strconv.Itoa(port))
+		_, _ = connection.Write([]byte{0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+	}()
+
+	router, err := NewRouter(Config{
+		Default:  "socks",
+		Profiles: []Profile{{ID: "socks", URL: "socks5h://" + listener.Addr().String()}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := newPinnedTransport(nil, router, "", nil, func(_ context.Context, rawURL string, _ map[string]struct{}) (*url.URL, error) {
+		resolved, err := url.Parse(rawURL)
+		if err != nil {
+			return nil, err
+		}
+		resolved.Host = "198.18.5.255:443"
+		return resolved, nil
+	})
+	response, _ := (&http.Client{Timeout: 5 * time.Second, Transport: transport}).Get("https://cdn.example.com/manifest.mpd")
+	if response != nil {
+		_ = response.Body.Close()
+	}
+
+	select {
+	case got := <-connectTarget:
+		if got != "cdn.example.com:443" {
+			t.Fatalf("SOCKS5H target = %q, want cdn.example.com:443", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("SOCKS5H proxy never received a request")
+	}
+}
+
+func TestPinnedTransportAppliesLocalSSRFValidationBeforeProxying(t *testing.T) {
+	proxyURL := &url.URL{Scheme: "http", Host: "127.0.0.1:1"}
+	transport := newPinnedTransport(&http.Transport{
+		Proxy: http.ProxyURL(proxyURL),
+	}, nil, "", nil, func(_ context.Context, _ string, _ map[string]struct{}) (*url.URL, error) {
+		return nil, fmt.Errorf("resolved to a non-public address")
+	})
+	client := &http.Client{Timeout: 5 * time.Second, Transport: transport}
+	response, err := client.Get("https://internal.example.com/secret")
+	if response != nil {
+		_ = response.Body.Close()
+	}
+	if err == nil {
+		t.Fatal("the proxy was reached after local SSRF validation failed")
+	}
 }

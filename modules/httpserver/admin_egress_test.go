@@ -191,7 +191,7 @@ func TestEgressTestPreservesHostWhenPinningAnAllowlistedName(t *testing.T) {
 	}
 }
 
-func TestEgressTestSendsPinnedAddressThroughProxy(t *testing.T) {
+func TestEgressTestSendsHostnameThroughProxy(t *testing.T) {
 	type proxyRequest struct {
 		urlHost string
 		host    string
@@ -234,7 +234,7 @@ func TestEgressTestSendsPinnedAddressThroughProxy(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatalf("proxy was not reached: status=%d body=%s", response.Code, response.Body.String())
 	}
-	if response.Code != http.StatusOK || proxied.urlHost != "127.0.0.1" || proxied.host != "127.0.0.1:8080" {
+	if response.Code != http.StatusOK || proxied.urlHost != "probe.test" || proxied.host != "probe.test:8080" {
 		t.Fatalf("response status=%d proxy request=%#v body=%s", response.Code, proxied, response.Body.String())
 	}
 }

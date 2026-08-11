@@ -114,6 +114,10 @@ func TestDialPinnedChainsThroughSOCKSProxy(t *testing.T) {
 		defer func() { _ = connection.Close() }()
 		_, _ = io.Copy(connection, connection)
 	}()
+	_, targetPort, err := net.SplitHostPort(target.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	connectTarget := make(chan string, 1)
 	socksAddr := startTestSOCKS5(t, connectTarget)
@@ -127,10 +131,10 @@ func TestDialPinnedChainsThroughSOCKSProxy(t *testing.T) {
 		t.Fatal(err)
 	}
 	client := New(Options{
-		Allowed: map[string]struct{}{"127.0.0.1": {}},
+		Allowed: map[string]struct{}{"localhost": {}},
 		Router:  router,
 	})
-	connection, err := client.DialPinned(context.Background(), "https://"+target.Addr().String(), "channel")
+	connection, err := client.DialPinned(context.Background(), "https://localhost:"+targetPort, "channel")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,8 +149,8 @@ func TestDialPinnedChainsThroughSOCKSProxy(t *testing.T) {
 	if string(response) != "ping" {
 		t.Fatalf("tunnel response = %q, want ping", response)
 	}
-	if got := <-connectTarget; got != target.Addr().String() {
-		t.Fatalf("socks CONNECT target = %q, want pinned IP %q", got, target.Addr())
+	if got, want := <-connectTarget, net.JoinHostPort("localhost", targetPort); got != want {
+		t.Fatalf("SOCKS5H target = %q, want proxy-resolved hostname %q", got, want)
 	}
 }
 
@@ -161,7 +165,6 @@ func TestDialPinnedRejectsUnsupportedProxyScheme(t *testing.T) {
 	}
 }
 
-// Minimal SOCKS5 CONNECT server: no auth, IPv4 targets only.
 func startTestSOCKS5(t *testing.T, connectTarget chan<- string) string {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -189,16 +192,37 @@ func startTestSOCKS5(t *testing.T, connectTarget chan<- string) string {
 		if _, err := io.ReadFull(client, request); err != nil {
 			return
 		}
-		if request[1] != 0x01 || request[3] != 0x01 {
+		if request[1] != 0x01 {
 			return
 		}
-		destination := make([]byte, 6)
-		if _, err := io.ReadFull(client, destination); err != nil {
+		var host string
+		switch request[3] {
+		case 0x01:
+			destination := make([]byte, 4)
+			if _, err := io.ReadFull(client, destination); err != nil {
+				return
+			}
+			host = net.IP(destination).String()
+		case 0x03:
+			var size [1]byte
+			if _, err := io.ReadFull(client, size[:]); err != nil {
+				return
+			}
+			destination := make([]byte, int(size[0]))
+			if _, err := io.ReadFull(client, destination); err != nil {
+				return
+			}
+			host = string(destination)
+		default:
+			return
+		}
+		port := make([]byte, 2)
+		if _, err := io.ReadFull(client, port); err != nil {
 			return
 		}
 		address := net.JoinHostPort(
-			net.IP(destination[:4]).String(),
-			strconv.Itoa(int(destination[4])<<8|int(destination[5])),
+			host,
+			strconv.Itoa(int(port[0])<<8|int(port[1])),
 		)
 		connectTarget <- address
 		upstream, err := net.Dial("tcp", address)

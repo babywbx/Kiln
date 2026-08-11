@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/babywbx/kiln/modules/proxyegress"
 	"github.com/babywbx/kiln/modules/security"
 	"golang.org/x/net/proxy"
 )
@@ -35,15 +36,21 @@ func (c *Client) DialPinned(ctx context.Context, rawURL, channelID string) (net.
 		return dialPinnedTarget(ctx, nil, address)
 	}
 	decision := c.router.Resolve(rawURL, channelID)
+	if proxyegress.ProxyResolvesHostname(decision.ProxyURL) {
+		address = net.JoinHostPort(target.Hostname(), port)
+	}
 	return dialPinnedTarget(ctx, decision.ProxyURL, address)
 }
 
 func dialPinnedTarget(ctx context.Context, proxyURL *url.URL, address string) (net.Conn, error) {
 	host, _, err := net.SplitHostPort(address)
-	if err != nil || net.ParseIP(host) == nil {
-		return nil, fmt.Errorf("pinned target requires an IP address")
+	if err != nil || host == "" {
+		return nil, fmt.Errorf("invalid CONNECT target")
 	}
 	if proxyURL == nil {
+		if net.ParseIP(host) == nil {
+			return nil, fmt.Errorf("pinned target requires an IP address")
+		}
 		return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "tcp", address)
 	}
 	scheme := strings.ToLower(proxyURL.Scheme)
@@ -107,7 +114,6 @@ func dialPinnedTarget(ctx context.Context, proxyURL *url.URL, address string) (n
 	return &bufferedConn{Conn: connection, reader: reader}, nil
 }
 
-// address is already a pinned IP, so socks5 and socks5h behave identically.
 func dialPinnedThroughSOCKS(ctx context.Context, proxyURL *url.URL, address string) (net.Conn, error) {
 	u := *proxyURL
 	u.Scheme = "socks5"

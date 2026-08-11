@@ -59,6 +59,10 @@ proxy = "proxy-http"
 - `socks5h` 由代理侧解析域名，`socks5` 先在本机解析再连接。回源地址依赖境外 DNS 时优先选 `socks5h`。
 - 线路可以停用而不删除。被 `egress.default` 或启用中的规则引用的线路不允许处于停用状态。
 
+<Aside type="caution" title="代理侧 DNS 是信任边界">
+  Kiln 会在发给代理前拒绝本机解析到私网或特殊地址的目标。HTTP、HTTPS 与 `socks5h` 代理会再次解析域名，而 Kiln 无法检查该结果。拉取地址不完全受控时，只使用可信代理，并在代理端阻止访问私网目标。
+</Aside>
+
 <Aside type="note" title="两种引擎都支持全部四种 scheme">
   ffmpeg 引擎不直接使用你配置的线路，它通过 Kiln 在本地开的一次性 HTTP 代理取数据，出站仍由 Kiln 按路由完成，因此线路是 HTTP 还是 SOCKS 对它同样透明。频道走哪个引擎见 [媒体引擎](/guide/media-engine/)。
 </Aside>

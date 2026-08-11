@@ -372,6 +372,10 @@ func compatTLSForProxy(tr *http.Transport) {
 	tr.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 }
 
+func ProxyResolvesHostname(proxyURL *url.URL) bool {
+	return proxyURL != nil && !strings.EqualFold(proxyURL.Scheme, "socks5")
+}
+
 func matchHostSuffix(host, pattern string) bool {
 	host = strings.ToLower(strings.TrimSpace(host))
 	pattern = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(pattern, ".")))
