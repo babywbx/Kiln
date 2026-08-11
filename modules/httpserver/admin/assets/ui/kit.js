@@ -23,16 +23,17 @@ export function setBusy(control, busy) {
   control.disabled = busy;
   control.setAttribute("aria-busy", String(busy));
   const name = control.dataset.icon;
+  const size = Number(control.dataset.iconSize) || 16;
   const spinning = control.querySelector(".is-spinning");
   if (busy === Boolean(spinning)) return;
   if (busy) {
-    const spinner = icon("loader-circle", 16);
+    const spinner = icon("loader-circle", size);
     spinner.classList.add("is-spinning");
     if (name) control.firstElementChild.replaceWith(spinner);
     else control.prepend(spinner);
     return;
   }
-  if (name) spinning.replaceWith(icon(name, 16));
+  if (name) spinning.replaceWith(icon(name, size));
   else spinning.remove();
 }
 
@@ -47,6 +48,7 @@ export function linkButton(label, href, options = {}) {
 }
 
 export function iconButton(iconName, label, options = {}) {
+  const size = options.size || 18;
   return h(
     "button",
     {
@@ -56,8 +58,9 @@ export function iconButton(iconName, label, options = {}) {
       title: label,
       "aria-label": label,
       onClick: options.onClick,
+      dataset: { icon: iconName, iconSize: String(size) },
     },
-    icon(iconName, options.size || 18),
+    icon(iconName, size),
   );
 }
 

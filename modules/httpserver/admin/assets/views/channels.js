@@ -72,7 +72,9 @@ export async function renderChannels(ctx) {
       });
       if (!accepted) return;
     }
-    control.disabled = true;
+    const restoreFocus = document.activeElement === control;
+    if (restoreFocus) control.dataset.restoreFocus = "true";
+    setBusy(control, true);
     try {
       if (active) await endpoints.stopSession(channel.id);
       else await endpoints.warmupChannel(channel.id);
@@ -82,7 +84,9 @@ export async function renderChannels(ctx) {
     } catch (error) {
       toastError(error, vt(active ? "channel.stopFailed" : "channel.startFailed"));
     } finally {
-      control.disabled = false;
+      setBusy(control, false);
+      delete control.dataset.restoreFocus;
+      if (restoreFocus && control.isConnected) control.focus();
     }
   };
 
@@ -116,7 +120,9 @@ export async function renderChannels(ctx) {
   };
 
   const swap = (control, next) => {
+    const restoreFocus = document.activeElement === control || control.dataset.restoreFocus === "true";
     control.replaceWith(next);
+    if (restoreFocus) next.focus();
     return next;
   };
 
