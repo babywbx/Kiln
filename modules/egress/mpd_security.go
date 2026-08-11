@@ -233,7 +233,7 @@ func looksLikeAbsoluteReference(raw string) bool {
 		return true
 	}
 	u, err := url.Parse(raw)
-	return err == nil && u.Scheme != ""
+	return err == nil && u.Scheme != "" && !strings.EqualFold(u.Scheme, "urn")
 }
 
 func validateFFmpegReference(raw, sourceURL string, client *pull.Client, headers map[string]string) error {

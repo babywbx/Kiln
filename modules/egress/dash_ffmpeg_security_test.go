@@ -324,6 +324,42 @@ func TestValidateFFmpegMPDRejectsProtocolAndTemplateEscapes(t *testing.T) {
 	}
 }
 
+func TestValidateFFmpegMPDAcceptsURNIdentifiers(t *testing.T) {
+	client := pull.New(pull.Options{})
+	const body = `<?xml version="1.0" encoding="utf-8"?>` +
+		`<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"` +
+		` xmlns:cenc="urn:mpeg:cenc:2013" xsi:schemaLocation="urn:mpeg:dash:schema:mpd:2011 DASH-MPD.xsd"` +
+		` profiles="urn:mpeg:dash:profile:isoff-live:2011" type="dynamic">` +
+		`<UTCTiming schemeIdUri="urn:mpeg:dash:utc:http-iso:2014" value="https://media.example/time"/>` +
+		`<Period id="1"><AdaptationSet id="1" profiles="urn:mpeg:dash:profile:isoff-live:2011">` +
+		`<Role schemeIdUri="urn:mpeg:dash:role:2011" value="main"/>` +
+		`<ContentProtection schemeIdUri="urn:uuid:edef8ba9-79d6-4ace-a3c8-27dcd51d21ed"/>` +
+		`<EssentialProperty schemeIdUri="urn:mpeg:mpegB:cicp:TransferCharacteristics" value="18"/>` +
+		`<Representation id="v15000000" associationType="urn:mpeg:dash:association:2015">` +
+		`<SegmentTemplate initialization="init.mp4" media="seg-$Number$.m4s"/>` +
+		`</Representation></AdaptationSet></Period></MPD>`
+	if err := validateFFmpegMPD(body, "https://media.example/live.mpd", client, nil); err != nil {
+		t.Fatalf("legitimate urn identifiers rejected: %v", err)
+	}
+	for _, unsafe := range []string{
+		`<MPD><BaseURL>file:///etc/passwd</BaseURL></MPD>`,
+		`<MPD><BaseURL>data:text/plain,payload</BaseURL></MPD>`,
+		`<MPD><Period><AdaptationSet profiles="\\attacker\share\x"/></Period></MPD>`,
+		`<MPD><Period><Representation><SegmentTemplate media="urn:mpeg:dash:resolve-uri-to-zero:2013"/></Representation></Period></MPD>`,
+	} {
+		if err := validateFFmpegMPD(unsafe, "https://media.example/live.mpd", client, nil); err == nil {
+			t.Fatalf("unsafe MPD passed validation: %s", unsafe)
+		}
+	}
+	headers := map[string]string{"Authorization": "Bearer secret"}
+	if err := validateFFmpegMPD(
+		`<MPD><BaseURL>//169.254.169.254/latest/</BaseURL></MPD>`,
+		"https://media.example/live.mpd", client, headers,
+	); err == nil {
+		t.Fatal("protocol relative reference crossed the authorized header origin")
+	}
+}
+
 func TestRefreshFFmpegMPDReplacesDynamicSnapshot(t *testing.T) {
 	var generation atomic.Int64
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
