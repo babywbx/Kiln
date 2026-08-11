@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -792,7 +793,7 @@ func (db *DB) GetRuntimeSettingsSnapshot() (RuntimeSettingsSnapshot, error) {
 	defer db.mu.Unlock()
 	snapshot := RuntimeSettingsSnapshot{Values: map[string]string{}}
 	rows, err := db.sql.Query(`SELECT key, value, revision FROM settings
-		WHERE key IN ('public_base_url','access_log_retention_days','runtime_settings_revision')`)
+		WHERE key IN ('public_base_url','access_log_retention_days','tls_enabled','runtime_settings_revision')`)
 	if err != nil {
 		return RuntimeSettingsSnapshot{}, err
 	}
@@ -2042,7 +2043,7 @@ func (db *DB) setSetting(key, value string, expectedRevision int64) error {
 	return err
 }
 
-func (db *DB) ReplaceRuntimeSettings(publicBaseURL, retentionDays string, expectedRevision int64) error {
+func (db *DB) ReplaceRuntimeSettings(publicBaseURL, retentionDays string, tlsEnabled bool, expectedRevision int64) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	tx, err := db.sql.Begin()
@@ -2062,6 +2063,7 @@ func (db *DB) ReplaceRuntimeSettings(publicBaseURL, retentionDays string, expect
 	for key, value := range map[string]string{
 		"public_base_url":           publicBaseURL,
 		"access_log_retention_days": retentionDays,
+		"tls_enabled":               strconv.FormatBool(tlsEnabled),
 	} {
 		if _, err := tx.Exec(`INSERT INTO settings(key, value, updated_at) VALUES (?,?,?)
 			ON CONFLICT(key) DO UPDATE SET value=excluded.value, revision=settings.revision+1,

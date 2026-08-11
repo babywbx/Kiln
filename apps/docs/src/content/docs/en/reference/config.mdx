@@ -67,6 +67,11 @@ Resource adaptation runs after validation. Based on detected memory and CPU ceil
 | `write_timeout_sec` | int | `0` | HTTP write timeout in seconds; `0` means no write timeout. A write timeout cuts long-lived streaming responses, so leave it at `0` unless you specifically need one. |
 | `idle_timeout_sec` | int | `120` | HTTP idle timeout in seconds. Non-positive values fall back to the default. |
 | `memory_limit_mb` | int | `0` | Go soft memory target in MiB; `0` leaves it unset. Negative or absurdly large values fail validation. Applied only when `GOMEMLIMIT` is unset. |
+| `tls_enabled` | bool | `false` | Serve over HTTPS. The console toggle stores an override in the database that wins over this value and applies after a restart. |
+| `tls_cert_file` | string | `""` | Path to a PEM certificate. Must be set together with `tls_key_file`. Leave both empty to issue and reuse a self-signed certificate under `data_dir/tls/`. |
+| `tls_key_file` | string | `""` | Path to the matching PEM private key. Must be set together with `tls_cert_file`. |
+
+TLS is available in Core and Full. Lite rejects `tls_enabled = true` or either certificate path instead of silently serving HTTP.
 
 ### The three resource modes
 

@@ -17,7 +17,7 @@ Kiln provides three Docker images that use the same configuration model and nati
 
 `latest` is an alias for `full`. All three run as the non-root uid/gid `999`, listen on `8080`, and hard-code `-config /etc/kiln/kiln.toml` as their command, so mounting the config at that path is all it takes to start with no arguments.
 
-Lite creates no SQLite database, and its public surface is limited to `/healthz`, `/readyz`, `/v1/auth/login`, `/v1/playlist.m3u`, and `/v1/play/*`. An `auto` or `ffmpeg` packager, EPG, OTLP, or pprof in the config is rejected at startup rather than silently ignored. See [Image variants](/en/guide/variants/) for the full comparison.
+Lite creates no SQLite database, and its public surface is limited to `/healthz`, `/readyz`, `/v1/auth/login`, `/v1/playlist.m3u`, and `/v1/play/*`. An `auto` or `ffmpeg` packager, EPG, OTLP, pprof, or TLS in the config is rejected at startup rather than silently ignored. See [Image variants](/en/guide/variants/) for the full comparison.
 
 <Aside type="note" title="Image defaults never override an explicit setting">
   `KILN_DEFAULT_PACKAGER_ENGINE` applies only when `[packager].engine` is absent. An explicit `auto`, `native`, or `ffmpeg` always wins, so the same config never changes behavior because of an image tag.

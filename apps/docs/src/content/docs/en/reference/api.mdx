@@ -526,9 +526,9 @@ Records are pruned according to `access_log_retention_days`, which defaults to 3
 | `GET` | `/v1/admin/settings` | `read` | Read runtime settings |
 | `PUT` | `/v1/admin/settings` | `write` | Write runtime settings |
 
-The read returns the config-file values `listen`, `cors_origins`, `public_hosts`, and `play_require_auth`, plus the runtime-editable `public_base_url` and `access_log_retention_days` and the current `revision`.
+The read returns the config-file values `listen`, `cors_origins`, `public_hosts`, and `play_require_auth`, plus the runtime-editable `public_base_url`, `access_log_retention_days`, `tls_enabled`, TLS certificate status, and the current `revision`.
 
-The write body is `{"public_base_url": "https://kiln.example.com", "access_log_retention_days": "30"}`. Both fields are strings, and retention must be between 1 and 3650. `If-Match` is required; without it the request returns 409.
+The write body is `{"public_base_url": "https://kiln.example.com", "access_log_retention_days": "30", "tls_enabled": true}`. The first two fields are strings, retention must be between 1 and 3650, and changing TLS takes effect after a restart. `tls_enabled` is optional and retains its current value when omitted. `If-Match` is required; without it the request returns 409.
 
 ### Import and export
 

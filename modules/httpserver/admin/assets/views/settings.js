@@ -31,6 +31,14 @@ export async function renderSettings(ctx) {
 
   const baseInput = input("public_base_url", data.public_base_url || "", { type: "url", placeholder: "https://kiln.example.com" });
   const retentionInput = input("access_log_retention_days", data.access_log_retention_days || "30", { type: "number", min: 1, max: 3650 });
+  const tlsError = String(data.tls_certificate_error || "");
+  const tlsToggle = h("input", {
+    name: "tls_enabled",
+    type: "checkbox",
+    checked: Boolean(data.tls_enabled),
+    disabled: Boolean(tlsError && !data.tls_enabled),
+    "aria-label": i18n.t("settings.httpsToggleAria"),
+  });
 
   const saveButton = button(i18n.t("settings.save"), { kind: "primary", iconName: "check", disabled: true });
   const touch = () => {
@@ -39,19 +47,26 @@ export async function renderSettings(ctx) {
   };
   baseInput.addEventListener("input", touch);
   retentionInput.addEventListener("input", touch);
+  tlsToggle.addEventListener("change", touch);
 
   saveButton.addEventListener("click", async () => {
+    if (tlsError && tlsToggle.checked) {
+      toast(i18n.t("settings.httpsCertificateError"), i18n.t("settings.httpsCertificateErrorHint"), "danger");
+      tlsToggle.focus();
+      return;
+    }
     setBusy(saveButton, true);
     try {
       await endpoints.saveSettings(
         {
           public_base_url: baseInput.value.trim(),
           access_log_retention_days: String(retentionInput.value).trim(),
+          tls_enabled: tlsToggle.checked,
         },
         data.revision,
       );
       ctx.markDirty(false);
-      toast(i18n.t("settings.saved"));
+      toast(i18n.t("settings.saved"), tlsToggle.checked === Boolean(data.tls_enabled) ? "" : i18n.t("settings.httpsRestartHint"));
       await ctx.reload();
     } catch (error) {
       toast(i18n.t("error.saveFailed"), errorDetail(error), "danger");
@@ -93,6 +108,34 @@ export async function renderSettings(ctx) {
     runtimeRow(i18n.t("settings.serviceVersion"), store.version || "—"),
   );
 
+  const https = card({
+    title: i18n.t("settings.httpsTitle"),
+    description: i18n.t("settings.httpsDescription"),
+    body: h(
+      "div",
+      { class: "list" },
+      h(
+        "label",
+        { class: "list-item check-row" },
+        h("span", {}, h("strong", { text: i18n.t("settings.httpsToggle") }), h("small", { class: "muted", text: i18n.t("settings.httpsToggleHint") })),
+        tlsToggle,
+      ),
+      runtimeRow(
+        i18n.t("settings.httpsCertificate"),
+        null,
+        data.tls_certificate_error
+          ? badge(i18n.t("settings.httpsCertificateError"), "danger")
+          : badge(
+              i18n.t(data.tls_certificate_source === "file" ? "settings.httpsCertificateFile" : "settings.httpsCertificateSelfSigned"),
+              data.tls_certificate_source === "file" ? "success" : "warning",
+            ),
+      ),
+      tlsError ? notice(i18n.t("settings.httpsCertificateErrorHint"), "danger", "triangle-alert") : null,
+      stackedRow(i18n.t("settings.httpsCertificateHosts"), (data.tls_certificate_hosts || []).join(" · ") || "—"),
+      runtimeRow(i18n.t("settings.httpsCertificateExpiry"), formatExpiry(data.tls_certificate_expires_at)),
+    ),
+  });
+
   return frag(
     pageHead(i18n.t("settings.title"), i18n.t("settings.description"), [saveButton]),
     h(
@@ -118,6 +161,7 @@ export async function renderSettings(ctx) {
           body: runtime,
         }),
       ),
+      https,
     ),
   );
 }
@@ -352,6 +396,16 @@ function settingActionRow(label, value, action, marker = "") {
     h("span", {}, h("strong", { text: label }), h("small", valueAttrs)),
     action,
   );
+}
+
+function formatExpiry(raw) {
+  if (!raw) return "—";
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? raw : parsed.toLocaleDateString(i18n.locale);
+}
+
+function stackedRow(label, value) {
+  return h("div", { class: "list-item" }, h("span", {}, h("strong", { text: label }), h("small", { class: "mono", text: value })));
 }
 
 function runtimeRow(label, value, node = null) {

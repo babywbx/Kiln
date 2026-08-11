@@ -4,6 +4,7 @@ package httpserver
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"io"
@@ -88,8 +89,23 @@ func New(deps Deps) *Server {
 func (s *Server) Handler() http.Handler { return s.http.Handler }
 
 func (s *Server) Start() error {
-	s.deps.Log.Info("listening", "addr", s.deps.Cfg.Server.Listen, "version", version.Version)
-	return s.http.ListenAndServe()
+	tlsEnabled, err := s.tlsEnabled()
+	if err != nil {
+		return err
+	}
+	if !tlsEnabled {
+		s.deps.Log.Info("listening", "addr", s.deps.Cfg.Server.Listen, "scheme", "http", "version", version.Version)
+		return s.http.ListenAndServe()
+	}
+	material, err := s.tlsMaterial()
+	if err != nil {
+		return err
+	}
+	s.http.TLSConfig = &tls.Config{Certificates: []tls.Certificate{material.Certificate}, MinVersion: tls.VersionTLS12}
+	s.deps.Log.Info("listening",
+		"addr", s.deps.Cfg.Server.Listen, "scheme", "https", "certificate", material.Source,
+		"expires", material.NotAfter.Format(time.RFC3339), "version", version.Version)
+	return s.http.ListenAndServeTLS("", "")
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {

@@ -17,7 +17,7 @@ Kiln 提供三个 Docker 镜像版本，它们使用相同的配置模型和原�
 
 `latest` 是 `full` 的别名。三个变体都以非 root 的 uid/gid `999` 运行，默认监听 `8080`，入口命令固定为 `-config /etc/kiln/kiln.toml`，所以只要把配置挂到这个路径就不需要再传任何参数。
 
-lite 不创建 SQLite，公开接口只有 `/healthz`、`/readyz`、`/v1/auth/login`、`/v1/playlist.m3u` 和 `/v1/play/*`。配置里出现 `auto` 或 `ffmpeg` packager、EPG、OTLP、pprof 时，进程会在启动时直接拒绝而不是静默忽略。变体之间的能力差异见 [镜像变体对比](/guide/variants/)。
+lite 不创建 SQLite，公开接口只有 `/healthz`、`/readyz`、`/v1/auth/login`、`/v1/playlist.m3u` 和 `/v1/play/*`。配置里出现 `auto` 或 `ffmpeg` packager、EPG、OTLP、pprof 或 TLS 时，进程会在启动时直接拒绝而不是静默忽略。变体之间的能力差异见 [镜像变体对比](/guide/variants/)。
 
 <Aside type="note" title="镜像默认值不会覆盖显式配置">
   `KILN_DEFAULT_PACKAGER_ENGINE` 只在配置没有填写 `[packager].engine` 时生效。显式写 `auto`、`native` 或 `ffmpeg` 始终优先，同一份配置不会因为换了镜像标签而改变行为。

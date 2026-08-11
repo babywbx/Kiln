@@ -881,10 +881,10 @@ func TestConfigurationReplacementsAreAtomicAndRevisionChecked(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("get runtime revision: found=%v err=%v", ok, err)
 	}
-	if err := db.ReplaceRuntimeSettings("https://kiln.example", "30", runtimeRevision.Revision); err != nil {
+	if err := db.ReplaceRuntimeSettings("https://kiln.example", "30", true, runtimeRevision.Revision); err != nil {
 		t.Fatalf("replace runtime settings: %v", err)
 	}
-	if err := db.ReplaceRuntimeSettings("https://stale.example", "10", runtimeRevision.Revision); !errors.Is(err, store.ErrRevisionConflict) {
+	if err := db.ReplaceRuntimeSettings("https://stale.example", "10", false, runtimeRevision.Revision); !errors.Is(err, store.ErrRevisionConflict) {
 		t.Fatalf("stale runtime replacement error = %v", err)
 	}
 	publicBase, _, err := db.GetSetting("public_base_url")

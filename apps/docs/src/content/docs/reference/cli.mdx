@@ -143,6 +143,7 @@ Lite 二进制的命令行与完整版完全一致，差异在启动后的行为
   - `[[epg.sources]]` 里不能有任何一项 `enabled = true`；
   - `observe.otlp_endpoint` 必须为空；
   - `debug.pprof.enabled` 必须为 `false`。
+  - `server.tls_enabled` 必须为 `false`，两个 TLS 证书路径都必须为空。
 - 资源自适应使用固定的低内存档位，不随宿主机内存浮动。
 
 各版本提供的路由差异见 [API 参考](/reference/api/)。

@@ -67,6 +67,11 @@ kiln -config /etc/kiln/kiln.toml
 | `write_timeout_sec` | int | `0` | HTTP 写超时秒数，`0` 表示不设写超时。直播长连接会被写超时切断，除非明确需要否则保持 `0`。 |
 | `idle_timeout_sec` | int | `120` | HTTP 空闲连接超时秒数，非正数按默认值处理。 |
 | `memory_limit_mb` | int | `0` | Go 运行时软内存目标，单位 MiB，`0` 表示不设置。负数与超大值校验失败。仅在 `GOMEMLIMIT` 未设置时应用。 |
+| `tls_enabled` | bool | `false` | 以 HTTPS 提供服务。控制台里的开关会写入数据库并覆盖这里的取值，重启后生效。 |
+| `tls_cert_file` | string | `""` | PEM 证书路径，必须与 `tls_key_file` 同时设置。留空则在 `data_dir/tls/` 下自动签发并复用自签名证书。 |
+| `tls_key_file` | string | `""` | PEM 私钥路径，必须与 `tls_cert_file` 同时设置。 |
+
+TLS 仅在 Core 与 Full 中可用。Lite 遇到 `tls_enabled = true` 或任一证书路径时会拒绝启动，不会静默改用 HTTP。
 
 ### resource_mode 的三态语义
 

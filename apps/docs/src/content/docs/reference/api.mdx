@@ -526,9 +526,9 @@ DASH 频道的探测返回 `{"ok": true, "dur_ms": 1200, "inspection": {...}}`�
 | `GET` | `/v1/admin/settings` | `read` | 读取运行时设置 |
 | `PUT` | `/v1/admin/settings` | `write` | 写入运行时设置 |
 
-读取返回配置文件中的 `listen`、`cors_origins`、`public_hosts`、`play_require_auth`，加上可在运行时修改的 `public_base_url`、`access_log_retention_days` 与当前 `revision`。
+读取返回配置文件中的 `listen`、`cors_origins`、`public_hosts`、`play_require_auth`，加上可在运行时修改的 `public_base_url`、`access_log_retention_days`、`tls_enabled`、TLS 证书状态与当前 `revision`。
 
-写入的请求体为 `{"public_base_url": "https://kiln.example.com", "access_log_retention_days": "30"}`，两个字段都是字符串，保留天数取值范围为 1 至 3650。必须携带 `If-Match`，缺失返回 409。
+写入的请求体为 `{"public_base_url": "https://kiln.example.com", "access_log_retention_days": "30", "tls_enabled": true}`。前两个字段为字符串，保留天数取值范围为 1 至 3650，TLS 变更在重启后生效。`tls_enabled` 可省略，省略时保留当前值。必须携带 `If-Match`，缺失返回 409。
 
 ### 导入与导出
 

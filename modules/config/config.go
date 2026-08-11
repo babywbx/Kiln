@@ -88,6 +88,9 @@ type Server struct {
 	WriteTimeout  int    `json:"write_timeout_sec" toml:"write_timeout_sec"`
 	IdleTimeout   int    `json:"idle_timeout_sec" toml:"idle_timeout_sec"`
 	MemoryLimitMB int    `json:"memory_limit_mb" toml:"memory_limit_mb"`
+	TLSEnabled    bool   `json:"tls_enabled" toml:"tls_enabled"`
+	TLSCertFile   string `json:"tls_cert_file" toml:"tls_cert_file"`
+	TLSKeyFile    string `json:"tls_key_file" toml:"tls_key_file"`
 }
 
 const (

@@ -842,6 +842,9 @@ func TestHLSPlayEndToEnd(t *testing.T) {
 	if staleEgress.StatusCode != http.StatusConflict {
 		t.Fatalf("stale egress status %d %s", staleEgress.StatusCode, staleEgress.Body)
 	}
+	if err := db.SetSetting("tls_enabled", "true"); err != nil {
+		t.Fatal(err)
+	}
 	settingsState := adminJSON(t, http.MethodGet, ts.URL+"/v1/admin/settings", login.Token, nil)
 	var settingsBody struct {
 		Revision int64 `json:"revision"`
@@ -854,6 +857,9 @@ func TestHLSPlayEndToEnd(t *testing.T) {
 	}, map[string]string{"If-Match": strconv.FormatInt(settingsBody.Revision, 10)})
 	if settingsPut.StatusCode != http.StatusOK {
 		t.Fatalf("settings put %d %s", settingsPut.StatusCode, settingsPut.Body)
+	}
+	if tlsEnabled, _, err := db.GetSetting("tls_enabled"); err != nil || tlsEnabled != "true" {
+		t.Fatalf("settings PUT without tls_enabled changed it to %q: %v", tlsEnabled, err)
 	}
 	staleSettings := adminJSONHeaders(t, http.MethodPut, ts.URL+"/v1/admin/settings", login.Token, map[string]string{
 		"public_base_url": "https://stale.kiln.test", "access_log_retention_days": "10",

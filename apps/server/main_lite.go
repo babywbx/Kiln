@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"strings"
 	"syscall"
 	"time"
 	_ "time/tzdata"
@@ -122,6 +123,9 @@ func resolveLitePlan(cfg config.File, limits resources.Limits) resources.Plan {
 func validateLiteConfig(cfg config.File) error {
 	if cfg.Packager.Engine != config.EngineNative {
 		return fmt.Errorf("packager.engine must be native in lite")
+	}
+	if cfg.Server.TLSEnabled || strings.TrimSpace(cfg.Server.TLSCertFile) != "" || strings.TrimSpace(cfg.Server.TLSKeyFile) != "" {
+		return fmt.Errorf("tls is not available in lite")
 	}
 	for _, channel := range cfg.Channels {
 		if cfg.EngineFor(channel) != config.EngineNative {

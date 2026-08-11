@@ -577,6 +577,9 @@ func (s *Server) handleAdminGetSettings(w http.ResponseWriter, r *http.Request) 
 		}
 		out["revision"] = snapshot.Revision
 	}
+	for key, value := range s.tlsStatus() {
+		out[key] = value
+	}
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -591,6 +594,7 @@ func (s *Server) handleAdminPutSettings(w http.ResponseWriter, r *http.Request) 
 	var req struct {
 		PublicBaseURL          string `json:"public_base_url"`
 		AccessLogRetentionDays string `json:"access_log_retention_days"`
+		TLSEnabled             *bool  `json:"tls_enabled"`
 	}
 	dec := json.NewDecoder(io.LimitReader(r.Body, s.deps.Cfg.Security.MaxBodyBytes))
 	if err := dec.Decode(&req); err != nil {
@@ -609,7 +613,15 @@ func (s *Server) handleAdminPutSettings(w http.ResponseWriter, r *http.Request) 
 		writeAppErr(w, apperr.New(apperr.CodeConflict, http.StatusConflict, "If-Match revision required"))
 		return
 	}
-	if err := s.deps.Store.ReplaceRuntimeSettings(publicBaseURL, retentionDays, expected); err != nil {
+	tlsEnabled, err := s.tlsEnabled()
+	if err != nil {
+		writeAppErr(w, apperr.Internal(err))
+		return
+	}
+	if req.TLSEnabled != nil {
+		tlsEnabled = *req.TLSEnabled
+	}
+	if err := s.deps.Store.ReplaceRuntimeSettings(publicBaseURL, retentionDays, tlsEnabled, expected); err != nil {
 		if errors.Is(err, store.ErrRevisionConflict) {
 			writeAppErr(w, apperr.New(apperr.CodeConflict, http.StatusConflict, "settings were updated elsewhere"))
 		} else {

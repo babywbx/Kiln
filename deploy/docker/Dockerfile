@@ -87,7 +87,7 @@ USER kiln
 WORKDIR /var/lib/kiln
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-  CMD wget -q -O /dev/null --spider http://127.0.0.1:8080/healthz || exit 1
+  CMD wget -q -O /dev/null --no-check-certificate --spider https://127.0.0.1:8080/healthz || wget -q -O /dev/null --spider http://127.0.0.1:8080/healthz || exit 1
 ENTRYPOINT ["/usr/local/bin/kiln"]
 CMD ["-config", "/etc/kiln/kiln.toml"]
 

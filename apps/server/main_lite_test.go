@@ -64,6 +64,12 @@ func TestValidateLiteConfigRejectsExcludedFeatures(t *testing.T) {
 		},
 		{name: "global auto engine", cfg: config.File{Packager: config.Packager{Engine: config.EngineAuto}}, want: "must be native"},
 		{
+			name: "tls",
+			cfg: config.File{Packager: config.Packager{Engine: config.EngineNative},
+				Server: config.Server{TLSEnabled: true}},
+			want: "tls is not available",
+		},
+		{
 			name: "disabled channel override",
 			cfg: config.File{Packager: config.Packager{Engine: config.EngineNative},
 				Channels: []config.Channel{{ID: "news", Packager: config.EngineFFmpeg, Disabled: true}}},
