@@ -269,6 +269,7 @@ Examples live in `configs/examples/kiln.toml` and `kiln.jsonc` — the two forma
 | Setting | Description |
 | --- | --- |
 | `upstreams[].base_url` | Points at the origin; channels reference it via `upstream` + `path` |
+| `upstreams[].upgrade_insecure_redirects` | Upgrades the scheme when an upstream redirects to `http` on an https-only origin; the same channel-level field opts in per channel, and only public hosts on default ports are upgraded |
 | `[packager].engine` | `native` runs without ffmpeg entirely; `auto` prefers native and falls back when required |
 | `[packager].keys_file` | Global `kid:key` catalog, one pair per line; relative paths resolve against `kiln.toml` |
 | `[packager].ll_hls` | Enables CMAF parts, delta playlists, and blocking reload; `part_target_ms` sets the part duration |

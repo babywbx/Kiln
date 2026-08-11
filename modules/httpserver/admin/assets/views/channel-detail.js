@@ -16,6 +16,7 @@ const BLANK = {
   disabled: false, on_demand: true, autostart: false, idle_timeout_sec: 90,
   max_viewers: 0,
   user_agent: "", headers: {}, restart_on_failure: false, prefer_height: 0,
+  upgrade_insecure_redirects: false,
   preferred_audio_languages: [], selection: { video: { mode: "auto" }, audio: { mode: "auto" }, subtitles: { mode: "auto" } },
   packager: "", epg_id: "", epg_name: "", epg_source: "",
 };
@@ -149,6 +150,7 @@ function buildEditor(ctx, channel, revision, isNew, epg, egress) {
   ], channel.packager || "");
   const userAgentInput = input("user_agent", channel.user_agent, { placeholder: vt("channel.uaAuto", { version: store.version || "—" }) });
   const restartSelect = select("restart_on_failure", [["false", vt("channel.restartNo")], ["true", vt("channel.restartYes")]], String(Boolean(channel.restart_on_failure)));
+  const upgradeRedirectsInput = h("input", { name: "upgrade_insecure_redirects", type: "checkbox", checked: Boolean(channel.upgrade_insecure_redirects) });
   const headersInput = h("textarea", {
     name: "headers",
     rows: 4,
@@ -376,7 +378,7 @@ function buildEditor(ctx, channel, revision, isNew, epg, egress) {
     probeDetail.textContent = vt("channel.trackStaleHint");
   };
   [
-    idInput, sourceInput, ingressSelect, userAgentInput, headersInput, packagerSelect,
+    idInput, sourceInput, ingressSelect, userAgentInput, headersInput, upgradeRedirectsInput, packagerSelect,
     egressSelect, quickProxyName, quickProxyURL,
     videoSelect, audioSelect, subtitleSelect, videoCustom, audioCustom, subtitleCustom,
   ].forEach((control) => control.addEventListener("input", markProbeStale));
@@ -434,6 +436,7 @@ function buildEditor(ctx, channel, revision, isNew, epg, egress) {
       user_agent: userAgentInput.value.trim(),
       headers,
       restart_on_failure: ingress === "dash" || restartSelect.value === "true",
+      upgrade_insecure_redirects: upgradeRedirectsInput.checked,
       egress: currentEgress(),
     };
   };
@@ -626,6 +629,13 @@ function buildEditor(ctx, channel, revision, isNew, epg, egress) {
           field("User-Agent", userAgentInput, vt("channel.userAgentHint")),
           field(vt("channel.recovery"), restartSelect, vt("channel.recoveryHint")),
           field(vt("channel.audioFallback"), preferredAudioInput, vt("channel.audioFallbackHint")),
+          h("label", { class: "check-row span-all" },
+            upgradeRedirectsInput,
+            h("span", { class: "identity-copy" },
+              h("strong", { text: vt("channel.upgradeRedirects") }),
+              h("small", { text: vt("channel.upgradeRedirectsHint") }),
+            ),
+          ),
           h("div", { class: "field span-all" },
             h("label", { class: "field-label", htmlFor: "channel-headers", text: vt("channel.headers") }),
             Object.assign(headersInput, { id: "channel-headers" }),

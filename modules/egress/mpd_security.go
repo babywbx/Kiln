@@ -54,12 +54,13 @@ func fetchPinnedMPDAttempt(ctx context.Context, opt DashOptions, startURL string
 	currentURL := startURL
 	for redirects := 0; redirects <= 8; redirects++ {
 		res, err := opt.Pull.Get(ctx, pull.Request{
-			URL:          currentURL,
-			UserAgent:    opt.UserAgent,
-			Headers:      opt.Headers,
-			HeaderOrigin: opt.SourceURL,
-			ChannelID:    opt.ChannelID,
-			StopRedirect: true,
+			URL:                      currentURL,
+			UserAgent:                opt.UserAgent,
+			Headers:                  opt.Headers,
+			HeaderOrigin:             opt.SourceURL,
+			ChannelID:                opt.ChannelID,
+			StopRedirect:             true,
+			UpgradeInsecureRedirects: opt.UpgradeInsecureRedirects,
 		})
 		if err != nil {
 			return "", "", fmt.Errorf("resolve mpd: %w", err)
@@ -78,7 +79,8 @@ func fetchPinnedMPDAttempt(ctx context.Context, opt DashOptions, startURL string
 			if err != nil {
 				return "", "", fmt.Errorf("mpd redirect url: %w", err)
 			}
-			currentURL = base.ResolveReference(reference).String()
+			next := base.ResolveReference(reference)
+			currentURL = next.String()
 			continue
 		}
 		body, err := io.ReadAll(io.LimitReader(res.Body, maxFFmpegMPDBytes+1))
@@ -156,6 +158,44 @@ func validateFFmpegMPD(body, sourceURL string, client *pull.Client, headers map[
 			}
 		}
 	}
+}
+
+func canUpgradeFFmpegHTTPRedirects(body string) bool {
+	decoder := xml.NewDecoder(strings.NewReader(body))
+	stack := make([]string, 0, 8)
+	for {
+		token, err := decoder.Token()
+		if err == io.EOF {
+			return true
+		}
+		if err != nil {
+			return false
+		}
+		switch value := token.(type) {
+		case xml.StartElement:
+			stack = append(stack, value.Name.Local)
+			for _, attribute := range value.Attr {
+				name := strings.ToLower(attribute.Name.Local)
+				if (mpdURLAttribute(value.Name.Local, name) || genericNetworkReference(attribute, value.Name.Local)) &&
+					explicitHTTPURL(attribute.Value) {
+					return false
+				}
+			}
+		case xml.EndElement:
+			if len(stack) > 0 {
+				stack = stack[:len(stack)-1]
+			}
+		case xml.CharData:
+			if len(stack) > 0 && mpdURLTextElement(stack[len(stack)-1]) && explicitHTTPURL(string(value)) {
+				return false
+			}
+		}
+	}
+}
+
+func explicitHTTPURL(raw string) bool {
+	reference, err := url.Parse(strings.TrimSpace(raw))
+	return err == nil && strings.EqualFold(reference.Scheme, "http")
 }
 
 func mpdURLAttribute(element, attribute string) bool {

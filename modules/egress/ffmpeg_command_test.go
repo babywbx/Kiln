@@ -60,6 +60,28 @@ func TestBuildPackagerArgsForcesGuardedNetworkProxy(t *testing.T) {
 	}
 }
 
+func TestBuildPackagerArgsAllowsRedirectsForInsecureUpgrade(t *testing.T) {
+	work := t.TempDir()
+	args := buildPackagerArgs(DashOptions{
+		HLSTime: 2, HLSListSize: 6, UpgradeInsecureRedirects: true,
+	}, packAttempt{
+		input: "input.mpd", vMap: "0:v:0", aMap: "0:a:0?", network: true,
+	}, "00112233445566778899aabbccddeeff",
+		filepath.Join(work, "index.m3u8"), filepath.Join(work, "seg_%05d.ts"))
+	if joined := strings.Join(args, "\x00"); !strings.Contains(joined, "-max_redirects\x008") {
+		t.Fatalf("guarded redirect limit missing: %q", args)
+	}
+}
+
+func TestCanUpgradeFFmpegHTTPRedirects(t *testing.T) {
+	if !canUpgradeFFmpegHTTPRedirects(`<MPD xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><BaseURL>https://cdn.example/live/</BaseURL></MPD>`) {
+		t.Fatal("HTTPS-only MPD rejected redirect upgrades")
+	}
+	if canUpgradeFFmpegHTTPRedirects(`<MPD><BaseURL>http://cdn.example/live/</BaseURL></MPD>`) {
+		t.Fatal("explicit HTTP media URL accepted redirect upgrades")
+	}
+}
+
 func TestPlanFFmpegCommandNative(t *testing.T) {
 	args := []string{"-i", "https://example.test/live.mpd", "out.m3u8"}
 	proxyEnv := []string{"HTTPS_PROXY=http://127.0.0.1:7890"}

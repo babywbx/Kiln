@@ -112,11 +112,12 @@ func (h *Handler) HandleIndex(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) serveHLSIndex(w http.ResponseWriter, r *http.Request, active *session.Session, viewerID string) {
 	channel, sourceURL, _, _ := active.SourceSnapshot()
 	body, finalURL, err := h.deps.Sessions.Pull().GetBytes(r.Context(), pull.Request{
-		URL:          mergeHLSDeliveryDirectives(sourceURL, r.URL.Query()),
-		UserAgent:    version.UserAgent(channel.UserAgent),
-		Headers:      h.deps.Sessions.HeadersFor(channel),
-		HeaderOrigin: sourceURL,
-		ChannelID:    channel.ID,
+		URL:                      mergeHLSDeliveryDirectives(sourceURL, r.URL.Query()),
+		UserAgent:                version.UserAgent(channel.UserAgent),
+		Headers:                  h.deps.Sessions.HeadersFor(channel),
+		HeaderOrigin:             sourceURL,
+		ChannelID:                channel.ID,
+		UpgradeInsecureRedirects: h.deps.Cfg.UpgradeInsecureRedirectsFor(channel),
 	})
 	if err != nil {
 		h.deps.Observe.IncError()
@@ -336,6 +337,7 @@ func (h *Handler) HandleUpstream(w http.ResponseWriter, r *http.Request) {
 	response, err := h.deps.Sessions.Pull().Get(r.Context(), pull.Request{
 		URL: absolute, UserAgent: version.UserAgent(channel.UserAgent),
 		Headers: h.deps.Sessions.HeadersFor(channel), HeaderOrigin: sourceURL, ChannelID: id,
+		UpgradeInsecureRedirects: h.deps.Cfg.UpgradeInsecureRedirectsFor(channel),
 	})
 	if err != nil {
 		h.deps.Observe.IncError()

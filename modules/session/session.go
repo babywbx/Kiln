@@ -657,17 +657,18 @@ func (m *Manager) launchDash(s *Session) (*dashStart, error) {
 	engine := m.pack
 	m.mu.Unlock()
 	job, err := engine.Start(s.ctx, packager.Request{
-		ChannelID:               ch.ID,
-		SourceURL:               sourceURL,
-		Keys:                    keys,
-		Headers:                 headers,
-		UserAgent:               ch.UserAgent,
-		WorkDir:                 work,
-		PreferHeight:            prefer,
-		PreferredAudioLanguages: append([]string(nil), ch.PreferredAudioLanguages...),
-		Selection:               ch.Selection,
-		Engine:                  m.cat.Config().EngineFor(ch),
-		Log:                     m.log.With("channel", ch.ID),
+		ChannelID:                ch.ID,
+		SourceURL:                sourceURL,
+		Keys:                     keys,
+		Headers:                  headers,
+		UserAgent:                ch.UserAgent,
+		WorkDir:                  work,
+		PreferHeight:             prefer,
+		PreferredAudioLanguages:  append([]string(nil), ch.PreferredAudioLanguages...),
+		Selection:                ch.Selection,
+		Engine:                   m.cat.Config().EngineFor(ch),
+		UpgradeInsecureRedirects: m.cat.Config().UpgradeInsecureRedirectsFor(ch),
+		Log:                      m.log.With("channel", ch.ID),
 	})
 	if err != nil {
 		_ = os.RemoveAll(work)

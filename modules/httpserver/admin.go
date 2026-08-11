@@ -639,6 +639,7 @@ func (s *Server) handleAdminProbeChannel(w http.ResponseWriter, r *http.Request)
 		start := time.Now()
 		res, err := s.deps.Sessions.Pull().Get(r.Context(), pull.Request{
 			URL: src, HeaderOrigin: src, ChannelID: ch.ID, UserAgent: version.UserAgent(ch.UserAgent), Headers: s.deps.Sessions.HeadersFor(ch),
+			UpgradeInsecureRedirects: s.deps.Cfg.UpgradeInsecureRedirectsFor(ch),
 		})
 		if err != nil {
 			writeAppErr(w, apperr.Wrap(apperr.CodeUpstream, http.StatusBadGateway, "source check failed", err))
@@ -746,6 +747,7 @@ func (s *Server) probeSource(w http.ResponseWriter, r *http.Request, ch config.C
 		start := time.Now()
 		res, err := testPull.Get(r.Context(), pull.Request{
 			URL: src, HeaderOrigin: src, ChannelID: ch.ID, UserAgent: version.UserAgent(ch.UserAgent), Headers: s.deps.Sessions.HeadersFor(ch),
+			UpgradeInsecureRedirects: s.deps.Cfg.UpgradeInsecureRedirectsFor(ch),
 		})
 		if err != nil {
 			writeAppErr(w, apperr.Wrap(apperr.CodeUpstream, http.StatusBadGateway, "source check failed", err))
@@ -771,12 +773,13 @@ func (s *Server) probeSource(w http.ResponseWriter, r *http.Request, ch config.C
 		return
 	}
 	fetcher := &packager.PullFetcher{
-		Client:       testPull,
-		ChannelID:    ch.ID,
-		UserAgent:    ch.UserAgent,
-		Headers:      s.deps.Sessions.HeadersFor(ch),
-		HeaderOrigin: src,
-		MaxBytes:     s.deps.Cfg.Packager.MaxSegmentBytes,
+		Client:                   testPull,
+		ChannelID:                ch.ID,
+		UserAgent:                ch.UserAgent,
+		Headers:                  s.deps.Sessions.HeadersFor(ch),
+		HeaderOrigin:             src,
+		MaxBytes:                 s.deps.Cfg.Packager.MaxSegmentBytes,
+		UpgradeInsecureRedirects: s.deps.Cfg.UpgradeInsecureRedirectsFor(ch),
 	}
 	inspection, err := packager.InspectManifest(r.Context(), fetcher, src, ch.PreferHeight, ch.Selection, keys)
 	if err != nil {

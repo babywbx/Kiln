@@ -84,13 +84,14 @@ type Result struct {
 }
 
 type Request struct {
-	URL            string
-	UserAgent      string
-	Headers        map[string]string
-	ForwardHeaders http.Header
-	HeaderOrigin   string
-	ChannelID      string
-	StopRedirect   bool
+	URL                      string
+	UserAgent                string
+	Headers                  map[string]string
+	ForwardHeaders           http.Header
+	HeaderOrigin             string
+	ChannelID                string
+	StopRedirect             bool
+	UpgradeInsecureRedirects bool
 }
 
 func (c *Client) Get(ctx context.Context, req Request) (Result, error) {
@@ -142,7 +143,7 @@ func (c *Client) Do(ctx context.Context, method string, req Request) (result Res
 		d := c.router.Resolve(req.URL, req.ChannelID)
 		proxyID, reason = d.ProxyID, d.Reason
 	}
-	client := c.pinnedClient(req.ChannelID, headerOrigin, req.Headers, req.StopRedirect)
+	client := c.pinnedClient(req.ChannelID, headerOrigin, req.Headers, req.StopRedirect, req.UpgradeInsecureRedirects)
 
 	resp, err := client.Do(httpReq)
 	if err != nil {
@@ -296,10 +297,15 @@ func (c *Client) PinURL(ctx context.Context, rawURL string) (*url.URL, error) {
 	return security.PinPublicProbeURL(ctx, rawURL, c.allowed)
 }
 
+func (c *Client) UpgradeInsecureURL(u *url.URL) bool {
+	return upgradeInsecureURL(u, c.allowed)
+}
+
 func (c *Client) pinnedClient(
 	channelID, headerOrigin string,
 	customHeaders map[string]string,
 	stopRedirect bool,
+	upgradeInsecure bool,
 ) *http.Client {
 	return &http.Client{
 		Timeout: c.timeout,
@@ -310,18 +316,58 @@ func (c *Client) pinnedClient(
 			if len(via) >= 8 {
 				return fmt.Errorf("too many redirects")
 			}
+			upgraded := upgradeInsecure && c.UpgradeInsecureURL(req.URL)
+			if stopRedirect {
+				if upgraded && req.Response != nil {
+					if req.Response.Header == nil {
+						req.Response.Header = make(http.Header)
+					}
+					req.Response.Header.Set("Location", req.URL.String())
+				}
+				return http.ErrUseLastResponse
+			}
 			if !sameOrigin(req.URL.String(), headerOrigin) {
 				for name := range customHeaders {
 					req.Header.Del(name)
 				}
 				req.Header.Del("Referer")
 			}
-			if stopRedirect {
-				return http.ErrUseLastResponse
-			}
 			return nil
 		},
 	}
+}
+
+func upgradeInsecureURL(u *url.URL, allowedPrivate map[string]struct{}) bool {
+	if u == nil || u.Scheme != "http" {
+		return false
+	}
+	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+	if host == "" || isLocalOrSpecialHost(host) {
+		return false
+	}
+	if _, explicitlyAllowed := allowedPrivate[host]; explicitlyAllowed {
+		return false
+	}
+	if port := u.Port(); port != "" && port != "80" {
+		return false
+	}
+	u.Scheme = "https"
+	u.Host = host
+	if strings.Contains(u.Host, ":") {
+		u.Host = "[" + u.Host + "]"
+	}
+	return true
+}
+
+func isLocalOrSpecialHost(host string) bool {
+	if strings.Contains(host, "%") || host == "localhost" || strings.HasSuffix(host, ".localhost") || strings.HasSuffix(host, ".local") || strings.HasSuffix(host, ".internal") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return !security.IsPublicIP(ip)
 }
 
 func sameOrigin(left, right string) bool {

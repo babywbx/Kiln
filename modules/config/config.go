@@ -134,32 +134,35 @@ type Upstream struct {
 	ID      string            `json:"id" toml:"id"`
 	BaseURL string            `json:"base_url" toml:"base_url"`
 	Headers map[string]string `json:"headers" toml:"headers"`
+
+	UpgradeInsecureRedirects bool `json:"upgrade_insecure_redirects,omitempty" toml:"upgrade_insecure_redirects,omitempty"`
 }
 
 type Channel struct {
-	ID                      string            `json:"id" toml:"id"`
-	Title                   string            `json:"title" toml:"title"`
-	Group                   string            `json:"group" toml:"group"`
-	LogoURL                 string            `json:"logo_url" toml:"logo_url"`
-	EPGID                   string            `json:"epg_id" toml:"epg_id"`
-	EPGName                 string            `json:"epg_name" toml:"epg_name"`
-	EPGSource               string            `json:"epg_source" toml:"epg_source"`
-	SourceURL               string            `json:"source_url,omitempty" toml:"source_url,omitempty"`
-	Upstream                string            `json:"upstream" toml:"upstream"`
-	Path                    string            `json:"path" toml:"path"`
-	Ingress                 string            `json:"ingress" toml:"ingress"`
-	Disabled                bool              `json:"disabled" toml:"disabled"`
-	OnDemand                bool              `json:"on_demand" toml:"on_demand"`
-	Autostart               bool              `json:"autostart" toml:"autostart"`
-	IdleTimeoutSec          int               `json:"idle_timeout_sec" toml:"idle_timeout_sec"`
-	MaxViewers              int               `json:"max_viewers" toml:"max_viewers"`
-	UserAgent               string            `json:"user_agent" toml:"user_agent"`
-	Headers                 map[string]string `json:"headers" toml:"headers"`
-	RestartOnFailure        bool              `json:"restart_on_failure" toml:"restart_on_failure"`
-	PreferHeight            int               `json:"prefer_height" toml:"prefer_height"`
-	PreferredAudioLanguages []string          `json:"preferred_audio_languages,omitempty" toml:"preferred_audio_languages,omitempty"`
-	Selection               TrackSelection    `json:"selection,omitempty" toml:"selection,omitempty"`
-	Packager                string            `json:"packager" toml:"packager"`
+	ID                       string            `json:"id" toml:"id"`
+	Title                    string            `json:"title" toml:"title"`
+	Group                    string            `json:"group" toml:"group"`
+	LogoURL                  string            `json:"logo_url" toml:"logo_url"`
+	EPGID                    string            `json:"epg_id" toml:"epg_id"`
+	EPGName                  string            `json:"epg_name" toml:"epg_name"`
+	EPGSource                string            `json:"epg_source" toml:"epg_source"`
+	SourceURL                string            `json:"source_url,omitempty" toml:"source_url,omitempty"`
+	Upstream                 string            `json:"upstream" toml:"upstream"`
+	Path                     string            `json:"path" toml:"path"`
+	Ingress                  string            `json:"ingress" toml:"ingress"`
+	Disabled                 bool              `json:"disabled" toml:"disabled"`
+	OnDemand                 bool              `json:"on_demand" toml:"on_demand"`
+	Autostart                bool              `json:"autostart" toml:"autostart"`
+	IdleTimeoutSec           int               `json:"idle_timeout_sec" toml:"idle_timeout_sec"`
+	MaxViewers               int               `json:"max_viewers" toml:"max_viewers"`
+	UserAgent                string            `json:"user_agent" toml:"user_agent"`
+	Headers                  map[string]string `json:"headers" toml:"headers"`
+	RestartOnFailure         bool              `json:"restart_on_failure" toml:"restart_on_failure"`
+	PreferHeight             int               `json:"prefer_height" toml:"prefer_height"`
+	PreferredAudioLanguages  []string          `json:"preferred_audio_languages,omitempty" toml:"preferred_audio_languages,omitempty"`
+	Selection                TrackSelection    `json:"selection,omitempty" toml:"selection,omitempty"`
+	Packager                 string            `json:"packager" toml:"packager"`
+	UpgradeInsecureRedirects bool              `json:"upgrade_insecure_redirects,omitempty" toml:"upgrade_insecure_redirects,omitempty"`
 }
 
 type TrackSelector struct {
@@ -303,6 +306,21 @@ func (c File) EngineFor(ch Channel) string {
 		return c.Packager.Engine
 	}
 	return EngineAuto
+}
+
+func (c File) UpgradeInsecureRedirectsFor(ch Channel) bool {
+	if ch.UpgradeInsecureRedirects {
+		return true
+	}
+	if ch.SourceURL != "" || ch.Upstream == "" {
+		return false
+	}
+	for _, up := range c.Upstreams {
+		if up.ID == ch.Upstream {
+			return up.UpgradeInsecureRedirects
+		}
+	}
+	return false
 }
 
 func (c File) GlobalKeys() []KeyPair {

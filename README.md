@@ -275,6 +275,7 @@ New-NetFirewallRule -DisplayName "Kiln" -Direction Inbound -LocalPort 8080 -Prot
 | 配置项 | 说明 |
 | --- | --- |
 | `upstreams[].base_url` | 指向上游服务，频道用 `upstream` + `path` 引用 |
+| `upstreams[].upgrade_insecure_redirects` | 上游把只支持 https 的源站重定向写成 http 时，跟随重定向时升级 scheme；频道级同名字段可单独开启，只作用于公网主机的默认端口 |
 | `[packager].engine` | `native` 完全不装 ffmpeg；`auto` 优先原生并在必要时回退 |
 | `[packager].keys_file` | 全局 `kid:key` 文件，每行一对；相对路径按 `kiln.toml` 所在目录解析 |
 | `[packager].ll_hls` | 开启 CMAF part、delta playlist 与 blocking reload，`part_target_ms` 定 part 时长 |

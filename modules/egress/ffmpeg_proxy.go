@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/babywbx/kiln/modules/pull"
@@ -20,24 +21,28 @@ import (
 )
 
 type ffmpegProxyOptions struct {
-	Client       *pull.Client
-	ChannelID    string
-	HeaderOrigin string
-	Headers      map[string]string
-	UserAgent    string
-	Docker       bool
+	Client                   *pull.Client
+	ChannelID                string
+	HeaderOrigin             string
+	Headers                  map[string]string
+	UserAgent                string
+	Docker                   bool
+	UpgradeInsecureRedirects bool
+	UpgradeHTTPRequests      bool
 }
 
 type ffmpegForwardProxy struct {
-	client        *pull.Client
-	channelID     string
-	headerOrigin  string
-	headers       map[string]string
-	userAgent     string
-	authorization string
-	proxyURL      string
-	listener      net.Listener
-	server        *http.Server
+	client          *pull.Client
+	channelID       string
+	headerOrigin    string
+	headers         map[string]string
+	userAgent       string
+	authorization   string
+	proxyURL        string
+	upgradeInsecure bool
+	upgradeHTTP     atomic.Bool
+	listener        net.Listener
+	server          *http.Server
 
 	mu          sync.Mutex
 	connections map[net.Conn]struct{}
@@ -83,16 +88,18 @@ func startFFmpegForwardProxy(options ffmpegProxyOptions) (*ffmpegForwardProxy, e
 		Host:   net.JoinHostPort(advertisedHost, fmt.Sprintf("%d", port)),
 	}
 	proxy := &ffmpegForwardProxy{
-		client:        options.Client,
-		channelID:     options.ChannelID,
-		headerOrigin:  options.HeaderOrigin,
-		headers:       options.Headers,
-		userAgent:     options.UserAgent,
-		authorization: authorization,
-		proxyURL:      proxyAddress.String(),
-		listener:      listener,
-		connections:   map[net.Conn]struct{}{},
+		client:          options.Client,
+		channelID:       options.ChannelID,
+		headerOrigin:    options.HeaderOrigin,
+		headers:         options.Headers,
+		userAgent:       options.UserAgent,
+		upgradeInsecure: options.UpgradeInsecureRedirects,
+		authorization:   authorization,
+		proxyURL:        proxyAddress.String(),
+		listener:        listener,
+		connections:     map[net.Conn]struct{}{},
 	}
+	proxy.upgradeHTTP.Store(options.UpgradeHTTPRequests)
 	proxy.server = &http.Server{
 		Handler:           proxy,
 		ReadHeaderTimeout: 10 * time.Second,
@@ -178,14 +185,19 @@ func (p *ffmpegForwardProxy) ServeHTTP(w http.ResponseWriter, request *http.Requ
 	if userAgent == "" {
 		userAgent = request.UserAgent()
 	}
+	targetURL := *request.URL
+	if p.upgradeHTTP.Load() {
+		p.client.UpgradeInsecureURL(&targetURL)
+	}
 	result, err := p.client.Do(request.Context(), request.Method, pull.Request{
-		URL:            request.URL.String(),
-		UserAgent:      userAgent,
-		Headers:        p.headers,
-		ForwardHeaders: copyProxyRequestHeaders(request.Header, p.headers),
-		HeaderOrigin:   p.headerOrigin,
-		ChannelID:      p.channelID,
-		StopRedirect:   true,
+		URL:                      targetURL.String(),
+		UserAgent:                userAgent,
+		Headers:                  p.headers,
+		ForwardHeaders:           copyProxyRequestHeaders(request.Header, p.headers),
+		HeaderOrigin:             p.headerOrigin,
+		ChannelID:                p.channelID,
+		StopRedirect:             !p.upgradeInsecure,
+		UpgradeInsecureRedirects: p.upgradeInsecure,
 	})
 	if err != nil {
 		http.Error(w, "upstream request failed", http.StatusBadGateway)
@@ -195,6 +207,13 @@ func (p *ffmpegForwardProxy) ServeHTTP(w http.ResponseWriter, request *http.Requ
 	copyProxyResponseHeaders(w.Header(), result.Header)
 	w.WriteHeader(result.StatusCode)
 	_, _ = io.Copy(w, result.Body)
+}
+
+func (p *ffmpegForwardProxy) disableHTTPUpgrades() {
+	if p != nil {
+		// ponytail: job-wide latch; track generations if needed.
+		p.upgradeHTTP.Store(false)
+	}
 }
 
 func (p *ffmpegForwardProxy) authorized(request *http.Request) bool {

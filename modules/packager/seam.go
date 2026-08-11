@@ -9,17 +9,18 @@ import (
 )
 
 type Request struct {
-	ChannelID               string
-	SourceURL               string
-	Keys                    []config.KeyPair
-	Headers                 map[string]string
-	UserAgent               string
-	WorkDir                 string
-	PreferHeight            int
-	PreferredAudioLanguages []string
-	Selection               config.TrackSelection
-	Engine                  string
-	Log                     *slog.Logger
+	ChannelID                string
+	SourceURL                string
+	Keys                     []config.KeyPair
+	Headers                  map[string]string
+	UserAgent                string
+	WorkDir                  string
+	PreferHeight             int
+	PreferredAudioLanguages  []string
+	Selection                config.TrackSelection
+	Engine                   string
+	UpgradeInsecureRedirects bool
+	Log                      *slog.Logger
 }
 
 const (

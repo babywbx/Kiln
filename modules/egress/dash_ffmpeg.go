@@ -51,26 +51,27 @@ type SpawnGate interface {
 }
 
 type DashOptions struct {
-	Binary                string
-	SourceURL             string
-	UserAgent             string
-	Headers               map[string]string
-	Keys                  []config.KeyPair
-	WorkDir               string
-	HLSTime               int
-	HLSListSize           int
-	LogLevel              string
-	PreferHeight          int
-	VideoRepresentationID string
-	AudioRepresentationID string
-	LowLatency            bool
-	Logger                *slog.Logger
-	Egress                *proxyegress.Router
-	Pull                  *pull.Client
-	ChannelID             string
-	FFmpegMode            config.FFmpegMode
-	DockerImage           string
-	SpawnGate             SpawnGate
+	Binary                   string
+	SourceURL                string
+	UserAgent                string
+	Headers                  map[string]string
+	Keys                     []config.KeyPair
+	WorkDir                  string
+	HLSTime                  int
+	HLSListSize              int
+	LogLevel                 string
+	PreferHeight             int
+	VideoRepresentationID    string
+	AudioRepresentationID    string
+	LowLatency               bool
+	Logger                   *slog.Logger
+	Egress                   *proxyegress.Router
+	Pull                     *pull.Client
+	ChannelID                string
+	FFmpegMode               config.FFmpegMode
+	DockerImage              string
+	SpawnGate                SpawnGate
+	UpgradeInsecureRedirects bool
 }
 
 var kidRe = regexp.MustCompile(`(?i)default_KID="([0-9a-fA-F-]{32,36})"`)
@@ -137,14 +138,15 @@ func StartDashHLS(parent context.Context, opt DashOptions) (*DashJob, error) {
 	}
 
 	local := packAttempt{
-		mode:            "local_filtered",
-		input:           localMPD,
-		vMap:            "0:v:0",
-		aMap:            "0:a:0?",
-		note:            note,
-		network:         opt.Pull != nil,
-		headers:         ffmpegHeaders,
-		refreshInterval: ffmpegMPDRefreshInterval(filtered),
+		mode:                "local_filtered",
+		input:               localMPD,
+		vMap:                "0:v:0",
+		aMap:                "0:a:0?",
+		note:                note,
+		network:             opt.Pull != nil,
+		headers:             ffmpegHeaders,
+		upgradeHTTPRequests: opt.UpgradeInsecureRedirects && canUpgradeFFmpegHTTPRedirects(filtered),
+		refreshInterval:     ffmpegMPDRefreshInterval(filtered),
 	}
 	attempts := []packAttempt{local}
 
@@ -183,15 +185,16 @@ func StartDashHLS(parent context.Context, opt DashOptions) (*DashJob, error) {
 }
 
 type packAttempt struct {
-	mode            string
-	input           string
-	vMap            string
-	aMap            string
-	note            string
-	network         bool
-	headers         map[string]string
-	proxyURL        string
-	refreshInterval time.Duration
+	mode                string
+	input               string
+	vMap                string
+	aMap                string
+	note                string
+	network             bool
+	headers             map[string]string
+	proxyURL            string
+	upgradeHTTPRequests bool
+	refreshInterval     time.Duration
 }
 
 func cleanHLSArtifacts(work string) {
@@ -223,12 +226,14 @@ func startPackager(parent context.Context, opt DashOptions, log *slog.Logger, ab
 	proxyEnv := []string(nil)
 	if att.network {
 		forwardProxy, err = startFFmpegForwardProxy(ffmpegProxyOptions{
-			Client:       opt.Pull,
-			ChannelID:    opt.ChannelID,
-			HeaderOrigin: resolvedURL,
-			Headers:      att.headers,
-			UserAgent:    opt.UserAgent,
-			Docker:       opt.FFmpegMode.IsDocker(),
+			Client:                   opt.Pull,
+			ChannelID:                opt.ChannelID,
+			HeaderOrigin:             resolvedURL,
+			Headers:                  att.headers,
+			UserAgent:                opt.UserAgent,
+			Docker:                   opt.FFmpegMode.IsDocker(),
+			UpgradeInsecureRedirects: opt.UpgradeInsecureRedirects,
+			UpgradeHTTPRequests:      att.upgradeHTTPRequests,
 		})
 		if err != nil {
 			_ = stderrFile.Close()
@@ -282,7 +287,7 @@ func startPackager(parent context.Context, opt DashOptions, log *slog.Logger, ab
 		job.pid = cmd.Process.Pid
 	}
 	if att.refreshInterval > 0 {
-		go refreshFFmpegMPD(ctx, opt, att.input, resolvedURL, att.headers, att.refreshInterval, log)
+		go refreshFFmpegMPD(ctx, opt, att.input, resolvedURL, att.headers, forwardProxy, att.refreshInterval, log)
 	}
 	go func() {
 		processErr := cmd.Wait()
@@ -335,8 +340,12 @@ func buildPackagerArgs(opt DashOptions, att packAttempt, key, indexPath, segPatt
 		"-fflags", "+genpts+discardcorrupt",
 	}
 	if att.network {
+		maxRedirects := "0"
+		if opt.UpgradeInsecureRedirects {
+			maxRedirects = "8"
+		}
 		args = append(args,
-			"-max_redirects", "0",
+			"-max_redirects", maxRedirects,
 			"-reconnect", "1",
 			"-reconnect_streamed", "1",
 			"-reconnect_delay_max", "5",
@@ -642,6 +651,7 @@ func refreshFFmpegMPD(
 	path string,
 	headerOrigin string,
 	headers map[string]string,
+	forwardProxy *ffmpegForwardProxy,
 	interval time.Duration,
 	log *slog.Logger,
 ) {
@@ -668,6 +678,9 @@ func refreshFFmpegMPD(
 		}
 		if err == nil {
 			err = validateFFmpegMPD(body, resolvedURL, opt.Pull, headers)
+		}
+		if err == nil && !canUpgradeFFmpegHTTPRedirects(body) {
+			forwardProxy.disableHTTPUpgrades()
 		}
 		if err == nil {
 			err = writeFFmpegMPD(path, []byte(body))

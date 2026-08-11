@@ -258,6 +258,7 @@ pprof 使用独立的监听器与路由，永远不会挂到对外的 HTTP 服�
 | --- | --- | --- | --- |
 | `id` | string | 必填 | 上游标识，频道通过 `upstream` 引用，为空校验失败。 |
 | `base_url` | string | 必填 | 上游基础地址，必须是可解析的绝对 URL，为空或非法都会校验失败。若主机解析到回环或私有地址，还必须显式加入 `security.allowed_hosts`。 |
+| `upgrade_insecure_redirects` | bool | `false` | 兼容只提供 HTTPS、却把重定向目标错误写成 `http` 的源站。开启后，仅将公网主机默认端口的重定向升级为 `https`；私网白名单主机与非默认端口保持原样。 |
 | `headers` | table | `{}` | 请求该上游时附加的固定请求头。 |
 
 ## `[[channels]]`
@@ -274,6 +275,7 @@ pprof 使用独立的监听器与路由，永远不会挂到对外的 HTTP 服�
 | `source_url` | string | `""` | 直接指定绝对源地址。非空时必须是 `http` 或 `https`、带主机名、不含 fragment，此时不再需要 `upstream` 与 `path`。 |
 | `upstream` | string | 条件必填 | 引用的 `[[upstreams]].id`。未填 `source_url` 时必填且必须存在，否则校验失败。 |
 | `path` | string | 条件必填 | 拼接在上游 `base_url` 之后的路径。未填 `source_url` 时必填。 |
+| `upgrade_insecure_redirects` | bool | `false` | 针对该频道开启不安全重定向升级。直接使用 `source_url` 的频道需要在此开启；引用 `upstream` 的频道也会继承上游设置。 |
 | `ingress` | string | `"hls"` | 源类型，取值 `hls` 或 `dash`，会转为小写后校验，其它值校验失败。 |
 | `disabled` | bool | `false` | 是否停用。停用的 DASH 频道不再要求全局密钥。 |
 | `on_demand` | bool | `true` | 是否按需拉流。当 `on_demand` 与 `autostart` 都为 `false` 时，填充默认值会把 `on_demand` 置为 `true`。 |

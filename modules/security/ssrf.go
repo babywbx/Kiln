@@ -143,6 +143,10 @@ func probeIPAllowed(ip net.IP, explicitlyAllowed bool) bool {
 	return ip.IsGlobalUnicast()
 }
 
+func IsPublicIP(ip net.IP) bool {
+	return probeIPAllowed(ip, false)
+}
+
 func metadataHost(host string) bool {
 	return host == "metadata.google.internal" ||
 		strings.HasSuffix(host, ".internal") && slices.Contains(strings.Split(host, "."), "metadata")

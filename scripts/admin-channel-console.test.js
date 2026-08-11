@@ -20,6 +20,8 @@ test("both layouts share the toggle and repaint it when the session state change
   assert.match(channels, /class: "record-actions" \},[\s\S]*?entry\.cardToggle,/);
   assert.match(channels, /entry\.toggle = swap\(entry\.toggle, rowToggle\(entry\.channel\)\)/);
   assert.match(channels, /entry\.cardToggle = swap\(entry\.cardToggle, cardToggle\(entry\.channel\)\)/);
+  assert.match(channels, /document\.activeElement === control \|\| control\.dataset\.restoreFocus === "true"/);
+  assert.match(channels, /if \(restoreFocus\) next\.focus\(\)/);
 });
 
 test("the channel name opens the preview instead of routing to the configuration page", () => {
@@ -33,6 +35,13 @@ test("the channel name opens the preview instead of routing to the configuration
 
 test("the configuration page keeps its own preview entry", () => {
   assert.match(detail, /vt\("channel\.openPreview"\)[^;]*onClick: \(\) => previewChannel\(channel\)/);
+});
+
+test("the redirect upgrade setting is editable and affects source checks", () => {
+  assert.match(detail, /const upgradeRedirectsInput = h\("input", \{ name: "upgrade_insecure_redirects", type: "checkbox"/);
+  assert.match(detail, /upgrade_insecure_redirects: upgradeRedirectsInput\.checked/);
+  assert.match(detail, /headersInput, upgradeRedirectsInput, packagerSelect/);
+  assert.match(detail, /vt\("channel\.upgradeRedirects"\)/);
 });
 
 test("the channel cell stays styled once it becomes a button", () => {

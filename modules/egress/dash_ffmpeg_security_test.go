@@ -116,6 +116,45 @@ func TestFFmpegProxyPinsHTTPAndStripsCrossOriginHeaders(t *testing.T) {
 	}
 }
 
+func TestFFmpegProxyFollowsRedirectsForInsecureUpgrade(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/entry" {
+			http.Redirect(w, r, "/final", http.StatusFound)
+			return
+		}
+		_, _ = io.WriteString(w, "final")
+	}))
+	defer origin.Close()
+	proxy, err := startFFmpegForwardProxy(ffmpegProxyOptions{
+		Client:                   pull.New(pull.Options{Allowed: map[string]struct{}{"127.0.0.1": {}}}),
+		HeaderOrigin:             origin.URL,
+		UpgradeInsecureRedirects: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proxy.Close()
+	proxyURL, err := url.Parse(proxy.URL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{
+		Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)},
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	response, err := client.Get(origin.URL + "/entry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil || response.StatusCode != http.StatusOK || string(body) != "final" {
+		t.Fatalf("redirect response = %d %q, err=%v", response.StatusCode, body, err)
+	}
+}
+
 func TestFFprobeRoutesNestedDASHRequestsThroughGuardedProxy(t *testing.T) {
 	ffprobe, err := exec.LookPath("ffprobe")
 	if err != nil {
@@ -300,16 +339,22 @@ func TestRefreshFFmpegMPDReplacesDynamicSnapshot(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	options := DashOptions{
-		SourceURL: origin.URL + "/live.mpd",
-		Pull:      pull.New(pull.Options{Allowed: map[string]struct{}{"127.0.0.1": {}}}),
+		SourceURL:                origin.URL + "/live.mpd",
+		Pull:                     pull.New(pull.Options{Allowed: map[string]struct{}{"127.0.0.1": {}}}),
+		UpgradeInsecureRedirects: true,
 	}
+	proxy := &ffmpegForwardProxy{}
+	proxy.upgradeHTTP.Store(true)
 	generation.Store(2)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	go refreshFFmpegMPD(ctx, options, path, origin.URL, nil, 20*time.Millisecond, logger)
+	go refreshFFmpegMPD(ctx, options, path, origin.URL, nil, proxy, 20*time.Millisecond, logger)
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		body, err := os.ReadFile(path)
 		if err == nil && strings.Contains(string(body), "generation-2") {
+			if proxy.upgradeHTTP.Load() {
+				t.Fatal("explicit HTTP refresh left proxy upgrades enabled")
+			}
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -339,7 +384,7 @@ func TestRefreshFFmpegMPDKeepsSnapshotAfterHeaderOriginChange(t *testing.T) {
 		Pull:      pull.New(pull.Options{Allowed: map[string]struct{}{"127.0.0.1": {}}}),
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	go refreshFFmpegMPD(ctx, options, path, origin.URL, options.Headers, 10*time.Millisecond, logger)
+	go refreshFFmpegMPD(ctx, options, path, origin.URL, options.Headers, nil, 10*time.Millisecond, logger)
 	time.Sleep(100 * time.Millisecond)
 	cancel()
 	body, err := os.ReadFile(path)

@@ -611,6 +611,7 @@ func TestChannelSourceURLRoundTrip(t *testing.T) {
 
 	want := config.Channel{
 		ID: "direct", Title: "Direct", SourceURL: "https://media.example/live/index.m3u8?token=abc", Ingress: "hls",
+		UpgradeInsecureRedirects: true,
 	}
 	if err := db.UpsertChannel(want); err != nil {
 		t.Fatalf("upsert direct channel: %v", err)
@@ -619,11 +620,12 @@ func TestChannelSourceURLRoundTrip(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("get direct channel: found=%v err=%v", ok, err)
 	}
-	if got.SourceURL != want.SourceURL {
-		t.Fatalf("source URL = %q, want %q", got.SourceURL, want.SourceURL)
+	if got.SourceURL != want.SourceURL || !got.UpgradeInsecureRedirects {
+		t.Fatalf("stored channel = %#v", got)
 	}
 
 	want.SourceURL = "https://other.example/channel.m3u8"
+	want.UpgradeInsecureRedirects = false
 	row, _, err := db.GetChannelRow(want.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -632,8 +634,8 @@ func TestChannelSourceURLRoundTrip(t *testing.T) {
 		t.Fatalf("update source URL: %v", err)
 	}
 	got, _, err = db.GetChannel(want.ID)
-	if err != nil || got.SourceURL != want.SourceURL {
-		t.Fatalf("updated source URL = %q, %v", got.SourceURL, err)
+	if err != nil || got.SourceURL != want.SourceURL || got.UpgradeInsecureRedirects {
+		t.Fatalf("updated channel = %#v, %v", got, err)
 	}
 }
 

@@ -35,7 +35,7 @@ Channels are the bulk of the console, split into a list and a detail view. Field
 
 The table shows channel, source, format, run mode, guide status, and state, with a per-row session switch and a configure action plus up and down controls to reorder the catalog. The order carries through to the generated playlist. Click a channel name to open its preview.
 
-The switch at the start of each row drives the session directly: an idle channel shows ▷ and starts warming up when clicked; a channel with a session (running, starting, restarting, or failed) shows ■ and stops it when clicked, so a stalled cold start can always be cut short. It only affects the current session and is separate from enabling or disabling the channel.
+The switch in each row drives the session directly: an idle channel shows ▷ and starts warming up when clicked; a channel with a session (running, starting, restarting, or failed) shows ■ and stops it when clicked, so a stalled cold start can always be cut short. It only affects the current session and is separate from enabling or disabling the channel.
 
 Bulk actions in the page header:
 
@@ -61,7 +61,7 @@ The detail view is a sectioned form, filled in order:
   </Step>
 </Steps>
 
-Expand **Advanced request settings** to configure the user agent, extra request headers, and failure-recovery behavior. Sensitive headers are not shown again after saving. **Network egress** lets a channel follow the global rules, use a direct connection, or use a specific proxy. You can also paste a new proxy URL to create one from this page.
+Expand **Advanced request settings** to configure the user agent, extra request headers, insecure redirect upgrades, and failure-recovery behavior. Sensitive headers are not shown again after saving. **Network egress** lets a channel follow the global rules, use a direct connection, or use a specific proxy. You can also paste a new proxy URL to create one from this page.
 
 The command bar at the top offers four immediate actions: probe the source, start now, open preview, and stop the current session. A **Channel Management** card at the bottom groups enable, disable, and permanent delete.
 

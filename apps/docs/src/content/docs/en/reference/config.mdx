@@ -258,6 +258,7 @@ See [Outbound proxying](/en/guide/proxy/) for route selection, rewriting policie
 | --- | --- | --- | --- |
 | `id` | string | Required | Upstream identifier referenced by a channel's `upstream`. Empty fails validation. |
 | `base_url` | string | Required | Upstream base address. Must parse as an absolute URL; empty or malformed fails validation. A host that resolves to a loopback or private address must also be listed explicitly in `security.allowed_hosts`. |
+| `upgrade_insecure_redirects` | bool | `false` | Compatibility for HTTPS-only origins that emit an `http` redirect target. When enabled, only redirects to public hosts on default ports are upgraded to `https`; allowlisted private hosts and non-default ports are unchanged. |
 | `headers` | table | `{}` | Fixed headers added to requests toward this upstream. |
 
 ## `[[channels]]`
@@ -274,6 +275,7 @@ See [Outbound proxying](/en/guide/proxy/) for route selection, rewriting policie
 | `source_url` | string | `""` | Absolute source address. When set it must be `http` or `https`, carry a host, and contain no fragment; `upstream` and `path` are then unnecessary. |
 | `upstream` | string | Conditional | The `[[upstreams]]` id to use. Required and must exist when `source_url` is absent, otherwise validation fails. |
 | `path` | string | Conditional | Path appended to the upstream `base_url`. Required when `source_url` is absent. |
+| `upgrade_insecure_redirects` | bool | `false` | Enables insecure redirect upgrades for this channel. Direct `source_url` channels must opt in here; channels that reference an `upstream` also inherit its setting. |
 | `ingress` | string | `"hls"` | Source type; `hls` or `dash`, lowercased before validation. Anything else fails validation. |
 | `disabled` | bool | `false` | Whether the channel is inactive. A disabled DASH channel no longer requires the global key catalog. |
 | `on_demand` | bool | `true` | Whether the channel pulls on demand. When both `on_demand` and `autostart` are `false`, defaults set `on_demand` to `true`. |

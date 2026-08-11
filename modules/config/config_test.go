@@ -660,3 +660,31 @@ proxy = "http://127.0.0.1:7890"
 		t.Fatalf("upstreams = %+v", cfg.Upstreams)
 	}
 }
+
+func TestUpgradeInsecureRedirectsFor(t *testing.T) {
+	cfg := File{
+		Upstreams: []Upstream{
+			{ID: "lax", BaseURL: "http://a.example", UpgradeInsecureRedirects: true},
+			{ID: "strict", BaseURL: "http://b.example"},
+		},
+	}
+	for _, tc := range []struct {
+		name string
+		ch   Channel
+		want bool
+	}{
+		{"inherits upstream", Channel{ID: "a", Upstream: "lax"}, true},
+		{"strict upstream", Channel{ID: "b", Upstream: "strict"}, false},
+		{"channel override", Channel{ID: "c", Upstream: "strict", UpgradeInsecureRedirects: true}, true},
+		{"source url channel", Channel{ID: "d", SourceURL: "http://c.example/a.m3u8"}, false},
+		{"source url opt in", Channel{ID: "e", SourceURL: "http://c.example/a.m3u8", UpgradeInsecureRedirects: true}, true},
+		{"source url ignores upstream", Channel{ID: "f", SourceURL: "http://c.example/a.m3u8", Upstream: "lax"}, false},
+		{"unknown upstream", Channel{ID: "g", Upstream: "missing"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := cfg.UpgradeInsecureRedirectsFor(tc.ch); got != tc.want {
+				t.Fatalf("UpgradeInsecureRedirectsFor = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

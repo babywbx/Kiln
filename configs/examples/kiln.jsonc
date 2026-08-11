@@ -74,6 +74,7 @@
     {
       "id": "origin",
       "base_url": "http://127.0.0.1:5050",
+      // "upgrade_insecure_redirects": true,
     },
   ],
   "channels": [
