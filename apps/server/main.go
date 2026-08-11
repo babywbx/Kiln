@@ -142,10 +142,11 @@ func runServer(cfgPath string) int {
 	}
 	cat := catalog.New(cfg, db)
 	puller := pull.New(pull.Options{
-		Observe:     obs,
-		Allowed:     allowedPrivate,
-		MaxPlaylist: cfg.Security.MaxPlaylistBytes,
-		Router:      egressRouter,
+		Observe:      obs,
+		Allowed:      allowedPrivate,
+		MaxPlaylist:  cfg.Security.MaxPlaylistBytes,
+		Router:       egressRouter,
+		StallTimeout: time.Duration(cfg.Packager.FetchStallSec) * time.Second,
 	})
 	sessions := session.NewManager(cat, puller, obs, cfg.Server.DataDir, cfg.FFmpeg, cfg.GlobalKeys(), log, egressRouter)
 

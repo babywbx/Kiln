@@ -729,7 +729,7 @@ func (s *Server) pullForChannelEgressProbe(request *channelEgressRequest) (*pull
 	}
 	return pull.New(pull.Options{
 		Observe: s.deps.Observe, Allowed: s.deps.Cfg.ExplicitAllowedHostSet(), MaxPlaylist: s.deps.Cfg.Security.MaxPlaylistBytes,
-		Router: router, Timeout: 15 * time.Second,
+		Router: router, StallTimeout: 15 * time.Second,
 	}), nil
 }
 

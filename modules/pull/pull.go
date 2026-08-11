@@ -22,21 +22,21 @@ type Client struct {
 	observe     *observe.Service
 	allowed     map[string]struct{}
 	maxPlaylist int64
-	timeout     time.Duration
+	stall       time.Duration
 }
 
 type Options struct {
-	Observe     *observe.Service
-	Allowed     map[string]struct{}
-	MaxPlaylist int64
-	ProxyURL    string
-	Router      *proxyegress.Router
-	Timeout     time.Duration
+	Observe      *observe.Service
+	Allowed      map[string]struct{}
+	MaxPlaylist  int64
+	ProxyURL     string
+	Router       *proxyegress.Router
+	StallTimeout time.Duration
 }
 
 func New(opt Options) *Client {
-	if opt.Timeout <= 0 {
-		opt.Timeout = 30 * time.Second
+	if opt.StallTimeout <= 0 {
+		opt.StallTimeout = 30 * time.Second
 	}
 	if opt.MaxPlaylist <= 0 {
 		opt.MaxPlaylist = 8 << 20
@@ -60,15 +60,12 @@ func New(opt Options) *Client {
 		}
 	}
 	return &Client{
-		fallback: &http.Client{
-			Timeout:   opt.Timeout,
-			Transport: tr,
-		},
+		fallback:    &http.Client{Transport: tr},
 		router:      opt.Router,
 		observe:     opt.Observe,
 		allowed:     opt.Allowed,
 		maxPlaylist: opt.MaxPlaylist,
-		timeout:     opt.Timeout,
+		stall:       opt.StallTimeout,
 	}
 }
 
@@ -106,6 +103,12 @@ func (c *Client) Do(ctx context.Context, method string, req Request) (result Res
 	ctx, trace := startRequestTrace(ctx, method, host)
 	defer func() {
 		trace.finish(result.StatusCode, resultErr)
+	}()
+	ctx, abandon := context.WithCancel(ctx)
+	defer func() {
+		if resultErr != nil {
+			abandon()
+		}
 	}()
 	if err := security.MediaHostOK(req.URL, c.allowed); err != nil {
 		return Result{}, apperr.Wrap(apperr.CodeForbidden, 403, "upstream host not allowed", err)
@@ -149,14 +152,14 @@ func (c *Client) Do(ctx context.Context, method string, req Request) (result Res
 	if err != nil {
 		return Result{}, apperr.Wrap(apperr.CodeUpstream, 502, "upstream request failed", err)
 	}
+	resp.Body = newStallGuard(resp.Body, c.observe, c.stall, abandon)
 	if resp.StatusCode >= 400 {
 		defer resp.Body.Close()
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		return Result{}, apperr.New(apperr.CodeUpstream, 502, fmt.Sprintf("upstream status %s: %s", resp.Status, string(b)))
 	}
-	body := &countingReadCloser{rc: resp.Body, obs: c.observe}
 	return Result{
-		Body:          body,
+		Body:          resp.Body,
 		Header:        resp.Header.Clone(),
 		StatusCode:    resp.StatusCode,
 		ContentLength: resp.ContentLength,
@@ -308,14 +311,10 @@ func (c *Client) pinnedClient(
 	upgradeInsecure bool,
 ) *http.Client {
 	return &http.Client{
-		Timeout: c.timeout,
 		Transport: proxyegress.NewPinnedTransport(
 			c.fallback.Transport.(*http.Transport), c.router, channelID, c.allowed,
 		),
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 8 {
-				return fmt.Errorf("too many redirects")
-			}
 			upgraded := upgradeInsecure && c.UpgradeInsecureURL(req.URL)
 			if stopRedirect {
 				if upgraded && req.Response != nil {
@@ -325,6 +324,13 @@ func (c *Client) pinnedClient(
 					req.Response.Header.Set("Location", req.URL.String())
 				}
 				return http.ErrUseLastResponse
+			}
+			if req.Response != nil {
+				_ = req.Response.Body.Close()
+				req.Response.Body = http.NoBody
+			}
+			if len(via) >= 8 {
+				return fmt.Errorf("too many redirects")
 			}
 			if !sameOrigin(req.URL.String(), headerOrigin) {
 				for name := range customHeaders {
@@ -397,17 +403,33 @@ func originPort(u *url.URL) string {
 	return ""
 }
 
-type countingReadCloser struct {
-	rc  io.ReadCloser
-	obs *observe.Service
+type stallGuard struct {
+	rc      io.ReadCloser
+	obs     *observe.Service
+	stall   time.Duration
+	watch   *time.Timer
+	abandon context.CancelFunc
 }
 
-func (c *countingReadCloser) Read(p []byte) (int, error) {
-	n, err := c.rc.Read(p)
-	if n > 0 && c.obs != nil {
-		c.obs.AddBytesIn(int64(n))
+func newStallGuard(
+	rc io.ReadCloser, obs *observe.Service, stall time.Duration, abandon context.CancelFunc,
+) *stallGuard {
+	return &stallGuard{rc: rc, obs: obs, stall: stall, watch: time.AfterFunc(stall, abandon), abandon: abandon}
+}
+
+func (s *stallGuard) Read(p []byte) (int, error) {
+	n, err := s.rc.Read(p)
+	if n > 0 {
+		if s.obs != nil {
+			s.obs.AddBytesIn(int64(n))
+		}
+		s.watch.Reset(s.stall)
 	}
 	return n, err
 }
 
-func (c *countingReadCloser) Close() error { return c.rc.Close() }
+func (s *stallGuard) Close() error {
+	s.watch.Stop()
+	s.abandon()
+	return s.rc.Close()
+}

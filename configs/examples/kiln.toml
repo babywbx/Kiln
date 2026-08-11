@@ -80,6 +80,10 @@ primary_track_hold_sec = 12
 # playlist: at that point the fault is ours, and a restart re-plans from scratch.
 # An unreachable upstream is not this case and keeps retrying. -1 disables.
 stall_timeout_sec = 180
+# Upstream fetches fail once no new byte arrives for this long. It is a progress
+# timeout, not a total one: a multi-megabyte 4K segment may take as long as it
+# needs as long as the transfer keeps moving.
+fetch_stall_sec = 30
 
 [ffmpeg]
 mode = "native"       # native | docker

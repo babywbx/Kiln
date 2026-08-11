@@ -143,6 +143,7 @@ Outbound requests also pass a fixed guard: link-local, unspecified, multicast, a
 | `grace_sec` | int | `30` | Grace period, in seconds, during which a segment remains fetchable after leaving the playlist. Non-positive values fall back to the default. |
 | `primary_track_hold_sec` | int | `12` | How far, in media seconds, audio may run ahead of video. Non-positive values fall back to the default. It bounds playlist window advancement, not A/V sync. |
 | `stall_timeout_sec` | int | `180` | Fails a publication whose manifest keeps updating while nothing reaches the playlist. `-1` disables it; `0` falls back to the default. An unreachable upstream is a different case and keeps retrying. |
+| `fetch_stall_sec` | int | `30` | Progress timeout for upstream fetches, in seconds: a fetch fails once no new byte has arrived for this long. Non-positive values fall back to the default. It measures progress rather than total request time, so a multi-megabyte 4K segment is never cut off while the transfer keeps moving. Resource adaptation leaves it alone. |
 | `inflight_bytes` | int64 | `100663296` | Segment memory budget shared across all channels, in bytes. Non-positive values fall back to the default. Resource adaptation may lower it. |
 
 ### The inflight_bytes trade-off

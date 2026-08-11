@@ -260,6 +260,7 @@ type Packager struct {
 	GraceSec            int    `json:"grace_sec" toml:"grace_sec"`
 	PrimaryTrackHoldSec int    `json:"primary_track_hold_sec" toml:"primary_track_hold_sec"`
 	StallTimeoutSec     int    `json:"stall_timeout_sec" toml:"stall_timeout_sec"`
+	FetchStallSec       int    `json:"fetch_stall_sec" toml:"fetch_stall_sec"`
 	InflightBytes       int64  `json:"inflight_bytes" toml:"inflight_bytes"`
 }
 
@@ -497,6 +498,9 @@ func (c *File) applyDefaults() {
 	}
 	if c.Packager.StallTimeoutSec == 0 {
 		c.Packager.StallTimeoutSec = 180
+	}
+	if c.Packager.FetchStallSec <= 0 {
+		c.Packager.FetchStallSec = 30
 	}
 	if c.Packager.InflightBytes <= 0 {
 		c.Packager.InflightBytes = 96 << 20

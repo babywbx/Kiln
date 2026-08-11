@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDefaultRequestRejectsHostnameResolvingToPrivateAddress(t *testing.T) {
@@ -145,6 +146,87 @@ func TestCrossOriginRedirectDoesNotForwardSourceQueryInReferer(t *testing.T) {
 	_ = result.Body.Close()
 	if got := <-referer; got != "" {
 		t.Fatalf("cross-origin Referer = %q, want empty", got)
+	}
+}
+
+func TestSlowSegmentOutlivesTheStallWindowWhileBytesKeepArriving(t *testing.T) {
+	const chunks = 8
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		for range chunks {
+			_, _ = w.Write(make([]byte, 4<<10))
+			w.(http.Flusher).Flush()
+			time.Sleep(40 * time.Millisecond)
+		}
+	}))
+	defer origin.Close()
+
+	client := New(Options{Allowed: map[string]struct{}{"127.0.0.1": {}}, StallTimeout: 150 * time.Millisecond})
+	data, _, err := client.GetBytesLimit(context.Background(), Request{URL: origin.URL}, 1<<20)
+	if err != nil {
+		t.Fatalf("steady transfer longer than the stall window failed: %v", err)
+	}
+	if len(data) != chunks*(4<<10) {
+		t.Fatalf("bytes = %d, want %d", len(data), chunks*(4<<10))
+	}
+}
+
+func TestStalledBodyFailsAfterTheStallWindow(t *testing.T) {
+	release := make(chan struct{})
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(make([]byte, 4<<10))
+		w.(http.Flusher).Flush()
+		<-release
+	}))
+	defer origin.Close()
+	defer close(release)
+
+	client := New(Options{Allowed: map[string]struct{}{"127.0.0.1": {}}, StallTimeout: 100 * time.Millisecond})
+	start := time.Now()
+	if _, _, err := client.GetBytesLimit(context.Background(), Request{URL: origin.URL}, 1<<20); err == nil {
+		t.Fatal("stalled upstream body was accepted")
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("stall detection took %v", elapsed)
+	}
+}
+
+func TestStalledNonSuccessBodiesStayBounded(t *testing.T) {
+	release := make(chan struct{})
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/redirect":
+			w.Header().Set("Location", "/final")
+			w.WriteHeader(http.StatusFound)
+		case "/final":
+			_, _ = io.WriteString(w, "ok")
+			return
+		default:
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+		w.(http.Flusher).Flush()
+		<-release
+	}))
+	defer origin.Close()
+	defer close(release)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	client := New(Options{Allowed: map[string]struct{}{"127.0.0.1": {}}, StallTimeout: 100 * time.Millisecond})
+	start := time.Now()
+	if _, err := client.Get(ctx, Request{URL: origin.URL + "/error"}); err == nil {
+		t.Fatal("stalled upstream error body was accepted")
+	}
+	result, err := client.Get(ctx, Request{URL: origin.URL + "/redirect"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Body.Close()
+	body, err := io.ReadAll(result.Body)
+	if err != nil || string(body) != "ok" {
+		t.Fatalf("redirect result = %q, %v", body, err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("non-success body handling took %v", elapsed)
 	}
 }
 

@@ -56,6 +56,7 @@ func New(cfg config.File, log *slog.Logger) (*Server, error) {
 	catalog := staticcatalog.New(cfg)
 	puller := pull.New(pull.Options{
 		Observe: metrics, Allowed: allowedPrivate, MaxPlaylist: cfg.Security.MaxPlaylistBytes, Router: router,
+		StallTimeout: time.Duration(cfg.Packager.FetchStallSec) * time.Second,
 	})
 	sessions := session.NewNativeManager(
 		catalog, puller, metrics, cfg.Server.DataDir, cfg.FFmpeg, cfg.GlobalKeys(), log, router,

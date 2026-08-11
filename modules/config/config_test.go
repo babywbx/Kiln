@@ -646,6 +646,21 @@ func TestHLSListSizeDefaultTracksLowLatency(t *testing.T) {
 	}
 }
 
+func TestFetchStallDefaultsAndKeepsExplicitValues(t *testing.T) {
+	var plain File
+	plain.applyDefaults()
+	if plain.Packager.FetchStallSec != 30 {
+		t.Fatalf("default fetch stall = %d, want 30", plain.Packager.FetchStallSec)
+	}
+
+	var explicit File
+	explicit.Packager.FetchStallSec = 90
+	explicit.applyDefaults()
+	if explicit.Packager.FetchStallSec != 90 {
+		t.Fatalf("explicit fetch stall = %d, want 90", explicit.Packager.FetchStallSec)
+	}
+}
+
 func TestRemovedKeysStayIgnored(t *testing.T) {
 	cfg := loadTOMLBody(t, minimalAuthTOML()+`
 [epg]
