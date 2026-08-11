@@ -33,7 +33,9 @@ Channels are the bulk of the console, split into a list and a detail view. Field
 
 ### List view
 
-The table shows channel, source, format, run mode, guide status, and state, with per-row preview and configure actions plus up and down controls to reorder the catalog. The order carries through to the generated playlist.
+The table shows channel, source, format, run mode, guide status, and state, with a per-row session switch and a configure action plus up and down controls to reorder the catalog. The order carries through to the generated playlist. Click a channel name to open its preview.
+
+The switch at the start of each row drives the session directly: an idle channel shows ▷ and starts warming up when clicked; a channel with a session (running, starting, restarting, or failed) shows ■ and stops it when clicked, so a stalled cold start can always be cut short. It only affects the current session and is separate from enabling or disabling the channel.
 
 Bulk actions in the page header:
 

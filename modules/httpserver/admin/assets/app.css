@@ -787,7 +787,9 @@ td .empty-state { min-height: 200px; }
 .identity-copy small { overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
 
 .cell-link { display: inline-flex; min-width: 0; max-width: 100%; border-radius: var(--r-sm); }
-.cell-link:hover strong, a.cell-link:hover { text-decoration: underline; text-underline-offset: 3px; }
+button.cell-link { padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: start; cursor: pointer; }
+button.cell-link:disabled { cursor: default; }
+.cell-link:hover:not(:disabled) strong, a.cell-link:hover { text-decoration: underline; text-underline-offset: 3px; }
 
 .source-cell { display: grid; gap: 2px; min-width: 180px; max-width: 340px; }
 .source-cell small { overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }

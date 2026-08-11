@@ -61,6 +61,65 @@ export async function renderChannels(ctx) {
     return session ? session.state || "unknown" : "idle";
   };
 
+  const toggleSession = async (channel, control) => {
+    const active = Boolean(sessionFor(channel.id));
+    if (active) {
+      const accepted = await confirmDialog({
+        title: vt("channel.stopTitle"),
+        description: vt("channel.stopDesc", { id: channel.id }),
+        warning: vt("channel.stopWarning"),
+        confirmLabel: vt("channel.stopAction"),
+      });
+      if (!accepted) return;
+    }
+    control.disabled = true;
+    try {
+      if (active) await endpoints.stopSession(channel.id);
+      else await endpoints.warmupChannel(channel.id);
+      await refreshStatus();
+      if (active) toast(vt("channel.stopped"));
+      else toast(vt("channel.starting"), vt("channel.startingHint"));
+    } catch (error) {
+      toastError(error, vt(active ? "channel.stopFailed" : "channel.startFailed"));
+    } finally {
+      control.disabled = false;
+    }
+  };
+
+  const rowToggle = (channel) => {
+    const active = Boolean(sessionFor(channel.id));
+    return iconButton(active ? "square" : "play", vt(active ? "channels.stopNamed" : "channels.startNamed", { name: channel.title || channel.id }), {
+      variant: "outline",
+      kind: active ? "danger" : "",
+      disabled: channel.disabled,
+      onClick: (event) => toggleSession(channel, event.currentTarget),
+    });
+  };
+
+  const cardToggle = (channel) => {
+    const active = Boolean(sessionFor(channel.id));
+    return button(vt(active ? "channel.stopAction" : "channel.start"), {
+      iconName: active ? "square" : "play",
+      kind: active ? "danger" : "secondary",
+      disabled: channel.disabled,
+      onClick: (event) => toggleSession(channel, event.currentTarget),
+    });
+  };
+
+  const previewCell = (channel) => {
+    const label = vt("channels.previewNamed", { name: channel.title || channel.id });
+    return h(
+      "button",
+      { class: "cell-link", type: "button", title: label, "aria-label": label, disabled: channel.disabled, onClick: () => previewChannel(channel) },
+      channelCell(channel),
+    );
+  };
+
+  const swap = (control, next) => {
+    control.replaceWith(next);
+    return next;
+  };
+
   const entries = store.channels.map((channel, index) => ({
     channel,
     index,
@@ -69,8 +128,10 @@ export async function renderChannels(ctx) {
     slot: null,
     up: null,
     down: null,
+    toggle: null,
     card: null,
     cardSlot: null,
+    cardToggle: null,
   }));
 
   const buildRow = (entry) => {
@@ -80,10 +141,11 @@ export async function renderChannels(ctx) {
     entry.slot = h("span", { class: "state-slot" }, stateBadge(channel, sessionFor(channel.id)));
     entry.up = iconButton("arrow-up", vt("channels.moveUp", { name: channel.title }), { variant: "outline", onClick: () => move(channel.id, -1) });
     entry.down = iconButton("arrow-down", vt("channels.moveDown", { name: channel.title }), { variant: "outline", onClick: () => move(channel.id, 1) });
+    entry.toggle = rowToggle(channel);
     entry.tr = h(
       "tr",
       {},
-      h("td", {}, h("a", { class: "cell-link", href: route, "data-route": true }, channelCell(channel))),
+      h("td", {}, previewCell(channel)),
       h(
         "td",
         {},
@@ -104,7 +166,7 @@ export async function renderChannels(ctx) {
         h(
           "div",
           { class: "row-actions" },
-          iconButton("play", vt("channels.previewNamed", { name: channel.title }), { variant: "outline", disabled: channel.disabled, onClick: () => previewChannel(channel) }),
+          entry.toggle,
           entry.up,
           entry.down,
           linkButton(vt("channels.configure"), route, { iconName: "sliders-horizontal" }),
@@ -118,10 +180,11 @@ export async function renderChannels(ctx) {
     const route = `/admin/channels/${encodeURIComponent(channel.id)}`;
     entry.state = stateOf(channel);
     entry.cardSlot = h("span", { class: "state-slot" }, stateBadge(channel, sessionFor(channel.id)));
+    entry.cardToggle = cardToggle(channel);
     entry.card = h(
       "article",
       { class: "record" },
-      h("div", { class: "record-head" }, channelCell(channel), entry.cardSlot),
+      h("div", { class: "record-head" }, previewCell(channel), entry.cardSlot),
       h("div", { class: "record-source mono truncate", text: sourceURL(channel.upstream, channel.path, channel.source_url) }),
       h(
         "div",
@@ -134,7 +197,7 @@ export async function renderChannels(ctx) {
         "div",
         { class: "record-actions" },
         linkButton(vt("channels.configureChannel"), route, { kind: "primary", iconName: "sliders-horizontal" }),
-        button(vt("channels.preview"), { iconName: "play", disabled: channel.disabled, onClick: () => previewChannel(channel) }),
+        entry.cardToggle,
       ),
     );
   };
@@ -212,6 +275,8 @@ export async function renderChannels(ctx) {
       const session = sessionFor(entry.channel.id);
       entry.slot?.replaceChildren(stateBadge(entry.channel, session));
       entry.cardSlot?.replaceChildren(stateBadge(entry.channel, session));
+      if (entry.toggle) entry.toggle = swap(entry.toggle, rowToggle(entry.channel));
+      if (entry.cardToggle) entry.cardToggle = swap(entry.cardToggle, cardToggle(entry.channel));
     }
   };
 
