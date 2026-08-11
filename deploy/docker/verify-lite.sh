@@ -46,19 +46,21 @@ expect_label org.opencontainers.image.source https://github.com/babywbx/Kiln
 expect_label org.opencontainers.image.authors Babywbx
 expect_label org.opencontainers.image.vendor Babywbx
 expect_label org.opencontainers.image.licenses AGPL-3.0-only
-expect_label org.opencontainers.image.base.name scratch
 expect_nonempty_label org.opencontainers.image.version
 expect_nonempty_label org.opencontainers.image.revision
 expect_nonempty_label org.opencontainers.image.created
+expect_label org.opencontainers.image.base.name scratch
+expect_label dev.orbstack.icon \
+  https://raw.githubusercontent.com/babywbx/Kiln/main/apps/docs/public/icon.webp
 expect_label io.kiln.variant lite
-expect_label io.kiln.media.engines native
 expect_label io.kiln.features playback
-expect_label io.kiln.ffmpeg.available false
-expect_label io.kiln.database.available false
-expect_label io.kiln.admin.available false
-expect_label io.kiln.epg.available false
-expect_label io.kiln.telemetry.available false
+expect_label io.kiln.media.engines native
 expect_label io.kiln.packager.default native
+expect_label io.kiln.available.admin false
+expect_label io.kiln.available.database false
+expect_label io.kiln.available.epg false
+expect_label io.kiln.available.ffmpeg false
+expect_label io.kiln.available.telemetry false
 
 user=$(docker image inspect "$IMAGE" --format '{{.Config.User}}')
 if [ "$user" != "999:999" ]; then

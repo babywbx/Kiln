@@ -46,6 +46,8 @@ expect_common_labels() {
   expect_nonempty_label "$image" org.opencontainers.image.version
   expect_nonempty_label "$image" org.opencontainers.image.revision
   expect_nonempty_label "$image" org.opencontainers.image.created
+  expect_label "$image" dev.orbstack.icon \
+    https://raw.githubusercontent.com/babywbx/Kiln/main/apps/docs/public/icon.webp
 }
 
 expect_common_labels "$CORE_IMAGE" "Kiln Core" \
@@ -54,23 +56,23 @@ expect_common_labels "$FULL_IMAGE" "Kiln Full" \
   "High-performance native media server with FFmpeg."
 
 expect_label "$CORE_IMAGE" io.kiln.variant core
-expect_label "$CORE_IMAGE" io.kiln.media.engines native
 expect_label "$CORE_IMAGE" io.kiln.features admin,database,epg,observability,playback
-expect_label "$CORE_IMAGE" io.kiln.ffmpeg.available false
-expect_label "$CORE_IMAGE" io.kiln.database.available true
-expect_label "$CORE_IMAGE" io.kiln.admin.available true
-expect_label "$CORE_IMAGE" io.kiln.epg.available true
-expect_label "$CORE_IMAGE" io.kiln.telemetry.available true
+expect_label "$CORE_IMAGE" io.kiln.media.engines native
 expect_label "$CORE_IMAGE" io.kiln.packager.default native
+expect_label "$CORE_IMAGE" io.kiln.available.admin true
+expect_label "$CORE_IMAGE" io.kiln.available.database true
+expect_label "$CORE_IMAGE" io.kiln.available.epg true
+expect_label "$CORE_IMAGE" io.kiln.available.ffmpeg false
+expect_label "$CORE_IMAGE" io.kiln.available.telemetry true
 expect_label "$FULL_IMAGE" io.kiln.variant full
-expect_label "$FULL_IMAGE" io.kiln.media.engines native,ffmpeg
 expect_label "$FULL_IMAGE" io.kiln.features admin,database,epg,observability,playback
-expect_label "$FULL_IMAGE" io.kiln.ffmpeg.available true
-expect_label "$FULL_IMAGE" io.kiln.database.available true
-expect_label "$FULL_IMAGE" io.kiln.admin.available true
-expect_label "$FULL_IMAGE" io.kiln.epg.available true
-expect_label "$FULL_IMAGE" io.kiln.telemetry.available true
+expect_label "$FULL_IMAGE" io.kiln.media.engines native,ffmpeg
 expect_label "$FULL_IMAGE" io.kiln.packager.default auto
+expect_label "$FULL_IMAGE" io.kiln.available.admin true
+expect_label "$FULL_IMAGE" io.kiln.available.database true
+expect_label "$FULL_IMAGE" io.kiln.available.epg true
+expect_label "$FULL_IMAGE" io.kiln.available.ffmpeg true
+expect_label "$FULL_IMAGE" io.kiln.available.telemetry true
 
 core_base="$(label "$CORE_IMAGE" org.opencontainers.image.base.name)"
 full_base="$(label "$FULL_IMAGE" org.opencontainers.image.base.name)"

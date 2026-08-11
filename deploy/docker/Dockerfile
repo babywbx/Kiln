@@ -77,11 +77,12 @@ LABEL org.opencontainers.image.title="Kiln" \
       org.opencontainers.image.source="https://github.com/babywbx/Kiln" \
       org.opencontainers.image.authors="Babywbx" \
       org.opencontainers.image.vendor="Babywbx" \
+      org.opencontainers.image.licenses="AGPL-3.0-only" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${COMMIT}" \
       org.opencontainers.image.created="${BUILT_AT}" \
-      org.opencontainers.image.licenses="AGPL-3.0-only" \
-      org.opencontainers.image.base.name="${ALPINE_IMAGE}"
+      org.opencontainers.image.base.name="${ALPINE_IMAGE}" \
+      dev.orbstack.icon="https://raw.githubusercontent.com/babywbx/Kiln/main/apps/docs/public/icon.webp"
 USER kiln
 WORKDIR /var/lib/kiln
 EXPOSE 8080
@@ -102,14 +103,14 @@ ENV KILN_DEFAULT_PACKAGER_ENGINE=native \
 LABEL org.opencontainers.image.title="Kiln Core" \
       org.opencontainers.image.description="High-performance native media server." \
       io.kiln.variant="core" \
-      io.kiln.media.engines="native" \
       io.kiln.features="admin,database,epg,observability,playback" \
-      io.kiln.ffmpeg.available="false" \
-      io.kiln.database.available="true" \
-      io.kiln.admin.available="true" \
-      io.kiln.epg.available="true" \
-      io.kiln.telemetry.available="true" \
-      io.kiln.packager.default="native"
+      io.kiln.media.engines="native" \
+      io.kiln.packager.default="native" \
+      io.kiln.available.admin="true" \
+      io.kiln.available.database="true" \
+      io.kiln.available.epg="true" \
+      io.kiln.available.ffmpeg="false" \
+      io.kiln.available.telemetry="true"
 COPY --from=core-verify /verified /usr/local/share/kiln/build-verified
 
 FROM ${FFMPEG_IMAGE} AS ffmpeg
@@ -133,15 +134,15 @@ ENV KILN_DEFAULT_PACKAGER_ENGINE=auto \
 LABEL org.opencontainers.image.title="Kiln Full" \
       org.opencontainers.image.description="High-performance native media server with FFmpeg." \
       io.kiln.variant="full" \
-      io.kiln.media.engines="native,ffmpeg" \
       io.kiln.features="admin,database,epg,observability,playback" \
-      io.kiln.ffmpeg.available="true" \
-      io.kiln.database.available="true" \
-      io.kiln.admin.available="true" \
-      io.kiln.epg.available="true" \
-      io.kiln.telemetry.available="true" \
+      io.kiln.media.engines="native,ffmpeg" \
       io.kiln.packager.default="auto" \
-      io.kiln.ffmpeg.source="${FFMPEG_IMAGE}"
+      io.kiln.ffmpeg.source="${FFMPEG_IMAGE}" \
+      io.kiln.available.admin="true" \
+      io.kiln.available.database="true" \
+      io.kiln.available.epg="true" \
+      io.kiln.available.ffmpeg="true" \
+      io.kiln.available.telemetry="true"
 COPY --from=full-verify /verified /usr/local/share/kiln/build-verified
 USER kiln
 
@@ -171,20 +172,21 @@ LABEL org.opencontainers.image.title="Kiln Lite" \
       org.opencontainers.image.source="https://github.com/babywbx/Kiln" \
       org.opencontainers.image.authors="Babywbx" \
       org.opencontainers.image.vendor="Babywbx" \
+      org.opencontainers.image.licenses="AGPL-3.0-only" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${COMMIT}" \
       org.opencontainers.image.created="${BUILT_AT}" \
-      org.opencontainers.image.licenses="AGPL-3.0-only" \
       org.opencontainers.image.base.name="scratch" \
+      dev.orbstack.icon="https://raw.githubusercontent.com/babywbx/Kiln/main/apps/docs/public/icon.webp" \
       io.kiln.variant="lite" \
-      io.kiln.media.engines="native" \
       io.kiln.features="playback" \
-      io.kiln.ffmpeg.available="false" \
-      io.kiln.database.available="false" \
-      io.kiln.admin.available="false" \
-      io.kiln.epg.available="false" \
-      io.kiln.telemetry.available="false" \
-      io.kiln.packager.default="native"
+      io.kiln.media.engines="native" \
+      io.kiln.packager.default="native" \
+      io.kiln.available.admin="false" \
+      io.kiln.available.database="false" \
+      io.kiln.available.epg="false" \
+      io.kiln.available.ffmpeg="false" \
+      io.kiln.available.telemetry="false"
 USER 999:999
 WORKDIR /var/lib/kiln
 EXPOSE 8080
