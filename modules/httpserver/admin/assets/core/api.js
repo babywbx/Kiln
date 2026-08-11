@@ -283,13 +283,39 @@ function nextEventTime() {
   return Math.max(Date.now(), session.issuedAt + 1, lastSignOutAt + 1);
 }
 
+const RETRY_DELAYS_MS = [200, 600];
+const RETRY_STATUSES = new Set([502, 503, 504]);
+
+function retryable(method, signal) {
+  if (signal?.aborted) return false;
+  const verb = (method || "GET").toUpperCase();
+  return verb === "GET" || verb === "HEAD";
+}
+
+async function fetchWithRetry(path, init, signal) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      const response = await fetch(path, init);
+      if (!RETRY_STATUSES.has(response.status) || attempt >= RETRY_DELAYS_MS.length) return response;
+      await response.body?.cancel();
+    } catch (error) {
+      if (error?.name === "AbortError" || attempt >= RETRY_DELAYS_MS.length) throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, RETRY_DELAYS_MS[attempt]));
+    if (signal?.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");
+  }
+}
+
 export async function api(path, options = {}) {
   const { suppressUnauthorized = false, rawText = false, ...fetchOptions } = options;
   const headers = new Headers(fetchOptions.headers || {});
   if (fetchOptions.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   if (session.token) headers.set("Authorization", `Bearer ${session.token}`);
 
-  const response = await fetch(path, { ...fetchOptions, headers, cache: "no-store" });
+  const init = { ...fetchOptions, headers, cache: "no-store" };
+  const response = retryable(fetchOptions.method, fetchOptions.signal)
+    ? await fetchWithRetry(path, init, fetchOptions.signal)
+    : await fetch(path, init);
   const requestId = response.headers.get("X-Request-ID") || "";
   const text = await response.text();
   let data = null;
