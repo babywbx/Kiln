@@ -118,8 +118,10 @@ export function card(options = {}) {
   );
 }
 
+let fieldSeq = 0;
+
 export function field(label, control, hint = "") {
-  const id = control.id || `f-${crypto.randomUUID().slice(0, 8)}`;
+  const id = control.id || `f-${++fieldSeq}`;
   control.id = id;
   return h(
     "div",
@@ -239,11 +241,11 @@ export function channelAvatar(channel, size = 38) {
 
 export function channelCell(channel) {
   return h(
-    "div",
+    "span",
     { class: "identity" },
     channelAvatar(channel),
     h(
-      "div",
+      "span",
       { class: "identity-copy" },
       h("strong", { text: channel.title || channel.id }),
       h("small", { class: "mono", text: channel.id }),

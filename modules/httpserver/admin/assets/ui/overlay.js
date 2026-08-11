@@ -207,9 +207,24 @@ export function attachMenu(anchor, items, options = {}) {
   return { menu, close: () => menu.hidePopover(), dispose: () => menu.remove() };
 }
 
+function legacyCopy(value) {
+  const active = document.activeElement;
+  const area = h("textarea", { readOnly: true, "aria-hidden": true, style: { position: "fixed", top: "0", left: "-9999px" } });
+  area.value = value;
+  document.body.append(area);
+  try {
+    area.select();
+    return document.execCommand("copy");
+  } finally {
+    area.remove();
+    active?.focus?.();
+  }
+}
+
 export async function copyText(value, message = "") {
   try {
-    await navigator.clipboard.writeText(value);
+    if (navigator.clipboard) await navigator.clipboard.writeText(value);
+    else if (!legacyCopy(value)) throw new Error("clipboard unavailable");
     toast(message || vt("common.copied"));
   } catch {
     toast(vt("common.copyFailed"), vt("common.copyDenied"), "danger");
