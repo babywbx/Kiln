@@ -8,5 +8,13 @@
     "not_found_handling": "404-page",
     "binding": "ASSETS",
     "run_worker_first": ["/", "/en/"]
-  }
+  },
+  "workers_dev": false,
+  "routes": [{ "pattern": "kiln.wbxdocs.com", "custom_domain": true }],
+  "observability": {
+    "enabled": true,
+    "logs": { "head_sampling_rate": 1 },
+    "traces": { "enabled": true, "head_sampling_rate": 1 }
+  },
+  "limits": { "cpu_ms": 30000 }
 }
