@@ -500,15 +500,17 @@ input:not([type="checkbox"]):disabled, select:disabled { color: var(--muted); ba
 
 .sidebar-foot { display: grid; gap: 8px; margin-top: auto; }
 .instance {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 10px;
+  justify-content: center;
   padding: 10px 11px;
   border: 1px solid transparent;
   border-radius: var(--r-md);
   background: var(--surface-soft);
 }
-.instance > span { display: grid; min-width: 0; }
+.instance .dot { position: absolute; left: 11px; }
+.instance > span:not(.dot) { display: grid; min-width: 0; padding-inline: 12px; text-align: center; }
 .instance strong { font-size: 12px; font-weight: 650; }
 .instance small { overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -651,7 +653,8 @@ input:not([type="checkbox"]):disabled, select:disabled { color: var(--muted); ba
 .card-head p { margin-top: 6px; color: var(--muted); font-size: 14px; }
 .card-body { padding: 18px 24px 24px; }
 .card > .card-body:first-child { padding-top: 24px; }
-.card-body.is-flush { padding: 0; }
+.card-body.is-flush,
+.card > .card-body.is-flush:first-child { padding: 0; }
 
 .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; }
 .metric {
@@ -706,6 +709,7 @@ input:not([type="checkbox"]):disabled, select:disabled { color: var(--muted); ba
 .list-item > span:first-child { display: grid; min-width: 0; flex: 1; }
 .list-item > span.identity:first-child { display: flex; }
 .list-item small { overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; }
+.list-item > .truncate { min-width: 0; }
 
 .logo-preview {
   width: 44px;
@@ -751,7 +755,7 @@ input:not([type="checkbox"]):disabled, select:disabled { color: var(--muted); ba
   text-align: center;
 }
 .empty-state strong { color: var(--fg); font-size: 17px; font-weight: 500; }
-.empty-state p { max-width: 360px; text-wrap: balance; }
+.empty-state p { max-width: 420px; text-wrap: balance; }
 .empty-state .button { margin-top: 10px; }
 
 /* ---------------------------------------------------------------- tables */

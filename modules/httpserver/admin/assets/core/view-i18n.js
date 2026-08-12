@@ -159,7 +159,7 @@ const zhHans = {
   "channel.sourceTestDraft": "测试当前源地址", "channel.sourceAvailable": "源地址可用", "channel.sourceConnectedVia": "已通过 {via} 连接节目源",
 
   "apiToken.title": "管理员 API 令牌", "apiToken.description": "为命令行、自动化和外部管理工具签发独立凭证；完整令牌只显示一次。",
-  "apiToken.create": "生成 API 令牌", "apiToken.empty": "还没有管理员 API 令牌", "apiToken.emptyHint": "浏览器登录不会暴露给脚本；按需要生成一个有明确权限的令牌。",
+  "apiToken.create": "生成 API 令牌", "apiToken.empty": "还没有管理员 API 令牌", "apiToken.emptyHint": "浏览器登录不会暴露给脚本，按需生成权限明确的令牌",
   "apiToken.name": "名称", "apiToken.prefix": "令牌前缀", "apiToken.permissions": "权限", "apiToken.permission": "所需权限", "apiToken.expires": "到期时间",
   "apiToken.lastUsed": "最近使用", "apiToken.status": "状态", "apiToken.active": "有效", "apiToken.revoked": "已吊销", "apiToken.expired": "已过期", "apiToken.disabled": "已停用",
   "apiToken.never": "永不过期", "apiToken.edit": "编辑", "apiToken.rotate": "轮换", "apiToken.revoke": "吊销", "apiToken.audit": "API 调用审计",
@@ -218,7 +218,7 @@ Object.assign(zhHant, {
   "channel.upgradeRedirectsHint": "相容僅支援 HTTPS、卻把重新導向目標寫成 HTTP 的來源站；只升級公網主機的預設連接埠。",
 
   "apiToken.title": "管理員 API 權杖", "apiToken.description": "為命令列、自動化與外部管理工具簽發獨立憑證；完整權杖僅顯示一次。",
-  "apiToken.create": "產生 API 權杖", "apiToken.empty": "尚無管理員 API 權杖", "apiToken.emptyHint": "瀏覽器登入不會暴露給指令碼；請依需要產生具有明確權限的權杖。",
+  "apiToken.create": "產生 API 權杖", "apiToken.empty": "尚無管理員 API 權杖", "apiToken.emptyHint": "瀏覽器登入不會暴露給指令碼，按需產生權限明確的權杖",
   "apiToken.name": "名稱", "apiToken.prefix": "權杖前綴", "apiToken.permissions": "權限", "apiToken.permission": "所需權限", "apiToken.expires": "到期時間",
   "apiToken.lastUsed": "最近使用", "apiToken.status": "狀態", "apiToken.active": "有效", "apiToken.revoked": "已撤銷", "apiToken.expired": "已過期", "apiToken.disabled": "已停用",
   "apiToken.never": "永不過期", "apiToken.edit": "編輯", "apiToken.rotate": "輪替", "apiToken.revoke": "撤銷", "apiToken.audit": "API 呼叫稽核",
@@ -374,7 +374,7 @@ Object.assign(en, {
   "channel.sourceTestDraft": "Test current source", "channel.sourceAvailable": "Source available", "channel.sourceConnectedVia": "Connected to the source through {via}",
 
   "apiToken.title": "Administrator API tokens", "apiToken.description": "Issue separate credentials for command-line tools, automation, and external administration. Full tokens are shown once.",
-  "apiToken.create": "Generate API token", "apiToken.empty": "No administrator API tokens", "apiToken.emptyHint": "Browser sessions stay out of scripts; generate a token with explicit permissions when needed.",
+  "apiToken.create": "Generate API token", "apiToken.empty": "No administrator API tokens", "apiToken.emptyHint": "Browser sessions stay out of scripts. Generate a token with explicit permissions",
   "apiToken.name": "Name", "apiToken.prefix": "Token prefix", "apiToken.permissions": "Permissions", "apiToken.permission": "Required permission", "apiToken.expires": "Expires",
   "apiToken.lastUsed": "Last used", "apiToken.status": "Status", "apiToken.active": "Active", "apiToken.revoked": "Revoked", "apiToken.expired": "Expired", "apiToken.disabled": "Disabled",
   "apiToken.never": "Never", "apiToken.edit": "Edit", "apiToken.rotate": "Rotate", "apiToken.revoke": "Revoke", "apiToken.audit": "API invocation audit",
