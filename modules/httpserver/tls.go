@@ -38,7 +38,17 @@ type tlsMaterial struct {
 
 func (s *Server) tlsStatus() map[string]any {
 	enabled, err := s.tlsEnabled()
-	status := map[string]any{"tls_enabled": enabled}
+	status := map[string]any{
+		"tls_enabled":      enabled,
+		"tls_listen":       strings.TrimSpace(s.deps.Cfg.Server.TLSListen),
+		"tls_split_listen": strings.TrimSpace(s.deps.Cfg.Server.TLSListen) != "",
+		"tls_certificate_path": filepath.Join(
+			s.deps.Cfg.Server.DataDir, "tls", "kiln.crt",
+		),
+	}
+	if certFile := strings.TrimSpace(s.deps.Cfg.Server.TLSCertFile); certFile != "" {
+		status["tls_certificate_path"] = certFile
+	}
 	if err != nil {
 		status["tls_certificate_error"] = err.Error()
 		return status
@@ -137,6 +147,11 @@ func (s *Server) certificateHosts() []string {
 	if base := strings.TrimSpace(publicBase); base != "" {
 		if parsed, err := url.Parse(base); err == nil && parsed.Hostname() != "" {
 			hosts = append(hosts, parsed.Hostname())
+		}
+	}
+	if host, _, err := net.SplitHostPort(strings.TrimSpace(s.deps.Cfg.Server.TLSListen)); err == nil {
+		if ip := net.ParseIP(host); ip == nil || !ip.IsUnspecified() {
+			hosts = append(hosts, host)
 		}
 	}
 	hosts = append(hosts, s.deps.Cfg.Security.PublicHosts...)

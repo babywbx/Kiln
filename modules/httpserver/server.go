@@ -53,6 +53,7 @@ type Server struct {
 	deps   Deps
 	mux    *http.ServeMux
 	http   *http.Server
+	tls    *http.Server
 	loginL *security.Limiter
 	play   *playback.Handler
 }
@@ -83,6 +84,16 @@ func New(deps Deps) *Server {
 	if deps.Cfg.Server.WriteTimeout > 0 {
 		s.http.WriteTimeout = time.Duration(deps.Cfg.Server.WriteTimeout) * time.Second
 	}
+	if splitAddr := strings.TrimSpace(deps.Cfg.Server.TLSListen); splitAddr != "" {
+		s.tls = &http.Server{
+			Addr:              splitAddr,
+			Handler:           handler,
+			ReadHeaderTimeout: s.http.ReadHeaderTimeout,
+			ReadTimeout:       s.http.ReadTimeout,
+			IdleTimeout:       s.http.IdleTimeout,
+			WriteTimeout:      s.http.WriteTimeout,
+		}
+	}
 	return s
 }
 
@@ -101,15 +112,37 @@ func (s *Server) Start() error {
 	if err != nil {
 		return err
 	}
-	s.http.TLSConfig = &tls.Config{Certificates: []tls.Certificate{material.Certificate}, MinVersion: tls.VersionTLS12}
+	tlsConfig := &tls.Config{Certificates: []tls.Certificate{material.Certificate}, MinVersion: tls.VersionTLS12}
+	if s.tls == nil {
+		s.http.TLSConfig = tlsConfig
+		s.deps.Log.Info("listening",
+			"addr", s.deps.Cfg.Server.Listen, "scheme", "https", "certificate", material.Source,
+			"expires", material.NotAfter.Format(time.RFC3339), "version", version.Version)
+		return s.http.ListenAndServeTLS("", "")
+	}
+
+	s.tls.TLSConfig = tlsConfig
+	s.http.Handler = s.plaintextSurface(s.http.Handler, s.tls.Addr)
 	s.deps.Log.Info("listening",
-		"addr", s.deps.Cfg.Server.Listen, "scheme", "https", "certificate", material.Source,
+		"addr", s.tls.Addr, "scheme", "https", "certificate", material.Source,
 		"expires", material.NotAfter.Format(time.RFC3339), "version", version.Version)
-	return s.http.ListenAndServeTLS("", "")
+	s.deps.Log.Info("listening",
+		"addr", s.deps.Cfg.Server.Listen, "scheme", "http", "surface", "playback", "version", version.Version)
+
+	errs := make(chan error, 2)
+	go func() { errs <- s.tls.ListenAndServeTLS("", "") }()
+	go func() { errs <- s.http.ListenAndServe() }()
+	return <-errs
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
-	return s.http.Shutdown(ctx)
+	if s.tls == nil {
+		return s.http.Shutdown(ctx)
+	}
+	errs := make(chan error, 2)
+	go func() { errs <- s.http.Shutdown(ctx) }()
+	go func() { errs <- s.tls.Shutdown(ctx) }()
+	return errors.Join(<-errs, <-errs)
 }
 
 func (s *Server) routes() {
@@ -125,7 +158,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /v1/me/credentials", s.requireAuth(s.handleUpdateCredentials))
 	s.mux.HandleFunc("GET /v1/channels", s.requireAuth(s.handleChannels))
 	s.mux.HandleFunc("GET /v1/status", s.requireAuth(s.handleStatus))
-	s.mux.HandleFunc("GET /v1/playlist.m3u", s.requireAuth(s.handlePlaylist))
+	s.mux.HandleFunc("GET /v1/playlist.m3u", s.requirePlayAuth(s.handlePlaylist))
 	s.mux.HandleFunc("GET /v1/epg.xml", s.handleEPGXML)
 	s.mux.HandleFunc("GET /v1/epg.xml.gz", s.handleEPGGzip)
 	s.mux.HandleFunc("GET /v1/logo/{id}", s.handleChannelLogo)
@@ -259,12 +292,16 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 			ww.WriteHeader(http.StatusNoContent)
 			return
 		}
-		if !security.IsLocalHealthRequest(r) && !security.RequestHostAllowed(r, s.deps.Cfg.Security.PublicHosts) {
+		if !s.requestHostAllowed(r) {
 			writeAppErr(ww, apperr.New(apperr.CodeForbidden, 403, "host not allowed"))
 			return
 		}
 		next.ServeHTTP(ww, r)
 	})
+}
+
+func (s *Server) requestHostAllowed(r *http.Request) bool {
+	return security.IsLocalHealthRequest(r) || security.RequestHostAllowed(r, s.deps.Cfg.Security.PublicHosts)
 }
 
 type statusWriter struct {
@@ -461,7 +498,10 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePlaylist(w http.ResponseWriter, r *http.Request) {
-	tok := extractPlayToken(r)
+	tok := ""
+	if s.deps.Cfg.Security.PlayAuthRequired() {
+		tok = extractPlayToken(r)
+	}
 	chs, err := s.deps.Catalog.List(false)
 	if err != nil {
 		writeAppErr(w, apperr.Internal(err))

@@ -28,11 +28,12 @@ func serverWithDataDir(t *testing.T, publicBase string) *Server {
 
 func TestSelfSignedCertificateCoversLoopbackAndPublicBase(t *testing.T) {
 	server := serverWithDataDir(t, "https://10.10.5.60:8080")
+	server.deps.Cfg.Server.TLSListen = "console.kiln.test:8443"
 	material, err := server.selfSignedMaterial()
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, host := range []string{"localhost", "127.0.0.1", "::1", "10.10.5.60"} {
+	for _, host := range []string{"localhost", "127.0.0.1", "::1", "10.10.5.60", "console.kiln.test"} {
 		if !slices.Contains(material.Hosts, host) {
 			t.Fatalf("certificate hosts %v missing %s", material.Hosts, host)
 		}

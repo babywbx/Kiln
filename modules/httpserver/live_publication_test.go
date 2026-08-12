@@ -226,6 +226,12 @@ func body(t *testing.T, resp *http.Response) string {
 func TestLivePublicationServesFullChain(t *testing.T) {
 	ts, _ := newLiveServer(t)
 
+	playlistResponse := get(t, ts.URL+"/v1/playlist.m3u")
+	playlist := body(t, playlistResponse)
+	if playlistResponse.StatusCode != http.StatusOK || !strings.Contains(playlist, "dash1") || strings.Contains(playlist, "token=") {
+		t.Fatalf("public playlist = %d %s", playlistResponse.StatusCode, playlist)
+	}
+
 	master := body(t, get(t, ts.URL+"/v1/play/dash1/index.m3u8"))
 	for _, want := range []string{
 		`URI="/v1/play/dash1/live/audio-main.m3u8?g=`,

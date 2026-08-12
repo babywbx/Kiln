@@ -32,7 +32,7 @@ The session manager owns both the pull and the packaging lifecycle, so a channel
 Each credential covers its own surface, and none of them can escalate into another.
 
 - **Public endpoints**: no credential at all, covering `/healthz`, `/readyz`, `/metrics`, `/v1/epg.xml`, `/v1/logo/{id}`, and the rate-limited `POST /v1/auth/login`.
-- **Session JWT**: an Ed25519-signed token obtained by logging in with a password. It backs the admin console and `/v1/playlist.m3u`, which accepts nothing else.
+- **Session JWT**: an Ed25519-signed token obtained by logging in with a password. It backs the admin console and authorizes `/v1/playlist.m3u` while playback authentication is enabled.
 - **Admin API token**: a long-lived credential for scripts and CLI use. Shown exactly once, split across `read`, `write`, `delete`, and `refresh`, and limited to the registered admin routes.
 - **Path-based playback key**: `/p/{token}/...`, carried in the URL path. Scopable to a subset of channels, revocable at any time, and meant for handing playlists to players.
 

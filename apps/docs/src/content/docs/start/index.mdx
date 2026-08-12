@@ -55,7 +55,7 @@ curl -s http://127.0.0.1:8080/v1/playlist.m3u -H "authorization: Bearer $TOKEN"
 curl -s "http://127.0.0.1:8080/v1/play/hls-demo/index.m3u8?token=$TOKEN"
 ```
 
-`hls-demo` 是示例配置里的频道 id，换成自己的频道 id 即可。`/v1/playlist.m3u` 只认登录会话，`/v1/play/` 下的地址既接受 `?token=` 查询参数，也接受 `Authorization` 请求头。凭据的完整划分见 [接口参考](/reference/api/)。
+`hls-demo` 是示例配置里的频道 id，换成自己的频道 id 即可。`/v1/playlist.m3u` 与 `/v1/play/` 下的地址都跟随 `security.play_require_auth`，开启时通过 `?token=` 或 `Authorization` 请求头接受会话 JWT。凭据的完整划分见 [接口参考](/reference/api/)。
 
 ## 生产前必改
 

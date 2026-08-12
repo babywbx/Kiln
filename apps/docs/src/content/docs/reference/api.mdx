@@ -229,13 +229,18 @@ API Token 只能访问**已登记**的路由。登记表共 43 条，就是本�
 
 非管理员会话且带频道范围限制时，`sessions` 与 `session_count` 按范围过滤。
 
+## 播放列表
+
+### `GET /v1/playlist.m3u`
+
+这条接口跟随 `security.play_require_auth`。需要鉴权时，它通过 `Authorization: Bearer` 或 `?token=` 接受会话或预览 JWT，按凭据的频道范围过滤，并把同一令牌写进生成的 `/v1/play/` 地址；管理员 API 令牌不能使用。关闭鉴权时，接口公开，并为全部已启用频道生成不带令牌的地址。存在已启用的 EPG 源时，播放列表头部带 `x-tvg-url` 指向 `/v1/epg.xml.gz`。
+
 ## 仅会话端点
 
-只接受登录会话。管理员 API 令牌访问这些路由会被拒绝，其中 `/v1/me/credentials`、`/v1/admin/api-tokens/*` 与 `/v1/admin/api-token-logs` 的拒绝原因为 `session_required`，`/v1/playlist.m3u` 的拒绝原因为 `route_not_available`。这一限制可防止令牌自行提升权限。
+只接受登录会话。管理员 API 令牌访问时以 `session_required` 拒绝，这道边界防止令牌修改账号凭据或管理其它令牌。
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `GET` | `/v1/playlist.m3u` | 带会话令牌的播放列表 |
 | `PUT` | `/v1/me/credentials` | 修改登录凭据 |
 | `GET` | `/v1/admin/api-tokens` | 列出管理员 API 令牌 |
 | `POST` | `/v1/admin/api-tokens` | 创建管理员 API 令牌 |
@@ -244,10 +249,6 @@ API Token 只能访问**已登记**的路由。登记表共 43 条，就是本�
 | `POST` | `/v1/admin/api-tokens/{id}/revoke` | 撤销 |
 | `DELETE` | `/v1/admin/api-tokens/{id}` | 删除 |
 | `GET` | `/v1/admin/api-token-logs` | Token 审计日志 |
-
-### `GET /v1/playlist.m3u`
-
-返回 `application/vnd.apple.mpegurl`，播放地址前缀为 `/v1/play/`，并把请求所用的会话令牌拼进每条播放地址。配置了 EPG 源时，播放列表头部带 `x-tvg-url` 指向 `/v1/epg.xml.gz`。
 
 ### `PUT /v1/me/credentials`
 
@@ -347,9 +348,9 @@ API Token 只能访问**已登记**的路由。登记表共 43 条，就是本�
 
 | 方法 | 路径 | 凭据 | 说明 |
 | --- | --- | --- | --- |
-| `GET` | `/v1/play/{id}/index.m3u8` | 会话或预览令牌 | 频道主播放列表 |
-| `GET` | `/v1/play/{id}/live/{file}` | 会话或预览令牌 | 本地封装产物：媒体播放列表、分片、CMAF part |
-| `GET` | `/v1/play/{id}/u/{upstream}` | 会话或预览令牌 | 已签名的上游回源代理 |
+| `GET` | `/v1/play/{id}/index.m3u8` | 由 `play_require_auth` 决定 | 频道主播放列表 |
+| `GET` | `/v1/play/{id}/live/{file}` | 由 `play_require_auth` 决定 | 本地封装产物：媒体播放列表、分片、CMAF part |
+| `GET` | `/v1/play/{id}/u/{upstream}` | 由 `play_require_auth` 决定 | 已签名的上游回源代理 |
 | `GET` | `/p/{token}/playlist.m3u` | 路径内的播放密钥 | 该密钥范围内的播放列表 |
 | `GET` | `/p/{token}/play/{id}/index.m3u8` | 路径内的播放密钥 | 频道主播放列表 |
 | `GET` | `/p/{token}/play/{id}/live/{file}` | 路径内的播放密钥 | 本地封装产物 |
@@ -526,7 +527,7 @@ DASH 频道的探测返回 `{"ok": true, "dur_ms": 1200, "inspection": {...}}`�
 | `GET` | `/v1/admin/settings` | `read` | 读取运行时设置 |
 | `PUT` | `/v1/admin/settings` | `write` | 写入运行时设置 |
 
-读取返回配置文件中的 `listen`、`cors_origins`、`public_hosts`、`play_require_auth`，加上可在运行时修改的 `public_base_url`、`access_log_retention_days`、`tls_enabled`、TLS 证书状态与当前 `revision`。
+读取返回配置文件中的 `listen`、`cors_origins`、`public_hosts`、`play_require_auth` 与 `tls_listen`，加上可在运行时修改的 `public_base_url`、`access_log_retention_days` 与 `tls_enabled`。响应还会给出是否配置了分离监听、证书来源、路径、覆盖主机、到期时间或错误，以及当前 `revision`。
 
 写入的请求体为 `{"public_base_url": "https://kiln.example.com", "access_log_retention_days": "30", "tls_enabled": true}`。前两个字段为字符串，保留天数取值范围为 1 至 3650，TLS 变更在重启后生效。`tls_enabled` 可省略，省略时保留当前值。必须携带 `If-Match`，缺失返回 409。
 
@@ -624,15 +625,15 @@ Lite 二进制只注册 7 条路由，没有管理控制台、管理 API、EPG�
 | `GET` | `/healthz` | 无 |
 | `GET` | `/readyz` | 无 |
 | `POST` | `/v1/auth/login` | 无（限流） |
-| `GET` | `/v1/playlist.m3u` | 会话令牌 |
-| `GET` | `/v1/play/{id}/index.m3u8` | 会话令牌 |
-| `GET` | `/v1/play/{id}/live/{file}` | 会话令牌 |
-| `GET` | `/v1/play/{id}/u/{upstream}` | 会话令牌 |
+| `GET` | `/v1/playlist.m3u` | 由 `security.play_require_auth` 决定 |
+| `GET` | `/v1/play/{id}/index.m3u8` | 由 `security.play_require_auth` 决定 |
+| `GET` | `/v1/play/{id}/live/{file}` | 由 `security.play_require_auth` 决定 |
+| `GET` | `/v1/play/{id}/u/{upstream}` | 由 `security.play_require_auth` 决定 |
 
 差异要点：
 
 - `/readyz` 恒定返回就绪，不做兼容引擎检查。
-- `/v1/playlist.m3u` 走播放鉴权而非会话鉴权，因此受 `security.play_require_auth` 控制，凭据可用 `Authorization: Bearer` 头或 `?token=` 查询参数。
+- `/v1/playlist.m3u` 与 `/v1/play/` 都受 `security.play_require_auth` 控制，开启时凭据可用 `Authorization: Bearer` 头或 `?token=` 查询参数。
 - 错误响应格式与完整版一致。
 - 响应头只设置 `X-Content-Type-Options`、`Referrer-Policy`、`Cache-Control` 与 CORS，没有 `X-Request-ID`、CSP 与 `X-Frame-Options`。
 - 主机白名单校验与 `OPTIONS` 处理与完整版相同。

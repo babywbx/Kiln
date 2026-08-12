@@ -124,7 +124,8 @@ func validateLiteConfig(cfg config.File) error {
 	if cfg.Packager.Engine != config.EngineNative {
 		return fmt.Errorf("packager.engine must be native in lite")
 	}
-	if cfg.Server.TLSEnabled || strings.TrimSpace(cfg.Server.TLSCertFile) != "" || strings.TrimSpace(cfg.Server.TLSKeyFile) != "" {
+	if cfg.Server.TLSEnabled || strings.TrimSpace(cfg.Server.TLSCertFile) != "" ||
+		strings.TrimSpace(cfg.Server.TLSKeyFile) != "" || strings.TrimSpace(cfg.Server.TLSListen) != "" {
 		return fmt.Errorf("tls is not available in lite")
 	}
 	for _, channel := range cfg.Channels {

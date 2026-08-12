@@ -143,7 +143,7 @@ The Lite binary takes the same command line. The differences show up after start
   - no `[[epg.sources]]` entry may carry `enabled = true`;
   - `observe.otlp_endpoint` must be empty;
   - `debug.pprof.enabled` must be `false`.
-  - `server.tls_enabled` must be `false`, and both TLS certificate paths must be empty.
+  - `server.tls_enabled` must be `false`, and `server.tls_listen` plus both TLS certificate paths must be empty.
 - Resource adaptation uses a fixed low-memory profile instead of scaling with host memory.
 
 For route surface differences, see the [API reference](/en/reference/api/).

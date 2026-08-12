@@ -38,12 +38,12 @@ A non-admin session scoped to a channel subset can only play channels in that su
 
 ## The full playlist
 
-`GET /v1/playlist.m3u` returns an M3U of every enabled channel and accepts a login session only. An admin API token is rejected here, because this route is not registered among the routes a token can reach.
+`GET /v1/playlist.m3u` returns an M3U of every enabled channel and follows `security.play_require_auth`. With the default enabled setting it accepts a session or preview JWT through the bearer header or `?token=`; with the setting disabled it is public and emits token-free playback URLs. Admin API tokens are not accepted.
 
 What it does:
 
-- The credential used for the request is embedded verbatim as `?token=` on every playback URL, so the playlist stays valid exactly as long as the session token does.
-- A session scoped to a channel subset only receives that subset.
+- With playback authorization enabled, the request credential is embedded verbatim as `?token=` on every playback URL, so the playlist stays valid exactly as long as the token does; with authorization disabled, no token is emitted.
+- A credential scoped to a channel subset only receives that subset.
 - When the guide is enabled, the `#EXTM3U` line carries `x-tvg-url` pointing at Kiln's own EPG endpoint.
 - Disabled channels are omitted.
 

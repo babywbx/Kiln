@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -89,6 +90,7 @@ type Server struct {
 	IdleTimeout   int    `json:"idle_timeout_sec" toml:"idle_timeout_sec"`
 	MemoryLimitMB int    `json:"memory_limit_mb" toml:"memory_limit_mb"`
 	TLSEnabled    bool   `json:"tls_enabled" toml:"tls_enabled"`
+	TLSListen     string `json:"tls_listen" toml:"tls_listen"`
 	TLSCertFile   string `json:"tls_cert_file" toml:"tls_cert_file"`
 	TLSKeyFile    string `json:"tls_key_file" toml:"tls_key_file"`
 }
@@ -633,6 +635,27 @@ func (c File) validate() error {
 		ip := net.ParseIP(host)
 		if ip == nil || !ip.IsLoopback() {
 			return fmt.Errorf("debug.pprof.listen must use a loopback IP")
+		}
+	}
+	if listen := strings.TrimSpace(c.Server.TLSListen); listen != "" {
+		host, port, err := net.SplitHostPort(listen)
+		if err != nil {
+			return fmt.Errorf("server.tls_listen must be host:port: %w", err)
+		}
+		portNumber, err := strconv.ParseUint(port, 10, 16)
+		if err != nil || portNumber == 0 {
+			return fmt.Errorf("server.tls_listen port must be between 1 and 65535")
+		}
+		plainHost, plainPort, plainErr := net.SplitHostPort(strings.TrimSpace(c.Server.Listen))
+		plainPortNumber, portErr := strconv.ParseUint(plainPort, 10, 16)
+		hostsOverlap := strings.EqualFold(host, plainHost) || host == "" || plainHost == ""
+		tlsIP, plainIP := net.ParseIP(host), net.ParseIP(plainHost)
+		if tlsIP != nil && plainIP != nil {
+			hostsOverlap = tlsIP.Equal(plainIP) || tlsIP.IsUnspecified() || plainIP.IsUnspecified()
+		}
+		if listen == strings.TrimSpace(c.Server.Listen) ||
+			plainErr == nil && portErr == nil && hostsOverlap && portNumber == plainPortNumber {
+			return fmt.Errorf("server.tls_listen must differ from server.listen")
 		}
 	}
 	if len(c.Auth.Users) == 0 {

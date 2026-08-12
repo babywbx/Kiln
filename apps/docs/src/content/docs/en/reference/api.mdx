@@ -229,13 +229,18 @@ Returns `uptime_sec`, `bytes_in`, `bytes_out`, `requests`, `errors`, `goroutines
 
 A non-admin session with a channel scope sees `sessions` and `session_count` filtered to that scope.
 
+## Playback playlist
+
+### `GET /v1/playlist.m3u`
+
+This endpoint follows `security.play_require_auth`. When authorization is required, it accepts a session or preview JWT through `Authorization: Bearer` or `?token=`, filters scoped credentials to their channels, and puts the same token into the generated `/v1/play/` URLs. An admin API token is not accepted. When authorization is disabled, the endpoint is public and generates token-free URLs for every enabled channel. With active EPG sources, the playlist header carries `x-tvg-url` pointing at `/v1/epg.xml.gz`.
+
 ## Session-only endpoints
 
-These accept a login session only. An admin API token is refused: `/v1/me/credentials`, `/v1/admin/api-tokens/*`, and `/v1/admin/api-token-logs` are denied with `session_required`, while `/v1/playlist.m3u` is denied with `route_not_available`. This boundary is what keeps a token from escalating itself.
+These accept a login session only. Admin API tokens are denied with `session_required`; this boundary keeps a token from changing account credentials or managing other tokens.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/v1/playlist.m3u` | Playlist carrying the session token |
 | `PUT` | `/v1/me/credentials` | Change login credentials |
 | `GET` | `/v1/admin/api-tokens` | List admin API tokens |
 | `POST` | `/v1/admin/api-tokens` | Create an admin API token |
@@ -244,10 +249,6 @@ These accept a login session only. An admin API token is refused: `/v1/me/creden
 | `POST` | `/v1/admin/api-tokens/{id}/revoke` | Revoke |
 | `DELETE` | `/v1/admin/api-tokens/{id}` | Delete |
 | `GET` | `/v1/admin/api-token-logs` | Token audit log |
-
-### `GET /v1/playlist.m3u`
-
-Returns `application/vnd.apple.mpegurl` with playback URLs prefixed by `/v1/play/` and the caller's session token appended to each one. When EPG sources are configured, the playlist header carries `x-tvg-url` pointing at `/v1/epg.xml.gz`.
 
 ### `PUT /v1/me/credentials`
 
@@ -347,9 +348,9 @@ Playback has two parallel path families: `/v1/play/` for session and preview tok
 
 | Method | Path | Credential | Purpose |
 | --- | --- | --- | --- |
-| `GET` | `/v1/play/{id}/index.m3u8` | Session or preview token | Channel entry playlist |
-| `GET` | `/v1/play/{id}/live/{file}` | Session or preview token | Locally packaged output: media playlists, segments, CMAF parts |
-| `GET` | `/v1/play/{id}/u/{upstream}` | Session or preview token | Signed upstream fetch proxy |
+| `GET` | `/v1/play/{id}/index.m3u8` | Depends on `play_require_auth` | Channel entry playlist |
+| `GET` | `/v1/play/{id}/live/{file}` | Depends on `play_require_auth` | Locally packaged output: media playlists, segments, CMAF parts |
+| `GET` | `/v1/play/{id}/u/{upstream}` | Depends on `play_require_auth` | Signed upstream fetch proxy |
 | `GET` | `/p/{token}/playlist.m3u` | Playback key in the path | Playlist scoped to that key |
 | `GET` | `/p/{token}/play/{id}/index.m3u8` | Playback key in the path | Channel entry playlist |
 | `GET` | `/p/{token}/play/{id}/live/{file}` | Playback key in the path | Locally packaged output |
@@ -526,7 +527,7 @@ Records are pruned according to `access_log_retention_days`, which defaults to 3
 | `GET` | `/v1/admin/settings` | `read` | Read runtime settings |
 | `PUT` | `/v1/admin/settings` | `write` | Write runtime settings |
 
-The read returns the config-file values `listen`, `cors_origins`, `public_hosts`, and `play_require_auth`, plus the runtime-editable `public_base_url`, `access_log_retention_days`, `tls_enabled`, TLS certificate status, and the current `revision`.
+The read returns the config-file values `listen`, `cors_origins`, `public_hosts`, `play_require_auth`, and `tls_listen`, plus the runtime-editable `public_base_url`, `access_log_retention_days`, and `tls_enabled`. It also reports whether split listening is configured, the certificate source, path, hosts, expiry or error, and the current `revision`.
 
 The write body is `{"public_base_url": "https://kiln.example.com", "access_log_retention_days": "30", "tls_enabled": true}`. The first two fields are strings, retention must be between 1 and 3650, and changing TLS takes effect after a restart. `tls_enabled` is optional and retains its current value when omitted. `If-Match` is required; without it the request returns 409.
 
@@ -624,15 +625,15 @@ The Lite binary registers 7 routes. There is no admin console, no admin API, no 
 | `GET` | `/healthz` | None |
 | `GET` | `/readyz` | None |
 | `POST` | `/v1/auth/login` | None (rate limited) |
-| `GET` | `/v1/playlist.m3u` | Session token |
-| `GET` | `/v1/play/{id}/index.m3u8` | Session token |
-| `GET` | `/v1/play/{id}/live/{file}` | Session token |
-| `GET` | `/v1/play/{id}/u/{upstream}` | Session token |
+| `GET` | `/v1/playlist.m3u` | Depends on `security.play_require_auth` |
+| `GET` | `/v1/play/{id}/index.m3u8` | Depends on `security.play_require_auth` |
+| `GET` | `/v1/play/{id}/live/{file}` | Depends on `security.play_require_auth` |
+| `GET` | `/v1/play/{id}/u/{upstream}` | Depends on `security.play_require_auth` |
 
 What differs:
 
 - `/readyz` always reports ready and runs no compatibility-engine check.
-- `/v1/playlist.m3u` uses playback authorization rather than session authorization, so it follows `security.play_require_auth` and accepts either an `Authorization: Bearer` header or a `?token=` query parameter.
+- `/v1/playlist.m3u` and `/v1/play/` both follow `security.play_require_auth`; when enabled, they accept either an `Authorization: Bearer` header or a `?token=` query parameter.
 - The error response format is identical to the full build.
 - Responses set only `X-Content-Type-Options`, `Referrer-Policy`, `Cache-Control`, and CORS. There is no `X-Request-ID`, no CSP, and no `X-Frame-Options`.
 - Host allowlist checks and `OPTIONS` handling match the full build.

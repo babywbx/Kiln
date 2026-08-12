@@ -55,7 +55,7 @@ curl -s http://127.0.0.1:8080/v1/playlist.m3u -H "authorization: Bearer $TOKEN"
 curl -s "http://127.0.0.1:8080/v1/play/hls-demo/index.m3u8?token=$TOKEN"
 ```
 
-`hls-demo` is the channel ID from the example config; replace it with your own. `/v1/playlist.m3u` accepts a login session only, while everything under `/v1/play/` takes either a `?token=` query parameter or an `Authorization` header. The full credential split is documented in the [API reference](/en/reference/api/).
+`hls-demo` is the channel ID from the example config; replace it with your own. `/v1/playlist.m3u` and everything under `/v1/play/` follow `security.play_require_auth`, accepting a session JWT through either `?token=` or an `Authorization` header when it is enabled. The full credential split is documented in the [API reference](/en/reference/api/).
 
 ## Before you go live
 

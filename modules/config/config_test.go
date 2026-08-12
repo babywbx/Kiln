@@ -703,3 +703,33 @@ func TestUpgradeInsecureRedirectsFor(t *testing.T) {
 		})
 	}
 }
+
+func TestSplitTLSListenerValidation(t *testing.T) {
+	cfg := loadTOMLBody(t, `
+[server]
+listen = "0.0.0.0:8080"
+public_base_url = "http://127.0.0.1:8080"
+data_dir = "./data"
+tls_listen = "0.0.0.0:8443"
+
+[[auth.users]]
+username = "admin"
+password_hash = "$2a$10$8JxhvnpdTX/TrOTi1XaYWuPlrZK1aw3ANgGIWpTO6KtD2M432w7Ie"
+role = "admin"
+	`)
+	if cfg.Server.TLSListen != "0.0.0.0:8443" {
+		t.Fatalf("tls_listen = %q", cfg.Server.TLSListen)
+	}
+	for _, listen := range []string{"0.0.0.0:8080", "0.0.0.0:08080", "127.0.0.1:8080", ":8080", "not-an-address", "0.0.0.0:0", "0.0.0.0:65536", "0.0.0.0:https"} {
+		invalid := cfg
+		invalid.Server.TLSListen = listen
+		if err := invalid.validate(); err == nil {
+			t.Errorf("tls_listen %q was accepted", listen)
+		}
+	}
+	optional := cfg
+	optional.Server.TLSListen = ""
+	if err := optional.validate(); err != nil {
+		t.Fatalf("empty tls_listen: %v", err)
+	}
+}
