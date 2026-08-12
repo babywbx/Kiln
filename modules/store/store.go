@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -502,44 +503,80 @@ func (db *DB) seedChannels(cfg config.File) error {
 func (db *DB) seedEgress(cfg config.File) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	var n int
-	if err := db.sql.QueryRow(`SELECT COUNT(1) FROM proxy_profiles`).Scan(&n); err != nil {
-		return err
-	}
 	tx, err := db.sql.Begin()
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
 	now := time.Now().Unix()
-	if n == 0 {
-		for _, p := range cfg.Proxies {
-			if _, err := tx.Exec(`INSERT INTO proxy_profiles(id, name, url, disabled, updated_at) VALUES (?,?,?,?,?)`,
-				p.ID, p.Name, p.URL, boolInt(p.Disabled), now); err != nil {
-				return err
-			}
+	for key, value := range map[string]string{
+		"egress_default":    cfg.Egress.Default,
+		"playlist_policy":   cfg.Egress.PlaylistPolicy,
+		"docker_proxy_host": cfg.Egress.DockerProxyHost,
+	} {
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO settings(key, value, updated_at) VALUES (?,?,?)`, key, value, now); err != nil {
+			return err
 		}
-		for i, r := range cfg.Egress.Rules {
-			id := r.ID
-			if id == "" {
-				id = fmt.Sprintf("rule-%d", i+1)
-			}
-			if _, err := tx.Exec(`INSERT INTO proxy_rules(id, priority, kind, pattern, proxy_id, disabled, updated_at) VALUES (?,?,?,?,?,?,?)`,
-				id, r.Priority, r.Kind, r.Pattern, r.Proxy, boolInt(r.Disabled), now); err != nil {
-				return err
-			}
+		if value == "" {
+			continue
+		}
+		if _, err := tx.Exec(`UPDATE settings SET value=?, revision=revision+1, updated_at=?
+			WHERE key=? AND value<>?`, value, now, key, value); err != nil {
+			return err
 		}
 	}
-	if _, err := tx.Exec(`INSERT OR IGNORE INTO settings(key, value, updated_at) VALUES ('egress_default', ?, ?)`, cfg.Egress.Default, now); err != nil {
-		return err
+	for _, p := range cfg.Proxies {
+		if p.ID == "" {
+			continue
+		}
+		var stored string
+		err := tx.QueryRow(`SELECT url FROM proxy_profiles WHERE id=?`, p.ID).Scan(&stored)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+		case err != nil:
+			return err
+		default:
+			p.URL = keepProxyCredentials(p.URL, stored)
+		}
+		if _, err := tx.Exec(`INSERT INTO proxy_profiles(id, name, url, disabled, updated_at) VALUES (?,?,?,?,?)
+			ON CONFLICT(id) DO UPDATE SET name=excluded.name, url=excluded.url, disabled=excluded.disabled,
+			revision=proxy_profiles.revision+1, updated_at=excluded.updated_at
+			WHERE proxy_profiles.name<>excluded.name OR proxy_profiles.url<>excluded.url
+				OR proxy_profiles.disabled<>excluded.disabled`,
+			p.ID, p.Name, p.URL, boolInt(p.Disabled), now); err != nil {
+			return err
+		}
 	}
-	if _, err := tx.Exec(`INSERT OR IGNORE INTO settings(key, value, updated_at) VALUES ('playlist_policy', ?, ?)`, cfg.Egress.PlaylistPolicy, now); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`INSERT OR IGNORE INTO settings(key, value, updated_at) VALUES ('docker_proxy_host', ?, ?)`, cfg.Egress.DockerProxyHost, now); err != nil {
-		return err
+	for i, r := range cfg.Egress.Rules {
+		id := r.ID
+		if id == "" {
+			id = fmt.Sprintf("rule-%d", i+1)
+		}
+		if _, err := tx.Exec(`INSERT INTO proxy_rules(id, priority, kind, pattern, proxy_id, disabled, updated_at) VALUES (?,?,?,?,?,?,?)
+			ON CONFLICT(id) DO UPDATE SET priority=excluded.priority, kind=excluded.kind, pattern=excluded.pattern,
+			proxy_id=excluded.proxy_id, disabled=excluded.disabled,
+			revision=proxy_rules.revision+1, updated_at=excluded.updated_at
+			WHERE proxy_rules.priority<>excluded.priority OR proxy_rules.kind<>excluded.kind
+				OR proxy_rules.pattern<>excluded.pattern OR proxy_rules.proxy_id<>excluded.proxy_id
+				OR proxy_rules.disabled<>excluded.disabled`,
+			id, r.Priority, r.Kind, r.Pattern, r.Proxy, boolInt(r.Disabled), now); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
+}
+
+func keepProxyCredentials(incoming, stored string) string {
+	target, err := url.Parse(incoming)
+	if err != nil || target.User != nil {
+		return incoming
+	}
+	previous, err := url.Parse(stored)
+	if err != nil || previous.User == nil || previous.Scheme != target.Scheme || previous.Host != target.Host {
+		return incoming
+	}
+	target.User = previous.User
+	return target.String()
 }
 
 type ProxyProfileRow struct {

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -890,5 +891,154 @@ func TestConfigurationReplacementsAreAtomicAndRevisionChecked(t *testing.T) {
 	publicBase, _, err := db.GetSetting("public_base_url")
 	if err != nil || publicBase != "https://kiln.example" {
 		t.Fatalf("stale runtime replacement changed public base: %q, %v", publicBase, err)
+	}
+	tlsEnabled, _, err := db.GetSetting("tls_enabled")
+	if err != nil || tlsEnabled != "true" {
+		t.Fatalf("stored tls setting = %q, %v", tlsEnabled, err)
+	}
+}
+
+func TestSeedAppliesConfigFileChangesOnEveryStart(t *testing.T) {
+	dir := t.TempDir()
+	db, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	first := config.File{
+		Egress:  config.Egress{Default: "direct", PlaylistPolicy: "rewrite"},
+		Proxies: []config.ProxyProfile{{ID: "hk", Name: "HK", URL: "http://proxy:1080"}},
+	}
+	if err := db.SeedFromConfig(first); err != nil {
+		t.Fatal(err)
+	}
+
+	second := config.File{
+		Egress: config.Egress{
+			Default:        "hk",
+			PlaylistPolicy: "rewrite",
+			Rules:          []config.EgressRule{{ID: "lan", Priority: 5, Kind: "host_exact", Pattern: "pixman", Proxy: "direct"}},
+		},
+		Proxies: []config.ProxyProfile{{ID: "hk", Name: "HK Egress", URL: "http://proxy:1080"}},
+	}
+	if err := db.SeedFromConfig(second); err != nil {
+		t.Fatal(err)
+	}
+
+	value, _, err := db.GetSetting("egress_default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value != "hk" {
+		t.Fatalf("egress_default = %q, want hk; editing the config file must not be silently ignored", value)
+	}
+	profiles, err := db.ListProxyProfiles()
+	if err != nil || len(profiles) != 1 {
+		t.Fatalf("profiles = %#v, err = %v", profiles, err)
+	}
+	if profiles[0].Name != "HK Egress" {
+		t.Fatalf("proxy name = %q, want HK Egress", profiles[0].Name)
+	}
+	rules, err := db.ListProxyRules()
+	if err != nil || len(rules) != 1 || rules[0].ID != "lan" {
+		t.Fatalf("rules = %#v, err = %v", rules, err)
+	}
+}
+
+func TestSeedLeavesConsoleOnlySettingsAlone(t *testing.T) {
+	dir := t.TempDir()
+	db, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	declared := config.File{Egress: config.Egress{Default: "direct", PlaylistPolicy: "rewrite"}}
+	if err := db.SeedFromConfig(declared); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpsertProxyProfile(store.ProxyProfileRow{ID: "console", Name: "Console", URL: "http://added:1080"}); err != nil {
+		t.Fatal(err)
+	}
+	row, _, err := db.GetSettingRow("docker_proxy_host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SeedFromConfig(declared); err != nil {
+		t.Fatal(err)
+	}
+
+	profiles, err := db.ListProxyProfiles()
+	if err != nil || len(profiles) != 1 || profiles[0].ID != "console" {
+		t.Fatalf("a proxy the console created must survive a restart: %#v, %v", profiles, err)
+	}
+	after, _, err := db.GetSettingRow("docker_proxy_host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Revision != row.Revision {
+		t.Fatalf("undeclared setting revision moved %d -> %d; a no-op start must not invalidate open consoles", row.Revision, after.Revision)
+	}
+}
+
+func TestSeedKeepsProxyCredentialsTheConfigFileOmits(t *testing.T) {
+	dir := t.TempDir()
+	db, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	declared := config.File{
+		Egress:  config.Egress{Default: "direct", PlaylistPolicy: "rewrite"},
+		Proxies: []config.ProxyProfile{{ID: "hk", Name: "HK", URL: "http://proxy:1080"}},
+	}
+	if err := db.SeedFromConfig(declared); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpsertProxyProfile(store.ProxyProfileRow{ID: "hk", Name: "HK", URL: "http://user:pass@proxy:1080"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SeedFromConfig(declared); err != nil {
+		t.Fatal(err)
+	}
+
+	profiles, err := db.ListProxyProfiles()
+	if err != nil || len(profiles) != 1 {
+		t.Fatalf("profiles = %#v, err = %v", profiles, err)
+	}
+	if !strings.Contains(profiles[0].URL, "user:pass@") {
+		t.Fatalf("proxy url = %q; a restart must not silently drop credentials the config file never carried", profiles[0].URL)
+	}
+}
+
+func TestSeedRewritesProxyCredentialsTheConfigFileDeclares(t *testing.T) {
+	dir := t.TempDir()
+	db, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	if err := db.SeedFromConfig(config.File{
+		Egress:  config.Egress{Default: "direct", PlaylistPolicy: "rewrite"},
+		Proxies: []config.ProxyProfile{{ID: "hk", Name: "HK", URL: "http://old:secret@proxy:1080"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SeedFromConfig(config.File{
+		Egress:  config.Egress{Default: "direct", PlaylistPolicy: "rewrite"},
+		Proxies: []config.ProxyProfile{{ID: "hk", Name: "HK", URL: "http://new:rotated@proxy:1080"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	profiles, err := db.ListProxyProfiles()
+	if err != nil || len(profiles) != 1 {
+		t.Fatalf("profiles = %#v, err = %v", profiles, err)
+	}
+	if !strings.Contains(profiles[0].URL, "new:rotated@") {
+		t.Fatalf("proxy url = %q; rotating a credential in the config file must take effect", profiles[0].URL)
 	}
 }

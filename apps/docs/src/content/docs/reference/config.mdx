@@ -53,7 +53,7 @@ kiln -config /etc/kiln/kiln.toml
 
 ### 配置与数据库的分工
 
-`[[channels]]`、`[[proxies]]` 与 `[[egress.rules]]` 只在对应数据表为空时作为首次启动的种子写入 `server.data_dir` 下的 SQLite，之后管理端的改动以数据库为准，再改配置文件不会覆盖它们。`egress.default`、`egress.playlist_policy`、`egress.docker_proxy_host` 与 `server.public_base_url` 以「不存在才写入」的方式落库，同样只在首次生效。`[[upstreams]]`、`[auth]` 与其余全局键始终以配置文件为准，其中 `[[auth.users]]` 的用户名与密码可以被管理端改写并存入数据库覆盖表。
+`[[channels]]` 只在频道表为空时作为首次启动的种子写入 `server.data_dir` 下的 SQLite，之后管理端的改动以数据库为准，再改配置文件不会覆盖它们。`[[proxies]]`、`[[egress.rules]]` 以及 `egress.default`、`egress.playlist_policy`、`egress.docker_proxy_host` 则**每次启动都会按配置文件同步进数据库**：配置文件里声明了的项以配置文件为准，没有声明的项保持控制台里的取值，只在配置文件中的值确实不同时才写入并推进 revision。配置文件没有携带凭据、而库中已有同一个代理的凭据时，凭据会被保留。控制台创建、但配置文件里不存在的代理与规则不会被删除。`server.public_base_url` 仍以「不存在才写入」的方式落库，只在首次生效。`[[upstreams]]`、`[auth]` 与其余全局键始终以配置文件为准，其中 `[[auth.users]]` 的用户名与密码可以被管理端改写并存入数据库覆盖表。
 
 ## `[server]`
 
