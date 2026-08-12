@@ -619,6 +619,7 @@ input:not([type="checkbox"]):disabled, select:disabled { color: var(--muted); ba
 /* ---------------------------------------------------------------- layout */
 
 .stack { display: grid; gap: 20px; }
+.stack:empty { display: none; }
 .split { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(280px, .9fr); gap: 20px; }
 .split-even { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); gap: 20px; align-items: start; }
 .inline-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }

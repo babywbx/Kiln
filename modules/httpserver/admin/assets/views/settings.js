@@ -2,6 +2,7 @@ import { frag, h } from "/admin/assets/core/dom.js";
 import { endpoints, remembersSession, saveSession } from "/admin/assets/core/api.js";
 import { LOCALE_OPTIONS, i18n, localeLabel } from "/admin/assets/core/i18n.js";
 import { store } from "/admin/assets/core/store.js";
+import { expectedPublicBaseScheme } from "/admin/assets/core/tls-settings.js";
 import { badge, button, card, field, input, notice, pageHead, select, setBusy } from "/admin/assets/ui/kit.js";
 import { closeModal, openModal, toast } from "/admin/assets/ui/overlay.js";
 import { adminAPITokensCard } from "/admin/assets/views/api-tokens.js";
@@ -108,6 +109,49 @@ export async function renderSettings(ctx) {
     runtimeRow(i18n.t("settings.serviceVersion"), store.version || "—"),
   );
 
+  const splitMode = Boolean(data.tls_split_listen);
+  const expectedScheme = () => expectedPublicBaseScheme(tlsToggle.checked, splitMode);
+  const advisories = h("div", { class: "stack", "aria-live": "polite" });
+
+  const fixBaseScheme = button(i18n.t("settings.httpsBaseMismatchAction"), {
+    size: "small",
+    iconName: "pencil",
+    onClick: () => {
+      try {
+        const scheme = expectedScheme();
+        if (!scheme) return;
+        const raw = baseInput.value.trim();
+        new URL(raw);
+        baseInput.value = raw.replace(/^[a-z][a-z0-9+.-]*:/i, scheme);
+        touch();
+        syncAdvisories();
+      } catch {
+        toast(i18n.t("settings.httpsBaseMismatch"), "", "danger");
+      }
+    },
+  });
+
+  const syncAdvisories = () => {
+    const turningOn = tlsToggle.checked && !data.tls_enabled;
+    let mismatch = false;
+    try {
+      const scheme = expectedScheme();
+      mismatch = Boolean(scheme) && new URL(baseInput.value.trim()).protocol !== scheme;
+    } catch {
+      mismatch = false;
+    }
+    advisories.replaceChildren(
+      ...[
+        turningOn && !splitMode ? notice(i18n.t("settings.httpsPlayerWarning"), "warning", "triangle-alert") : null,
+        turningOn && splitMode ? notice(i18n.t("settings.httpsSplitActiveHint"), "info", "info") : null,
+        mismatch ? h("div", { class: "stack" }, notice(i18n.t("settings.httpsBaseMismatch"), "warning", "link"), fixBaseScheme) : null,
+      ].filter(Boolean),
+    );
+  };
+  tlsToggle.addEventListener("change", syncAdvisories);
+  baseInput.addEventListener("input", syncAdvisories);
+  syncAdvisories();
+
   const https = card({
     title: i18n.t("settings.httpsTitle"),
     description: i18n.t("settings.httpsDescription"),
@@ -120,6 +164,13 @@ export async function renderSettings(ctx) {
         h("span", {}, h("strong", { text: i18n.t("settings.httpsToggle") }), h("small", { class: "muted", text: i18n.t("settings.httpsToggleHint") })),
         tlsToggle,
       ),
+      advisories,
+      runtimeRow(
+        i18n.t("settings.httpsSplit"),
+        null,
+        splitMode ? badge(data.tls_listen || i18n.t("shared.enabled"), "success") : badge(i18n.t("shared.disabled"), "warning"),
+      ),
+      h("p", { class: "field-hint", text: i18n.t(splitMode ? "settings.httpsSplitOnHint" : "settings.httpsSplitOffHint") }),
       runtimeRow(
         i18n.t("settings.httpsCertificate"),
         null,
@@ -133,6 +184,8 @@ export async function renderSettings(ctx) {
       tlsError ? notice(i18n.t("settings.httpsCertificateErrorHint"), "danger", "triangle-alert") : null,
       stackedRow(i18n.t("settings.httpsCertificateHosts"), (data.tls_certificate_hosts || []).join(" · ") || "—"),
       runtimeRow(i18n.t("settings.httpsCertificateExpiry"), formatExpiry(data.tls_certificate_expires_at)),
+      data.tls_certificate_path ? stackedRow(i18n.t("settings.httpsCertificatePath"), data.tls_certificate_path) : null,
+      data.tls_certificate_source === "self-signed" ? h("p", { class: "field-hint", text: i18n.t("settings.httpsTrustHint") }) : null,
     ),
   });
 
