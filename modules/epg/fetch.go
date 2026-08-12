@@ -2,6 +2,7 @@ package epg
 
 import (
 	"bufio"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"errors"
@@ -28,8 +29,23 @@ type CacheMetadata struct {
 
 type FetchResult struct {
 	Data        []byte        `json:"-"`
+	Body        io.ReadCloser `json:"-"`
 	Metadata    CacheMetadata `json:"metadata"`
 	NotModified bool          `json:"not_modified"`
+}
+
+func (r FetchResult) Close() error {
+	if r.Body == nil {
+		return nil
+	}
+	return r.Body.Close()
+}
+
+func (r FetchResult) reader() io.Reader {
+	if r.Body != nil {
+		return r.Body
+	}
+	return bytes.NewReader(r.Data)
 }
 
 type SourceFetcher interface {
@@ -83,57 +99,131 @@ func (f *Fetcher) Fetch(ctx context.Context, source Source, previous CacheMetada
 	if client == nil {
 		client = defaultFetchClient
 	}
+	timeout := client.Timeout
+	var cancel context.CancelFunc
+	var headerTimer *time.Timer
+	if timeout > 0 {
+		requestContext, cancelRequest := context.WithCancel(ctx)
+		cancel = cancelRequest
+		request = request.WithContext(requestContext)
+		clientCopy := *client
+		clientCopy.Timeout = 0
+		client = &clientCopy
+		headerTimer = time.AfterFunc(timeout, cancel)
+	}
 	response, err := client.Do(request)
+	if headerTimer != nil {
+		headerTimer.Stop()
+	}
 	if err != nil {
+		if cancel != nil {
+			cancel()
+		}
 		return FetchResult{}, fmt.Errorf("fetch EPG source %q: %w", source.ID, err)
 	}
-	defer response.Body.Close()
+	closeBody := func() {
+		_ = response.Body.Close()
+		if cancel != nil {
+			cancel()
+		}
+	}
 
 	if response.StatusCode == http.StatusNotModified {
+		closeBody()
 		return FetchResult{
 			Metadata:    mergeMetadata(previous, metadataFromResponse(response)),
 			NotModified: true,
 		}, nil
 	}
 	if response.StatusCode != http.StatusOK {
+		closeBody()
 		return FetchResult{}, &HTTPStatusError{SourceID: source.ID, Status: response.Status, Code: response.StatusCode}
 	}
 
 	reader := bufio.NewReader(response.Body)
-	var payload io.Reader = reader
-	var compressed *gzip.Reader
+	var peekTimer *time.Timer
+	if timeout > 0 {
+		peekTimer = time.AfterFunc(timeout, cancel)
+	}
+	magic, peekErr := reader.Peek(2)
+	if peekTimer != nil {
+		peekTimer.Stop()
+	}
+	if peekErr != nil && peekErr != io.EOF {
+		closeBody()
+		return FetchResult{}, fmt.Errorf("fetch EPG source %q: read body: %w", source.ID, peekErr)
+	}
+	body := &sourceBody{
+		sourceID: source.ID, limit: f.MaxSourceBytes, reader: reader,
+		closers: []io.Closer{response.Body}, cancel: cancel, readTimeout: timeout,
+	}
+	if body.limit <= 0 {
+		body.limit = DefaultMaxSourceBytes
+	}
 	encoding := strings.ToLower(strings.TrimSpace(response.Header.Get("Content-Encoding")))
-	magic, _ := reader.Peek(2)
 	isGzip := encoding == "gzip" || (len(magic) == 2 && magic[0] == 0x1f && magic[1] == 0x8b)
 	if isGzip && !response.Uncompressed {
-		compressed, err = gzip.NewReader(reader)
+		compressed, err := gzip.NewReader(reader)
 		if err != nil {
+			closeBody()
 			return FetchResult{}, fmt.Errorf("fetch EPG source %q: open gzip: %w", source.ID, err)
 		}
-		payload = compressed
-	}
-
-	limit := f.MaxSourceBytes
-	if limit <= 0 {
-		limit = DefaultMaxSourceBytes
-	}
-	data, err := io.ReadAll(io.LimitReader(payload, limit+1))
-	var closeErr error
-	if compressed != nil {
-		closeErr = compressed.Close()
-	}
-	if err != nil {
-		return FetchResult{}, fmt.Errorf("fetch EPG source %q: read body: %w", source.ID, err)
-	}
-	if closeErr != nil {
-		return FetchResult{}, fmt.Errorf("fetch EPG source %q: close gzip: %w", source.ID, closeErr)
-	}
-	if int64(len(data)) > limit {
-		return FetchResult{}, fmt.Errorf("fetch EPG source %q: %w (%d bytes)", source.ID, ErrSourceTooLarge, limit)
+		body.reader = compressed
+		body.closers = append([]io.Closer{compressed}, body.closers...)
 	}
 	metadata := metadataFromResponse(response)
 	metadata.FetchedAt = time.Now().UTC()
-	return FetchResult{Data: data, Metadata: metadata}, nil
+	return FetchResult{Body: body, Metadata: metadata}, nil
+}
+
+type sourceBody struct {
+	reader      io.Reader
+	closers     []io.Closer
+	sourceID    string
+	limit       int64
+	read        int64
+	err         error
+	cancel      context.CancelFunc
+	readTimeout time.Duration
+}
+
+func (b *sourceBody) Read(p []byte) (int, error) {
+	if b.err != nil {
+		return 0, b.err
+	}
+	var timer *time.Timer
+	if b.readTimeout > 0 {
+		timer = time.AfterFunc(b.readTimeout, b.cancel)
+	}
+	count, err := b.reader.Read(p)
+	if timer != nil {
+		timer.Stop()
+	}
+	b.read += int64(count)
+	if b.read > b.limit {
+		b.err = fmt.Errorf("fetch EPG source %q: %w (%d bytes)", b.sourceID, ErrSourceTooLarge, b.limit)
+		return count, b.err
+	}
+	if err != nil && err != io.EOF {
+		b.err = fmt.Errorf("fetch EPG source %q: read body: %w", b.sourceID, err)
+		return count, b.err
+	}
+	return count, err
+}
+
+func (b *sourceBody) Close() error {
+	var closeErr error
+	for _, closer := range b.closers {
+		if err := closer.Close(); err != nil && closeErr == nil {
+			closeErr = err
+		}
+	}
+	b.closers = nil
+	if b.cancel != nil {
+		b.cancel()
+		b.cancel = nil
+	}
+	return closeErr
 }
 
 func metadataFromResponse(response *http.Response) CacheMetadata {

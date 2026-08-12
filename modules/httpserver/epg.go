@@ -3,12 +3,15 @@
 package httpserver
 
 import (
+	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/babywbx/kiln/modules/apperr"
@@ -100,14 +103,23 @@ func (s *Server) epgActive() bool {
 	return s.deps.EPG != nil && len(s.deps.EPG.Sources()) > 0
 }
 
+var emptyEPGPayloads = sync.OnceValues(buildEmptyEPGPayloads)
+
+func buildEmptyEPGPayloads() ([]byte, []byte) {
+	plain, _ := epg.Marshal(&epg.Document{GeneratorInfoName: "Kiln"})
+	var compressed bytes.Buffer
+	writer := gzip.NewWriter(&compressed)
+	_, _ = writer.Write(plain)
+	_ = writer.Close()
+	return plain, compressed.Bytes()
+}
+
 func emptyEPGPayload(compressed bool) []byte {
-	service := epg.NewService(epg.ServiceConfig{}, nil, nil)
+	plain, gzipped := emptyEPGPayloads()
 	if compressed {
-		payload, _ := service.GzipXML(nil)
-		return payload
+		return bytes.Clone(gzipped)
 	}
-	payload, _ := service.XML(nil)
-	return payload
+	return bytes.Clone(plain)
 }
 
 func (s *Server) epgChannels() []epg.ChannelRef {

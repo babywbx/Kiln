@@ -1,6 +1,7 @@
 package epg_test
 
 import (
+	"context"
 	"testing"
 
 	"github.com/babywbx/kiln/modules/epg"
@@ -23,10 +24,7 @@ func TestNormalizeNameFoldsKnownBroadcastVariantsWidthAndSuffixes(t *testing.T) 
 func TestMatchChannelUsesIDBeforeName(t *testing.T) {
 	t.Parallel()
 
-	documents := sampleSourceDocuments()
-	result := epg.MatchChannel(epg.ChannelRef{
-		ID: "kiln-news", EPGID: "368359", EPGName: "TVBS新聞台",
-	}, documents)
+	result := matchSample(t, epg.ChannelRef{ID: "kiln-news", EPGID: "368359", EPGName: "TVBS新聞台"})
 	if result.Status != epg.MatchMatched || result.Match == nil {
 		t.Fatalf("result = %+v", result)
 	}
@@ -38,9 +36,7 @@ func TestMatchChannelUsesIDBeforeName(t *testing.T) {
 func TestMatchChannelReturnsAllDuplicateNameCandidates(t *testing.T) {
 	t.Parallel()
 
-	result := epg.MatchChannel(epg.ChannelRef{
-		ID: "kiln-demo", EPGName: "ＴＶＢＳ 新聞台 HD",
-	}, sampleSourceDocuments())
+	result := matchSample(t, epg.ChannelRef{ID: "kiln-demo", EPGName: "ＴＶＢＳ 新聞台 HD"})
 	if result.Status != epg.MatchSuggested {
 		t.Fatalf("status = %q, want suggested", result.Status)
 	}
@@ -55,28 +51,30 @@ func TestMatchChannelReturnsAllDuplicateNameCandidates(t *testing.T) {
 func TestMatchChannelHonorsSourceSelection(t *testing.T) {
 	t.Parallel()
 
-	result := epg.MatchChannel(epg.ChannelRef{
-		ID: "kiln-news", EPGID: "368359", EPGSource: "tw",
-	}, sampleSourceDocuments())
+	result := matchSample(t, epg.ChannelRef{ID: "kiln-news", EPGID: "368359", EPGSource: "tw"})
 	if result.Status != epg.MatchUnmatched {
 		t.Fatalf("result = %+v, want unmatched", result)
 	}
 }
 
-func sampleSourceDocuments() []epg.SourceDocument {
-	return []epg.SourceDocument{
-		{
-			Source: epg.Source{ID: "hk"},
-			Document: &epg.Document{Channels: []epg.Channel{
-				{ID: "368359", DisplayNames: []epg.Text{{Value: "無綫新聞台"}}},
-			}},
+func matchSample(t *testing.T, channel epg.ChannelRef) epg.MatchResult {
+	t.Helper()
+	service := epg.NewService(epg.ServiceConfig{
+		Sources: []epg.Source{
+			{ID: "hk", Timezone: "Asia/Hong_Kong"},
+			{ID: "tw", Timezone: "Asia/Taipei"},
 		},
-		{
-			Source: epg.Source{ID: "tw"},
-			Document: &epg.Document{Channels: []epg.Channel{
-				{ID: "456556", DisplayNames: []epg.Text{{Value: "TVBS 新聞台"}}},
-				{ID: "492811", DisplayNames: []epg.Text{{Value: "TVBS新聞台 HD"}}},
-			}},
-		},
+	}, &fakeSourceFetcher{results: map[string]epg.FetchResult{
+		"hk": {Data: []byte(`<tv><channel id="368359"><display-name>無綫新聞台</display-name></channel></tv>`)},
+		"tw": {Data: []byte(`<tv><channel id="456556"><display-name>TVBS 新聞台</display-name></channel>` +
+			`<channel id="492811"><display-name>TVBS新聞台 HD</display-name></channel></tv>`)},
+	}}, newTestStore(t))
+	if err := service.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
 	}
+	matches := service.Matches([]epg.ChannelRef{channel})
+	if len(matches) != 1 {
+		t.Fatalf("matches = %+v, want one result", matches)
+	}
+	return matches[0]
 }

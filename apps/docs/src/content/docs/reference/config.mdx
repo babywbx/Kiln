@@ -206,10 +206,10 @@ pprof 使用独立的监听器与路由，永远不会挂到对外的 HTTP 服�
 | 键 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `cache` | bool | `true` | 是否启用节目单缓存。缺省即为启用。 |
-| `cache_dir` | string | `"{data_dir}/epg"` | 缓存目录。写成 `memory` 或 `:memory:` 时改用内存缓存，其余值按目录路径处理。 |
+| `cache_dir` | string | `"{data_dir}/epg"` | 节目单库所在目录，库文件为其中的 `epg.db`。写成 `memory` 或 `:memory:` 时改用内存库，其余值按目录路径处理。 |
 | `refresh_interval_min` | int | `360` | 刷新间隔分钟数，非正数按默认值处理。 |
 | `max_refresh_concurrency` | int | `0` | 并发刷新的源数量上限，`0` 表示不限制（一轮内全部并发）。负数校验失败。资源自适应可能下调，包括把 `0` 收紧为具体数值。 |
-| `max_source_bytes` | int64 | `67108864` | 单个源允许的字节上限，超出即拒绝，非正数按默认值处理。资源自适应可能下调。 |
+| `max_source_bytes` | int64 | `67108864` | 单个源解压后允许的字节上限，流式读取过程中超出即拒绝，非正数按默认值处理。资源自适应可能下调。 |
 | `default_timezone` | string | `"UTC"` | 源未声明时区时使用的默认时区，必须是可加载的时区名，否则校验失败。 |
 | `serve_timezone` | string | `"keep"` | 输出时区策略，当前只接受 `keep`，即原样输出不做换算。 |
 | `sources` | array | `[]` | 节目单源，见下方 `[[epg.sources]]`。 |

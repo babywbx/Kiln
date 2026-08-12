@@ -86,13 +86,9 @@ func BenchmarkServiceRefreshUnchanged(b *testing.B) {
 	} {
 		b.Run(benchmark.name, func(b *testing.B) {
 			fetcher := &benchmarkRefreshFetcher{data: data}
-			var store epg.CacheStore
-			if benchmark.notModified {
-				store = epg.NewMemoryStore()
-			}
 			service := epg.NewService(epg.ServiceConfig{
 				Sources: []epg.Source{{ID: "benchmark", Timezone: "Asia/Hong_Kong"}},
-			}, fetcher, store)
+			}, fetcher, newTestStore(b))
 			if err := service.Refresh(context.Background()); err != nil {
 				b.Fatal(err)
 			}

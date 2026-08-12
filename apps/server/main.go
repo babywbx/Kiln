@@ -131,6 +131,7 @@ func runServer(cfgPath string) int {
 		log.Error("EPG init failed", "err", err)
 		return 1
 	}
+	defer func() { _ = epgSvc.Close() }()
 
 	obs := observe.New()
 	allowed := cfg.AllowedHostSet()
@@ -302,20 +303,20 @@ func buildEPGService(cfg config.File, db *store.DB, router *proxyegress.Router, 
 		}
 	}
 
-	var cache epg.CacheStore
+	var cache *epg.Store
 	if cfg.EPG.CacheEnabled() {
 		cacheDirectory := strings.TrimSpace(cfg.EPG.CacheDir)
 		switch strings.ToLower(cacheDirectory) {
 		case "memory", ":memory:":
-			cache = epg.NewMemoryStore()
+			cache, err = epg.NewMemoryStore()
 		default:
 			if cacheDirectory == "" {
 				cacheDirectory = filepath.Join(cfg.Server.DataDir, "epg")
 			}
 			cache, err = epg.NewDiskStore(cacheDirectory)
-			if err != nil {
-				return nil, err
-			}
+		}
+		if err != nil {
+			return nil, err
 		}
 	}
 	fetcher := &epg.Fetcher{

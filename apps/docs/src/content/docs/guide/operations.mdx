@@ -81,7 +81,7 @@ Windows 用内置的 `kiln.exe service` 子命令注册服务，不需要额外�
 | `kiln.db-wal`、`kiln.db-shm` | WAL 与共享内存边车文件，同样收紧到 `0600` | 与主库一起 |
 | `auth/ed25519.pem` | 会话 JWT 的 Ed25519 私钥。没有通过配置或环境变量注入密钥时自动生成 | 是 |
 | `auth/ed25519.pub.pem` | 对应公钥，随私钥一起生成 | 是 |
-| `epg/` | EPG 磁盘缓存。`epg.cache_dir` 留空时默认落在这里 | 否，可重新抓取 |
+| `epg/` | EPG 节目单库 `epg.db`。`epg.cache_dir` 留空时默认落在这里 | 否，可重新抓取 |
 | `sessions/<channel-id>/<generation>/` | 会话运行期的媒体工作目录，下面再分 `native/` 与 `ffmpeg/` | 否，重启即重建 |
 
 最简单可靠的备份方式是先停止 Kiln，再复制整个数据目录。如需在线备份，请使用 SQLite Backup API 或具备同等一致性保证的快照工具；分别复制 `kiln.db` 与 `kiln.db-wal` 不能保证得到同一时刻的数据。无需备份 `sessions/`，Kiln 会在新会话启动时重新创建其中的内容。

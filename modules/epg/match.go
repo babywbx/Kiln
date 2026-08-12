@@ -22,11 +22,6 @@ type ChannelRef struct {
 	EPGSource string `json:"epg_source,omitempty"`
 }
 
-type SourceDocument struct {
-	Source   Source
-	Document *Document
-}
-
 type MatchCandidate struct {
 	SourceID  string   `json:"source_id"`
 	ChannelID string   `json:"channel_id"`
@@ -91,78 +86,87 @@ func NormalizeName(value string) string {
 	}
 }
 
-func MatchChannel(channel ChannelRef, documents []SourceDocument) MatchResult {
+func (s *Service) matchChannel(channel ChannelRef) (MatchResult, []storedChannel, error) {
 	result := MatchResult{
 		ChannelID: channel.ID,
 		Status:    MatchUnmatched,
 		Logos:     LogoCandidates(firstNonEmpty(channel.EPGName, channel.Title)),
 	}
+	if s.store == nil {
+		return result, nil, s.storeErr
+	}
+	sources := s.matchableSources(channel.EPGSource)
+	if len(sources) == 0 {
+		return result, nil, nil
+	}
 	if channel.EPGID != "" {
-		candidates := collectCandidates(documents, channel.EPGSource, func(item Channel) bool {
-			return item.ID == channel.EPGID
-		})
-		if len(candidates) > 0 {
-			result.Status = MatchMatched
-			result.Match = &candidates[0]
-			result.Candidates = candidates
-			if len(result.Logos) == 0 {
-				result.Logos = LogoCandidates(candidates[0].Name)
+		matches := make([]storedChannel, 0, len(sources))
+		for _, source := range sources {
+			stored, found, err := s.store.channelByID(source, channel.EPGID)
+			if err != nil {
+				return result, nil, err
 			}
-			return result
+			if found {
+				matches = append(matches, stored)
+			}
+		}
+		if len(matches) > 0 {
+			result.Status = MatchMatched
+			result.Candidates = candidatesFor(matches)
+			result.Match = &result.Candidates[0]
+			if len(result.Logos) == 0 {
+				result.Logos = LogoCandidates(result.Candidates[0].Name)
+			}
+			return result, matches, nil
 		}
 	}
 
-	query := channel.EPGName
-	if query == "" {
-		query = channel.Title
-	}
-	normalizedQuery := NormalizeName(query)
+	normalizedQuery := NormalizeName(firstNonEmpty(channel.EPGName, channel.Title))
 	if normalizedQuery == "" {
-		return result
+		return result, nil, nil
 	}
-	candidates := collectCandidates(documents, channel.EPGSource, func(item Channel) bool {
-		for _, name := range item.DisplayNames {
-			if NormalizeName(name.Value) == normalizedQuery {
-				return true
-			}
+	var matches []storedChannel
+	for _, source := range sources {
+		stored, err := s.store.channelsByName(source, normalizedQuery)
+		if err != nil {
+			return result, nil, err
 		}
-		return false
-	})
-	if len(candidates) > 0 {
-		result.Status = MatchSuggested
-		result.Candidates = candidates
+		matches = append(matches, stored...)
 	}
-	return result
+	if len(matches) > 0 {
+		result.Status = MatchSuggested
+		result.Candidates = candidatesFor(matches)
+	}
+	return result, matches, nil
 }
 
-func collectCandidates(documents []SourceDocument, sourceID string, matches func(Channel) bool) []MatchCandidate {
-	var candidates []MatchCandidate
-	seen := make(map[string]struct{})
-	for _, sourceDocument := range documents {
-		if sourceDocument.Document == nil || (sourceID != "" && sourceDocument.Source.ID != sourceID) {
+func (s *Service) matchableSources(sourceID string) []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	sources := make([]string, 0, len(s.config.Sources))
+	for _, source := range s.config.Sources {
+		if sourceID != "" && source.ID != sourceID {
 			continue
 		}
-		for _, channel := range sourceDocument.Document.Channels {
-			if !matches(channel) {
-				continue
+		sources = append(sources, source.ID)
+	}
+	return sources
+}
+
+func candidatesFor(matches []storedChannel) []MatchCandidate {
+	candidates := make([]MatchCandidate, 0, len(matches))
+	for _, stored := range matches {
+		names := make([]string, 0, len(stored.DisplayNames))
+		for _, name := range stored.DisplayNames {
+			if name.Value != "" {
+				names = append(names, name.Value)
 			}
-			key := sourceDocument.Source.ID + "\x00" + channel.ID
-			if _, ok := seen[key]; ok {
-				continue
-			}
-			seen[key] = struct{}{}
-			names := make([]string, 0, len(channel.DisplayNames))
-			for _, name := range channel.DisplayNames {
-				if name.Value != "" {
-					names = append(names, name.Value)
-				}
-			}
-			candidate := MatchCandidate{SourceID: sourceDocument.Source.ID, ChannelID: channel.ID, Names: names}
-			if len(names) > 0 {
-				candidate.Name = names[0]
-			}
-			candidates = append(candidates, candidate)
 		}
+		candidate := MatchCandidate{SourceID: stored.SourceID, ChannelID: stored.ChannelID, Names: names}
+		if len(names) > 0 {
+			candidate.Name = names[0]
+		}
+		candidates = append(candidates, candidate)
 	}
 	return candidates
 }

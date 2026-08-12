@@ -5,9 +5,11 @@ import (
 	"compress/gzip"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/babywbx/kiln/modules/epg"
 )
@@ -42,12 +44,22 @@ func TestFetcherSendsValidatorsAndDecodesGzip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(result.Data, want) {
-		t.Fatalf("data = %q, want %q", result.Data, want)
+	if got := readFetched(t, result); !bytes.Equal(got, want) {
+		t.Fatalf("data = %q, want %q", got, want)
 	}
 	if result.Metadata.ETag != `"new"` || result.Metadata.LastModified != "Mon, 13 Jul 2026 00:00:00 GMT" {
 		t.Fatalf("metadata = %+v", result.Metadata)
 	}
+}
+
+func readFetched(t *testing.T, result epg.FetchResult) []byte {
+	t.Helper()
+	defer func() { _ = result.Close() }()
+	data, err := io.ReadAll(result.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }
 
 func TestFetcherHandlesNotModified(t *testing.T) {
@@ -90,8 +102,8 @@ func TestFetcherDetectsGzipFileWithoutContentEncoding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(result.Data, want) {
-		t.Fatalf("data = %q, want %q", result.Data, want)
+	if got := readFetched(t, result); !bytes.Equal(got, want) {
+		t.Fatalf("data = %q, want %q", got, want)
 	}
 }
 
@@ -108,10 +120,14 @@ func TestFetcherLimitsDecompressedBytes(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := (&epg.Fetcher{Client: server.Client(), MaxSourceBytes: 1024}).Fetch(
+	result, err := (&epg.Fetcher{Client: server.Client(), MaxSourceBytes: 1024}).Fetch(
 		context.Background(), epg.Source{ID: "large", URL: server.URL}, epg.CacheMetadata{},
 	)
-	if !errors.Is(err, epg.ErrSourceTooLarge) {
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = result.Close() }()
+	if _, err := io.ReadAll(result.Body); !errors.Is(err, epg.ErrSourceTooLarge) {
 		t.Fatalf("error = %v, want ErrSourceTooLarge", err)
 	}
 }
@@ -119,8 +135,9 @@ func TestFetcherLimitsDecompressedBytes(t *testing.T) {
 func TestFetcherResolvesAClientPerSource(t *testing.T) {
 	t.Parallel()
 
+	want := bytes.Repeat([]byte("0123456789abcdef"), 1024)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`<tv></tv>`))
+		_, _ = w.Write(want)
 	}))
 	defer server.Close()
 
@@ -132,10 +149,59 @@ func TestFetcherResolvesAClientPerSource(t *testing.T) {
 		},
 	}
 	source := epg.Source{ID: "routed", URL: server.URL, Proxy: "lan-http"}
-	if _, err := fetcher.Fetch(context.Background(), source, epg.CacheMetadata{}); err != nil {
+	result, err := fetcher.Fetch(context.Background(), source, epg.CacheMetadata{})
+	if err != nil {
 		t.Fatal(err)
+	}
+	if got := readFetched(t, result); !bytes.Equal(got, want) {
+		t.Fatalf("data length = %d, want %d", len(got), len(want))
 	}
 	if resolved.ID != source.ID || resolved.Proxy != "lan-http" {
 		t.Fatalf("resolved source = %+v, want %+v", resolved, source)
+	}
+}
+
+func TestFetcherStartsBodyTimeoutWhenStreamingStarts(t *testing.T) {
+	t.Parallel()
+
+	want := bytes.Repeat([]byte("0123456789abcdef"), 1024)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(want)
+	}))
+	defer server.Close()
+	client := server.Client()
+	client.Timeout = 50 * time.Millisecond
+	result, err := (&epg.Fetcher{Client: client}).Fetch(
+		context.Background(), epg.Source{ID: "queued", URL: server.URL}, epg.CacheMetadata{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(2 * client.Timeout)
+	if got := readFetched(t, result); !bytes.Equal(got, want) {
+		t.Fatalf("data length = %d, want %d", len(got), len(want))
+	}
+}
+
+func TestFetcherTimesOutStalledStreamingReads(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "<t")
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+	client := server.Client()
+	client.Timeout = 50 * time.Millisecond
+	result, err := (&epg.Fetcher{Client: client}).Fetch(
+		context.Background(), epg.Source{ID: "stalled", URL: server.URL}, epg.CacheMetadata{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = result.Close() }()
+	if _, err := io.ReadAll(result.Body); err == nil {
+		t.Fatal("stalled body read succeeded")
 	}
 }

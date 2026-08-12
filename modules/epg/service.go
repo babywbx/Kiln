@@ -5,8 +5,10 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"sync"
 	"time"
@@ -39,16 +41,16 @@ type SourceStatus struct {
 }
 
 type Service struct {
-	config  ServiceConfig
-	fetcher SourceFetcher
-	store   CacheStore
+	config   ServiceConfig
+	fetcher  SourceFetcher
+	store    *Store
+	storeErr error
 
 	refreshMu sync.Mutex
 	gzipMu    sync.Mutex
 	mu        sync.RWMutex
-	documents map[string]*Document
-	versions  map[string]documentVersion
 	statuses  map[string]SourceStatus
+	digests   map[string][sha256.Size]byte
 
 	outputGeneration uint64
 	gzipOutputCache  gzipOutputCache
@@ -60,12 +62,7 @@ type gzipOutputCache struct {
 	payload    []byte
 }
 
-type documentVersion struct {
-	digest   [sha256.Size]byte
-	timezone string
-}
-
-func NewService(config ServiceConfig, fetcher SourceFetcher, store CacheStore) *Service {
+func NewService(config ServiceConfig, fetcher SourceFetcher, store *Store) *Service {
 	config.Sources = cloneSources(config.Sources)
 	if config.DefaultTimezone == "" {
 		config.DefaultTimezone = DefaultTimezone
@@ -82,10 +79,47 @@ func NewService(config ServiceConfig, fetcher SourceFetcher, store CacheStore) *
 	if fetcher == nil {
 		fetcher = &Fetcher{}
 	}
-	return &Service{
+	service := &Service{
 		config: config, fetcher: fetcher, store: store,
-		documents: make(map[string]*Document), versions: make(map[string]documentVersion),
-		statuses: make(map[string]SourceStatus),
+		statuses: make(map[string]SourceStatus), digests: make(map[string][sha256.Size]byte),
+	}
+	if store == nil {
+		service.store, service.storeErr = NewMemoryStore()
+	}
+	service.loadPersistedState()
+	return service
+}
+
+func (s *Service) Close() error {
+	if s.store == nil {
+		return nil
+	}
+	return s.store.Close()
+}
+
+func (s *Service) loadPersistedState() {
+	if s.store == nil {
+		return
+	}
+	states, err := s.store.states()
+	if err != nil {
+		s.reportError(err)
+		return
+	}
+	for _, source := range s.config.Sources {
+		state, ok := states[source.ID]
+		if !ok {
+			continue
+		}
+		digest, ok := decodeDigest(state.Digest)
+		if ok {
+			s.digests[source.ID] = digest
+		}
+		s.statuses[source.ID] = SourceStatus{
+			SourceID: source.ID, Metadata: state.Metadata,
+			ChannelCount: state.ChannelCount, ProgrammeCount: state.ProgrammeCount,
+			Available: ok,
+		}
 	}
 }
 
@@ -99,69 +133,79 @@ func (s *Service) SetSources(sources []Source) {
 	sources = cloneSources(sources)
 	s.refreshMu.Lock()
 	defer s.refreshMu.Unlock()
+	if s.store != nil {
+		s.store.mu.Lock()
+		defer s.store.mu.Unlock()
+	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	documents := make(map[string]*Document, len(sources))
-	versions := make(map[string]documentVersion, len(sources))
 	statuses := make(map[string]SourceStatus, len(sources))
+	digests := make(map[string][sha256.Size]byte, len(sources))
+	retained := make([]string, 0, len(sources))
 	for _, source := range sources {
-		if document := s.documents[source.ID]; document != nil {
-			documents[source.ID] = document
-			if version, ok := s.versions[source.ID]; ok {
-				versions[source.ID] = version
-			}
-		}
+		retained = append(retained, source.ID)
 		if status, ok := s.statuses[source.ID]; ok {
 			statuses[source.ID] = status
 		}
+		if digest, ok := s.digests[source.ID]; ok {
+			digests[source.ID] = digest
+		}
 	}
 	s.config.Sources = sources
-	s.documents = documents
-	s.versions = versions
 	s.statuses = statuses
+	s.digests = digests
 	s.invalidateOutputCacheLocked()
+	s.mu.Unlock()
+	if s.store != nil {
+		if err := s.store.retain(retained); err != nil {
+			s.reportError(err)
+		}
+	}
 }
 
 func cloneSources(sources []Source) []Source {
 	return append([]Source(nil), sources...)
 }
 
-type sourceRefreshResult struct {
-	source        Source
-	document      *Document
-	version       documentVersion
-	authoritative bool
-	metadata      CacheMetadata
-	stale         bool
-	err           error
+type knownState struct {
+	digest    [sha256.Size]byte
+	metadata  CacheMetadata
+	available bool
 }
 
-type sourceDocumentState struct {
-	document *Document
-	version  documentVersion
+type sourceRefreshResult struct {
+	source      Source
+	metadata    CacheMetadata
+	state       SourceState
+	digest      [sha256.Size]byte
+	metadataSet bool
+	ingested    bool
+	stale       bool
+	err         error
 }
 
 func (s *Service) Refresh(ctx context.Context) error {
 	s.refreshMu.Lock()
 	defer s.refreshMu.Unlock()
+	if s.store == nil {
+		return s.storeErr
+	}
 
 	s.mu.RLock()
-	states := make(map[string]sourceDocumentState, len(s.config.Sources))
-	for _, source := range s.config.Sources {
-		states[source.ID] = sourceDocumentState{
-			document: s.documents[source.ID],
-			version:  s.versions[source.ID],
+	sources := s.config.Sources
+	known := make(map[string]knownState, len(sources))
+	for _, source := range sources {
+		status := s.statuses[source.ID]
+		known[source.ID] = knownState{
+			digest: s.digests[source.ID], metadata: status.Metadata, available: status.Available,
 		}
 	}
 	s.mu.RUnlock()
 
-	results := make(chan sourceRefreshResult, len(s.config.Sources))
+	results := make(chan sourceRefreshResult, len(sources))
 	var wait sync.WaitGroup
-	if s.config.MaxRefreshConcurrency <= 0 || s.config.MaxRefreshConcurrency >= len(s.config.Sources) {
-		for _, source := range s.config.Sources {
-			source := source
-			state := states[source.ID]
+	if s.config.MaxRefreshConcurrency <= 0 || s.config.MaxRefreshConcurrency >= len(sources) {
+		for _, source := range sources {
+			state := known[source.ID]
 			wait.Add(1)
 			go func() {
 				defer wait.Done()
@@ -170,9 +214,8 @@ func (s *Service) Refresh(ctx context.Context) error {
 		}
 	} else {
 		refreshSlots := make(chan struct{}, s.config.MaxRefreshConcurrency)
-		for _, source := range s.config.Sources {
-			source := source
-			state := states[source.ID]
+		for _, source := range sources {
+			state := known[source.ID]
 			refreshSlots <- struct{}{}
 			wait.Add(1)
 			go func() {
@@ -186,7 +229,7 @@ func (s *Service) Refresh(ctx context.Context) error {
 	close(results)
 
 	now := time.Now().UTC()
-	bySource := make(map[string]sourceRefreshResult, len(s.config.Sources))
+	bySource := make(map[string]sourceRefreshResult, len(sources))
 	var refreshErrors []error
 	for result := range results {
 		bySource[result.source.ID] = result
@@ -196,175 +239,167 @@ func (s *Service) Refresh(ctx context.Context) error {
 	}
 
 	s.mu.Lock()
-	documentsChanged := false
 	for _, source := range s.config.Sources {
-		result := bySource[source.ID]
+		result, ok := bySource[source.ID]
+		if !ok {
+			continue
+		}
 		status := s.statuses[source.ID]
 		status.SourceID = source.ID
 		status.LastAttempt = now
-		if result.document != nil {
-			current := s.documents[source.ID]
-			currentVersion, versioned := s.versions[source.ID]
-			versionChanged := !versioned || currentVersion != result.version
-			if current == nil || result.authoritative && versionChanged {
-				s.documents[source.ID] = result.document
-				s.versions[source.ID] = result.version
-				documentsChanged = true
-			}
-		}
-		if result.metadata != (CacheMetadata{}) {
+		if result.metadataSet {
 			status.Metadata = result.metadata
 		}
+		if result.ingested {
+			status.ChannelCount = result.state.ChannelCount
+			status.ProgrammeCount = result.state.ProgrammeCount
+			status.Available = true
+			s.digests[source.ID] = result.digest
+		}
 		if result.err != nil {
-			status.Stale = result.stale || (result.document == nil && s.documents[source.ID] != nil)
+			status.Stale = result.stale
 			status.Error = result.err.Error()
 		} else {
 			status.Stale = false
 			status.Error = ""
 			status.LastSuccess = now
 		}
-		if document := s.documents[source.ID]; document != nil {
-			status.Available = true
-			status.ChannelCount = len(document.Channels)
-			status.ProgrammeCount = len(document.Programmes)
-		}
 		s.statuses[source.ID] = status
-	}
-	if documentsChanged {
-		s.invalidateOutputCacheLocked()
 	}
 	s.mu.Unlock()
 	return errors.Join(refreshErrors...)
 }
 
-func (s *Service) refreshSource(ctx context.Context, source Source, state sourceDocumentState) sourceRefreshResult {
-	result := sourceRefreshResult{source: source}
-	var cached CacheEntry
-	var found bool
-	var cacheLoadError error
-	if s.store != nil {
-		cached, found, cacheLoadError = loadCacheEntry(s.store, source.ID)
-		if found && int64(len(cached.Data)) > s.config.MaxSourceBytes {
-			cacheLoadError = errors.Join(cacheLoadError, fmt.Errorf("cached XMLTV: %w (%d bytes)", ErrSourceTooLarge, s.config.MaxSourceBytes))
-			cached = CacheEntry{}
-			found = false
-		}
-		if found {
-			result.metadata = cached.Metadata
-		}
+func (s *Service) refreshSource(ctx context.Context, source Source, known knownState) sourceRefreshResult {
+	result := sourceRefreshResult{source: source, digest: known.digest}
+	fetched, err := s.fetcher.Fetch(ctx, source, known.metadata)
+	if err != nil {
+		result.err = err
+		result.stale = known.available
+		return result
 	}
+	defer func() { _ = fetched.Close() }()
 
-	fetched, fetchError := s.fetcher.Fetch(ctx, source, cached.Metadata)
-	if fetchError != nil {
-		result.err = errors.Join(cacheLoadError, fetchError)
-		if state.document != nil {
-			result.document = state.document
-			result.version = state.version
-			result.stale = true
-			return result
-		}
-		if found {
-			timezone := s.timezoneFor(source)
-			result.document, result.err = parseFallback(source, timezone, cached.Data, result.err)
-			result.version = versionDocument(cached.Data, timezone)
-			result.stale = result.document != nil
-		}
-		return result
-	}
-	if !fetched.NotModified && int64(len(fetched.Data)) > s.config.MaxSourceBytes {
-		result.err = errors.Join(cacheLoadError, fmt.Errorf("downloaded XMLTV: %w (%d bytes)", ErrSourceTooLarge, s.config.MaxSourceBytes))
-		if state.document != nil {
-			result.document = state.document
-			result.version = state.version
-			result.stale = true
-			return result
-		}
-		if found {
-			timezone := s.timezoneFor(source)
-			result.document, result.err = parseFallback(source, timezone, cached.Data, result.err)
-			result.version = versionDocument(cached.Data, timezone)
-			result.stale = result.document != nil
-		}
-		return result
-	}
 	if fetched.NotModified {
-		result.metadata = fetched.Metadata
-		if !found {
-			result.err = errors.Join(cacheLoadError, fmt.Errorf("source returned 304 without a cached body"))
+		if !known.available {
+			result.err = fmt.Errorf("source returned 304 without cached data")
 			return result
 		}
-		timezone := s.timezoneFor(source)
-		version := versionDocument(cached.Data, timezone)
-		if state.document != nil && state.version == version {
-			result.document = state.document
-			result.version = state.version
-			result.authoritative = true
+		metadata := mergeMetadata(known.metadata, fetched.Metadata)
+		if err := s.persistMetadata(source.ID, known.metadata, metadata); err != nil {
+			result.err = err
 			return result
 		}
-		document, err := ParseBytes(cached.Data, timezone)
-		if err != nil {
-			result.err = errors.Join(cacheLoadError, fmt.Errorf("parse cached XMLTV: %w", err))
-			return result
-		}
-		result.document = document
-		result.version = version
-		result.authoritative = true
+		result.metadata, result.metadataSet = metadata, true
 		return result
 	}
 
-	timezone := s.timezoneFor(source)
-	version := versionDocument(fetched.Data, timezone)
-	if state.document != nil && state.version == version {
-		result.document = state.document
-	} else {
-		document, parseError := ParseBytes(fetched.Data, timezone)
-		if parseError != nil {
-			result.err = errors.Join(cacheLoadError, fmt.Errorf("parse downloaded XMLTV: %w", parseError))
-			if state.document != nil {
-				result.document = state.document
-				result.version = state.version
-				result.stale = true
+	var precomputed [sha256.Size]byte
+	if fetched.Body == nil {
+		precomputed = sha256.Sum256(fetched.Data)
+		if precomputed == known.digest {
+			if err := s.persistMetadata(source.ID, known.metadata, fetched.Metadata); err != nil {
+				result.err = err
 				return result
 			}
-			if found {
-				result.document, result.err = parseFallback(source, timezone, cached.Data, result.err)
-				result.version = versionDocument(cached.Data, timezone)
-				result.stale = result.document != nil
-			}
-			return result
-		}
-		result.document = document
-	}
-	result.version = version
-	result.authoritative = true
-	result.metadata = fetched.Metadata
-	if s.store != nil {
-		updatedAt := fetched.Metadata.FetchedAt
-		if updatedAt.IsZero() {
-			updatedAt = time.Now().UTC()
-		}
-		if err := s.store.Save(CacheEntry{
-			SourceID: source.ID, Data: fetched.Data,
-			Metadata: fetched.Metadata, UpdatedAt: updatedAt,
-		}); err != nil {
-			result.err = errors.Join(cacheLoadError, fmt.Errorf("save cache: %w", err))
+			result.metadata, result.metadataSet = fetched.Metadata, true
 			return result
 		}
 	}
-	result.err = cacheLoadError
+	state, digest, ingested, err := s.ingestSource(source, known, fetched, precomputed)
+	if err != nil {
+		result.err = err
+		result.stale = known.available
+		return result
+	}
+	result.state, result.digest, result.ingested = state, digest, ingested
+	if !ingested {
+		if err := s.persistMetadata(source.ID, known.metadata, fetched.Metadata); err != nil {
+			result.err = err
+			return result
+		}
+	}
+	result.metadata, result.metadataSet = fetched.Metadata, true
 	return result
 }
 
-func versionDocument(data []byte, timezone string) documentVersion {
-	return documentVersion{digest: sha256.Sum256(data), timezone: timezone}
+func (s *Service) persistMetadata(sourceID string, previous, current CacheMetadata) error {
+	if current == previous {
+		return nil
+	}
+	return s.store.saveMetadata(sourceID, current)
 }
 
-func parseFallback(source Source, timezone string, data []byte, prior error) (*Document, error) {
-	document, err := ParseBytes(data, timezone)
+func (s *Service) ingestSource(source Source, known knownState, fetched FetchResult,
+	precomputed [sha256.Size]byte) (SourceState, [sha256.Size]byte, bool, error) {
+	s.store.mu.Lock()
+	defer s.store.mu.Unlock()
+	item, err := s.store.beginIngest(source.ID)
 	if err != nil {
-		return nil, errors.Join(prior, fmt.Errorf("parse cached XMLTV for %q: %w", source.ID, err))
+		return SourceState{}, known.digest, false, err
 	}
-	return document, prior
+	defer item.close()
+
+	limited := &sourceBody{reader: fetched.reader(), sourceID: source.ID, limit: s.config.MaxSourceBytes}
+	var reader io.Reader = limited
+	hasher := sha256.New()
+	streaming := fetched.Body != nil
+	if streaming {
+		reader = io.TeeReader(limited, hasher)
+	}
+	scanErr := Scan(reader, s.timezoneFor(source), Handler{
+		Channel:   item.addChannel,
+		Programme: item.addProgramme,
+	})
+	if limited.err != nil {
+		return SourceState{}, known.digest, false, limited.err
+	}
+	if scanErr != nil {
+		return SourceState{}, known.digest, false, fmt.Errorf("parse XMLTV: %w", scanErr)
+	}
+	digest := precomputed
+	if streaming {
+		if _, err := io.Copy(io.Discard, reader); err != nil {
+			return SourceState{}, known.digest, false, err
+		}
+		if limited.err != nil {
+			return SourceState{}, known.digest, false, limited.err
+		}
+		copy(digest[:], hasher.Sum(nil))
+	}
+	if digest == known.digest {
+		return SourceState{}, known.digest, false, nil
+	}
+	updatedAt := fetched.Metadata.FetchedAt
+	if updatedAt.IsZero() {
+		updatedAt = time.Now().UTC()
+	}
+	state, err := item.commit(encodeDigest(digest), fetched.Metadata, updatedAt)
+	if err != nil {
+		return SourceState{}, known.digest, false, err
+	}
+	s.mu.Lock()
+	s.invalidateOutputCacheLocked()
+	s.mu.Unlock()
+	return state, digest, true, nil
+}
+
+func encodeDigest(digest [sha256.Size]byte) string {
+	return ingestVersion + ":" + hex.EncodeToString(digest[:])
+}
+
+func decodeDigest(value string) ([sha256.Size]byte, bool) {
+	var digest [sha256.Size]byte
+	prefix := ingestVersion + ":"
+	if len(value) != len(prefix)+2*sha256.Size || value[:len(prefix)] != prefix {
+		return digest, false
+	}
+	raw, err := hex.DecodeString(value[len(prefix):])
+	if err != nil {
+		return digest, false
+	}
+	copy(digest[:], raw)
+	return digest, true
 }
 
 func (s *Service) timezoneFor(source Source) string {
@@ -374,8 +409,19 @@ func (s *Service) timezoneFor(source Source) string {
 	return s.config.DefaultTimezone
 }
 
+func (s *Service) timezoneForID(sourceID string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, source := range s.config.Sources {
+		if source.ID == sourceID {
+			return s.timezoneFor(source)
+		}
+	}
+	return s.config.DefaultTimezone
+}
+
 func (s *Service) Run(ctx context.Context) {
-	s.reportRefreshError(s.Refresh(ctx))
+	s.reportError(s.Refresh(ctx))
 	ticker := time.NewTicker(s.config.RefreshInterval)
 	defer ticker.Stop()
 	for {
@@ -383,7 +429,7 @@ func (s *Service) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.reportRefreshError(s.Refresh(ctx))
+			s.reportError(s.Refresh(ctx))
 		}
 	}
 }
@@ -392,22 +438,10 @@ func (s *Service) Start(ctx context.Context) {
 	go s.Run(ctx)
 }
 
-func (s *Service) reportRefreshError(err error) {
+func (s *Service) reportError(err error) {
 	if err != nil && s.config.OnError != nil {
 		s.config.OnError(err)
 	}
-}
-
-func (s *Service) Snapshot() []SourceDocument {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	documents := make([]SourceDocument, 0, len(s.config.Sources))
-	for _, source := range s.config.Sources {
-		if document := s.documents[source.ID]; document != nil {
-			documents = append(documents, SourceDocument{Source: source, Document: document})
-		}
-	}
-	return documents
 }
 
 func (s *Service) Statuses() []SourceStatus {
@@ -423,17 +457,40 @@ func (s *Service) Statuses() []SourceStatus {
 }
 
 func (s *Service) Matches(channels []ChannelRef) []MatchResult {
-	documents := s.Snapshot()
+	var readErrors []error
+	defer func() {
+		for _, err := range readErrors {
+			s.reportError(err)
+		}
+	}()
+	if s.store != nil {
+		s.store.mu.RLock()
+		defer s.store.mu.RUnlock()
+	}
 	results := make([]MatchResult, 0, len(channels))
 	for _, channel := range channels {
-		results = append(results, MatchChannel(channel, documents))
+		result, _, err := s.matchChannel(channel)
+		if err != nil {
+			readErrors = append(readErrors, err)
+		}
+		results = append(results, result)
 	}
 	return results
 }
 
 func (s *Service) Document(channels []ChannelRef) *Document {
-	documents := s.Snapshot()
 	output := &Document{GeneratorInfoName: s.config.GeneratorInfoName}
+	if s.store == nil {
+		return output
+	}
+	s.store.mu.RLock()
+	var readErrors []error
+	defer func() {
+		s.store.mu.RUnlock()
+		for _, err := range readErrors {
+			s.reportError(err)
+		}
+	}()
 	seenKilnIDs := make(map[string]struct{}, len(channels))
 	for _, channel := range channels {
 		if channel.ID == "" {
@@ -442,26 +499,26 @@ func (s *Service) Document(channels []ChannelRef) *Document {
 		if _, exists := seenKilnIDs[channel.ID]; exists {
 			continue
 		}
-		match := MatchChannel(channel, documents)
-		if match.Status != MatchMatched || match.Match == nil {
+		match, matched, err := s.matchChannel(channel)
+		if err != nil {
+			readErrors = append(readErrors, err)
 			continue
 		}
-		sourceDocument, sourceChannel, ok := findMatchedChannel(documents, *match.Match)
-		if !ok {
+		if match.Status != MatchMatched || len(matched) == 0 {
+			continue
+		}
+		source := matched[0]
+		programmes, err := s.store.programmes(source.SourceID, source.ChannelID, s.timezoneForID(source.SourceID))
+		if err != nil {
+			readErrors = append(readErrors, err)
 			continue
 		}
 		seenKilnIDs[channel.ID] = struct{}{}
-		rewritten := sourceChannel
-		rewritten.ID = channel.ID
-		rewritten.DisplayNames = append([]Text(nil), sourceChannel.DisplayNames...)
-		rewritten.URLs = append([]string(nil), sourceChannel.URLs...)
-		rewritten.InnerXML = ""
-		rewritten.Icons = outputIcons(channel, sourceChannel)
-		output.Channels = append(output.Channels, rewritten)
-		for _, programme := range sourceDocument.Document.Programmes {
-			if programme.Channel != sourceChannel.ID {
-				continue
-			}
+		output.Channels = append(output.Channels, Channel{
+			ID: channel.ID, DisplayNames: source.DisplayNames,
+			URLs: source.URLs, Icons: outputIcons(channel, source),
+		})
+		for _, programme := range programmes {
 			programme.Channel = channel.ID
 			output.Programmes = append(output.Programmes, programme)
 		}
@@ -543,21 +600,7 @@ func gzipOutputCacheLimit(maxSourceBytes int64) int {
 	return int(limit)
 }
 
-func findMatchedChannel(documents []SourceDocument, match MatchCandidate) (SourceDocument, Channel, bool) {
-	for _, document := range documents {
-		if document.Source.ID != match.SourceID || document.Document == nil {
-			continue
-		}
-		for _, channel := range document.Document.Channels {
-			if channel.ID == match.ChannelID {
-				return document, channel, true
-			}
-		}
-	}
-	return SourceDocument{}, Channel{}, false
-}
-
-func outputIcons(channel ChannelRef, source Channel) []Icon {
+func outputIcons(channel ChannelRef, source storedChannel) []Icon {
 	if channel.LogoURL != "" {
 		return []Icon{{Src: channel.LogoURL}}
 	}

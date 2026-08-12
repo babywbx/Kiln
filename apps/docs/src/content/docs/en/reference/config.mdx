@@ -206,10 +206,10 @@ pprof uses its own listener and mux and is never mounted on the public server. T
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `cache` | bool | `true` | Whether the guide cache is used. Omitting the key means enabled. |
-| `cache_dir` | string | `"{data_dir}/epg"` | Cache directory. `memory` or `:memory:` switches to an in-memory store; any other value is treated as a directory path. |
+| `cache_dir` | string | `"{data_dir}/epg"` | Directory holding the guide database (`epg.db`). `memory` or `:memory:` switches to an in-memory database; any other value is treated as a directory path. |
 | `refresh_interval_min` | int | `360` | Refresh interval in minutes. Non-positive values fall back to the default. |
 | `max_refresh_concurrency` | int | `0` | Ceiling on sources refreshed concurrently; `0` means unlimited (every source in one pass). Negative values fail validation. Resource adaptation may lower it, including tightening `0` into a concrete number. |
-| `max_source_bytes` | int64 | `67108864` | Byte ceiling per source; larger payloads are rejected. Non-positive values fall back to the default. Resource adaptation may lower it. |
+| `max_source_bytes` | int64 | `67108864` | Decompressed byte ceiling per source, tripped while streaming; larger payloads are rejected. Non-positive values fall back to the default. Resource adaptation may lower it. |
 | `default_timezone` | string | `"UTC"` | Timezone used when a source declares none. Must be a loadable timezone name, otherwise validation fails. |
 | `serve_timezone` | string | `"keep"` | Output timezone policy. Only `keep` is accepted, meaning timestamps are served as-is. |
 | `sources` | array | `[]` | Guide sources, see `[[epg.sources]]` below. |

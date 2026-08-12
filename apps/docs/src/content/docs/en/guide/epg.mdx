@@ -37,25 +37,25 @@ serve_timezone = "keep"
   </Step>
 </Steps>
 
-## Cache modes
+## Storage modes
 
-`cache` and `cache_dir` together select one of three behaviors for the raw XMLTV payloads.
+Fetched XMLTV is parsed as it streams in and written straight into a SQLite database, so the guide never lives in memory as a whole and is read back per channel and time window on demand. `cache` and `cache_dir` together decide where that database lives.
 
 <Tabs>
   <TabItem label="Disk (default)">
-    `cache = true` with `cache_dir` pointing at a directory, `{data_dir}/epg` by default.
+    `cache = true` with `cache_dir` pointing at a directory, `{data_dir}/epg` by default, holding `epg.db`.
 
-    Each source is stored as a JSON header plus the raw body, with a length and SHA-256 checksum, written to a temporary file and atomically renamed into place. The cache survives restarts, feeds `If-None-Match` and `If-Modified-Since` on the next fetch so an unchanged source costs a 304, and provides the fallback body when a fetch or parse fails.
+    The database survives restarts, feeds `If-None-Match` and `If-Modified-Since` on the next fetch so an unchanged source costs a 304 and skips parsing entirely, and keeps serving the previously ingested guide when a fetch or parse fails, flagging that source as stale. Disk usage is roughly the decompressed size of the sources.
   </TabItem>
   <TabItem label="Memory">
     `cache = true` with `cache_dir = "memory"` (`:memory:` is equivalent).
 
-    Conditional requests and failure fallback behave exactly as on disk, but nothing is written to the filesystem and every source is downloaded in full again after a restart. Use it on read-only root filesystems, or wherever you do not want large files accumulating in the data directory.
+    Conditional requests and failure fallback behave exactly as on disk, but nothing is written to the filesystem and every source is downloaded in full again after a restart. Use it on read-only root filesystems, or wherever you do not want large files accumulating in the data directory. Memory use still scales with the source size, but Kiln no longer retains a second parsed object graph.
   </TabItem>
   <TabItem label="Off">
     `cache = false`.
 
-    Raw payloads are not retained, so there are no conditional requests and no fallback. On top of that, every request to `/v1/epg.xml` or `/v1/epg.xml.gz` synchronously refreshes all sources before rendering the response.
+    Nothing is written to disk and a process-local database is used instead, so there are no conditional requests or fallback across restarts. On top of that, every request to `/v1/epg.xml` or `/v1/epg.xml.gz` synchronously refreshes all sources before rendering the response.
   </TabItem>
 </Tabs>
 
@@ -75,9 +75,8 @@ For a manual run, call `POST /v1/admin/epg/refresh` with the `refresh` scope. It
 
 `max_source_bytes` defaults to 64 MiB (`67108864`) and applies to the **decompressed** XMLTV body.
 
-- An oversized download fails the round. Existing data stays available and is flagged as stale rather than being replaced by a truncated body.
-- A cached entry that already exceeds the limit is discarded and never used as a fallback.
-- Under `auto` the limit is lowered with memory: below 256 MiB of memory it drops to 4 MiB, and other constrained profiles land somewhere between 4 MiB and 64 MiB depending on available memory.
+- An oversized download fails the round. Existing data stays available and is flagged as stale rather than being replaced by a truncated body. The limit trips while streaming, so an oversized body is never buffered in full.
+- Under `auto` the limit is lowered with memory: below 256 MiB of memory it drops to 4 MiB, and other constrained profiles land somewhere between 4 MiB and 64 MiB depending on available memory. In disk mode it primarily bounds download and database size rather than a retained Go object graph.
 
 ## Time zones
 

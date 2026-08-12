@@ -81,7 +81,7 @@ On Windows the built-in `kiln.exe service` subcommands register the service, so 
 | `kiln.db-wal`, `kiln.db-shm` | WAL and shared-memory sidecars, also restricted to `0600` | With the main file |
 | `auth/ed25519.pem` | Ed25519 private key for session JWTs. Generated automatically when no key is injected via config or environment | Yes |
 | `auth/ed25519.pub.pem` | Matching public key, written alongside the private key | Yes |
-| `epg/` | EPG disk cache, used when `epg.cache_dir` is empty | No, refetchable |
+| `epg/` | EPG guide database `epg.db`, used when `epg.cache_dir` is empty | No, refetchable |
 | `sessions/<channel-id>/<generation>/` | Per-session media working directory, further split into `native/` and `ffmpeg/` | No, rebuilt on start |
 
 The simplest reliable backup is to stop Kiln and copy the entire data directory. For an online backup, use the SQLite Backup API or a snapshot tool with equivalent consistency guarantees. Copying `kiln.db` and `kiln.db-wal` separately does not guarantee a point-in-time snapshot. You can skip `sessions/`; Kiln recreates it when a new session starts.
