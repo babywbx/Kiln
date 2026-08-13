@@ -3,12 +3,14 @@ package packager
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"math"
 	"math/bits"
+	"net"
 	"net/url"
 	"os"
 	"regexp"
@@ -140,6 +142,13 @@ const (
 	initialSegmentEstimate = 4 << 20
 )
 
+const (
+	manifestFetchRetries                    = 2
+	manifestRetryDelay                      = 100 * time.Millisecond
+	tlsAlertHandshakeFailure tls.AlertError = 40
+	tlsAlertInternalError    tls.AlertError = 80
+)
+
 var logURLPattern = regexp.MustCompile(`(?i)https?://[^\s"'<>]+`)
 
 func (o *Options) applyDefaults() {
@@ -205,6 +214,7 @@ type trackState struct {
 
 	forceDiscontinuity bool
 	lastProgress       time.Time
+	lastHeld           time.Time
 
 	readyMillis atomic.Int64
 
@@ -267,6 +277,7 @@ type Native struct {
 	gate     *byteGate
 	download chan struct{}
 	decrypt  chan struct{}
+	fetchCap time.Duration
 
 	budgetObserved func(string, int64)
 	stagePrepare   func() error
@@ -434,6 +445,11 @@ func StartNative(ctx context.Context, opts Options) (*Native, error) {
 		return nil, noFallback(plan, err)
 	}
 
+	fetchCap := time.Duration(0)
+	if pres.Dynamic {
+		fetchCap = max(2*maxSegmentDuration, 20*time.Second)
+	}
+
 	now := opts.Now()
 	n := &Native{
 		opts:           opts,
@@ -447,6 +463,7 @@ func StartNative(ctx context.Context, opts Options) (*Native, error) {
 		gate:           opts.Gate,
 		download:       opts.DownloadPool,
 		decrypt:        opts.DecryptPool,
+		fetchCap:       fetchCap,
 		refresh:        pres.Refresh,
 		done:           make(chan struct{}),
 		epoch:          presentationEpoch(pres),
@@ -490,8 +507,65 @@ func StartNative(ctx context.Context, opts Options) (*Native, error) {
 		return nil, noFallback(plan, err)
 	}
 
+	for _, ts := range n.tracks() {
+		ts.lastProgress = n.now()
+	}
 	go n.run(runCtx, pres)
 	return n, nil
+}
+
+func fetchManifest(ctx context.Context, opts Options, manifestURL string) (*mpd.Presentation, error) {
+	for attempt := 0; ; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		pres, err := fetchManifestOnce(ctx, opts, manifestURL)
+		if err == nil {
+			return pres, nil
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if attempt == manifestFetchRetries || !transientManifestFetchError(err) {
+			return nil, err
+		}
+		timer := time.NewTimer(manifestRetryDelay << attempt)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		}
+	}
+}
+
+func transientManifestFetchError(err error) bool {
+	var fallback *FallbackError
+	if errors.As(err, &fallback) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return dnsErr.IsTimeout || dnsErr.IsTemporary
+	}
+	var certificateErr *tls.CertificateVerificationError
+	if errors.As(err, &certificateErr) {
+		return false
+	}
+	var alertErr tls.AlertError
+	if errors.As(err, &alertErr) {
+		return alertErr == tlsAlertInternalError || alertErr == tlsAlertHandshakeFailure
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		if opErr.Op == "proxyconnect" {
+			return transientManifestFetchError(opErr.Err)
+		}
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout() ||
+		errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
 }
 
 func publicationMaxSegmentDuration(pres *mpd.Presentation, plan Plan) (time.Duration, error) {
@@ -537,7 +611,7 @@ func noFallback(plan Plan, err error) error {
 	return &FallbackError{Reason: ReasonMultiKIDNoFall, Allowed: false, Err: err}
 }
 
-func fetchManifest(ctx context.Context, opts Options, url string) (*mpd.Presentation, error) {
+func fetchManifestOnce(ctx context.Context, opts Options, url string) (*mpd.Presentation, error) {
 	raw, finalURL, reservation, err := fetchManifestBytes(ctx, opts, url)
 	if err != nil {
 		return nil, fmt.Errorf("fetch manifest: %w", err)
@@ -1167,9 +1241,27 @@ func (n *Native) downloadPool() chan struct{} {
 }
 
 func (n *Native) fetchSegment(ctx context.Context, url string) ([]byte, *byteReservation, error) {
-	raw, _, reservation, err := fetchBounded(ctx, n.opts.Fetcher, n.gate, n.downloadPool(),
-		n.opts.MaxSegmentBytes, url)
-	return raw, reservation, err
+	if n.fetchCap <= 0 {
+		raw, _, reservation, err := fetchBounded(ctx, n.opts.Fetcher, n.gate, n.downloadPool(),
+			n.opts.MaxSegmentBytes, url)
+		return raw, reservation, err
+	}
+	for attempt := 0; ; attempt++ {
+		capped, cancel := context.WithTimeout(ctx, n.fetchCap<<attempt)
+		raw, _, reservation, err := fetchBounded(capped, n.opts.Fetcher, n.gate, n.downloadPool(),
+			n.opts.MaxSegmentBytes, url)
+		if err == nil {
+			cancel()
+			return raw, reservation, nil
+		}
+		slow := capped.Err() != nil && ctx.Err() == nil
+		cancel()
+		if !slow || attempt == 1 {
+			return nil, nil, err
+		}
+		n.log.Warn("live segment fetch exceeded the media budget, retrying on a fresh connection",
+			"cap", n.fetchCap)
+	}
 }
 
 func fetchBounded(ctx context.Context, fetcher Fetcher, gate *byteGate, pool chan struct{}, maxBytes int64, url string) ([]byte, string, *byteReservation, error) {
@@ -1796,6 +1888,9 @@ func (n *Native) holdBehindVideo(ts *trackState, pending []mpd.Segment) []mpd.Se
 			n.trackHolds.Add(1)
 			n.log.Info("holding rendition behind the primary video watermark", "track", ts.name,
 				"video_ready_ms", watermark, "rendition_start_ms", start, "held", len(pending)-i)
+			if i == 0 {
+				ts.lastHeld = n.now()
+			}
 			return pending[:i]
 		}
 	}
@@ -1818,7 +1913,11 @@ func (n *Native) needsReanchor(ts *trackState, segs []mpd.Segment) (string, bool
 		return reasonRollback, true
 	}
 
-	if n.now().Sub(ts.lastProgress) > n.opts.ReanchorAfter {
+	reference := ts.lastProgress
+	if ts.lastHeld.After(reference) {
+		reference = ts.lastHeld
+	}
+	if n.now().Sub(reference) > n.opts.ReanchorAfter {
 		return reasonNoProgress, true
 	}
 	return "", false
@@ -1889,8 +1988,9 @@ func packMode(pres *mpd.Presentation, plan Plan) string {
 
 func (n *Native) Publication() *hls.Publisher { return n.pub }
 func (n *Native) Engine() string              { return n.plan.Engine }
-func (n *Native) PackMode() string            { return n.packMode }
-func (n *Native) Done() <-chan struct{}       { return n.done }
+
+func (n *Native) PackMode() string      { return n.packMode }
+func (n *Native) Done() <-chan struct{} { return n.done }
 
 func (n *Native) Reanchors() uint64 { return n.reanchors.Load() }
 

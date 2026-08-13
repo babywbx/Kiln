@@ -3,13 +3,16 @@ package packager
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"math"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/babywbx/kiln/modules/apperr"
 	"github.com/babywbx/kiln/modules/packager/cmaf"
 	"github.com/babywbx/kiln/modules/packager/hls"
 	"github.com/babywbx/kiln/modules/packager/mpd"
@@ -39,6 +43,12 @@ type httpFetcher struct {
 type refreshLogFetcher struct {
 	body      string
 	pinnedURL string
+}
+
+type fetcherFunc func(context.Context, string) ([]byte, string, error)
+
+func (f fetcherFunc) Fetch(ctx context.Context, rawURL string) ([]byte, string, error) {
+	return f(ctx, rawURL)
 }
 
 func (f refreshLogFetcher) Fetch(_ context.Context, rawURL string) ([]byte, string, error) {
@@ -110,6 +120,126 @@ func TestRefreshManifestRedactsPinnedURLCredentials(t *testing.T) {
 		if strings.Contains(output, secret) {
 			t.Fatalf("log leaked %q: %s", secret, output)
 		}
+	}
+}
+
+func TestFetchManifestRetriesTransientErrors(t *testing.T) {
+	const manifest = `<?xml version="1.0"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static"><Period/></MPD>`
+	calls := 0
+	opts := Options{
+		ManifestURL: "https://origin.example/live.mpd",
+		Fetcher: fetcherFunc(func(_ context.Context, rawURL string) ([]byte, string, error) {
+			calls++
+			switch calls {
+			case 1:
+				return nil, "", tlsAlertInternalError
+			case 2:
+				return nil, "", apperr.Wrap(apperr.CodeUpstream, http.StatusBadGateway, "upstream request failed",
+					&url.Error{Op: "Get", URL: rawURL, Err: &net.OpError{Op: "read", Net: "tcp", Err: io.ErrUnexpectedEOF}})
+			}
+			return []byte(manifest), rawURL, nil
+		}),
+	}
+	opts.applyDefaults()
+
+	if _, err := fetchManifest(context.Background(), opts, opts.ManifestURL); err != nil {
+		t.Fatal(err)
+	}
+	if calls != manifestFetchRetries+1 {
+		t.Fatalf("manifest fetches = %d, want %d", calls, manifestFetchRetries+1)
+	}
+}
+
+func TestFetchManifestDoesNotRetryParseErrors(t *testing.T) {
+	calls := 0
+	opts := Options{
+		ManifestURL: "https://origin.example/live.mpd",
+		Fetcher: fetcherFunc(func(_ context.Context, rawURL string) ([]byte, string, error) {
+			calls++
+			return nil, rawURL, nil
+		}),
+	}
+	opts.applyDefaults()
+
+	if _, err := fetchManifest(context.Background(), opts, opts.ManifestURL); err == nil {
+		t.Fatal("empty manifest parsed successfully")
+	}
+	if calls != 1 {
+		t.Fatalf("manifest fetches = %d, want 1", calls)
+	}
+}
+
+func TestFetchManifestDoesNotRetryPermanentFetchErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{"proxy status", &net.OpError{Op: "proxyconnect", Net: "tcp", Err: errors.New("Proxy Authentication Required")}},
+		{"HTTP status", apperr.New(apperr.CodeUpstream, http.StatusBadGateway, "upstream status 503")},
+		{"SSRF", apperr.Wrap(apperr.CodeUpstream, http.StatusBadGateway, "upstream request failed",
+			&url.Error{Op: "Get", URL: "https://origin.example/live.mpd", Err: errors.New("probe target is not public")})},
+		{"response limit", errors.New("upstream response too large")},
+		{"memory budget", errors.New("manifest memory budget exhausted")},
+		{"permanent DNS", &net.OpError{Op: "dial", Net: "tcp", Err: &net.DNSError{Err: "no such host", IsNotFound: true}}},
+		{"certificate", &tls.CertificateVerificationError{Err: errors.New("unknown authority")}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			calls := 0
+			opts := Options{
+				ManifestURL: "https://origin.example/live.mpd",
+				Fetcher: fetcherFunc(func(context.Context, string) ([]byte, string, error) {
+					calls++
+					return nil, "", test.err
+				}),
+			}
+			opts.applyDefaults()
+
+			if _, err := fetchManifest(context.Background(), opts, opts.ManifestURL); err == nil {
+				t.Fatal("permanent fetch error succeeded")
+			}
+			if calls != 1 {
+				t.Fatalf("manifest fetches = %d, want 1", calls)
+			}
+		})
+	}
+}
+
+func TestFetchManifestCancellationStopsBackoff(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	calls := 0
+	opts := Options{
+		ManifestURL: "https://origin.example/live.mpd",
+		Fetcher: fetcherFunc(func(context.Context, string) ([]byte, string, error) {
+			calls++
+			if calls == 1 {
+				close(started)
+			}
+			return nil, "", &net.OpError{Op: "read", Net: "tcp", Err: io.ErrUnexpectedEOF}
+		}),
+	}
+	opts.applyDefaults()
+	go func() {
+		_, err := fetchManifest(ctx, opts, opts.ManifestURL)
+		done <- err
+	}()
+
+	<-started
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("error = %v, want context canceled", err)
+		}
+	case <-time.After(manifestRetryDelay / 2):
+		err := <-done
+		t.Fatalf("cancellation waited through backoff: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("manifest fetches = %d, want 1", calls)
 	}
 }
 
@@ -1004,4 +1134,116 @@ func requireFFmpeg(t *testing.T) {
 		t.Fatal("ffmpeg is required by KILN_REQUIRE_MEDIA_ORACLE=1")
 	}
 	t.Skip("ffmpeg not available")
+}
+
+func TestTransientManifestFetchErrorTLSAlerts(t *testing.T) {
+	if !transientManifestFetchError(tlsAlertHandshakeFailure) {
+		t.Fatal("a handshake_failure alert is the observed transient rejection and must retry")
+	}
+	if !transientManifestFetchError(tlsAlertInternalError) {
+		t.Fatal("an internal_error alert must retry")
+	}
+	if transientManifestFetchError(tls.AlertError(112)) {
+		t.Fatal("unrecognized_name is a permanent misconfiguration")
+	}
+}
+
+func TestNeedsReanchorHonoursDeliberateHolds(t *testing.T) {
+	clock := time.Now()
+	n := &Native{opts: Options{ReanchorAfter: 30 * time.Second}, now: func() time.Time { return clock }}
+	ts := &trackState{hasLast: true, lastTime: 1000, lastProgress: clock.Add(-time.Hour)}
+
+	if reason, ok := n.needsReanchor(ts, []mpd.Segment{{Time: 2000}}); !ok || reason != reasonNoProgress {
+		t.Fatalf("reason = %q ok=%v, want no_progress for a genuinely stalled track", reason, ok)
+	}
+	ts.lastHeld = clock.Add(-time.Second)
+	if reason, ok := n.needsReanchor(ts, []mpd.Segment{{Time: 2000}}); ok {
+		t.Fatalf("re-anchored (%s) although the rendition was deliberately held back", reason)
+	}
+	if reason, ok := n.needsReanchor(ts, []mpd.Segment{{Time: 500}}); !ok || reason != reasonRollback {
+		t.Fatalf("reason = %q ok=%v, want rollback", reason, ok)
+	}
+}
+
+func TestHoldBehindVideoTouchesTheHoldClockOnly(t *testing.T) {
+	clock := time.Now()
+	video := &trackState{}
+	video.readyMillis.Store(8000)
+	n := &Native{
+		opts:  Options{PrimaryTrackHold: 12 * time.Second},
+		now:   func() time.Time { return clock },
+		log:   slog.Default(),
+		video: video,
+	}
+	stale := clock.Add(-time.Hour)
+	ts := &trackState{lastProgress: stale}
+	ts.rep.Addressing.Timescale = 1000
+
+	held := n.holdBehindVideo(ts, []mpd.Segment{{Time: 60000}})
+	if len(held) != 0 {
+		t.Fatalf("held %d segments, want everything held back", len(held))
+	}
+	if !ts.lastHeld.Equal(clock) {
+		t.Fatal("a fully held rendition must not accrue re-anchor stall time")
+	}
+	if !ts.lastProgress.Equal(stale) {
+		t.Fatal("holding is not progress; the fatal stall clock must keep running")
+	}
+
+	ts.lastHeld = time.Time{}
+	partial := n.holdBehindVideo(ts, []mpd.Segment{{Time: 1000}, {Time: 60000}})
+	if len(partial) != 1 {
+		t.Fatalf("held %d segments, want 1 published", len(partial))
+	}
+	if !ts.lastHeld.IsZero() {
+		t.Fatal("a partially published rendition records progress at commit, not at hold")
+	}
+}
+
+func TestFetchSegmentCapsSlowLiveDownloads(t *testing.T) {
+	calls := 0
+	blocked := fetcherFunc(func(ctx context.Context, _ string) ([]byte, string, error) {
+		calls++
+		<-ctx.Done()
+		return nil, "", ctx.Err()
+	})
+	n := &Native{
+		opts:     Options{Fetcher: blocked, MaxSegmentBytes: 1024},
+		gate:     newByteGate(4096),
+		fetchCap: 30 * time.Millisecond,
+		log:      slog.Default(),
+	}
+	if _, _, err := n.fetchSegment(context.Background(), "https://edge.example/seg.m4s"); err == nil {
+		t.Fatal("a permanently slow download must fail instead of freezing the pipeline")
+	}
+	if calls != 2 {
+		t.Fatalf("fetch attempts = %d, want one retry on a fresh connection", calls)
+	}
+
+	calls = 0
+	recovering := fetcherFunc(func(ctx context.Context, _ string) ([]byte, string, error) {
+		calls++
+		if calls == 1 {
+			<-ctx.Done()
+			return nil, "", ctx.Err()
+		}
+		return []byte("ok"), "https://edge.example/seg.m4s", nil
+	})
+	n.opts.Fetcher = recovering
+	raw, reservation, err := n.fetchSegment(context.Background(), "https://edge.example/seg.m4s")
+	if err != nil || string(raw) != "ok" {
+		t.Fatalf("retry on a fresh connection failed: raw=%q err=%v", raw, err)
+	}
+	reservation.release()
+
+	ctx, stop := context.WithCancel(context.Background())
+	stop()
+	calls = 0
+	n.opts.Fetcher = blocked
+	if _, _, err := n.fetchSegment(ctx, "https://edge.example/seg.m4s"); err == nil {
+		t.Fatal("a cancelled caller must not trigger the slow-path retry")
+	}
+	if calls > 1 {
+		t.Fatalf("fetch attempts = %d after caller cancellation, want no retry", calls)
+	}
 }
