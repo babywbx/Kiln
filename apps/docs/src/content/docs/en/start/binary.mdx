@@ -78,7 +78,7 @@ Each archive contains the executable (`kiln`, or `kiln.exe` on Windows) plus `LI
 
 On Apple Silicon, pick `darwin_arm64`. A shell running under Rosetta reports `x86_64` from `uname -m`, and choosing the archive from that would leave you with a translated build.
 
-To keep it running across reboots on Linux, the install script's [`--service`](/en/start/install-script/) flag registers a systemd unit for you.
+To keep it running across reboots on Linux, the install script's [`--service`](/en/start/install-script/) flag registers a systemd unit. It enables the unit immediately when the config exists; otherwise create the config and run `systemctl enable --now kiln`.
 
 ## Windows
 

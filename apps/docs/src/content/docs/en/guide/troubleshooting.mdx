@@ -2,13 +2,13 @@
 title: Troubleshooting
 description: Diagnose common startup, authentication, channel, memory, guide, proxy, and container issues by symptom.
 sidebar:
-  order: 11
+  order: 12
 ---
 
 Find the section that matches what you see, then follow **Symptom**, **Diagnosis**, and **Fix** in order. Each section includes exact log keywords and API messages you can search for. Related configuration is covered in [Operations](/en/guide/operations/).
 
 <Aside type="tip" title="Start with two log lines">
-  Most problems are answered by the startup logs. `listening` means the HTTP server bound successfully, and the `kiln starting` record prints the version, config path, channel count, resource profile, `packager_engine`, `ffmpeg_available`, proxy count, and database path. Confirm both are present before digging further.
+  Most problems are answered by the startup logs. `listening` reports the address and `scheme` Kiln is about to serve; split mode emits one HTTP and one HTTPS record, though a later bind can still fail. The `kiln starting` record prints the version, config path, channel count, resource profile, `packager_engine`, `ffmpeg_available`, proxy count, and database path. Confirm those records are present before digging further.
 </Aside>
 
 ## Startup failures
@@ -87,7 +87,7 @@ Either stop whatever holds the port or change `server.listen`, or override it te
 
 ## Playback returns 401 or 403
 
-First confirm which credential you are using. Four credential types cover four surfaces, and mixing them up is the most common cause: public endpoints need none, session JWTs serve the admin UI, admin API tokens serve scripts, and path-style play keys serve player distribution. See [Authentication](/en/guide/auth/).
+First confirm which credential you are using. Four credential types cover four surfaces, and mixing them up is the most common cause: public endpoints need none, session and preview JWTs serve the admin UI and protected playback, admin API tokens serve scripts, and path-style play keys serve player distribution. See [Authentication](/en/guide/auth/).
 
 | Status | Message | Meaning |
 | --- | --- | --- |
@@ -102,18 +102,18 @@ First confirm which credential you are using. Four credential types cover four s
 
 **Symptom**: using an admin API token against `/v1/play/...`, or a session JWT against `/p/<token>/...`.
 
-**Fix**: playback accepts either a session JWT (on `/v1/play/...`) or a path-style play key (on `/p/<token>/...`). API tokens are for management endpoints, and some of those routes are marked session-only, which returns `403 API token permission denied` for a token.
+**Fix**: with `play_require_auth` enabled, `/v1/playlist.m3u` and `/v1/play/...` accept a session or preview JWT through Bearer or `?token=`, but never an admin API token. `/p/<token>/...` accepts only the playback key in its path. With playback auth off, the first two surfaces are public and generated URLs carry no token. API tokens are for management endpoints, some of which remain session-only.
 
 ### play_require_auth
 
-**Symptom**: you disabled playback auth but the play endpoints still demand a credential.
+**Symptom**: you disabled playback auth but `/v1/playlist.m3u` or `/v1/play/...` still demands a credential.
 
 **How to tell**: `security.play_require_auth` defaults to on when omitted. Confirm the config really carries `play_require_auth = false`, then confirm no stray `KILN_PLAY_OPEN=0` survives in the environment, since the variable outranks the file.
 
 **Fix**: in a debugging environment, set `play_require_auth = false` under `[security]`, or set `KILN_PLAY_OPEN=1`.
 
 <Aside type="danger" title="Never disable playback auth in production">
-  With it off, anyone can pull every stream. This is a debugging switch, not a deployment option.
+  With it off, anyone can fetch the complete playlist and pull every stream. This is a debugging switch, not a deployment option.
 </Aside>
 
 ### Host not on the allow list
@@ -137,6 +137,8 @@ First confirm which credential you are using. Four credential types cover four s
 **How to tell**: restart backoff starts at 2 seconds and caps at 30, and the counter resets after 90 seconds of stability. Repeated restarts mean the upstream really is not serving content, not that you hit a blip.
 
 **Fix**: verify reachability from the server itself, including the channel's configured `headers` and `user_agent`. If the upstream needs a proxy, see [Proxies do not apply](#proxies-do-not-apply) below.
+
+If the log shows an HTTPS source redirecting to `http://...:80` on a public host, enable `upgrade_insecure_redirects` for that upstream or direct-URL channel as described under [Channels](/en/guide/channels/#repairing-an-incorrectly-downgraded-redirect). It only repairs that malformed redirect, not ordinary network, DNS, or TLS certificate failures.
 
 ### Upstream host not allowlisted
 
@@ -182,6 +184,16 @@ The dependency is probed once at startup. When it is missing, the log carries `f
 **Fix**: configure `[packager].keys_file` with one `kid:key` pair per line. The per-channel `keys` field has been removed; keys are global only.
 
 ## Playback stalls mid-stream
+
+First distinguish the three timeouts by the stage that failed:
+
+| Stage | Default | Meaning |
+| --- | ---: | --- |
+| Waiting for response headers | Fixed and not configurable | The request connected but the origin never returned headers |
+| `packager.fetch_stall_sec` | 30 seconds | No new body byte arrived for the whole window, covering manifests, segments, and error bodies; any progress resets it, so it is not a total download limit |
+| `packager.stall_timeout_sec` | 180 seconds | The manifest keeps refreshing but no track publishes a segment; `-1` disables it |
+
+A large, slow segment may take longer than 30 seconds as long as bytes keep arriving. A truly frozen transfer hits `fetch_stall_sec`; a progressing manifest with no new media hits the publication-stall detector below.
 
 **Symptom**: the channel starts fine, then freezes after a few minutes. The logs show a session restart with `err` set to `no segment published for 3m0s while the manifest kept updating`.
 
@@ -230,14 +242,14 @@ Compare that against the profile table in [Operations](/en/guide/operations/). T
     There is no EPG master switch; output depends only on having an enabled source. Built-in sources are all disabled by default and have to be enabled individually, in the admin UI or in the config. The `epg_sources` field in the startup log is the number of active sources; `0` means none are enabled. The `lite` variant has no EPG at all and refuses to start when the config carries an enabled source.
   </Step>
   <Step title="Size limit">
-    An `EPG refresh failed` log whose `err` contains `EPG source exceeds decompressed size limit` means the decompressed XMLTV is larger than `epg.max_source_bytes`. The default cap is 64 MiB, but low-resource profiles pull it down to somewhere between 4 MiB and 64 MiB. The `epg_max_source_mb` field in the startup log is the value in force. Cached payloads over the limit are discarded the same way.
+    An `EPG refresh failed` log whose `err` contains `EPG source exceeds decompressed size limit` means the decompressed XMLTV is larger than `epg.max_source_bytes`. The default cap is 64 MiB, but low-resource profiles pull it down to somewhere between 4 MiB and 64 MiB. The `epg_max_source_mb` field in the startup log is the value in force. The current write rolls back, while existing `epg.db` data remains available and is marked stale.
   </Step>
   <Step title="Proxy and network">
     A connection timeout or TLS error on `EPG refresh failed` means the guide source is unreachable. Each EPG source can set its own `proxy`. Use `auto` to follow the global egress rules. Leave it empty or set it to `direct` for a direct connection.
   </Step>
 </Steps>
 
-**Fix**: the disk cache defaults to `data_dir/epg`. It is fully rebuildable, so if you suspect corruption, delete the directory and restart. The refresh interval comes from `epg.refresh_interval_min`, 360 minutes by default; lowering it means watching out for upstream rate limits. See [EPG](/en/guide/epg/).
+**Fix**: the disk database defaults to `data_dir/epg/epg.db`. Fix the network, proxy, or size limit first and trigger a refresh. Only for confirmed database corruption, stop Kiln, move the `epg` directory aside as a backup, and restart. Legacy `<sha256>.cache` files are not imported. The refresh interval comes from `epg.refresh_interval_min`, 360 minutes by default; lowering it means watching out for upstream rate limits. See [EPG](/en/guide/epg/).
 
 ## Proxies do not apply
 
@@ -256,6 +268,12 @@ Compare that against the profile table in [Operations](/en/guide/operations/). T
 **How to tell**: an active rule that names a missing or disabled profile now fails both configuration loading and hot reload instead of silently becoming direct. The error identifies an `unknown or disabled proxy`; an unknown `egress.default` also prevents startup.
 
 **Fix**: check that the `id` under `[[proxies]]` matches exactly and that the profile is not disabled.
+
+### DNS, TUN, or fake-IP environments
+
+**How to tell**: HTTP, HTTPS, and `socks5h` profiles hand the original hostname to the proxy for resolution, while `socks5` resolves on the Kiln host first. In every case Kiln still performs local DNS and SSRF validation before the proxy connection. Errors such as `probe target dns lookup failed` or `resolved to a non-public address` can therefore occur before the proxy takes over.
+
+**Fix**: prefer DNS that returns real addresses to Kiln, or use a trusted HTTP(S) or `socks5h` profile. Add only exact, genuinely trusted private origins to `security.allowed_hosts`; never broadly disable private-network validation.
 
 ### FFmpeg container cannot reach Kiln
 
@@ -312,12 +330,14 @@ docker run --rm -p 8080:8080 --read-only \
 
 ### Health check never passes
 
-**How to tell**: `core` and `full` probe `/healthz` with `wget`. `lite` is built `FROM scratch` with no shell and no wget, so it uses the binary's own subcommand. Verify manually:
+**How to tell**: the `core` and `full` health checks use `wget --no-check-certificate` to try HTTPS first and then HTTP. Scratch-based `lite` uses the binary subcommand against HTTP. Reproduce the check for the image you run:
 
 ```bash
-docker exec kiln wget -q -O /dev/null http://127.0.0.1:8080/healthz
+docker exec kiln sh -c 'wget -q --no-check-certificate -O /dev/null https://127.0.0.1:8080/healthz || wget -q -O /dev/null http://127.0.0.1:8080/healthz'
 docker exec kiln kiln -healthcheck http://127.0.0.1:8080/healthz
 ```
+
+A manual `-healthcheck` against auto-generated HTTPS fails until the certificate enters the system trust store. Prefer the plaintext port in split mode; for HTTPS-only mode use a trusted certificate or the image probe above. See [HTTPS and split listeners](/en/guide/https/).
 
 If `/healthz` passes but `/readyz` does not, the compatibility engine is missing. Go back to [ffmpeg unavailable](#ffmpeg-unavailable).
 

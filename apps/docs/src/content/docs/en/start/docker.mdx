@@ -83,6 +83,8 @@ services:
     container_name: kiln
     ports:
       - "8080:8080"
+      # Publish this too with server.tls_listen = "0.0.0.0:8443":
+      # - "8443:8443"
     environment:
       KILN_PUBLIC_BASE_URL: "http://your-host:8080"
       KILN_LOG_FORMAT: "text"
@@ -97,17 +99,19 @@ volumes:
   kiln-data:
 ```
 
-Three details worth noting. Setting the log color to `never` keeps ANSI escapes out of `docker logs`. `KILN_PUBLIC_BASE_URL` controls the addresses written into the playlist and is required whenever the published port or hostname differs from what players use. And if the origin is another service on the same Compose network, point `base_url` at `http://service-name:port` and attach both containers to that network.
+Three details worth noting. Setting the log color to `never` keeps ANSI escapes out of `docker logs`. `KILN_PUBLIC_BASE_URL` supplies the startup value for addresses written into playlists, but an existing Core or Full data volume uses its database setting instead; change an existing instance in Settings or through `/v1/admin/settings`. If the origin is another service on the same Compose network, point `base_url` at `http://service-name:port` and attach both containers to that network. Split HTTPS also needs its second port published; see [HTTPS and split listeners](/en/guide/https/).
 
 ## Health checks
 
 Neither `/healthz` nor `/readyz` requires credentials. `/healthz` means the process is alive; `/readyz` additionally verifies the compatibility engine, returning 503 only when the config contains a DASH channel resolving to the ffmpeg engine while ffmpeg is unavailable.
 
-Every image carries a `HEALTHCHECK`: a 30-second interval, a 3-second timeout, a 10-second start period, and three consecutive failures before the container is marked unhealthy. Core and Full probe `/healthz` with `wget`. Lite is built on scratch and has no external commands at all, so it uses the binary's own `-healthcheck` subcommand for the same probe. That subcommand is useful on its own:
+Every image carries a `HEALTHCHECK`: a 30-second interval, a 3-second timeout, a 10-second start period, and three consecutive failures before the container is marked unhealthy. Core and Full use `wget --no-check-certificate` to try HTTPS first and then HTTP. Lite is built on scratch and uses the binary's own `-healthcheck` subcommand against HTTP. That subcommand is useful on its own:
 
 ```bash
 docker exec kiln /usr/local/bin/kiln -healthcheck http://127.0.0.1:8080/healthz
 ```
+
+`-healthcheck` performs normal certificate validation. A manual HTTPS probe fails until an auto-generated certificate is in the system trust store; with split listeners, prefer the plaintext health port. See [HTTPS and split listeners](/en/guide/https/).
 
 ## Resource adaptation inside a container
 
@@ -132,7 +136,7 @@ Kiln never rewrites the address on a route, so an address configured inside a co
 
 ## Persistent data
 
-`data_dir` is the only directory that needs to persist; the images default it to `/var/lib/kiln/data`. Core and full keep the SQLite database `kiln.db` there, along with the auto-generated session key at `auth/ed25519.pem` and the EPG cache when caching is enabled. The mount must be writable by uid/gid `999`, or the first start fails.
+`data_dir` is the only directory that needs to persist; the images default it to `/var/lib/kiln/data`. Core and full keep the SQLite database `kiln.db` there, along with the auto-generated session key at `auth/ed25519.pem` and `epg/epg.db` in disk EPG mode. The mount must be writable by uid/gid `999`, or the first start fails.
 
 Lite creates no database: its `data_dir` holds only the auto-generated login key and transient media files. When running with `--read-only`, mount the writable volume at `/var/lib/kiln`.
 

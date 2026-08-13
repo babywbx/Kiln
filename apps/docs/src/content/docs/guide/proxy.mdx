@@ -2,10 +2,10 @@
 title: 出站代理
 description: 配置可复用的代理和路由规则，控制 Kiln 访问节目源、节目单和台标时使用的网络出口。
 sidebar:
-  order: 8
+  order: 9
 ---
 
-Kiln 用两层配置管理出站流量：`[[proxies]]` 定义可复用的代理，`[egress]` 决定哪些请求使用哪个出口。节目源、节目单和台标共用同一套路由，无需分别设置。
+Kiln 用两层配置管理出站流量：`[[proxies]]` 定义可复用的代理，`[egress]` 决定哪些请求使用哪个出口。节目源、节目单和台标共用全局路由，但频道与节目单源可以单独覆盖。
 
 ## 模型总览
 
@@ -19,9 +19,19 @@ Kiln 用两层配置管理出站流量：`[[proxies]]` 定义可复用的代理�
     没有任何规则命中时使用 `egress.default`。
   </Step>
   <Step title="解析线路">
-    出口是 `direct` 就直连；是某条线路的 id 就走该线路；引用的线路不存在或已停用时退回直连。
+    出口是 `direct` 就直连，是某条线路的 id 就走该线路。启动配置引用不存在或已停用的线路时进程会拒绝启动；管理端保存同类无效设置时会拒绝更新并保留当前运行配置。
   </Step>
 </Steps>
+
+资源级设置优先于全局规则：
+
+| 资源 | `auto` | `direct` | 具体线路 |
+| --- | --- | --- | --- |
+| 频道 | 按 `channel_id` 和 URL 走全局规则 | 始终直连 | 固定走该线路 |
+| EPG 源 | 按 URL 走全局规则 | 始终直连（默认） | 固定走该线路 |
+| 台标 | 继承所属频道的出口上下文 | 继承频道 | 继承频道 |
+
+频道编辑页的「出站线路」与 EPG 源编辑页的 `proxy` 都提供 `auto`、`direct` 和具体线路；只有选 `auto` 才继续走下面的全局规则。
 
 ```toml title="kiln.toml"
 [[proxies]]
@@ -47,8 +57,8 @@ pattern = "example-cdn.com"
 proxy = "proxy-http"
 ```
 
-<Aside type="note" title="首次启动后请使用控制台">
-  出站配置和频道一样保存在 SQLite 中。只有数据库中还没有线路记录时，Kiln 才会写入配置文件里的 `[[proxies]]` 与 `[[egress.rules]]`；`default`、`playlist_policy`、`docker_proxy_host` 也只会在对应设置尚不存在时写入。首次启动后，请在 [管理控制台](/guide/admin/) 中修改。
+<Aside type="caution" title="配置文件会在每次启动时同步">
+  配置文件里的 `[[proxies]]` 与 `[[egress.rules]]` 会按 ID 在每次启动时写入数据库，同 ID 的控制台改动会被覆盖；只在控制台创建、配置文件里没有同 ID 的线路和规则会保留。`default`、`playlist_policy` 与 `docker_proxy_host` 也会在每次启动时按加载后的配置值同步，即使省略也会分别采用 `direct`、`rewrite` 与 `host.docker.internal` 的默认值。因此，需要跨重启保留控制台里的全局出口设置时，也要把最终值写进配置文件。
 </Aside>
 
 ## 定义线路
@@ -57,6 +67,7 @@ proxy = "proxy-http"
 - `url` 支持 `http`、`https`、`socks5`、`socks5h` 四种 scheme，例如 `http://127.0.0.1:7890` 或 `socks5h://127.0.0.1:7891`。
 - 需要认证时把凭据放进 URL，例如 `http://user:password@127.0.0.1:7890`，控制台会显示该线路已配置凭据而不回显密码。
 - `socks5h` 由代理侧解析域名，`socks5` 先在本机解析再连接。回源地址依赖境外 DNS 时优先选 `socks5h`。
+- HTTP、HTTPS 与 `socks5h` 线路都会把原始域名交给代理解析，适用于本机处于 TUN 或 fake-IP 环境、只能由代理得到真实目标地址的部署；`socks5` 仍使用 Kiln 本机的解析结果。
 - 线路可以停用而不删除。被 `egress.default` 或启用中的规则引用的线路不允许处于停用状态。
 
 <Aside type="caution" title="代理侧 DNS 是信任边界">
@@ -69,7 +80,9 @@ proxy = "proxy-http"
 
 ## 默认出口与规则
 
-`egress.default` 取 `direct` 或某条线路的 id，所有未命中规则的请求都走它。
+要让全部回源默认走代理，先定义 `[[proxies]]`，再把 `egress.default` 设为这条线路的 ID。Kiln 不读取 `HTTP_PROXY`、`HTTPS_PROXY` 或 `ALL_PROXY` 作为出站配置。
+
+`egress.default` 取 `direct` 或某条线路的 ID，所有未命中规则的请求都走它。
 
 规则由 `id`、`priority`、`kind`、`pattern`、`proxy` 组成，可以单独停用。`priority` 数字越小越优先，`proxy` 也可以填 `direct`，用来在默认走代理的部署里为个别域名开一个直连口子。
 

@@ -53,26 +53,26 @@ Resource adaptation runs after validation. Based on detected memory and CPU ceil
 
 ### What lives in the config file and what lives in the database
 
-`[[channels]]` seeds the SQLite database under `server.data_dir` only while the channel table is empty. After that the admin surface owns them, and editing the config file no longer overwrites them. `[[proxies]]`, `[[egress.rules]]`, `egress.default`, `egress.playlist_policy`, and `egress.docker_proxy_host` are instead **synchronized from the config file on every start**: whatever the file declares wins, whatever it omits keeps the value set from the console, and a write only happens (advancing the revision) when the file genuinely differs. When the file carries no credentials but the stored proxy has them, the credentials are kept. Proxies and rules created from the console that the file never mentions are left in place. `server.public_base_url` still uses insert-if-absent semantics and only applies on first run. `[[upstreams]]`, `[auth]`, and the remaining global keys are always taken from the file, though the username and password of an entry in `[[auth.users]]` can be changed from the admin surface and stored as a database override.
+`[[channels]]` seeds the SQLite database under `server.data_dir` only while the channel table is empty. After that the admin surface owns them, and editing the config file no longer overwrites them. `[[proxies]]` and `[[egress.rules]]` are instead **synchronized from the config file by ID on every start**: the file wins for matching IDs, while console-only IDs are left in place. When the file carries no credentials and the stored proxy still has the same scheme and host, its credentials are kept. `egress.default`, `egress.playlist_policy`, and `egress.docker_proxy_host` are synchronized on every start as well. Because config loading fills in `direct`, `rewrite`, and `host.docker.internal`, omitting those keys still overwrites the database with their defaults. `server.public_base_url` still uses insert-if-absent semantics and only applies on first run. `[[upstreams]]`, `[auth]`, and the remaining global keys are always taken from the file, though the username and password of an entry in `[[auth.users]]` can be changed from the admin surface and stored as a database override.
 
 ## `[server]`
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `listen` | string | `"0.0.0.0:8080"` | HTTP listen address. Environment equivalent: `KILN_LISTEN`. |
-| `public_base_url` | string | `"http://127.0.0.1:8080"` | Externally reachable base URL used to build playback and other outward links. A trailing slash is trimmed. Environment equivalent: `KILN_PUBLIC_BASE_URL`. |
-| `data_dir` | string | `"./data"` | Data directory holding SQLite, auto-generated signing keys, and the default EPG cache. Created with mode `0750` at startup. Environment equivalent: `KILN_DATA_DIR`. |
+| `listen` | string | `"0.0.0.0:8080"` | Primary listen address. It serves HTTP with TLS off, HTTPS when TLS is on without `tls_listen`, and restricted HTTP in split mode. Environment equivalent: `KILN_LISTEN`. |
+| `public_base_url` | string | `"http://127.0.0.1:8080"` | Externally reachable base URL used to build playback and other outward links. A trailing slash is trimmed. Core and Full use the config or `KILN_PUBLIC_BASE_URL` only to initialize a missing database setting; Lite always uses startup configuration. |
+| `data_dir` | string | `"./data"` | Data directory holding SQLite, auto-generated signing keys, and the default EPG database. Created with mode `0750` at startup. Environment equivalent: `KILN_DATA_DIR`. |
 | `resource_mode` | string | `"auto"` | Resource adaptation mode; one of `auto`, `performance`, `constrained`. Anything else fails validation. Environment equivalent: `KILN_RESOURCE_MODE`. |
 | `read_timeout_sec` | int | `15` | HTTP read timeout in seconds. Non-positive values fall back to the default. |
 | `write_timeout_sec` | int | `0` | HTTP write timeout in seconds; `0` means no write timeout. A write timeout cuts long-lived streaming responses, so leave it at `0` unless you specifically need one. |
 | `idle_timeout_sec` | int | `120` | HTTP idle timeout in seconds. Non-positive values fall back to the default. |
 | `memory_limit_mb` | int | `0` | Go soft memory target in MiB; `0` leaves it unset. Negative or absurdly large values fail validation. Applied only when `GOMEMLIMIT` is unset. |
 | `tls_enabled` | bool | `false` | Serve over HTTPS. The console toggle stores an override in the database that wins over this value and applies after a restart. |
-| `tls_listen` | string | `""` | Optional. When HTTPS is enabled, setting this adds a full-featured TLS listener at this address while `listen` stays plaintext and is limited to the public playback and probe surface. Must use a numeric port and differ from `listen`. Leave empty to apply TLS to the single listener. |
+| `tls_listen` | string | `""` | Optional. When HTTPS is enabled, setting this adds a full-featured TLS listener at this address while `listen` stays plaintext and is limited to the public playback and probe surface. The port must be numeric and must not overlap `listen`; a wildcard and concrete address on the same port overlap. Leave empty to apply TLS to the single listener. |
 | `tls_cert_file` | string | `""` | Path to a PEM certificate. Must be set together with `tls_key_file`. Leave both empty to issue and reuse a self-signed certificate under `data_dir/tls/`. |
 | `tls_key_file` | string | `""` | Path to the matching PEM private key. Must be set together with `tls_cert_file`. |
 
-TLS is available in Core and Full. Lite rejects `tls_enabled = true`, a `tls_listen` address, or either certificate path instead of silently serving HTTP.
+TLS is available in Core and Full. Lite rejects `tls_enabled = true`, a `tls_listen` address, or either certificate path instead of silently serving HTTP. See [HTTPS and split listeners](/en/guide/https/) for listener modes, the restricted HTTP surface, certificate trust, and Docker ports.
 
 ### The three resource modes
 
@@ -235,13 +235,13 @@ See [EPG](/en/guide/epg/) for channel matching and built-in source behavior.
 | `id` | string | Required | Route identifier, referenced by `egress.default`, `[[egress.rules]]`, and `[[epg.sources]]`. `direct` is reserved and means no proxy. |
 | `name` | string | `""` | Display name. |
 | `url` | string | Required | Proxy address. Schemes are limited to `http`, `https`, `socks5`, `socks5h` — for example `http://127.0.0.1:7890` or `socks5h://127.0.0.1:7891`. |
-| `disabled` | bool | `false` | Whether the route is inactive. A disabled route takes no traffic, and decisions pointing at it fall back to direct. |
+| `disabled` | bool | `false` | Whether the route is inactive. A default or enabled rule pointing at it fails config validation or the admin update rather than falling back to direct. |
 
 ## `[egress]`
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `default` | string | `"direct"` | Route used when no rule matches. Must be `direct` or a defined `[[proxies]]` id, otherwise validation fails. |
+| `default` | string | `"direct"` | Route used when no rule matches. Must be `direct` or a defined, enabled `[[proxies]]` id, otherwise validation fails. |
 | `playlist_policy` | string | `"rewrite"` | Playlist URL rewriting policy; one of `rewrite`, `passthrough`, `auto`. Anything else fails validation. `rewrite` always rewrites to a Kiln-relative URL, `passthrough` always keeps the original, `auto` rewrites only when a proxy was actually used. |
 | `docker_proxy_host` | string | `"host.docker.internal"` | Applies only when `ffmpeg.mode = "docker"`; the hostname the spawned ffmpeg container uses to reach the Kiln process. It does not affect `[[proxies]].url` — Kiln never rewrites a route address. |
 | `rules` | array | `[]` | Routing rules, see `[[egress.rules]]` below. |
@@ -253,8 +253,8 @@ See [EPG](/en/guide/epg/) for channel matching and built-in source behavior.
 | `id` | string | `""` | Rule identifier. When empty, seeding generates `rule-1`, `rule-2`, and so on. |
 | `priority` | int | `0` | Match order; lower runs first and the first match wins. |
 | `kind` | string | `"host_suffix"` | Match type; one of `host_suffix`, `host_exact`, `host_regex`, `channel_id`, `url_regex`. Empty behaves as `host_suffix`. |
-| `pattern` | string | `""` | Match input. Except for `channel_id`, a rule with an empty pattern is skipped. Regex kinds compile with Go's regexp syntax; a compile failure counts as no match. |
-| `proxy` | string | Required | Route used on a match. Must be `direct` or a defined `[[proxies]]` id; empty or unknown fails validation. |
+| `pattern` | string | `""` | Match input; an enabled rule cannot leave it empty. Regex kinds compile with Go's regexp syntax, and a compile failure rejects config validation or the admin update. |
+| `proxy` | string | Required | Route used on a match. Must be `direct` or a defined, enabled `[[proxies]]` id; empty, unknown, and disabled values fail validation rather than falling back to direct. |
 | `disabled` | bool | `false` | Whether the rule is inactive. |
 
 See [Outbound proxying](/en/guide/proxy/) for route selection, rewriting policies, and container scenarios.

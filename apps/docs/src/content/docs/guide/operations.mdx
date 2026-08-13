@@ -2,7 +2,7 @@
 title: 运维
 description: 长期运行 Kiln 所需的服务配置、备份与升级，以及日志、健康检查、指标、追踪、诊断和资源管理。
 sidebar:
-  order: 10
+  order: 11
 ---
 
 Kiln 上线后，可以在这里找到日常运维所需的信息：注册系统服务、备份数据、升级版本，以及配置日志、健康检查、指标、追踪和资源自适应。
@@ -11,7 +11,7 @@ Kiln 上线后，可以在这里找到日常运维所需的信息：注册系统
 
 ### systemd
 
-安装脚本带 `--service` 时会注册一个 systemd unit 并设为开机自启。这一步需要 root，且只支持带 systemd 的 Linux。
+安装脚本带 `--service` 时会注册一个 systemd unit；只有 `/etc/kiln/kiln.toml` 已存在时才同时启用并启动。这一步需要 root，且只支持带 systemd 的 Linux。
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh -o /tmp/kiln-install.sh
@@ -129,6 +129,10 @@ Windows 用内置的 `kiln.exe service` 子命令注册服务，不需要额外�
 
 跨多个版本升级走的是同一条迁移链，不需要先升到中间版本再升到目标版本，直接换成最新二进制即可。
 
+<Aside type="note" title="旧 EPG 缓存不会迁移">
+  旧版 `epg.cache_dir` 里的 `<sha256>.cache` 文件不会导入新的 `epg.db`。升级后首次启动会重新抓取已启用的节目单源，成功前节目单可能为空。确认 `epg.db` 已刷新后再清理旧文件；需要回退时可先保留。
+</Aside>
+
 <Aside type="danger" title="降级不受支持">
   如果库的 schema 版本比二进制支持的还新，启动会直接失败并打印 `database schema version N is newer than supported version M`。回退到旧版本前必须先恢复对应时点的数据库备份。
 </Aside>
@@ -166,7 +170,7 @@ Windows 用内置的 `kiln.exe service` 子命令注册服务，不需要额外�
 
 <CardGrid>
   <Card title="/healthz" icon="ph:heartbeat">
-    存活探针。只要 HTTP 服务在跑就返回 `200` 与 `{"status":"ok"}`，不检查任何依赖。适合做进程守护和容器重启判定。
+    存活探针。只要服务监听器在跑就返回 `200` 与 `{"status":"ok"}`，不检查任何依赖。适合做进程守护和容器重启判定。
   </Card>
   <Card title="/readyz" icon="ph:check-circle">
     就绪探针。除了确认服务存活，还会检查兼容引擎：当频道目录中存在 `ingress = "dash"` 且实际使用 `ffmpeg` 引擎的频道时，如果 FFmpeg 不可用，会返回 `503` 与 `not_ready`，消息为 `ffmpeg compatibility engine is not available`。适合用来决定是否向实例发送流量。
@@ -181,7 +185,7 @@ Windows 用内置的 `kiln.exe service` 子命令注册服务，不需要额外�
 kiln -healthcheck http://127.0.0.1:8080/healthz
 ```
 
-镜像里已经配好 `HEALTHCHECK`：`core` 与 `full` 基于 Alpine，用 `wget` 探 `/healthz`；`lite` 基于 `scratch`，没有 shell 和 wget，直接用上面这个子命令。
+该子命令使用系统信任库并正常校验证书，没有跳过校验或自定义 CA 参数。自动生成的自签名证书尚未受信时，HTTPS 探测会失败；分离监听时优先探测明文健康端口。镜像里已经配好 `HEALTHCHECK`：`core` 与 `full` 用 `wget --no-check-certificate` 先试 HTTPS 再回退 HTTP；`lite` 基于 `scratch`，直接用上面这个子命令探测 HTTP。监听与证书细节见 [HTTPS 与分离监听](/guide/https/)。
 
 ## 指标
 

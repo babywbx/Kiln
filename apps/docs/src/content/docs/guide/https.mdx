@@ -1,0 +1,95 @@
+---
+title: HTTPS 与分离监听
+description: 为管理控制台启用 HTTPS，选择单监听或分离监听，并处理自签名证书、播放地址和健康检查。
+sidebar:
+  order: 5
+---
+
+Core 与 Full 可以直接提供 HTTPS。你可以让全部接口共用一个 TLS 监听器，也可以保留一个 HTTP 播放端口，并把控制台和管理接口放到单独的 HTTPS 端口。Lite 不支持 TLS。
+
+<Aside type="note" title="已有 Core 或 Full 实例先看设置页">
+  `public_base_url` 首次启动时写入 SQLite，之后数据库里的设置优先于配置文件和 `KILN_PUBLIC_BASE_URL`。`tls_enabled` 在数据库没有覆盖值时读取配置文件，第一次保存设置页后也改为数据库优先。`tls_listen` 与证书路径始终只从配置文件读取。
+</Aside>
+
+## 选择监听方式
+
+| 模式 | 配置 | 适合场景 |
+| --- | --- | --- |
+| 全部 HTTPS | `tls_enabled = true`，不填 `tls_listen` | 证书已被播放器信任，或前后端都应只走 TLS |
+| 控制台 HTTPS，播放 HTTP | `tls_enabled = true`，另填 `tls_listen` | 控制台需要安全上下文，但播放器不能接受自签名证书 |
+
+### 全部接口使用 HTTPS
+
+```toml title="kiln.toml"
+[server]
+listen = "0.0.0.0:8080"
+public_base_url = "https://kiln.example.com:8080"
+tls_enabled = true
+```
+
+重启后，`listen` 只接受 HTTPS。`public_base_url` 必须使用播放器实际可达的 HTTPS 地址，否则生成的播放列表会带错协议或端口。
+
+### 分离控制台与播放
+
+```toml title="kiln.toml"
+[server]
+listen = "0.0.0.0:8080"
+tls_listen = "0.0.0.0:8443"
+public_base_url = "http://kiln.lan:8080"
+tls_enabled = true
+```
+
+重启后，打开 `https://kiln.lan:8443/admin`。TLS 端口提供全部接口；HTTP 端口只保留下列兼容面：
+
+- `/healthz`、`/readyz`、`/metrics`
+- `/v1/epg.xml`、`/v1/epg.xml.gz`、`/v1/logo/{id}`
+- `/p/{token}/playlist.m3u` 与 `/p/{token}/play/...`
+- 仅当 `security.play_require_auth = false` 时，公开的 `/v1/playlist.m3u` 与 `/v1/play/...`
+
+HTTP 上访问其它 GET 或 HEAD 路径时，Kiln 会重定向到 TLS 端口。写请求、带 `Authorization` 的请求和带 `?token=` 的请求不会重放到 HTTPS，而是返回 `403` 与 `tls_required`。
+
+<Aside type="caution" title="默认鉴权下，请用播放密钥分发 HTTP 地址">
+  默认的 `security.play_require_auth = true` 会让 `/v1/playlist.m3u` 与 `/v1/play/...?...token=` 只能走 HTTPS。要让播放器继续使用 HTTP，请在控制台创建限定频道和有效期的路径式播放密钥，再分发 `/p/{token}/playlist.m3u`。路径中的密钥会在 HTTP 上传输，只适合可信局域网或 VPN；不再使用时立即吊销。不要为了绕过证书问题而在生产环境关闭播放鉴权。
+</Aside>
+
+`tls_listen` 不会自动修改 `public_base_url`。分离模式下，想让播放器走 HTTP，就把公开地址设为 `http://<播放主机>:<listen 端口>`；设为 TLS 地址时，生成的播放链接仍然使用 HTTPS。
+
+## 证书
+
+同时设置 `tls_cert_file` 与 `tls_key_file` 即可使用自己的 PEM 证书：
+
+```toml title="kiln.toml"
+[server]
+tls_enabled = true
+tls_cert_file = "/etc/kiln/tls/fullchain.pem"
+tls_key_file = "/etc/kiln/tls/privkey.pem"
+```
+
+两项都留空时，Kiln 会在 `{data_dir}/tls/kiln.crt` 与 `kiln.key` 生成并复用自签名证书。证书覆盖 localhost、当前网络接口、`public_base_url` 主机、`tls_listen` 的具体主机，以及 `security.public_hosts`。主机集合改变或距离到期不足 30 天时会重新签发。
+
+浏览器第一次访问会报告不受信任。设置页会显示证书文件路径，可以把 `kiln.crt` 导入客户端系统信任库；这只分发证书，不要复制 `kiln.key`。也可以改用受客户端信任的正式证书。
+
+## Docker
+
+分离监听需要同时发布两个端口：
+
+```yaml title="compose.yaml"
+services:
+  kiln:
+    image: ghcr.io/babywbx/kiln:core
+    ports:
+      - "8080:8080"
+      - "8443:8443"
+```
+
+镜像自带的 Core 与 Full 健康检查会先探测 HTTPS，再回退到 HTTP。手动使用 `kiln -healthcheck` 时，自签名证书必须已经进入系统信任库；分离模式下直接探测明文 `http://127.0.0.1:8080/healthz` 最简单。
+
+## 排查
+
+- `server.tls_listen must differ from server.listen`：两个监听地址重叠。通配地址与同端口的具体地址也算重叠，例如 `0.0.0.0:8080` 与 `127.0.0.1:8080`；给 TLS 分配另一个端口。
+- `tls_cert_file and tls_key_file must be set together`：只配置了证书或私钥其中之一。
+- `403 tls_required`：请求把凭据发到了 HTTP 端口，改用 TLS 端口；播放器要走 HTTP 时改用路径式播放密钥。
+- 播放列表里的协议或端口不对：修改设置页中的公开访问地址。配置文件与 `KILN_PUBLIC_BASE_URL` 在 Core 与 Full 中只负责数据库尚未建立该设置时的初始值。
+- 浏览器仍提示不受信任：确认导入的是设置页显示的当前 `kiln.crt`，且访问主机包含在证书覆盖列表中。
+
+全部配置键见 [配置参考](/reference/config/)，容器端口与持久化见 [Docker 部署](/start/docker/)。

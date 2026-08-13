@@ -4,6 +4,13 @@
 listen = "0.0.0.0:8080"
 public_base_url = "http://127.0.0.1:8080"
 data_dir = "./data"
+# Core/Full only. With tls_listen, listen remains restricted HTTP and the new
+# port serves the full HTTPS surface. Omit tls_listen for HTTPS-only listen.
+# tls_enabled = true
+# tls_listen = "0.0.0.0:8443"
+# Leave both paths empty for an auto-generated self-signed certificate.
+# tls_cert_file = "/etc/kiln/tls/fullchain.pem"
+# tls_key_file = "/etc/kiln/tls/privkey.pem"
 # auto selects compact below 256 MiB, balanced below 512 MiB, standard below
 # 1 GiB, and otherwise keeps configured values. CPU ceilings are independent.
 # Fractional quotas and nested cgroup limits are retained. performance disables
@@ -38,7 +45,8 @@ role = "admin"
 
 [security]
 play_require_auth = true
-allowed_hosts = []
+# Required only because the demo origin below uses loopback.
+allowed_hosts = ["127.0.0.1"]
 # cors_origins = ["http://127.0.0.1:5173"]
 # public_hosts = ["kiln.lan", "origin.example.com", "localhost"]
 max_playlist_bytes = 8388608

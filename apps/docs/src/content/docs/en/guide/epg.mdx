@@ -2,7 +2,7 @@
 title: EPG
 description: Add and refresh guide sources, configure caching, size limits, and time zones, and serve a merged XMLTV document to players.
 sidebar:
-  order: 7
+  order: 8
 ---
 
 Kiln downloads the XMLTV sources you enable, matches their programs to your channels, and merges the results into one guide. Players only need `/v1/epg.xml.gz`, regardless of how many sources are behind it.
@@ -39,13 +39,15 @@ serve_timezone = "keep"
 
 ## Storage modes
 
-Fetched XMLTV is parsed as it streams in and written straight into a SQLite database, so the guide never lives in memory as a whole and is read back per channel and time window on demand. `cache` and `cache_dir` together decide where that database lives.
+Fetched XMLTV is parsed as it streams in and written straight into a SQLite database, so the guide never lives in memory as a whole and is read back on demand for each matched channel. `cache` and `cache_dir` together decide where that database lives.
 
 <Tabs>
   <TabItem label="Disk (default)">
     `cache = true` with `cache_dir` pointing at a directory, `{data_dir}/epg` by default, holding `epg.db`.
 
     The database survives restarts, feeds `If-None-Match` and `If-Modified-Since` on the next fetch so an unchanged source costs a 304 and skips parsing entirely, and keeps serving the previously ingested guide when a fetch or parse fails, flagging that source as stale. Disk usage is roughly the decompressed size of the sources.
+
+    Raw XMLTV files named `<sha256>.cache` from older versions are not imported into `epg.db`. The first start after upgrading performs a full fetch, and the affected guide may stay empty until it succeeds. Keep the old files if rollback matters, and remove them only after the new database has refreshed successfully.
   </TabItem>
   <TabItem label="Memory">
     `cache = true` with `cache_dir = "memory"` (`:memory:` is equivalent).

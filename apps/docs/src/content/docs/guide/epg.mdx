@@ -2,7 +2,7 @@
 title: EPG 节目单
 description: 添加并刷新节目单源，设置缓存、大小限制和时区，再将合并后的 XMLTV 提供给播放器。
 sidebar:
-  order: 7
+  order: 8
 ---
 
 Kiln 会下载已启用的 XMLTV 源，将节目与频道匹配，再合并成一份节目单。播放器只需访问 `/v1/epg.xml.gz`，无需了解背后有多少个来源。
@@ -39,13 +39,15 @@ serve_timezone = "keep"
 
 ## 存储模式
 
-抓取到的 XMLTV 会边解析边写入一个 SQLite 库，节目单本身不常驻内存，查询时按频道与时间按需读取。`cache` 与 `cache_dir` 一起决定这个库放在哪里，共三种组合。
+抓取到的 XMLTV 会边解析边写入一个 SQLite 库，节目单本身不常驻内存，查询时按匹配频道按需读取。`cache` 与 `cache_dir` 一起决定这个库放在哪里，共三种组合。
 
 <Tabs>
   <TabItem label="磁盘（默认）">
     `cache = true`，`cache_dir` 指向一个目录，缺省为 `{data_dir}/epg`，库文件是其中的 `epg.db`。
 
     库跨重启存活，抓取时会带上 `If-None-Match` 与 `If-Modified-Since`，源没有变化时直接命中 304 并跳过整轮解析。抓取或解析失败时，上一轮已入库的内容继续对外提供，并把该源标记为过期。占用的磁盘大致与源解压后的体积相当。
+
+    旧版写入的 `<sha256>.cache` 原始 XMLTV 文件不会导入 `epg.db`。升级后首次启动会重新完整抓取，成功前对应节目单可能为空；确认新库刷新成功后再清理旧文件，需回退旧版时可继续保留它们。
   </TabItem>
   <TabItem label="内存">
     `cache = true`，且 `cache_dir = "memory"`（`:memory:` 等价）。

@@ -78,7 +78,7 @@ lite 变体只构建 Linux，文件名前缀换成 `kiln-lite`，覆盖 `amd64`�
 
 在 macOS 上，Apple Silicon 机器请选 `darwin_arm64`。若终端跑在 Rosetta 下，`uname -m` 会返回 `x86_64`，据此选包会装成转译执行的版本。
 
-想让它开机自启并常驻，Linux 上用安装脚本的 [`--service`](/start/install-script/) 注册 systemd 服务最省事。
+想让它开机自启并常驻，Linux 上用安装脚本的 [`--service`](/start/install-script/) 注册 systemd 服务最省事；配置已存在时脚本会直接启用，否则创建配置后再执行 `systemctl enable --now kiln`。
 
 ## Windows
 

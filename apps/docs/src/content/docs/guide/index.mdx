@@ -32,7 +32,7 @@ sidebar:
 每种凭据只覆盖自己的那一段，互相之间不能提权。
 
 - **公开端点**：不需要凭据，覆盖 `/healthz`、`/readyz`、`/metrics`、`/v1/epg.xml`、`/v1/logo/{id}` 以及做了限流的 `POST /v1/auth/login`。
-- **登录会话 JWT**：口令登录换取的 Ed25519 签名令牌，服务管理控制台，并在播放鉴权开启时授权 `/v1/playlist.m3u`。
+- **会话与预览 JWT**：Ed25519 签名令牌，服务管理控制台，并在播放鉴权开启时授权 `/v1/playlist.m3u` 与 `/v1/play/*`；预览令牌只覆盖单个频道。
 - **管理员 API 令牌**：供脚本和命令行使用的长期凭据。明文只显示一次，可分别授予 `read`、`write`、`delete`、`refresh` 权限，并且只能访问已登记的管理路由。
 - **路径式播放密钥**：写在 URL 路径里的 `/p/{token}/...`，可限定频道范围、随时撤销，专门用来把播放列表交给播放器。
 
@@ -55,6 +55,9 @@ sidebar:
   </Card>
   <Card title="鉴权与凭据" icon="ph:key" href="/guide/auth/">
     口令、会话 JWT、管理员 API 令牌与播放密钥的签发和轮换。
+  </Card>
+  <Card title="HTTPS 与分离监听" icon="ph:lock-key" href="/guide/https/">
+    为控制台启用 TLS，或把 HTTPS 管理面与 HTTP 播放面分开。
   </Card>
   <Card title="媒体引擎" icon="ph:cpu" href="/guide/media-engine/">
     原生管线与兼容回退的取舍，以及打包相关的全部预算参数。

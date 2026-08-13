@@ -2,10 +2,10 @@
 title: Outbound proxies
 description: Configure reusable proxies and routing rules that control how Kiln connects to stream sources, guide sources, and logo files.
 sidebar:
-  order: 8
+  order: 9
 ---
 
-Kiln uses two layers to manage outbound traffic: `[[proxies]]` defines reusable proxies, and `[egress]` decides which requests use each route. Stream sources, guide sources, and logo requests share one routing table, so you do not need to configure them separately.
+Kiln uses two layers to manage outbound traffic: `[[proxies]]` defines reusable proxies, and `[egress]` decides which requests use each route. Stream sources, guide sources, and logo requests share the global routing table, while channels and guide sources can override it.
 
 ## The model
 
@@ -19,9 +19,19 @@ Every outbound URL is resolved on its own:
     When nothing matches, `egress.default` applies.
   </Step>
   <Step title="Resolve the route">
-    `direct` connects directly. A proxy ID uses that route. If the referenced route is missing or disabled, the request falls back to a direct connection.
+    `direct` connects directly, and a proxy ID uses that route. A startup config that references a missing or disabled route prevents startup; an invalid admin update is rejected while the current runtime configuration stays active.
   </Step>
 </Steps>
+
+Resource-level settings take precedence over global rules:
+
+| Resource | `auto` | `direct` | Named route |
+| --- | --- | --- | --- |
+| Channel | Global rules match the `channel_id` and URL | Always direct | Always use that route |
+| EPG source | Global rules match the URL | Always direct (default) | Always use that route |
+| Logo | Inherits its channel's egress context | Inherits the channel | Inherits the channel |
+
+The channel editor's **Egress route** and an EPG source's `proxy` setting both offer `auto`, `direct`, and named routes. Only `auto` continues into the global rules below.
 
 ```toml title="kiln.toml"
 [[proxies]]
@@ -47,8 +57,8 @@ pattern = "example-cdn.com"
 proxy = "proxy-http"
 ```
 
-<Aside type="note" title="The console is the source of truth">
-  Like channels, outbound settings live in SQLite. `[[proxies]]` and `[[egress.rules]]` from the config file seed the database once, and only while no proxy rows exist; `default`, `playlist_policy` and `docker_proxy_host` are written only if the corresponding setting is absent. After the first start, edit them in the [admin console](/en/guide/admin/).
+<Aside type="caution" title="The config file is synchronized on every start">
+  `[[proxies]]` and `[[egress.rules]]` are written to the database by ID on every start, so console edits to the same IDs are overwritten; routes and rules created only in the console remain when the file has no matching ID. `default`, `playlist_policy`, and `docker_proxy_host` are also synchronized from the loaded config on every start. Omitting them still supplies the defaults `direct`, `rewrite`, and `host.docker.internal`. Put the final global egress values in the config file if console changes must survive a restart.
 </Aside>
 
 ## Defining a route
@@ -57,6 +67,7 @@ proxy = "proxy-http"
 - `url` accepts the `http`, `https`, `socks5` and `socks5h` schemes, for example `http://127.0.0.1:7890` or `socks5h://127.0.0.1:7891`.
 - Put credentials in the URL when the proxy needs them, for example `http://user:password@127.0.0.1:7890`. The console shows that a route has credentials without echoing the password back.
 - `socks5h` resolves hostnames at the proxy, `socks5` resolves them locally first. Prefer `socks5h` when the origin only resolves correctly from the proxy's network.
+- HTTP, HTTPS, and `socks5h` routes preserve the original hostname for proxy-side resolution. This is the right choice when Kiln runs behind TUN or fake-IP DNS and only the proxy can resolve the real destination; `socks5` still uses Kiln's local resolution.
 - Routes can be disabled instead of deleted. A route referenced by `egress.default` or by an enabled rule cannot be left disabled.
 
 <Aside type="caution" title="Proxy-side DNS is a trust boundary">
@@ -68,6 +79,8 @@ proxy = "proxy-http"
 </Aside>
 
 ## Default egress and rules
+
+To proxy all origin fetches by default, define a `[[proxies]]` entry and set `egress.default` to its ID. Kiln does not use `HTTP_PROXY`, `HTTPS_PROXY`, or `ALL_PROXY` as egress configuration.
 
 `egress.default` is either `direct` or the ID of a route, and covers everything no rule matched.
 

@@ -78,7 +78,8 @@ DASH decryption and repackaging are implemented natively in Go, so FFmpeg is not
 | Full authentication | bcrypt passwords, Ed25519 session JWTs, admin API tokens shown exactly once, path-based playback keys |
 | Distribution and audit | Playback keys scoped to a channel subset, bulk M3U import and export, playback access logs and API token audit trails |
 | Playlist and EPG | Scoped M3U generation with automatically linked XMLTV, plus built-in logo source candidates |
-| Outbound proxying | Route HTTP / SOCKS by host or channel; the channel editor can create and test a route inline |
+| Outbound proxying | Set a global HTTP / SOCKS route, then add proxy or direct exceptions by host, URL, or channel |
+| Built-in HTTPS | Core and Full support automatic self-signed or custom certificates, plus separate HTTPS console and HTTP playback ports; see [HTTPS and split listeners][https-doc] |
 | Admin console | Responsive web UI, channel pre-warming and preview, Pinyin / Jyutping search that bridges simplified and traditional forms, compressed static assets |
 | Resource adaptation | Tightens memory budgets and concurrency from the container's real memory and CPU — scales down only, never up |
 | Cross-platform | A single binary for Linux, macOS, and Windows, with built-in Windows service installation and restart policy |
@@ -116,6 +117,8 @@ curl -s http://127.0.0.1:8080/v1/playlist.m3u -H "authorization: Bearer $TOKEN"
 curl -s "http://127.0.0.1:8080/v1/play/hls-demo/index.m3u8?token=$TOKEN"
 ```
 
+The sample channel points at `127.0.0.1:5050`, and the repository does not start that origin. The first two queries work immediately; before the final playback request, start your own origin there or replace the sample channel with a real URL.
+
 Generate production credentials:
 
 ```bash
@@ -147,6 +150,12 @@ One command installs it on Linux and macOS; run it again to upgrade:
 curl -fsSL https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh | sh
 ```
 
+If the direct download times out, use the mirror:
+
+```bash
+curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh | sh
+```
+
 The script does four things: detect your platform, pick a working download source, verify `SHA256SUMS`, and swap the binary atomically. No sudo needed by default, and it shows you the full plan before touching anything.
 
 <details>
@@ -156,21 +165,23 @@ The script does four things: detect your platform, pick a working download sourc
 
 | Option | Description |
 | --- | --- |
-| `--yes` | silent install |
+| `--yes` | skip prompts and accept defaults |
 | `--version <v>` | pin a version |
 | `--lite` | lite variant (Linux only) |
 | `--dir <path>` | custom install directory |
 | `--mirror <base>` | set a download mirror |
-| `--service` | register a systemd service with autostart (root) |
+| `--service` | register a systemd service; enable and start when configured (root) |
 | `--uninstall` | uninstall |
 | `--dry-run` | preview and simulate every step, write nothing |
 
-Install as a systemd service with autostart:
+Register a systemd service:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh -o /tmp/kiln-install.sh
 sudo sh /tmp/kiln-install.sh --yes --service
 ```
+
+The script enables and starts the service only when `/etc/kiln/kiln.toml` already exists; otherwise it installs the unit but leaves it disabled. After creating the config, run `sudo systemctl enable --now kiln`.
 
 </details>
 
@@ -214,7 +225,7 @@ docker run --rm -p 8080:8080 --read-only \
   kiln:lite
 ```
 
-It creates no SQLite database; `data_dir` only holds the auto-generated login keys and transient media files. The public surface is limited to `/healthz`, `/readyz`, `/v1/auth/login`, `/v1/playlist.m3u`, and `/v1/play/*`. An `auto`/`ffmpeg` packager, EPG, OTLP, or pprof in the config is rejected at startup rather than silently ignored.
+It creates no SQLite database; `data_dir` only holds the auto-generated login keys and transient media files. The public surface is limited to `/healthz`, `/readyz`, `/v1/auth/login`, `/v1/playlist.m3u`, and `/v1/play/*`. An `auto`/`ffmpeg` packager, EPG, OTLP, pprof, or TLS in the config is rejected at startup rather than silently ignored.
 
 > \[!NOTE\]
 > Image defaults apply only when `[packager].engine` is absent from the config. An explicit `auto`, `native`, or `ffmpeg` always wins, so the same config never changes behavior because of an image tag.
@@ -268,6 +279,7 @@ Examples live in `configs/examples/kiln.toml` and `kiln.jsonc` — the two forma
 
 | Setting | Description |
 | --- | --- |
+| `[server].tls_*` | Core / Full can use one HTTPS listener or split the HTTPS console from HTTP playback; see [HTTPS and split listeners][https-doc] |
 | `upstreams[].base_url` | Points at the origin; channels reference it via `upstream` + `path` |
 | `upstreams[].upgrade_insecure_redirects` | Upgrades the scheme when an upstream redirects to `http` on an https-only origin; the same channel-level field opts in per channel, and only public hosts on default ports are upgraded |
 | `[packager].engine` | `native` runs without ffmpeg entirely; `auto` prefers native and falls back when required |
@@ -319,7 +331,7 @@ docker run --rm --cpus=1 --memory=192m --memory-swap=192m \
 | Variable | Description |
 | --- | --- |
 | `KILN_LISTEN` | Overrides the listen address |
-| `KILN_PUBLIC_BASE_URL` | Overrides the externally reachable base URL |
+| `KILN_PUBLIC_BASE_URL` | Sets the public base URL; Core / Full only initialize a missing database setting, so change existing instances in Settings; Lite keeps overriding the config file |
 | `KILN_DATA_DIR` | Overrides the data directory |
 | `KILN_TOKEN_PRIVATE_KEY` / `_FILE` | Injects the Ed25519 private key; `_FILE` takes a path |
 | `KILN_TOKEN_PUBLIC_KEY` / `_FILE` | Injects the Ed25519 public key |
@@ -348,8 +360,8 @@ Four kinds of credentials, each covering its own surface: public endpoints need 
 | GET | `/v1/epg.xml`, `/v1/epg.xml.gz`, `/v1/logo/{id}` | None |
 | POST | `/v1/auth/login` | None (rate limited) |
 | GET | `/v1/me`, `/v1/channels`, `/v1/status` | Session or API token (`read`) |
-| GET | `/v1/playlist.m3u` | Session only |
-| GET | `/v1/play/{id}/index.m3u8`, `live/{file}`, `u/{upstream}` | Required by default (`?token=` or Bearer) |
+| GET | `/v1/playlist.m3u` | Follows `play_require_auth`; accepts a session or preview JWT when enabled |
+| GET | `/v1/play/{id}/index.m3u8`, `live/{file}`, `u/{upstream}` | Follows `play_require_auth` (`?token=` or Bearer) |
 | GET | `/p/{token}/playlist.m3u`, `/p/{token}/play/{id}/*` | The playback key in the path |
 | GET/POST/PUT/DELETE | `channels/*`, `epg/*`, `egress/*`, `settings`, `access-tokens/*`, `access-logs` under `/v1/admin` | Session or API token, split across `read`, `write`, `delete` |
 | POST | `/v1/admin/import/m3u`, `/v1/admin/exports/m3u` | Session or API token (`write`) |
@@ -444,7 +456,7 @@ This project is licensed under [AGPL-3.0-only](./LICENSE).
 [back-to-top]: https://img.shields.io/badge/-BACK_TO_TOP-151515?style=flat-square
 [coc-link]: ./.github/CODE_OF_CONDUCT.en.md
 [contributing-link]: ./.github/CONTRIBUTING.en.md
-[docs-link]: https://kiln.wbxdocs.com
+[docs-link]: https://kiln.wbxdocs.com/en/
 [github-contributors-link]: https://github.com/babywbx/Kiln/graphs/contributors
 [github-contributors-shield]: https://img.shields.io/github/contributors/babywbx/Kiln?color=c4f042&labelColor=black&style=flat-square
 [github-forks-link]: https://github.com/babywbx/Kiln/network/members
@@ -456,10 +468,11 @@ This project is licensed under [AGPL-3.0-only](./LICENSE).
 [github-license-link]: https://github.com/babywbx/Kiln/blob/main/LICENSE
 [github-license-shield]: https://img.shields.io/github/license/babywbx/Kiln?color=white&labelColor=black&style=flat-square
 [github-release-link]: https://github.com/babywbx/Kiln/releases
-[github-stars-link]: https://github.com/babywbx/Kiln/network/stargazers
+[github-stars-link]: https://github.com/babywbx/Kiln/stargazers
 [github-stars-shield]: https://img.shields.io/github/stars/babywbx/Kiln?color=ffcb47&labelColor=black&style=flat-square
 [go-version-link]: https://github.com/babywbx/Kiln/blob/main/go.mod
 [go-version-shield]: https://img.shields.io/github/go-mod/go-version/babywbx/Kiln?color=369eff&labelColor=black&style=flat-square
 [profile-link]: https://github.com/babywbx
 [security-link]: ./.github/SECURITY.en.md
+[https-doc]: https://kiln.wbxdocs.com/en/guide/https/
 [variant-doc]: https://kiln.wbxdocs.com/en/guide/variants/

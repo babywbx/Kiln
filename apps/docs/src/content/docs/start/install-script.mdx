@@ -1,6 +1,6 @@
 ---
 title: 安装脚本
-description: 用一条命令安装或升级 Kiln，并按需设置下载镜像、静默安装、systemd 服务或卸载。
+description: 用一条命令安装或升级 Kiln，并按需设置下载镜像、非交互安装、systemd 服务或卸载。
 sidebar:
   order: 2
 ---
@@ -147,7 +147,7 @@ curl -fsSL https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh | sh -
 
 版本号格式非法时以 1 退出；格式合法但没有对应 Release 时，探测阶段找不到产物，以 3 退出。
 
-想要静默升级，加 `--yes`：已经是最新版本时脚本打印一行提示并以 0 退出，适合放进定时任务。
+想要非交互升级，加 `--yes` 接受所有默认值：已经是最新版本时脚本打印一行提示并以 0 退出，适合放进定时任务。
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh | sh -s -- --lang zh --yes
@@ -157,7 +157,7 @@ lite 变体只有 Linux 构建，在 macOS 上加 `--lite` 会以 2 退出。变
 
 ## systemd 服务
 
-`--service` 会在安装二进制之后注册一个开机自启的系统服务。它需要 root，而管道运行时不便于提权，所以推荐先下载再执行：
+`--service` 会在安装二进制之后注册一个 systemd 服务；配置已经存在时才同时启用并启动。它需要 root，而管道运行时不便于提权，所以推荐先下载再执行：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh -o /tmp/kiln-install.sh

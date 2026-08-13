@@ -5,14 +5,14 @@ sidebar:
   order: 4
 ---
 
-Kiln uses four credential types with separate responsibilities. Public endpoints require no credentials. Login sessions are for the admin console, administrator API tokens are for scripts and automation, and path-based playback keys are for players and playlist distribution. Their privileges do not overlap, and one credential type cannot become another.
+Kiln uses four credential types with separate responsibilities. Public endpoints require no credentials. Session and preview JWTs cover the admin console and protected playback, administrator API tokens are for scripts and automation, and path-based playback keys are for players and playlist distribution. Their privileges do not overlap, and one credential type cannot become another.
 
 ## Credentials at a glance
 
 | Credential | Shape | Used for | Lifetime |
 | --- | --- | --- | --- |
 | Public endpoint | No credential | Health checks, metrics, EPG, logos | Not applicable |
-| Session JWT | `Authorization: Bearer <jwt>`, Ed25519 signed | Admin console, interactive debugging | `token_ttl_hours` (24 by default); invalidated when credentials change |
+| Session or preview JWT | `Authorization: Bearer <jwt>` or `?token=`, Ed25519 signed | Admin console, protected playlist, and `/v1/play/*` | Sessions default to 24 hours; preview tokens last 5 minutes and cover one channel |
 | Administrator API token | `kiln_v1_` prefix plus 48 random characters | Scripts, CI, external tooling | Expiration set at creation; rotatable and revocable |
 | Playback key | `v1` prefix plus 126 random characters, carried in the URL path | Players and playlist distribution | Expiration set at creation; revocable |
 
@@ -184,7 +184,7 @@ max_body_bytes = 1048576
 
 | Key | Effect |
 | --- | --- |
-| `play_require_auth` | Whether playback endpoints require a credential. On by default; turning it off makes everything under `/v1/play/` world-readable and is for local debugging only. `KILN_PLAY_OPEN=1` is the same switch |
+| `play_require_auth` | Whether `/v1/playlist.m3u` and `/v1/play/` require a credential. On by default; turning it off makes both surfaces world-readable and is for local debugging only. `KILN_PLAY_OPEN=1` is the same switch |
 | `allowed_hosts` | Explicit outbound exemptions for origin hostnames and IPs that resolve to loopback or private addresses. Upstream and channel declarations do not grant this exemption |
 | `public_hosts` | Inbound allowlist matched against the request `Host` header. When non-empty, anything outside the list gets 403, except loopback health checks. Empty means unrestricted |
 | `cors_origins` | Origins allowed to call the API cross-origin. Empty means same-origin only, and no CORS headers are emitted at all |

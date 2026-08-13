@@ -83,6 +83,8 @@ services:
     container_name: kiln
     ports:
       - "8080:8080"
+      # server.tls_listen = "0.0.0.0:8443" 时再发布这一项：
+      # - "8443:8443"
     environment:
       KILN_PUBLIC_BASE_URL: "http://your-host:8080"
       KILN_LOG_FORMAT: "text"
@@ -97,17 +99,19 @@ volumes:
   kiln-data:
 ```
 
-几处值得留意：日志颜色设为 `never`，`docker logs` 里就不会混入 ANSI 转义；`KILN_PUBLIC_BASE_URL` 决定播放列表里写出去的地址，容器端口映射与对外域名不一致时必须设置；上游如果是同一个 Compose 网络里的另一个服务，把 `base_url` 写成 `http://service-name:port` 并让两者共享网络即可。
+几处值得留意：日志颜色设为 `never`，`docker logs` 里就不会混入 ANSI 转义；`KILN_PUBLIC_BASE_URL` 提供播放列表对外地址的启动值，但 Core 与 Full 的已有数据卷会优先使用数据库设置，修改现有实例请走设置页或 `/v1/admin/settings`；上游如果是同一个 Compose 网络里的另一个服务，把 `base_url` 写成 `http://service-name:port` 并让两者共享网络即可。分离 HTTPS 还要发布第二个端口，见 [HTTPS 与分离监听](/guide/https/)。
 
 ## 健康检查
 
 `/healthz` 与 `/readyz` 都不需要凭据。`/healthz` 表示进程活着，`/readyz` 会额外检查兼容引擎的可用性，只有当配置里存在落到 ffmpeg 引擎的 DASH 频道而 ffmpeg 不可用时才返回 503。
 
-三个镜像都自带 `HEALTHCHECK`：间隔 30 秒、超时 3 秒、启动宽限 10 秒、连续 3 次失败判定为 unhealthy。core 与 full 用 `wget` 探测 `/healthz`；lite 基于 scratch，没有任何外部命令，改用二进制自带的 `-healthcheck` 子命令完成同样的探测。这个子命令也可以在容器外单独使用：
+三个镜像都自带 `HEALTHCHECK`：间隔 30 秒、超时 3 秒、启动宽限 10 秒、连续 3 次失败判定为 unhealthy。core 与 full 用 `wget --no-check-certificate` 先探测 HTTPS，再回退 HTTP；lite 基于 scratch，没有外部命令，使用二进制自带的 `-healthcheck` 探测 HTTP。这个子命令也可以在容器外单独使用：
 
 ```bash
 docker exec kiln /usr/local/bin/kiln -healthcheck http://127.0.0.1:8080/healthz
 ```
+
+`-healthcheck` 会正常校验证书。自动生成的自签名证书尚未加入系统信任库时，手工探测 HTTPS 会失败；分离监听优先探测明文健康端口。详见 [HTTPS 与分离监听](/guide/https/)。
 
 ## 容器内的资源自适应
 
@@ -132,7 +136,7 @@ Kiln 不会改写线路里的代理地址，容器里填的地址必须从容器
 
 ## 数据持久化
 
-`data_dir` 是唯一需要持久化的目录，镜像里默认是 `/var/lib/kiln/data`。core 与 full 在其中放 SQLite 数据库 `kiln.db`、自动生成的会话密钥 `auth/ed25519.pem`，以及启用 EPG 缓存时的缓存目录。挂载点必须对 uid/gid `999` 可写，否则首次启动会失败。
+`data_dir` 是唯一需要持久化的目录，镜像里默认是 `/var/lib/kiln/data`。core 与 full 在其中放 SQLite 数据库 `kiln.db`、自动生成的会话密钥 `auth/ed25519.pem`，以及磁盘 EPG 模式下的 `epg/epg.db`。挂载点必须对 uid/gid `999` 可写，否则首次启动会失败。
 
 lite 不创建数据库，`data_dir` 只存自动生成的登录密钥和临时媒体文件；配合 `--read-only` 使用时，把可写卷挂在 `/var/lib/kiln` 上。
 

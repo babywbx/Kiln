@@ -32,7 +32,7 @@ The session manager owns both the pull and the packaging lifecycle, so a channel
 Each credential covers its own surface, and none of them can escalate into another.
 
 - **Public endpoints**: no credential at all, covering `/healthz`, `/readyz`, `/metrics`, `/v1/epg.xml`, `/v1/logo/{id}`, and the rate-limited `POST /v1/auth/login`.
-- **Session JWT**: an Ed25519-signed token obtained by logging in with a password. It backs the admin console and authorizes `/v1/playlist.m3u` while playback authentication is enabled.
+- **Session and preview JWTs**: Ed25519-signed tokens for the admin console and, while playback authentication is enabled, `/v1/playlist.m3u` plus `/v1/play/*`. A preview token covers one channel only.
 - **Admin API token**: a long-lived credential for scripts and CLI use. Shown exactly once, split across `read`, `write`, `delete`, and `refresh`, and limited to the registered admin routes.
 - **Path-based playback key**: `/p/{token}/...`, carried in the URL path. Scopable to a subset of channels, revocable at any time, and meant for handing playlists to players.
 
@@ -55,6 +55,9 @@ Separately, the runtime ships as `lite`, `core`, and `full` variants. They diffe
   </Card>
   <Card title="Authentication" icon="ph:key" href="/en/guide/auth/">
     Passwords, session JWTs, admin API tokens, and playback keys, and how to issue and rotate each.
+  </Card>
+  <Card title="HTTPS and split listeners" icon="ph:lock-key" href="/en/guide/https/">
+    Enable TLS for the console, or split the HTTPS admin surface from HTTP playback.
   </Card>
   <Card title="Media engine" icon="ph:cpu" href="/en/guide/media-engine/">
     The native pipeline, the compatibility fallback, and every packaging budget.

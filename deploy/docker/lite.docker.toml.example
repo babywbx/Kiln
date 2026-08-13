@@ -3,8 +3,8 @@
 
 [server]
 listen = "0.0.0.0:8080"
-# Replace with the URL used by remote players.
-public_base_url = "https://kiln.example.com"
+# Lite does not terminate TLS. Use https only behind an external TLS proxy.
+public_base_url = "http://kiln.example.com:8080"
 data_dir = "/var/lib/kiln/data"
 resource_mode = "auto"
 read_timeout_sec = 15
@@ -42,9 +42,8 @@ start_segments = 2
 prefetch_segments = 2
 max_segment_bytes = 20971520
 inflight_bytes = 25165824
-
-[epg]
-enabled = false
+stall_timeout_sec = 180
+fetch_stall_sec = 30
 
 [[channels]]
 id = "news"

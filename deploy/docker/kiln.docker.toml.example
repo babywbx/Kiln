@@ -7,6 +7,12 @@
 listen = "0.0.0.0:8080"
 public_base_url = "http://127.0.0.1:8080"
 data_dir = "/var/lib/kiln/data"
+# Core/Full only. Publish 8443 as well when using the split listener.
+# tls_enabled = true
+# tls_listen = "0.0.0.0:8443"
+# Leave both paths empty to use the generated self-signed certificate.
+# tls_cert_file = "/etc/kiln/tls/fullchain.pem"
+# tls_key_file = "/etc/kiln/tls/privkey.pem"
 # Detects fractional CPU quotas plus nested/parent cgroup memory limits. Memory
 # selects compact/balanced/standard below 1 GiB; CPU ceilings apply independently.
 resource_mode = "auto"
@@ -59,6 +65,8 @@ prefetch_segments = 3
 max_segment_bytes = 33554432
 grace_sec = 30
 inflight_bytes = 100663296
+stall_timeout_sec = 180
+fetch_stall_sec = 30
 
 [observe]
 enabled = true
@@ -77,6 +85,23 @@ max_refresh_concurrency = 0
 max_source_bytes = 67108864
 default_timezone = "UTC"
 serve_timezone = "keep"
+
+# [[proxies]]
+# id = "proxy-host"
+# name = "Host proxy"
+# url = "http://host.docker.internal:7890"
+
+[egress]
+default = "direct"
+playlist_policy = "rewrite"
+docker_proxy_host = "host.docker.internal"
+
+# [[egress.rules]]
+# id = "example-cdn"
+# priority = 10
+# kind = "host_suffix"
+# pattern = "example-cdn.com"
+# proxy = "proxy-host"
 
 [[upstreams]]
 id = "origin"

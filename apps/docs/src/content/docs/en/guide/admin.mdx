@@ -2,7 +2,7 @@
 title: Admin console
 description: Use Kiln's built-in admin console to monitor the service and manage channels, the program guide, network egress, access, and system settings.
 sidebar:
-  order: 9
+  order: 10
 ---
 
 The admin console is built into the Kiln binary, so there is nothing else to deploy. Use it to configure channels, import and export playlists, manage guide sources and outbound proxies, issue playback keys and API tokens, and review access logs.
@@ -106,12 +106,14 @@ Distribution patterns are covered in [Playback and distribution](/en/guide/playb
 
 ## System settings
 
-The settings page holds four cards, top to bottom.
+The settings page holds five cards, top to bottom.
 
 **Account and language** shows the signed-in account and interface language with entry points to change either. Changing the username or password requires the current password, and saving immediately invalidates sessions on other devices.
 
 **Administrator API tokens** provides dedicated credentials for scripts and automation. Select the `read`, `write`, `delete`, and `refresh` scopes the job needs, set an expiration date, and copy the plaintext value when it appears. Kiln shows the value once and stores only a SHA-256 digest. Existing tokens can be edited, rotated, or revoked. The same card lists recent allowed and denied calls. See [Authentication](/en/guide/auth/) for details.
 
 **Playback URLs and access logs** carries two settings that take effect immediately: the public base URL used to build playback and playlist addresses, and access log retention in days (1 to 3650).
+
+**HTTPS** toggles built-in TLS, which takes effect after a restart. The card reports whether listening is single or split, the TLS port, certificate source and path, covered hosts, expiry, or a loading error. A self-signed certificate also gets a trust-store reminder. With one listener, the card checks the public base URL scheme. A split listener allows either port, so verify both the scheme and port against the player's actual entry point. See [HTTPS and split listeners](/en/guide/https/) for deployment details.
 
 **Active configuration** is read-only: listen address, whether playback authentication is on, CORS origins, allowed public hosts, and the service version. These require a config file change and a restart. See the [configuration reference](/en/reference/config/).

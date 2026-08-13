@@ -94,6 +94,12 @@ X-Custom = "value"
 - `base_url`: the origin's base address; a channel's `path` is appended to it.
 - `headers`: request headers injected into every fetch for channels on this upstream. A channel's own `headers` can override individual keys.
 
+### Repairing an incorrectly downgraded redirect
+
+Some HTTPS origins incorrectly redirect to an `http://` URL on a public host's default port. Enable `upgrade_insecure_redirects = true` on a shared upstream only for that case. A channel with a direct `source_url` needs the same option on the channel itself. It upgrades redirect targets only; it does not turn an initial HTTP source into HTTPS and never changes private, `.local`, `.internal`, non-default-port, or explicitly `security.allowed_hosts` targets.
+
+Channels inherit an enabled shared-upstream setting and may opt in themselves, but a channel-level `false` cannot cancel an enabled upstream. The option is off by default and is not a general workaround for unreachable origins or certificate failures.
+
 The matching channel:
 
 ```toml
@@ -115,7 +121,7 @@ The two are not the same store, so keep these boundaries in mind:
 - **Channels**: the `[[channels]]` blocks are written into SQLite only on first start, while the channel table is still empty. From then on the database is the single source of truth: editing the config file neither reseeds nor overwrites console changes. Bulk-adjust existing channels through the console or the admin API instead.
 - **Upstreams**: `[[upstreams]]` is always read from the configuration file, and the console cannot add or edit them. Saving a channel validates that the referenced `upstream` exists in the config, and rejects it otherwise.
 - **Public base URL**: `server.public_base_url` is seeded into the settings table on first start, after which the settings table wins and the console can change it.
-- **Outbound routes**: `[[proxies]]`, `[[egress.rules]]`, and the `egress.*` keys are synchronized from the config file on every start. Anything the file does not declare keeps the value set from the console.
+- **Outbound routes**: `[[proxies]]` and `[[egress.rules]]` are synchronized from the config file by ID on every start; console-only IDs remain. The three `egress.*` scalar settings are synchronized as well, and omitted keys still write the defaults `direct`, `rewrite`, and `host.docker.internal`.
 - **EPG sources**: seeded on first start only, database-authoritative afterwards.
 
 The `lite` variant creates no database. Its channels come entirely from the configuration file, read-only, with the admin API unavailable.

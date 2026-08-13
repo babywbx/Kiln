@@ -1,6 +1,6 @@
 ---
 title: Install script
-description: Install Kiln with one command, including mirrors, silent installs, systemd, and uninstall.
+description: Install Kiln with one command, including mirrors, non-interactive installs, systemd, and uninstall.
 sidebar:
   order: 2
 ---
@@ -151,7 +151,7 @@ The lite variant is built for Linux only, so `--lite` on macOS exits 2. See [Lit
 
 ## systemd service
 
-`--service` registers a system service that starts at boot, right after installing the binary. It needs root, and elevating a piped command is awkward, so download first and run second:
+`--service` registers a systemd service after installing the binary. It is enabled and started only when the config already exists. The operation needs root, and elevating a piped command is awkward, so download first and run second:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh -o /tmp/kiln-install.sh

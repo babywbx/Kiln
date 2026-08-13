@@ -53,26 +53,26 @@ kiln -config /etc/kiln/kiln.toml
 
 ### 配置与数据库的分工
 
-`[[channels]]` 只在频道表为空时作为首次启动的种子写入 `server.data_dir` 下的 SQLite，之后管理端的改动以数据库为准，再改配置文件不会覆盖它们。`[[proxies]]`、`[[egress.rules]]` 以及 `egress.default`、`egress.playlist_policy`、`egress.docker_proxy_host` 则**每次启动都会按配置文件同步进数据库**：配置文件里声明了的项以配置文件为准，没有声明的项保持控制台里的取值，只在配置文件中的值确实不同时才写入并推进 revision。配置文件没有携带凭据、而库中已有同一个代理的凭据时，凭据会被保留。控制台创建、但配置文件里不存在的代理与规则不会被删除。`server.public_base_url` 仍以「不存在才写入」的方式落库，只在首次生效。`[[upstreams]]`、`[auth]` 与其余全局键始终以配置文件为准，其中 `[[auth.users]]` 的用户名与密码可以被管理端改写并存入数据库覆盖表。
+`[[channels]]` 只在频道表为空时作为首次启动的种子写入 `server.data_dir` 下的 SQLite，之后管理端的改动以数据库为准，再改配置文件不会覆盖它们。`[[proxies]]` 与 `[[egress.rules]]` 则**每次启动都会按 ID 从配置文件同步进数据库**：同 ID 的配置文件内容优先，只在控制台创建、配置文件里没有同 ID 的线路与规则不会被删除。配置文件没有携带凭据，且库中同一代理的 scheme 与 host 都没有改变时，已有凭据会被保留。`egress.default`、`egress.playlist_policy` 与 `egress.docker_proxy_host` 同样每次同步；由于配置加载会填入 `direct`、`rewrite` 与 `host.docker.internal`，即使文件省略字段也会用默认值覆盖数据库。`server.public_base_url` 仍以「不存在才写入」的方式落库，只在首次生效。`[[upstreams]]`、`[auth]` 与其余全局键始终以配置文件为准，其中 `[[auth.users]]` 的用户名与密码可以被管理端改写并存入数据库覆盖表。
 
 ## `[server]`
 
 | 键 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `listen` | string | `"0.0.0.0:8080"` | HTTP 服务监听地址。等价环境变量 `KILN_LISTEN`。 |
-| `public_base_url` | string | `"http://127.0.0.1:8080"` | 对外可访问的基础 URL，用于生成播放地址等外部链接，尾部斜杠会被去掉。等价环境变量 `KILN_PUBLIC_BASE_URL`。 |
-| `data_dir` | string | `"./data"` | 数据目录，存放 SQLite、自动生成的签名密钥与默认的 EPG 缓存，启动时以 `0750` 创建。等价环境变量 `KILN_DATA_DIR`。 |
+| `listen` | string | `"0.0.0.0:8080"` | 主监听地址。TLS 关闭时提供 HTTP；TLS 开启且未配置 `tls_listen` 时提供 HTTPS；分离监听时保留为受限 HTTP。等价环境变量 `KILN_LISTEN`。 |
+| `public_base_url` | string | `"http://127.0.0.1:8080"` | 对外可访问的基础 URL，用于生成播放地址等外部链接，尾部斜杠会被去掉。Core 与 Full 只在数据库没有该设置时用配置文件或 `KILN_PUBLIC_BASE_URL` 初始化；Lite 始终使用启动配置。 |
+| `data_dir` | string | `"./data"` | 数据目录，存放 SQLite、自动生成的签名密钥与默认的 EPG 数据库，启动时以 `0750` 创建。等价环境变量 `KILN_DATA_DIR`。 |
 | `resource_mode` | string | `"auto"` | 资源自适应模式，取值 `auto`、`performance`、`constrained`，其它值校验失败。等价环境变量 `KILN_RESOURCE_MODE`。 |
 | `read_timeout_sec` | int | `15` | HTTP 读超时秒数，非正数按默认值处理。 |
 | `write_timeout_sec` | int | `0` | HTTP 写超时秒数，`0` 表示不设写超时。直播长连接会被写超时切断，除非明确需要否则保持 `0`。 |
 | `idle_timeout_sec` | int | `120` | HTTP 空闲连接超时秒数，非正数按默认值处理。 |
 | `memory_limit_mb` | int | `0` | Go 运行时软内存目标，单位 MiB，`0` 表示不设置。负数与超大值校验失败。仅在 `GOMEMLIMIT` 未设置时应用。 |
 | `tls_enabled` | bool | `false` | 以 HTTPS 提供服务。控制台里的开关会写入数据库并覆盖这里的取值，重启后生效。 |
-| `tls_listen` | string | `""` | 可选。启用 HTTPS 时，设了值就在这个地址增加一个提供全部功能的 TLS 监听器，`listen` 保持明文，只提供公开的播放与探针接口。端口必须是数字，且地址不能与 `listen` 相同。留空则 TLS 作用于唯一的监听地址。 |
+| `tls_listen` | string | `""` | 可选。启用 HTTPS 时，设了值就在这个地址增加一个提供全部功能的 TLS 监听器，`listen` 保持明文，只提供公开的播放与探针接口。端口必须是数字，且不能与 `listen` 重叠；通配地址与同端口的具体地址也算重叠。留空则 TLS 作用于唯一的监听地址。 |
 | `tls_cert_file` | string | `""` | PEM 证书路径，必须与 `tls_key_file` 同时设置。留空则在 `data_dir/tls/` 下自动签发并复用自签名证书。 |
 | `tls_key_file` | string | `""` | PEM 私钥路径，必须与 `tls_cert_file` 同时设置。 |
 
-TLS 仅在 Core 与 Full 中可用。Lite 遇到 `tls_enabled = true`、配置了 `tls_listen` 或任一证书路径时会拒绝启动，不会静默改用 HTTP。
+TLS 仅在 Core 与 Full 中可用。Lite 遇到 `tls_enabled = true`、配置了 `tls_listen` 或任一证书路径时会拒绝启动，不会静默改用 HTTP。监听模式、受限 HTTP 路由、证书信任与 Docker 端口见 [HTTPS 与分离监听](/guide/https/)。
 
 ### resource_mode 的三态语义
 
@@ -235,13 +235,13 @@ pprof 使用独立的监听器与路由，永远不会挂到对外的 HTTP 服�
 | `id` | string | 必填 | 线路标识，被 `egress.default`、`[[egress.rules]]` 与 `[[epg.sources]]` 引用。`direct` 是保留标识，代表直连。 |
 | `name` | string | `""` | 展示名称。 |
 | `url` | string | 必填 | 代理地址，协议限 `http`、`https`、`socks5`、`socks5h`，例如 `http://127.0.0.1:7890` 或 `socks5h://127.0.0.1:7891`。 |
-| `disabled` | bool | `false` | 是否停用。停用的线路不参与路由，引用它的决策会改用直连。 |
+| `disabled` | bool | `false` | 是否停用。默认出口或已启用规则引用停用线路时，配置校验或管理端保存会失败，不会退回直连。 |
 
 ## `[egress]`
 
 | 键 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `default` | string | `"direct"` | 未命中任何规则时使用的线路，必须是 `direct` 或某个已定义的 `[[proxies]].id`，否则校验失败。 |
+| `default` | string | `"direct"` | 未命中任何规则时使用的线路，必须是 `direct` 或某个已定义且启用的 `[[proxies]].id`，否则校验失败。 |
 | `playlist_policy` | string | `"rewrite"` | 播放列表地址改写策略，取值 `rewrite`、`passthrough`、`auto`，其它值校验失败。`rewrite` 始终改写为经由 Kiln 的地址，`passthrough` 始终保留原始地址，`auto` 仅在实际走了代理时改写。 |
 | `docker_proxy_host` | string | `"host.docker.internal"` | 仅在 `ffmpeg.mode = "docker"` 时生效，ffmpeg 子容器用这个主机名回连 Kiln 进程。不影响 `[[proxies]].url`，Kiln 从不改写线路地址。 |
 | `rules` | array | `[]` | 路由规则，见下方 `[[egress.rules]]`。 |
@@ -253,8 +253,8 @@ pprof 使用独立的监听器与路由，永远不会挂到对外的 HTTP 服�
 | `id` | string | `""` | 规则标识，留空时首次入库按 `rule-1`、`rule-2` 顺序生成。 |
 | `priority` | int | `0` | 匹配顺序，数值越小越先匹配，命中即停止。 |
 | `kind` | string | `"host_suffix"` | 匹配方式，取值 `host_suffix`、`host_exact`、`host_regex`、`channel_id`、`url_regex`，留空按 `host_suffix` 处理。 |
-| `pattern` | string | `""` | 匹配内容。除 `channel_id` 外，`pattern` 为空的规则被跳过。正则类按 Go 正则语法编译，编译失败视为不匹配。 |
-| `proxy` | string | 必填 | 命中后使用的线路，必须是 `direct` 或已定义的 `[[proxies]].id`，为空或未知都会校验失败。 |
+| `pattern` | string | `""` | 匹配内容，已启用规则不能为空。正则类按 Go 正则语法编译，编译失败会让配置校验或管理端保存失败。 |
+| `proxy` | string | 必填 | 命中后使用的线路，必须是 `direct` 或已定义且启用的 `[[proxies]].id`，为空、未知或停用都会校验失败，不会退回直连。 |
 | `disabled` | bool | `false` | 是否停用该规则。 |
 
 线路选择、改写策略与容器场景的完整说明见 [/guide/proxy/](/guide/proxy/)。

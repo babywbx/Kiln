@@ -78,7 +78,8 @@ DASH 的解密与重封装由 Go 原生实现，默认不需要 FFmpeg。整套�
 | 完整鉴权 | bcrypt 口令、Ed25519 会话 JWT、只展示一次的管理员 API Token、路径式播放密钥 |
 | 分发与审计 | 可限定频道范围的播放密钥，M3U 批量导入导出，播放访问日志与 API Token 操作审计 |
 | 播放列表与 EPG | 生成按范围过滤的 M3U 并自动关联 XMLTV，内置多组台标候选源 |
-| 出站代理 | 按域名或频道路由 HTTP / SOCKS，频道编辑页可直接新建线路并测试连通性 |
+| 出站代理 | 可设置全局 HTTP / SOCKS 出口，并按域名、URL 或频道开代理与直连例外 |
+| 内置 HTTPS | Core 与 Full 支持自动自签或自有证书，也可把控制台 HTTPS 与播放 HTTP 分开，见 [HTTPS 与分离监听][https-doc] |
 | 管理控制台 | 响应式 Web UI，频道预热与预览，拼音、粤拼与简繁互通搜索，静态资源压缩传输 |
 | 资源自适应 | 按容器实际内存与 CPU 自动收紧内存预算和并发，只下压、不上调 |
 | 跨平台部署 | Linux、macOS、Windows 单二进制，Windows 自带服务安装与失败重启 |
@@ -115,6 +116,8 @@ curl -s http://127.0.0.1:8080/v1/channels -H "authorization: Bearer $TOKEN" | jq
 curl -s http://127.0.0.1:8080/v1/playlist.m3u -H "authorization: Bearer $TOKEN"
 curl -s "http://127.0.0.1:8080/v1/play/hls-demo/index.m3u8?token=$TOKEN"
 ```
+
+示例频道指向 `127.0.0.1:5050`，仓库不会自动启动这个上游。前两条查询可以直接验证服务；执行最后一条播放请求前，请先在该端口启动自己的源，或把示例频道换成真实地址。
 
 生成生产用的口令哈希和 JWT 密钥：
 
@@ -162,21 +165,23 @@ curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/babywbx/Kiln/mai
 
 | 参数 | 说明 |
 | --- | --- |
-| `--yes` | 静默安装 |
+| `--yes` | 跳过交互确认并接受默认值 |
 | `--version <v>` | 固定版本 |
 | `--lite` | lite 变体（仅 Linux） |
 | `--dir <path>` | 自定义安装目录 |
 | `--mirror <base>` | 手动指定下载镜像 |
-| `--service` | 注册 systemd 服务并开机自启（需 root） |
+| `--service` | 注册 systemd 服务；已有配置时启用并启动（需 root） |
 | `--uninstall` | 卸载 |
 | `--dry-run` | 试运行：展示并模拟每一步，不写入任何文件 |
 
-设为开机自启的系统服务：
+注册 systemd 服务：
 
 ```bash
 curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh -o /tmp/kiln-install.sh
 sudo sh /tmp/kiln-install.sh --yes --service --lang zh
 ```
+
+只有 `/etc/kiln/kiln.toml` 已存在时，脚本才会启用并立即启动服务；否则只安装 unit。创建配置后执行 `sudo systemctl enable --now kiln`。
 
 </details>
 
@@ -220,7 +225,7 @@ docker run --rm -p 8080:8080 --read-only \
   kiln:lite
 ```
 
-它不创建 SQLite，`data_dir` 只存自动生成的登录密钥和临时媒体文件；公开接口只有 `/healthz`、`/readyz`、`/v1/auth/login`、`/v1/playlist.m3u` 和 `/v1/play/*`。配置里出现 `auto`/`ffmpeg` packager、EPG、OTLP 或 pprof 时，进程会在启动时直接拒绝而不是静默忽略。
+它不创建 SQLite，`data_dir` 只存自动生成的登录密钥和临时媒体文件；公开接口只有 `/healthz`、`/readyz`、`/v1/auth/login`、`/v1/playlist.m3u` 和 `/v1/play/*`。配置里出现 `auto`/`ffmpeg` packager、EPG、OTLP、pprof 或 TLS 时，进程会在启动时直接拒绝而不是静默忽略。
 
 > \[!NOTE\]
 > 镜像默认值只在配置没有填写 `[packager].engine` 时生效。显式写 `auto`、`native` 或 `ffmpeg` 始终优先，同一份配置不会被镜像标签悄悄改变行为。
@@ -274,6 +279,7 @@ New-NetFirewallRule -DisplayName "Kiln" -Direction Inbound -LocalPort 8080 -Prot
 
 | 配置项 | 说明 |
 | --- | --- |
+| `[server].tls_*` | Core / Full 可启用单端口 HTTPS 或分离的 HTTPS 控制台与 HTTP 播放端口，详见 [HTTPS 与分离监听][https-doc] |
 | `upstreams[].base_url` | 指向上游服务，频道用 `upstream` + `path` 引用 |
 | `upstreams[].upgrade_insecure_redirects` | 上游把只支持 https 的源站重定向写成 http 时，跟随重定向时升级 scheme；频道级同名字段可单独开启，只作用于公网主机的默认端口 |
 | `[packager].engine` | `native` 完全不装 ffmpeg；`auto` 优先原生并在必要时回退 |
@@ -325,7 +331,7 @@ docker run --rm --cpus=1 --memory=192m --memory-swap=192m \
 | 变量 | 说明 |
 | --- | --- |
 | `KILN_LISTEN` | 覆盖监听地址 |
-| `KILN_PUBLIC_BASE_URL` | 覆盖对外可访问的基础 URL |
+| `KILN_PUBLIC_BASE_URL` | 设置对外基础 URL；Core / Full 只初始化缺失的数据库设置，已有实例请在设置页修改；Lite 持续覆盖配置文件 |
 | `KILN_DATA_DIR` | 覆盖数据目录 |
 | `KILN_TOKEN_PRIVATE_KEY` / `_FILE` | 注入 Ed25519 私钥，`_FILE` 传路径 |
 | `KILN_TOKEN_PUBLIC_KEY` / `_FILE` | 注入 Ed25519 公钥 |
@@ -354,8 +360,8 @@ docker run --rm --cpus=1 --memory=192m --memory-swap=192m \
 | GET | `/v1/epg.xml`、`/v1/epg.xml.gz`、`/v1/logo/{id}` | 无 |
 | POST | `/v1/auth/login` | 无（限流） |
 | GET | `/v1/me`、`/v1/channels`、`/v1/status` | 会话或 API Token（`read`） |
-| GET | `/v1/playlist.m3u` | 仅会话 |
-| GET | `/v1/play/{id}/index.m3u8`、`live/{file}`、`u/{upstream}` | 默认需要（`?token=` 或 Bearer） |
+| GET | `/v1/playlist.m3u` | 由 `play_require_auth` 决定；开启时接受会话或预览 JWT |
+| GET | `/v1/play/{id}/index.m3u8`、`live/{file}`、`u/{upstream}` | 由 `play_require_auth` 决定（`?token=` 或 Bearer） |
 | GET | `/p/{token}/playlist.m3u`、`/p/{token}/play/{id}/*` | 路径内的播放密钥 |
 | GET/POST/PUT/DELETE | `/v1/admin` 下的 `channels/*`、`epg/*`、`egress/*`、`settings`、`access-tokens/*`、`access-logs` | 会话或 API Token，按 `read`、`write`、`delete` 划分 |
 | POST | `/v1/admin/import/m3u`、`/v1/admin/exports/m3u` | 会话或 API Token（`write`） |
@@ -462,10 +468,11 @@ Copyright © 2026-present [Babywbx][profile-link].<br/>
 [github-license-link]: https://github.com/babywbx/Kiln/blob/main/LICENSE
 [github-license-shield]: https://img.shields.io/github/license/babywbx/Kiln?color=white&labelColor=black&style=flat-square
 [github-release-link]: https://github.com/babywbx/Kiln/releases
-[github-stars-link]: https://github.com/babywbx/Kiln/network/stargazers
+[github-stars-link]: https://github.com/babywbx/Kiln/stargazers
 [github-stars-shield]: https://img.shields.io/github/stars/babywbx/Kiln?color=ffcb47&labelColor=black&style=flat-square
 [go-version-link]: https://github.com/babywbx/Kiln/blob/main/go.mod
 [go-version-shield]: https://img.shields.io/github/go-mod/go-version/babywbx/Kiln?color=369eff&labelColor=black&style=flat-square
 [profile-link]: https://github.com/babywbx
 [security-link]: ./.github/SECURITY.md
+[https-doc]: https://kiln.wbxdocs.com/guide/https/
 [variant-doc]: https://kiln.wbxdocs.com/guide/variants/

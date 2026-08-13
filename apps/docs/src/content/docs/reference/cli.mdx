@@ -62,7 +62,7 @@ kiln version=1.0.0 commit=dev built_at=unknown variant=full
 kiln -healthcheck http://127.0.0.1:8080/healthz
 ```
 
-这个参数专为容器健康检查设计，让镜像不必额外安装 curl 或 wget。官方镜像的 `HEALTHCHECK` 指令就是这条命令。
+它使用系统信任库并正常校验证书，没有跳过校验或自定义 CA 参数。Lite 镜像直接用这条命令探测 HTTP；Core 与 Full 则用 `wget` 先探测 HTTPS、失败后回退 HTTP。自动生成的自签名证书尚未受信时，手工探测 HTTPS 会失败。
 
 ## Windows 服务
 

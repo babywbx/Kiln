@@ -1,0 +1,95 @@
+---
+title: HTTPS and split listeners
+description: Enable HTTPS for the admin console, choose one or two listeners, and handle self-signed certificates, playback URLs, and health checks.
+sidebar:
+  order: 5
+---
+
+Core and Full can serve HTTPS directly. You can move every endpoint onto one TLS listener, or keep an HTTP playback port while putting the console and admin API on a separate HTTPS port. Lite does not support TLS.
+
+<Aside type="note" title="Check Settings first on an existing Core or Full instance">
+  `public_base_url` is written to SQLite on first start, after which the database setting outranks the config file and `KILN_PUBLIC_BASE_URL`. `tls_enabled` reads the config until a database override exists; saving Settings for the first time creates that override. `tls_listen` and the certificate paths always remain config-file only.
+</Aside>
+
+## Choose a listener mode
+
+| Mode | Configuration | Best for |
+| --- | --- | --- |
+| HTTPS everywhere | `tls_enabled = true`, no `tls_listen` | Players trust the certificate, or every surface must use TLS |
+| HTTPS console, HTTP playback | `tls_enabled = true` plus `tls_listen` | The console needs a secure context but players reject self-signed certificates |
+
+### Serve everything over HTTPS
+
+```toml title="kiln.toml"
+[server]
+listen = "0.0.0.0:8080"
+public_base_url = "https://kiln.example.com:8080"
+tls_enabled = true
+```
+
+After a restart, `listen` accepts HTTPS only. `public_base_url` must be the HTTPS address players can actually reach, or generated playlists will carry the wrong scheme or port.
+
+### Split the console from playback
+
+```toml title="kiln.toml"
+[server]
+listen = "0.0.0.0:8080"
+tls_listen = "0.0.0.0:8443"
+public_base_url = "http://kiln.lan:8080"
+tls_enabled = true
+```
+
+After a restart, open `https://kiln.lan:8443/admin`. The TLS port serves everything. The HTTP port retains only this compatibility surface:
+
+- `/healthz`, `/readyz`, and `/metrics`
+- `/v1/epg.xml`, `/v1/epg.xml.gz`, and `/v1/logo/{id}`
+- `/p/{token}/playlist.m3u` and `/p/{token}/play/...`
+- Public `/v1/playlist.m3u` and `/v1/play/...` only when `security.play_require_auth = false`
+
+Other GET and HEAD requests on HTTP redirect to the TLS port. Writes, requests carrying `Authorization`, and requests carrying `?token=` are never replayed through a redirect; they return `403` with `tls_required`.
+
+<Aside type="caution" title="Use playback keys for HTTP distribution with default authentication">
+  The default `security.play_require_auth = true` keeps `/v1/playlist.m3u` and `/v1/play/...?...token=` on HTTPS. To keep a player on HTTP, create a path-based playback key with a channel scope and expiry, then distribute `/p/{token}/playlist.m3u`. The key travels in plaintext as part of the HTTP path, so use this only on a trusted LAN or VPN and revoke it when no longer needed. Do not disable playback authentication in production merely to bypass certificate errors.
+</Aside>
+
+`tls_listen` never rewrites `public_base_url`. In split mode, point the public base at `http://<playback-host>:<listen-port>` when players should use HTTP. Pointing it at the TLS listener keeps generated playback URLs on HTTPS.
+
+## Certificates
+
+Set both `tls_cert_file` and `tls_key_file` to use your own PEM certificate:
+
+```toml title="kiln.toml"
+[server]
+tls_enabled = true
+tls_cert_file = "/etc/kiln/tls/fullchain.pem"
+tls_key_file = "/etc/kiln/tls/privkey.pem"
+```
+
+With both empty, Kiln generates and reuses `{data_dir}/tls/kiln.crt` and `kiln.key`. The certificate covers localhost, current network interfaces, the `public_base_url` host, a concrete `tls_listen` host, and `security.public_hosts`. It is reissued when that host set changes or less than 30 days remain.
+
+Browsers report the certificate as untrusted on first use. The settings page shows its file path so you can import `kiln.crt` into the client system trust store. Distribute the certificate only, never `kiln.key`. A certificate already trusted by your clients is the other option.
+
+## Docker
+
+A split listener needs both ports published:
+
+```yaml title="compose.yaml"
+services:
+  kiln:
+    image: ghcr.io/babywbx/kiln:core
+    ports:
+      - "8080:8080"
+      - "8443:8443"
+```
+
+The built-in Core and Full image health checks try HTTPS first and then HTTP. When you invoke `kiln -healthcheck` yourself, a self-signed certificate must already be in the system trust store. In split mode, probing `http://127.0.0.1:8080/healthz` is simpler.
+
+## Troubleshooting
+
+- `server.tls_listen must differ from server.listen`: the listener addresses overlap. A wildcard and a concrete address on the same port overlap too, such as `0.0.0.0:8080` and `127.0.0.1:8080`; assign a separate TLS port.
+- `tls_cert_file and tls_key_file must be set together`: only one half of the key pair is configured.
+- `403 tls_required`: credentials were sent to the HTTP port. Use the TLS listener, or use a path-based playback key when a player must stay on HTTP.
+- A playlist has the wrong scheme or port: update the public base URL in Settings. In Core and Full, the config value and `KILN_PUBLIC_BASE_URL` only initialize this database setting when it does not exist yet.
+- The browser still reports an untrusted certificate: import the current `kiln.crt` shown in Settings and confirm the hostname appears in the certificate host list.
+
+See [Configuration reference](/en/reference/config/) for every key and [Docker](/en/start/docker/) for ports and persistence.

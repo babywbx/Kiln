@@ -2,13 +2,13 @@
 title: 故障排查
 description: 按症状排查启动、播放鉴权、频道、内存、节目单、代理和容器中的常见问题。
 sidebar:
-  order: 11
+  order: 12
 ---
 
 请先找到与现象相符的章节，再依次查看「症状」「判断」和「处理」。每一节都列出了可直接搜索的日志关键字和接口消息。相关配置见[运维](/guide/operations/)。
 
 <Aside type="tip" title="先看两条日志">
-  绝大多数问题都能从启动日志判断出来。`listening` 说明 HTTP 已经在监听，`kiln starting` 那一条把版本、配置路径、频道数、资源档位、`packager_engine`、`ffmpeg_available`、代理数量和数据库路径全打出来了。先确认这两条存在，再往下排查。
+  绝大多数问题都能从启动日志判断出来。`listening` 会显示计划监听的地址与 `scheme`；分离模式会分别出现 HTTP 与 HTTPS 两条，随后仍可能因端口占用而失败。`kiln starting` 那一条把版本、配置路径、频道数、资源档位、`packager_engine`、`ffmpeg_available`、代理数量和数据库路径全打出来了。先确认这些记录存在，再往下排查。
 </Aside>
 
 ## 启动失败
@@ -87,7 +87,7 @@ ss -ltnp | grep 8080
 
 ## 播放返回 401 或 403
 
-先确认正在使用哪一类凭据。四种凭据各有用途，混用是最常见的原因：公开接口不需要凭据，会话 JWT 用于管理界面，管理员 API 令牌用于脚本，路径式播放密钥用于向播放器分发。详见 [鉴权](/guide/auth/)。
+先确认正在使用哪一类凭据。四种凭据各有用途，混用是最常见的原因：公开接口不需要凭据，会话与预览 JWT 用于管理界面和受保护播放，管理员 API 令牌用于脚本，路径式播放密钥用于向播放器分发。详见 [鉴权](/guide/auth/)。
 
 | 返回 | 消息 | 判断 |
 | --- | --- | --- |
@@ -102,18 +102,18 @@ ss -ltnp | grep 8080
 
 **症状**：使用管理员 API 令牌调用 `/v1/play/...`，或者使用会话 JWT 访问 `/p/<token>/...`。
 
-**处理**：播放接口只认会话 JWT（`/v1/play/...`）或路径式播放密钥（`/p/<token>/...`）。API Token 用于管理接口，且部分路由被标记为仅会话可用，用 Token 访问会返回 `403 API token permission denied`。
+**处理**：开启 `play_require_auth` 时，`/v1/playlist.m3u` 与 `/v1/play/...` 接受会话或预览 JWT（Bearer 或 `?token=`），不接受管理员 API Token；`/p/<token>/...` 只认路径里的播放密钥。关闭播放鉴权时，前两组接口公开且生成的地址不带令牌。API Token 只用于管理接口，且部分管理路由仅允许登录会话。
 
 ### play_require_auth
 
-**症状**：明明关掉了播放鉴权，播放接口还是要凭据。
+**症状**：明明关掉了播放鉴权，`/v1/playlist.m3u` 或 `/v1/play/...` 还是要凭据。
 
 **判断**：`security.play_require_auth` 不写时默认要求鉴权。先确认配置里确实写了 `play_require_auth = false`，再确认环境里没有残留 `KILN_PLAY_OPEN=0`，环境变量的优先级高于配置文件。
 
 **处理**：调试环境在 `[security]` 里写 `play_require_auth = false`，或设置 `KILN_PLAY_OPEN=1`。
 
 <Aside type="danger" title="不要在对外服务上关闭播放鉴权">
-  关掉之后任何人都能直接拉流。这是调试开关，不是部署选项。
+  关掉之后任何人都能取得全量播放列表并直接拉流。这是调试开关，不是部署选项。
 </Aside>
 
 ### Host 不在允许列表
@@ -137,6 +137,8 @@ ss -ltnp | grep 8080
 **判断**：重启退避从 2 秒起步，最长 30 秒，连续稳定 90 秒后计数清零。反复重启说明上游确实拿不到内容，而不是偶发抖动。
 
 **处理**：在服务器上直接验证上游可达性，注意带上频道配置的 `headers` 与 `user_agent`。需要走代理的上游见下面的[代理不生效](#代理不生效)。
+
+如果日志显示 HTTPS 源重定向到公网主机的 `http://...:80`，可按 [频道管理](/guide/channels/#修复错误的降级重定向) 为该上游或直接 URL 频道开启 `upgrade_insecure_redirects`。它只处理这种错误的重定向，不会修复普通网络、DNS 或 TLS 证书问题。
 
 ### 上游主机没有进允许列表
 
@@ -182,6 +184,16 @@ packager_engine=auto ffmpeg_available=false
 **处理**：配置 `[packager].keys_file`，每行一对 `kid:key`。频道级 `keys` 字段已经移除，密钥只能全局配置。
 
 ## 播放中途停滞
+
+先按错误发生阶段区分三个超时：
+
+| 阶段 | 默认值 | 含义 |
+| --- | ---: | --- |
+| 等待响应头 | 固定且不可配置 | 已建立请求，但源站一直没有返回响应头 |
+| `packager.fetch_stall_sec` | 30 秒 | 响应正文连续没有任何新字节，覆盖清单、分片和错误正文；有字节进展就重新计时，不是总下载时长 |
+| `packager.stall_timeout_sec` | 180 秒 | 清单仍在刷新，但所有轨道一直没有发布新分片；`-1` 可关闭 |
+
+慢速大分片只要持续有字节到达，可以超过 30 秒。只有传输真正停住时才会命中 `fetch_stall_sec`；若是清单持续更新却没有新媒体，则命中下一节的发布停滞检测。
 
 **症状**：频道能起来，播放几分钟后卡住。日志里出现会话重启，`err` 为 `no segment published for 3m0s while the manifest kept updating`。
 
@@ -230,14 +242,14 @@ inflight_mb=64 max_segment_mb=32 gc_percent=100 drop_file_cache=true
     EPG 没有总开关，是否有输出只看有没有已启用的源。内置源默认全部停用，需要在管理界面或配置里逐个启用。启动日志的 `epg_sources` 字段就是当前生效的源数量，为 `0` 说明一个都没启用。`lite` 变体不支持 EPG，配置里存在已启用的源会直接拒绝启动。
   </Step>
   <Step title="体积超限">
-    日志里出现 `EPG refresh failed`，`err` 含 `EPG source exceeds decompressed size limit` 时，说明解压后的 XMLTV 超过了 `epg.max_source_bytes`。默认上限是 64 MiB，但在低资源档位下会被自动压到 4 MiB 到 64 MiB 之间的某个值，启动日志的 `epg_max_source_mb` 就是实际生效值。已缓存的内容超限时同样会被丢弃。
+    日志里出现 `EPG refresh failed`，`err` 含 `EPG source exceeds decompressed size limit` 时，说明解压后的 XMLTV 超过了 `epg.max_source_bytes`。默认上限是 64 MiB，但在低资源档位下会被自动压到 4 MiB 到 64 MiB 之间的某个值，启动日志的 `epg_max_source_mb` 就是实际生效值。本轮写入会回滚，已有 `epg.db` 内容继续提供并被标记为过期。
   </Step>
   <Step title="代理与网络">
     `EPG refresh failed` 的 `err` 是连接超时或 TLS 错误时，说明节目单源不可达。每个 EPG 源都可以单独指定 `proxy`。设为 `auto` 时按全局网络出口规则选择线路；留空或设为 `direct` 时直接连接。
   </Step>
 </Steps>
 
-**处理**：磁盘缓存默认落在 `data_dir/epg`。缓存本身是可重建的，怀疑缓存损坏时可以直接删掉目录再重启。刷新间隔由 `epg.refresh_interval_min` 控制，默认 360 分钟，改小之后要注意源站的速率限制。详见 [EPG](/guide/epg/)。
+**处理**：磁盘库默认是 `data_dir/epg/epg.db`。先修复网络、代理或体积上限并手动刷新；只有确认数据库损坏时，才停服务、把 `epg` 目录移到备份位置后重启。旧版 `<sha256>.cache` 不会被新版导入。刷新间隔由 `epg.refresh_interval_min` 控制，默认 360 分钟，改小之后要注意源站的速率限制。详见 [EPG](/guide/epg/)。
 
 ## 代理不生效
 
@@ -256,6 +268,12 @@ inflight_mb=64 max_segment_mb=32 gc_percent=100 drop_file_cache=true
 **判断**：活动规则指向不存在或已停用的线路时，配置加载与热更新都会直接失败，不会静默改成直连。错误会指出规则引用了 `unknown or disabled proxy`；`egress.default` 引用未知线路也会拒绝启动。
 
 **处理**：检查 `[[proxies]]` 里的 `id` 是否拼写一致，以及该线路是否被停用。
+
+### DNS、TUN 或 fake-IP 环境
+
+**判断**：HTTP、HTTPS 与 `socks5h` 线路会把原始域名交给代理解析，`socks5` 则由 Kiln 所在主机先解析。无论选哪条线路，Kiln 都会在连接代理前执行本地 DNS 与 SSRF 校验；`probe target dns lookup failed` 或 `resolved to a non-public address` 因此可能在代理接管前出现。
+
+**处理**：优先让 Kiln 使用能返回真实地址的 DNS，或改用可信的 HTTP(S)／`socks5h` 线路。只有确实可信的内网源才把精确主机名或 IP 加入 `security.allowed_hosts`，不要用通配方式放开私网校验。
 
 ### FFmpeg 容器连不上 Kiln
 
@@ -312,12 +330,14 @@ docker run --rm -p 8080:8080 --read-only \
 
 ### 健康检查一直不通
 
-**判断**：`core` 与 `full` 的 `HEALTHCHECK` 用 `wget` 探 `/healthz`，`lite` 基于 `scratch`，没有 shell 与 wget，用的是二进制自带的子命令。手工验证：
+**判断**：`core` 与 `full` 的 `HEALTHCHECK` 用 `wget --no-check-certificate` 先探 HTTPS，再回退 HTTP；`lite` 基于 `scratch`，用二进制子命令探 HTTP。按镜像手工复现：
 
 ```bash
-docker exec kiln wget -q -O /dev/null http://127.0.0.1:8080/healthz
+docker exec kiln sh -c 'wget -q --no-check-certificate -O /dev/null https://127.0.0.1:8080/healthz || wget -q -O /dev/null http://127.0.0.1:8080/healthz'
 docker exec kiln kiln -healthcheck http://127.0.0.1:8080/healthz
 ```
+
+如果手工 `-healthcheck` 指向自动生成的自签名 HTTPS，在证书进入系统信任库前会失败。分离监听优先检查明文端口，HTTPS-only 则使用已受信的证书或上面的镜像探测方式，详见 [HTTPS 与分离监听](/guide/https/)。
 
 `/healthz` 通而 `/readyz` 不通，说明是兼容引擎缺失，回到上面的 [ffmpeg 不可用](#ffmpeg-不可用)。
 

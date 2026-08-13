@@ -2,7 +2,7 @@
 title: Operations
 description: Run Kiln as a service, manage backups and upgrades, and configure logs, health checks, metrics, tracing, diagnostics, and resource limits.
 sidebar:
-  order: 10
+  order: 11
 ---
 
 Use this guide for day-to-day operation after Kiln is running: register a system service, back up data, upgrade safely, and configure logs, health checks, metrics, tracing, and resource adaptation.
@@ -11,7 +11,7 @@ Use this guide for day-to-day operation after Kiln is running: register a system
 
 ### systemd
 
-Passing `--service` to the install script registers a systemd unit and enables it at boot. This step needs root and only works on Linux with systemd available.
+Passing `--service` to the install script registers a systemd unit. It is enabled and started only when `/etc/kiln/kiln.toml` already exists. This step needs root and only works on Linux with systemd available.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh -o /tmp/kiln-install.sh
@@ -129,6 +129,10 @@ Database migrations run automatically at startup, with no manual step. Kiln keep
 
 Upgrading across several releases uses the same migration chain. You do not need to step through intermediate versions; drop in the newest binary and go.
 
+<Aside type="note" title="Legacy EPG cache files are not migrated">
+  Older `<sha256>.cache` files under `epg.cache_dir` are not imported into the new `epg.db`. The first start after upgrading refetches every enabled guide source, so the guide may stay empty until that succeeds. Keep the old files if rollback matters and remove them only after `epg.db` has refreshed successfully.
+</Aside>
+
 <Aside type="danger" title="Downgrades are not supported">
   If the database schema is newer than the binary supports, startup fails with `database schema version N is newer than supported version M`. Restore the matching backup before rolling back to an older release.
 </Aside>
@@ -166,7 +170,7 @@ Neither endpoint requires credentials, and they mean different things. Do not us
 
 <CardGrid>
   <Card title="/healthz" icon="ph:heartbeat">
-    Liveness. Returns `200` and `{"status":"ok"}` as long as the HTTP server is running; it checks no dependencies. Use it for process supervision and container restart policies.
+    Liveness. Returns `200` and `{"status":"ok"}` as long as the service listener is running; it checks no dependencies. Use it for process supervision and container restart policies.
   </Card>
   <Card title="/readyz" icon="ph:check-circle">
     Readiness. Adds a compatibility-engine check: if the catalog contains a channel with `ingress = "dash"` whose effective engine is `ffmpeg` and ffmpeg is unavailable, it returns `503` with code `not_ready` and the message `ffmpeg compatibility engine is not available`. Use it to gate traffic.
@@ -181,7 +185,7 @@ The binary ships a health-check subcommand with a 3-second timeout. It exits wit
 kiln -healthcheck http://127.0.0.1:8080/healthz
 ```
 
-The images already declare `HEALTHCHECK`. `core` and `full` are Alpine-based and probe `/healthz` with `wget`; `lite` is built `FROM scratch` and has neither a shell nor wget, so it uses the subcommand above.
+The subcommand uses the system trust store and performs normal certificate validation; it has no insecure or custom-CA flag. An HTTPS probe fails until an auto-generated certificate is trusted, so split mode should probe the plaintext health port. The images already declare `HEALTHCHECK`: `core` and `full` use `wget --no-check-certificate` to try HTTPS before HTTP, while scratch-based `lite` uses the subcommand above against HTTP. See [HTTPS and split listeners](/en/guide/https/) for listener and certificate details.
 
 ## Metrics
 
