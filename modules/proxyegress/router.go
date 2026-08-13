@@ -353,6 +353,7 @@ func buildClient(proxyURL *url.URL, _ time.Duration) (*http.Client, error) {
 		TLSHandshakeTimeout:   12 * time.Second,
 		ResponseHeaderTimeout: 25 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
+		TLSClientConfig:       UpstreamTLSConfig(),
 	}
 	if proxyURL != nil {
 		compatTLSForProxy(tr)
@@ -387,7 +388,7 @@ func buildClient(proxyURL *url.URL, _ time.Duration) (*http.Client, error) {
 func compatTLSForProxy(tr *http.Transport) {
 	tr.ForceAttemptHTTP2 = false
 	tr.TLSNextProto = map[string]func(authority string, c *tls.Conn) http.RoundTripper{}
-	tr.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	tr.TLSClientConfig = UpstreamTLSConfig()
 }
 
 func ProxyResolvesHostname(proxyURL *url.URL) bool {

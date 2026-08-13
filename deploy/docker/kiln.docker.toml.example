@@ -44,6 +44,9 @@ play_require_auth = true
 allowed_hosts = []
 max_playlist_bytes = 8388608
 max_body_bytes = 1048576
+# Some CDN edges only support RSA key exchange; without it they answer with a
+# handshake failure. Forward secrecy is still preferred when available.
+upstream_rsa_key_exchange = true
 
 [ffmpeg]
 mode = "native"

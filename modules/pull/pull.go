@@ -42,7 +42,8 @@ func New(opt Options) *Client {
 		opt.MaxPlaylist = 8 << 20
 	}
 	tr := &http.Transport{
-		Proxy: nil,
+		Proxy:           nil,
+		TLSClientConfig: proxyegress.UpstreamTLSConfig(),
 		DialContext: (&net.Dialer{
 			Timeout:   10 * time.Second,
 			KeepAlive: 30 * time.Second,

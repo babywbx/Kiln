@@ -129,10 +129,16 @@ type Security struct {
 	MaxBodyBytes     int64    `json:"max_body_bytes" toml:"max_body_bytes"`
 	CORSOrigins      []string `json:"cors_origins" toml:"cors_origins"`
 	PublicHosts      []string `json:"public_hosts" toml:"public_hosts"`
+
+	UpstreamRSAKeyExchange *bool `json:"upstream_rsa_key_exchange" toml:"upstream_rsa_key_exchange"`
 }
 
 func (s Security) PlayAuthRequired() bool {
 	return s.PlayRequireAuth == nil || *s.PlayRequireAuth
+}
+
+func (s Security) UpstreamRSAKeyExchangeAllowed() bool {
+	return s.UpstreamRSAKeyExchange == nil || *s.UpstreamRSAKeyExchange
 }
 
 type Upstream struct {

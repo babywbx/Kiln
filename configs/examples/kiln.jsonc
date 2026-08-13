@@ -40,6 +40,8 @@
     "allowed_hosts": ["127.0.0.1"],
     "max_playlist_bytes": 8388608,
     "max_body_bytes": 1048576,
+    // Some CDN edges only support RSA key exchange and reject everything else.
+    "upstream_rsa_key_exchange": true,
   },
   "ffmpeg": {
     "mode": "native",

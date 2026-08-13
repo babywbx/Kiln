@@ -46,6 +46,7 @@ func New(cfg config.File, log *slog.Logger) (*Server, error) {
 	if log == nil {
 		log = slog.Default()
 	}
+	proxyegress.SetUpstreamRSAKeyExchange(cfg.Security.UpstreamRSAKeyExchangeAllowed())
 	router, err := proxyegress.NewRouter(proxyegress.ConfigFromFile(cfg))
 	if err != nil {
 		return nil, err

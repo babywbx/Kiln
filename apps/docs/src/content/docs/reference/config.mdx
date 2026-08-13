@@ -127,6 +127,7 @@ TLS 仅在 Core 与 Full 中可用。Lite 遇到 `tls_enabled = true`、配置�
 | `cors_origins` | array of string | `[]` | 允许的跨域来源，留空表示不下发任何 CORS 响应头。仅当列表恰好是单个 `*` 时才回显 `*`，否则回显匹配到的具体来源并附带 `Vary: Origin`。 |
 | `max_playlist_bytes` | int64 | `8388608` | 单个播放列表抓取的字节上限，非正数按默认值处理。 |
 | `max_body_bytes` | int64 | `1048576` | 管理接口请求体的字节上限，非正数按默认值处理。个别批量接口在此基础上按倍数放宽。 |
+| `upstream_rsa_key_exchange` | bool | `true` | 抓取上游时是否额外提供 RSA 密钥交换套件。Go 1.22 起默认不再提供这类套件，而部分 CDN 边缘节点只支持它们，握手会直接失败。开启后仍优先协商具备前向保密的套件，仅在对端别无选择时回落。设为 `false` 可强制只用前向保密套件，代价是这些节点无法访问。该设置只影响向上游发起的连接，不影响本服务对外提供的 HTTPS。 |
 
 <Aside type="caution" title="关闭播放鉴权只适合调试环境">
   显式写 `play_require_auth = false` 即可关闭播放鉴权，不再需要额外的环境变量。环境变量 `KILN_PLAY_OPEN` 的优先级高于配置文件：取 `1`、`true`、`TRUE` 强制关闭，取 `0`、`false`、`FALSE` 强制要求鉴权。任何对外可达的部署都不要关掉它。

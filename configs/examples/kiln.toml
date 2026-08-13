@@ -51,6 +51,10 @@ allowed_hosts = ["127.0.0.1"]
 # public_hosts = ["kiln.lan", "origin.example.com", "localhost"]
 max_playlist_bytes = 8388608
 max_body_bytes = 1048576
+# Also offer RSA key exchange when fetching upstream. Some CDN edges support
+# nothing else and reject everything else with a handshake failure. Forward
+# secrecy still wins whenever the edge can do it. Never affects our own HTTPS.
+upstream_rsa_key_exchange = true
 
 [packager]
 # auto  = native fast path when the source supports it, ffmpeg otherwise

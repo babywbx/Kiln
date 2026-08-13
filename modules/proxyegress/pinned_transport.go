@@ -2,7 +2,6 @@ package proxyegress
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -166,7 +165,7 @@ func (t *pinnedTransport) transport(key pinnedTransportKey, pinnedHost string, g
 	}
 	transport := key.base.Clone()
 	if key.scheme == "https" && transport.TLSClientConfig == nil {
-		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+		transport.TLSClientConfig = UpstreamTLSConfig()
 	}
 	if transport.TLSClientConfig != nil {
 		transport.TLSClientConfig.ServerName = ""

@@ -116,6 +116,8 @@ func runServer(cfgPath string) int {
 	}
 	cfg.Auth.Users = users
 
+	proxyegress.SetUpstreamRSAKeyExchange(cfg.Security.UpstreamRSAKeyExchangeAllowed())
+
 	egCfg, err := proxyegress.ConfigFromStore(db, cfg)
 	if err != nil {
 		log.Error("egress config failed", "err", err)

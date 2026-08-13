@@ -127,6 +127,7 @@ Changing a username or password in the admin console writes an override row keye
 | `cors_origins` | array of string | `[]` | Allowed cross-origin origins. Empty means no CORS headers are emitted at all. `*` is echoed back literally only when it is the single entry; otherwise the matched origin is echoed with `Vary: Origin`. |
 | `max_playlist_bytes` | int64 | `8388608` | Byte ceiling for a fetched playlist. Non-positive values fall back to the default. |
 | `max_body_bytes` | int64 | `1048576` | Byte ceiling for admin request bodies. Non-positive values fall back to the default. A few bulk endpoints multiply it. |
+| `upstream_rsa_key_exchange` | bool | `true` | Whether upstream fetches also offer RSA key exchange suites. Go stopped offering them by default in 1.22, and some CDN edges support nothing else, so the handshake fails outright. Forward-secret suites are still preferred; the legacy ones are a last resort. Set it to `false` to require forward secrecy at the cost of losing those edges. It applies only to outbound upstream connections, never to the HTTPS this service serves. |
 
 <Aside type="caution" title="Turning playback auth off belongs in debugging environments only">
   An explicit `play_require_auth = false` disables playback authentication on its own; no environment variable is needed. `KILN_PLAY_OPEN` still outranks the file: `1`, `true`, or `TRUE` forces authentication off, while `0`, `false`, or `FALSE` forces it on. Never turn it off on a deployment reachable from anywhere else.
