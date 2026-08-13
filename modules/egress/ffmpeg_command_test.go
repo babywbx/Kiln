@@ -39,7 +39,7 @@ func TestBuildPackagerArgsForcesGuardedNetworkProxy(t *testing.T) {
 		HLSListSize: 6,
 		SourceURL:   "https://media.example/live.mpd",
 	}, packAttempt{
-		input:    "input.mpd",
+		input:    "https://media.example/live.mpd",
 		vMap:     "0:v:0",
 		aMap:     "0:a:0?",
 		network:  true,
@@ -65,11 +65,35 @@ func TestBuildPackagerArgsAllowsRedirectsForInsecureUpgrade(t *testing.T) {
 	args := buildPackagerArgs(DashOptions{
 		HLSTime: 2, HLSListSize: 6, UpgradeInsecureRedirects: true,
 	}, packAttempt{
-		input: "input.mpd", vMap: "0:v:0", aMap: "0:a:0?", network: true,
+		input: "https://media.example/live.mpd", vMap: "0:v:0", aMap: "0:a:0?", network: true,
 	}, "00112233445566778899aabbccddeeff",
 		filepath.Join(work, "index.m3u8"), filepath.Join(work, "seg_%05d.ts"))
 	if joined := strings.Join(args, "\x00"); !strings.Contains(joined, "-max_redirects\x008") {
 		t.Fatalf("guarded redirect limit missing: %q", args)
+	}
+}
+
+func TestBuildPackagerArgsKeepsHTTPOptionsOffAFileInput(t *testing.T) {
+	work := t.TempDir()
+	args := buildPackagerArgs(DashOptions{
+		HLSTime: 2, HLSListSize: 6, UserAgent: "Kiln/1", SourceURL: "https://media.example/live.mpd",
+	}, packAttempt{
+		input:    filepath.Join(work, "input.mpd"),
+		vMap:     "0:v:0",
+		aMap:     "0:a:0?",
+		network:  true,
+		proxyURL: "http://127.0.0.1:1234",
+		headers:  map[string]string{"Authorization": "Bearer secret"},
+	}, "00112233445566778899aabbccddeeff",
+		filepath.Join(work, "index.m3u8"), filepath.Join(work, "seg_%05d.ts"))
+	joined := strings.Join(args, "\x00")
+	for _, rejected := range []string{"-max_redirects", "-reconnect", "-http_proxy", "-user_agent", "-headers"} {
+		if strings.Contains(joined, rejected) {
+			t.Fatalf("%s reaches a file input, and ffmpeg refuses the whole run over it: %q", rejected, args)
+		}
+	}
+	if !strings.Contains(joined, "-protocol_whitelist\x00file,http,https,tcp,tls,crypto,httpproxy") {
+		t.Fatalf("segments still travel over the network: %q", args)
 	}
 }
 

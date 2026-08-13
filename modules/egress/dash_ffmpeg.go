@@ -327,6 +327,14 @@ func startPackager(parent context.Context, opt DashOptions, log *slog.Logger, ab
 	return job, nil
 }
 
+func networkInput(input string) bool {
+	parsed, err := url.Parse(input)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(parsed.Scheme, "http") || strings.EqualFold(parsed.Scheme, "https")
+}
+
 func buildPackagerArgs(opt DashOptions, att packAttempt, key, indexPath, segPattern string) []string {
 	protocols := "file,crypto"
 	if att.network {
@@ -339,7 +347,8 @@ func buildPackagerArgs(opt DashOptions, att packAttempt, key, indexPath, segPatt
 		"-protocol_whitelist", protocols,
 		"-fflags", "+genpts+discardcorrupt",
 	}
-	if att.network {
+	// A file input rejects every http option; the forward proxy carries them instead.
+	if att.network && networkInput(att.input) {
 		maxRedirects := "0"
 		if opt.UpgradeInsecureRedirects {
 			maxRedirects = "8"
