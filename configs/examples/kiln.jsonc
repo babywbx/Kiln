@@ -64,6 +64,10 @@
     "primary_track_hold_sec": 12,
     "stall_timeout_sec": 180,
     "fetch_stall_sec": 30,
+    "rendition_idle_sec": 30,
+    "reanchor_sec": 30,
+    "segment_fetch_cap_sec": 0,
+    "manifest_fetch_retries": 2,
   },
   "observe": {
     "enabled": true,

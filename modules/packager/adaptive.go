@@ -24,6 +24,10 @@ type NativeAdapter struct {
 	StallTimeout     time.Duration
 	LLHLS            bool
 	PartTarget       time.Duration
+	ReanchorAfter    time.Duration
+	RenditionIdle    time.Duration
+	SegmentFetchCap  time.Duration
+	ManifestRetries  int
 
 	newFetcher   func(req Request) Fetcher
 	playlistSize int
@@ -79,6 +83,10 @@ func (a *NativeAdapter) Start(ctx context.Context, req Request) (Job, error) {
 		MaxSegmentBytes:         a.MaxSegmentBytes,
 		PrimaryTrackHold:        a.PrimaryTrackHold,
 		StallTimeout:            a.StallTimeout,
+		ReanchorAfter:           a.ReanchorAfter,
+		RenditionIdle:           a.RenditionIdle,
+		SegmentFetchCap:         a.SegmentFetchCap,
+		ManifestRetries:         a.ManifestRetries,
 		Gate:                    a.gate,
 		InitPool:                a.init,
 		DownloadPool:            a.download,
@@ -90,7 +98,7 @@ func (a *NativeAdapter) Start(ctx context.Context, req Request) (Job, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &nativeJob{native: native, pub: &nativePublication{pub: native.Publication(), dir: req.WorkDir}}, nil
+	return &nativeJob{native: native, pub: &nativePublication{pub: native.Publication(), native: native, dir: req.WorkDir}}, nil
 }
 
 func keySet(pairs []config.KeyPair) (cmaf.KeySet, error) {
@@ -120,8 +128,9 @@ func (j *nativeJob) IntentionalStop() bool    { return j.native.IntentionalStop(
 func (j *nativeJob) Stats() Stats             { return j.native.Stats() }
 
 type nativePublication struct {
-	pub *hls.Publisher
-	dir string
+	pub    *hls.Publisher
+	native *Native
+	dir    string
 }
 
 func (p *nativePublication) Master() string { return hls.MasterName }
@@ -130,10 +139,12 @@ func (p *nativePublication) Playlist(name string) ([]byte, bool) {
 	if !strings.HasSuffix(name, ".m3u8") {
 		return nil, false
 	}
+	p.native.WantTrack(name)
 	return p.pub.Playlist(name)
 }
 
 func (p *nativePublication) PlaylistContext(ctx context.Context, name string, request PlaylistRequest) (PlaylistView, bool, error) {
+	p.native.WantTrack(name)
 	view, ok, err := p.pub.PlaylistContext(ctx, name, hls.PlaylistRequest{
 		PlaylistOptions: hls.PlaylistOptions{Skip: request.Skip},
 		MSN:             request.MSN, Part: request.Part,
@@ -142,6 +153,7 @@ func (p *nativePublication) PlaylistContext(ctx context.Context, name string, re
 }
 
 func (p *nativePublication) Asset(name string) (Asset, bool) {
+	p.native.WantTrack(name)
 	path, ok := p.pub.Asset(name)
 	if !ok {
 		return Asset{}, false
@@ -154,6 +166,7 @@ func (p *nativePublication) Asset(name string) (Asset, bool) {
 }
 
 func (p *nativePublication) AssetContext(ctx context.Context, name string) (Asset, bool, error) {
+	p.native.WantTrack(name)
 	path, ok, err := p.pub.AssetContext(ctx, name)
 	if err != nil || !ok {
 		return Asset{}, ok, err

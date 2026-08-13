@@ -267,6 +267,11 @@ type Packager struct {
 	StallTimeoutSec     int    `json:"stall_timeout_sec" toml:"stall_timeout_sec"`
 	FetchStallSec       int    `json:"fetch_stall_sec" toml:"fetch_stall_sec"`
 	InflightBytes       int64  `json:"inflight_bytes" toml:"inflight_bytes"`
+
+	RenditionIdleSec     int `json:"rendition_idle_sec" toml:"rendition_idle_sec"`
+	ReanchorSec          int `json:"reanchor_sec" toml:"reanchor_sec"`
+	SegmentFetchCapSec   int `json:"segment_fetch_cap_sec" toml:"segment_fetch_cap_sec"`
+	ManifestFetchRetries int `json:"manifest_fetch_retries" toml:"manifest_fetch_retries"`
 }
 
 const (
@@ -509,6 +514,15 @@ func (c *File) applyDefaults() {
 	}
 	if c.Packager.InflightBytes <= 0 {
 		c.Packager.InflightBytes = 96 << 20
+	}
+	if c.Packager.RenditionIdleSec == 0 {
+		c.Packager.RenditionIdleSec = 30
+	}
+	if c.Packager.ReanchorSec == 0 {
+		c.Packager.ReanchorSec = 30
+	}
+	if c.Packager.ManifestFetchRetries == 0 {
+		c.Packager.ManifestFetchRetries = 2
 	}
 	if c.Observe.TraceSampleRatio <= 0 {
 		c.Observe.TraceSampleRatio = 1
@@ -789,6 +803,18 @@ func (c File) validate() error {
 	}
 	if c.Packager.PartTargetMS < 100 || c.Packager.PartTargetMS > 5000 {
 		return fmt.Errorf("packager.part_target_ms must be between 100 and 5000")
+	}
+	if c.Packager.RenditionIdleSec > 86400 {
+		return fmt.Errorf("packager.rendition_idle_sec must not exceed 86400")
+	}
+	if c.Packager.ReanchorSec > 3600 {
+		return fmt.Errorf("packager.reanchor_sec must not exceed 3600")
+	}
+	if c.Packager.SegmentFetchCapSec > 3600 {
+		return fmt.Errorf("packager.segment_fetch_cap_sec must not exceed 3600")
+	}
+	if c.Packager.ManifestFetchRetries > 10 {
+		return fmt.Errorf("packager.manifest_fetch_retries must not exceed 10")
 	}
 	if c.Observe.TraceSampleRatio < 0 || c.Observe.TraceSampleRatio > 1 {
 		return fmt.Errorf("observe.trace_sample_ratio must be between 0 and 1")

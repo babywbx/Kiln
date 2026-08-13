@@ -229,6 +229,10 @@ func (m *Manager) newNativePackager() *packager.NativeAdapter {
 	native.MaxSegmentBytes = cfg.MaxSegmentBytes
 	native.PrimaryTrackHold = time.Duration(cfg.PrimaryTrackHoldSec) * time.Second
 	native.StallTimeout = time.Duration(cfg.StallTimeoutSec) * time.Second
+	native.ReanchorAfter = time.Duration(cfg.ReanchorSec) * time.Second
+	native.RenditionIdle = time.Duration(cfg.RenditionIdleSec) * time.Second
+	native.SegmentFetchCap = time.Duration(cfg.SegmentFetchCapSec) * time.Second
+	native.ManifestRetries = cfg.ManifestFetchRetries
 	native.LLHLS = cfg.LLHLS
 	native.PartTarget = time.Duration(cfg.PartTargetMS) * time.Millisecond
 	native.SetInflightBytes(cfg.InflightBytes)

@@ -73,8 +73,8 @@ DASH decryption and repackaging are implemented natively in Go, so FFmpeg is not
 | --- | --- |
 | Native media pipeline | Same-origin HLS segment proxy; DASH decrypted locally with `kid:key` and repackaged to HLS, no FFmpeg anywhere in the path |
 | Low latency and multi-track | LL-HLS (CMAF parts, delta playlists, blocking reload), ABR, multiple audio tracks, TTML→WebVTT subtitles |
-| On-demand pulling | `on_demand` reclaims the upstream connection when nobody is watching; `autostart` pre-warms frequently used channels |
-| Self-healing | Media stall detection, exponential backoff restarts, publication generation isolation — players switch generations without a manual refresh |
+| On-demand pulling | `on_demand` reclaims the upstream session when nobody is watching, rendition-level pulling fetches only the quality and audio tracks being played, and `autostart` pre-warms frequently used channels |
+| Self-healing | Transient manifest retries, slow-segment caps with fresh-connection retries, media stall detection, exponential backoff restarts, publication generation isolation — players switch generations without a manual refresh |
 | Full authentication | bcrypt passwords, Ed25519 session JWTs, admin API tokens shown exactly once, path-based playback keys |
 | Distribution and audit | Playback keys scoped to a channel subset, bulk M3U import and export, playback access logs and API token audit trails |
 | Playlist and EPG | Scoped M3U generation with automatically linked XMLTV, plus built-in logo source candidates |

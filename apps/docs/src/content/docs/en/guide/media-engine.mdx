@@ -79,6 +79,10 @@ The native engine reads the MPD, plans the tracks, then downloads, decrypts, and
   </Step>
 </Steps>
 
+### On-demand pulling
+
+A live session publishes an initial window for every rendition at startup; from then on, upstream pulling follows playback demand. The primary video rendition is always pulled because it anchors the pipeline clock, while any other rendition pauses its upstream pull after going unrequested for `rendition_idle_sec` (30 seconds by default). As soon as a player asks for it again, the rendition rewarms to the live edge and marks the jump with `EXT-X-DISCONTINUITY` in its playlist. With a single viewer this trims inbound bandwidth down to the renditions actually being watched; set the key to a negative value to restore eager pulling. Static sources are unaffected.
+
 ### Reasons a source is rejected
 
 When planning or verification fails, the logs and the channel's `probe` result carry a reason code:

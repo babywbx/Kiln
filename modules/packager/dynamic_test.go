@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/babywbx/kiln/modules/packager/cmaf"
 	"github.com/babywbx/kiln/modules/packager/hls"
 	"github.com/babywbx/kiln/modules/packager/mpd"
 )
@@ -630,5 +631,117 @@ func TestPlaylistNeverReferencesAMissingAsset(t *testing.T) {
 				t.Errorf("%s references %s, which is not on disk: %v", name, ref, err)
 			}
 		}
+	}
+}
+
+func TestIdleRenditionPausesAndRewarmsOnDemand(t *testing.T) {
+	origin := newLiveOrigin(t)
+	clock := newClock()
+	dir := t.TempDir()
+	n, err := StartNative(context.Background(), Options{
+		ManifestURL:   entryURL,
+		Dir:           dir,
+		Keys:          keys(t),
+		Fetcher:       origin,
+		StartSegments: 3,
+		PlaylistSize:  10,
+		ReanchorAfter: 30 * time.Second,
+		RenditionIdle: 10 * time.Second,
+		Now:           clock.now,
+	})
+	if err != nil {
+		t.Fatalf("StartNative: %v", err)
+	}
+	t.Cleanup(func() { _ = n.Stop() })
+
+	playlist := func(name string) string {
+		body, ok := n.Publication().Playlist(name)
+		if !ok {
+			t.Fatalf("no playlist %s", name)
+		}
+		return string(body)
+	}
+
+	grow := func(count int) {
+		origin.mu.Lock()
+		origin.videoCount += count
+		origin.audioCount += count
+		origin.mu.Unlock()
+	}
+
+	videoBefore := strings.Count(videoPlaylist(t, n), ".m4s")
+	grow(4)
+	clock.advance(12 * time.Second)
+	if err := n.advance(context.Background(), parseManifest(t, origin)); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	frozen := playlist("audio-main.m3u8")
+
+	grow(4)
+	clock.advance(12 * time.Second)
+	if err := n.advance(context.Background(), parseManifest(t, origin)); err != nil {
+		t.Fatalf("advance while idle: %v", err)
+	}
+	if got := playlist("audio-main.m3u8"); got != frozen {
+		t.Fatal("an idle rendition kept pulling upstream segments")
+	}
+	if strings.Count(videoPlaylist(t, n), ".m4s") <= videoBefore {
+		t.Fatal("the primary video must keep pulling while other renditions idle")
+	}
+	if n.Reanchors() != 0 {
+		t.Fatal("an idle rendition must not trip the no_progress re-anchor")
+	}
+
+	n.WantTrack("audio-main.m3u8")
+	if err := n.advance(context.Background(), parseManifest(t, origin)); err != nil {
+		t.Fatalf("advance after rewarm: %v", err)
+	}
+	warmed := playlist("audio-main.m3u8")
+	if warmed == frozen {
+		t.Fatal("a requested rendition never rewarmed")
+	}
+	if !strings.Contains(warmed, "#EXT-X-DISCONTINUITY") {
+		t.Fatalf("the rewarm jump must be signalled as a discontinuity:\n%s", warmed)
+	}
+	if n.Reanchors() != 0 {
+		t.Fatal("a rewarm must not count as a re-anchor")
+	}
+}
+
+func TestWantTrackMatchesPlaylistsAssetsAndMaster(t *testing.T) {
+	clock := newClock()
+	n := &Native{now: clock.now, opts: Options{RenditionIdle: 30 * time.Second}}
+	video := newTrackState("video-main", mpd.Representation{}, &cmaf.Init{}, clock.now().Add(-time.Hour))
+	audio := newTrackState("audio-en", mpd.Representation{}, &cmaf.Init{}, clock.now().Add(-time.Hour))
+	n.video = video
+	n.videos = []*trackState{video}
+	n.audios = []*trackState{audio}
+
+	if n.trackWanted(audio) {
+		t.Fatal("a stale rendition still counts as wanted")
+	}
+	n.WantTrack("audio-en-part-000008-003.m4s")
+	if !n.trackWanted(audio) {
+		t.Fatal("an asset request must mark its rendition wanted")
+	}
+
+	audio.lastWanted.Store(clock.now().Add(-time.Hour).UnixNano())
+	n.WantTrack(hls.MasterName)
+	if !n.trackWanted(audio) {
+		t.Fatal("a master playlist request must warm every rendition")
+	}
+
+	audio.lastWanted.Store(clock.now().Add(-time.Hour).UnixNano())
+	n.WantTrack("unknown.m3u8")
+	if n.trackWanted(audio) {
+		t.Fatal("an unknown file must not warm anything")
+	}
+	if !n.trackWanted(video) {
+		t.Fatal("the primary video is always wanted")
+	}
+
+	n.opts.RenditionIdle = -time.Second
+	if !n.trackWanted(audio) {
+		t.Fatal("a negative idle threshold must disable lazy pulling")
 	}
 }

@@ -115,6 +115,10 @@ type Options struct {
 
 	ReanchorAfter time.Duration
 
+	RenditionIdle   time.Duration
+	SegmentFetchCap time.Duration
+	ManifestRetries int
+
 	PrimaryTrackHold time.Duration
 
 	StallTimeout time.Duration
@@ -145,6 +149,7 @@ const (
 const (
 	manifestFetchRetries                    = 2
 	manifestRetryDelay                      = 100 * time.Millisecond
+	defaultRenditionIdle                    = 30 * time.Second
 	tlsAlertHandshakeFailure tls.AlertError = 40
 	tlsAlertInternalError    tls.AlertError = 80
 )
@@ -176,8 +181,14 @@ func (o *Options) applyDefaults() {
 		}
 		o.DecryptPool = make(chan struct{}, o.DecryptWorkers)
 	}
-	if o.ReanchorAfter <= 0 {
+	if o.ReanchorAfter == 0 {
 		o.ReanchorAfter = defaultReanchorAfter
+	}
+	if o.RenditionIdle == 0 {
+		o.RenditionIdle = defaultRenditionIdle
+	}
+	if o.ManifestRetries == 0 {
+		o.ManifestRetries = manifestFetchRetries
 	}
 	if o.PrimaryTrackHold <= 0 {
 		o.PrimaryTrackHold = defaultPrimaryTrackHold
@@ -215,6 +226,9 @@ type trackState struct {
 	forceDiscontinuity bool
 	lastProgress       time.Time
 	lastHeld           time.Time
+	idle               bool
+
+	lastWanted atomic.Int64
 
 	readyMillis atomic.Int64
 
@@ -226,6 +240,7 @@ func newTrackState(name string, rep mpd.Representation, init *cmaf.Init, now tim
 		name: name, rep: rep, init: init, initHash: sha256.Sum256(init.Clear),
 		nextSeq: 1, nextPartSequence: 1, lastProgress: now,
 	}
+	ts.lastWanted.Store(now.UnixNano())
 	ts.readyMillis.Store(-1)
 	return ts
 }
@@ -446,8 +461,11 @@ func StartNative(ctx context.Context, opts Options) (*Native, error) {
 	}
 
 	fetchCap := time.Duration(0)
-	if pres.Dynamic {
-		fetchCap = max(2*maxSegmentDuration, 20*time.Second)
+	if pres.Dynamic && opts.SegmentFetchCap >= 0 {
+		fetchCap = opts.SegmentFetchCap
+		if fetchCap == 0 {
+			fetchCap = max(2*maxSegmentDuration, 20*time.Second)
+		}
 	}
 
 	now := opts.Now()
@@ -526,7 +544,7 @@ func fetchManifest(ctx context.Context, opts Options, manifestURL string) (*mpd.
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		if attempt == manifestFetchRetries || !transientManifestFetchError(err) {
+		if attempt >= max(opts.ManifestRetries, 0) || !transientManifestFetchError(err) {
 			return nil, err
 		}
 		timer := time.NewTimer(manifestRetryDelay << attempt)
@@ -1832,12 +1850,30 @@ func (n *Native) advance(ctx context.Context, pres *mpd.Presentation) error {
 }
 
 func (n *Native) advanceTrack(ctx context.Context, pres *mpd.Presentation, ts *trackState) error {
+	if pres.Dynamic && !n.trackWanted(ts) {
+		if !ts.idle {
+			ts.idle = true
+			n.log.Info("rendition idle, pausing its upstream pull", "track", ts.name)
+		}
+		return nil
+	}
 	segs, err := pres.AvailableSegments(0, ts.rep, n.sourceNow())
 	if err != nil {
 		return err
 	}
 	if len(segs) == 0 {
 		return nil
+	}
+	if pres.Dynamic && ts.idle {
+		ts.idle = false
+		ts.hasLast = false
+		ts.forceDiscontinuity = true
+		n.log.Info("rendition rewarming to the live edge", "track", ts.name)
+		pending := n.startWindow(pres, segs)
+		if ts != n.video {
+			pending = n.holdBehindVideo(ts, pending)
+		}
+		return n.publishSegments(ctx, ts, pending)
 	}
 	if pres.Dynamic && ts.init.Track.Kind == cmaf.KindText && !ts.hasLast && !ts.forceDiscontinuity {
 		pending := n.startWindow(pres, segs)
@@ -1917,7 +1953,7 @@ func (n *Native) needsReanchor(ts *trackState, segs []mpd.Segment) (string, bool
 	if ts.lastHeld.After(reference) {
 		reference = ts.lastHeld
 	}
-	if n.now().Sub(reference) > n.opts.ReanchorAfter {
+	if n.opts.ReanchorAfter > 0 && n.now().Sub(reference) > n.opts.ReanchorAfter {
 		return reasonNoProgress, true
 	}
 	return "", false
@@ -1989,6 +2025,29 @@ func packMode(pres *mpd.Presentation, plan Plan) string {
 func (n *Native) Publication() *hls.Publisher { return n.pub }
 func (n *Native) Engine() string              { return n.plan.Engine }
 
+func (n *Native) WantTrack(name string) {
+	stamp := n.now().UnixNano()
+	if name == hls.MasterName {
+		for _, ts := range n.tracks() {
+			ts.lastWanted.Store(stamp)
+		}
+		return
+	}
+	stem := strings.TrimSuffix(name, ".m3u8")
+	for _, ts := range n.tracks() {
+		if ts.name == stem || strings.HasPrefix(name, ts.name+"-") {
+			ts.lastWanted.Store(stamp)
+			return
+		}
+	}
+}
+
+func (n *Native) trackWanted(ts *trackState) bool {
+	if ts == n.video || n.opts.RenditionIdle < 0 {
+		return true
+	}
+	return n.now().Sub(time.Unix(0, ts.lastWanted.Load())) < n.opts.RenditionIdle
+}
 func (n *Native) PackMode() string      { return n.packMode }
 func (n *Native) Done() <-chan struct{} { return n.done }
 

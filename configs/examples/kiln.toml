@@ -92,6 +92,18 @@ stall_timeout_sec = 180
 # timeout, not a total one: a multi-megabyte 4K segment may take as long as it
 # needs as long as the transfer keeps moving.
 fetch_stall_sec = 30
+# The primary video rendition is always pulled; any other rendition pauses its
+# upstream pull after going unrequested for this long and rewarms to the live
+# edge on the next request. Negative restores eager pulling of every rendition.
+rendition_idle_sec = 30
+# A rendition with new segments available but nothing published for this long
+# jumps back to the live edge. Negative disables the no-progress re-anchor.
+reanchor_sec = 30
+# Wall-clock cap per live segment download; a capped fetch retries once on a
+# fresh connection. 0 derives 2x the segment duration with a 20s floor.
+segment_fetch_cap_sec = 0
+# Retries for transient manifest fetch errors. Negative disables retries.
+manifest_fetch_retries = 2
 
 [ffmpeg]
 mode = "native"       # native | docker

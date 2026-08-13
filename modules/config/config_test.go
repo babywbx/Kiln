@@ -733,3 +733,58 @@ role = "admin"
 		t.Fatalf("empty tls_listen: %v", err)
 	}
 }
+
+func TestPackagerResilienceKnobs(t *testing.T) {
+	cfg := loadTOMLBody(t, `
+[server]
+listen = "0.0.0.0:8080"
+public_base_url = "http://127.0.0.1:8080"
+data_dir = "./data"
+
+[[auth.users]]
+username = "admin"
+password_hash = "$2a$10$8JxhvnpdTX/TrOTi1XaYWuPlrZK1aw3ANgGIWpTO6KtD2M432w7Ie"
+role = "admin"
+	`)
+	if cfg.Packager.RenditionIdleSec != 30 || cfg.Packager.ReanchorSec != 30 ||
+		cfg.Packager.ManifestFetchRetries != 2 || cfg.Packager.SegmentFetchCapSec != 0 {
+		t.Fatalf("defaults = idle %d reanchor %d retries %d cap %d",
+			cfg.Packager.RenditionIdleSec, cfg.Packager.ReanchorSec,
+			cfg.Packager.ManifestFetchRetries, cfg.Packager.SegmentFetchCapSec)
+	}
+
+	custom := loadTOMLBody(t, `
+[server]
+listen = "0.0.0.0:8080"
+public_base_url = "http://127.0.0.1:8080"
+data_dir = "./data"
+
+[packager]
+rendition_idle_sec = -1
+reanchor_sec = -1
+segment_fetch_cap_sec = 45
+manifest_fetch_retries = -1
+
+[[auth.users]]
+username = "admin"
+password_hash = "$2a$10$8JxhvnpdTX/TrOTi1XaYWuPlrZK1aw3ANgGIWpTO6KtD2M432w7Ie"
+role = "admin"
+	`)
+	if custom.Packager.RenditionIdleSec != -1 || custom.Packager.ReanchorSec != -1 ||
+		custom.Packager.SegmentFetchCapSec != 45 || custom.Packager.ManifestFetchRetries != -1 {
+		t.Fatal("negative and explicit knob values must pass through untouched")
+	}
+
+	for field, apply := range map[string]func(*File){
+		"rendition_idle_sec":     func(f *File) { f.Packager.RenditionIdleSec = 86401 },
+		"reanchor_sec":           func(f *File) { f.Packager.ReanchorSec = 3601 },
+		"segment_fetch_cap_sec":  func(f *File) { f.Packager.SegmentFetchCapSec = 3601 },
+		"manifest_fetch_retries": func(f *File) { f.Packager.ManifestFetchRetries = 11 },
+	} {
+		invalid := cfg
+		apply(&invalid)
+		if err := invalid.validate(); err == nil {
+			t.Errorf("out-of-range %s was accepted", field)
+		}
+	}
+}
