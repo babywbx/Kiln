@@ -67,11 +67,12 @@ type Decision struct {
 }
 
 type Router struct {
-	mu       sync.RWMutex
-	cfg      Config
-	profiles map[string]*url.URL
-	rules    []Rule
-	clients  map[string]*http.Client
+	mu         sync.RWMutex
+	generation uint64
+	cfg        Config
+	profiles   map[string]*url.URL
+	rules      []Rule
+	clients    map[string]*http.Client
 }
 
 func NewRouter(cfg Config) (*Router, error) {
@@ -165,11 +166,16 @@ func (r *Router) Reload(cfg Config) error {
 		}
 	}
 	r.mu.Lock()
+	oldClients := r.clients
 	r.cfg = cfg
 	r.profiles = profs
 	r.rules = rules
 	r.clients = map[string]*http.Client{}
+	r.generation++
 	r.mu.Unlock()
+	for _, client := range oldClients {
+		client.CloseIdleConnections()
+	}
 	return nil
 }
 
@@ -273,17 +279,17 @@ func (r *Router) ClientForProxy(proxyID string, timeout time.Duration) (*http.Cl
 	if proxyID == "" {
 		proxyID = Direct
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	decision := Decision{ProxyID: proxyID}
 	if proxyID != Direct {
-		r.mu.RLock()
 		proxyURL, ok := r.profiles[proxyID]
-		r.mu.RUnlock()
 		if !ok {
 			return nil, fmt.Errorf("unknown proxy %q", proxyID)
 		}
 		decision.ProxyURL = proxyURL
 	}
-	fixed, err := r.fixedClient(decision)
+	fixed, err := r.fixedClientLocked(decision)
 	if err != nil {
 		return nil, err
 	}
@@ -296,21 +302,18 @@ type routingTransport struct {
 }
 
 func (t *routingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	d := t.router.Resolve(req.URL.String(), t.channelID)
-	c, err := t.router.fixedClient(d)
+	_, transport, _, err := t.router.transportFor(req.URL.String(), t.channelID)
 	if err != nil {
 		return nil, err
 	}
-	return c.Transport.RoundTrip(req)
+	return transport.RoundTrip(req)
 }
 
-func (r *Router) fixedClient(d Decision) (*http.Client, error) {
+func (r *Router) fixedClientLocked(d Decision) (*http.Client, error) {
 	key := d.ProxyID
 	if key == "" {
 		key = Direct
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
 	if c, ok := r.clients[key]; ok {
 		return c, nil
 	}
@@ -320,6 +323,21 @@ func (r *Router) fixedClient(d Decision) (*http.Client, error) {
 	}
 	r.clients[key] = c
 	return c, nil
+}
+
+func (r *Router) transportFor(targetURL, channelID string) (Decision, *http.Transport, uint64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	decision := r.resolveLocked(targetURL, channelID)
+	client, err := r.fixedClientLocked(decision)
+	if err != nil {
+		return Decision{}, nil, 0, err
+	}
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		return Decision{}, nil, 0, fmt.Errorf("unsupported transport %T", client.Transport)
+	}
+	return decision, transport, r.generation, nil
 }
 
 func buildClient(proxyURL *url.URL, _ time.Duration) (*http.Client, error) {

@@ -218,7 +218,7 @@ func TestNewRouterRejectsInvalidActiveRules(t *testing.T) {
 	}
 }
 
-func TestResolveUsesOneReloadSnapshot(t *testing.T) {
+func TestTransportForUsesOneReloadSnapshot(t *testing.T) {
 	configs := []Config{
 		{Default: "p", Profiles: []Profile{{ID: "p", URL: "http://proxy-a:1001"}}},
 		{Default: "p", Profiles: []Profile{{ID: "p", URL: "http://proxy-b:1002"}}},
@@ -250,7 +250,12 @@ func TestResolveUsesOneReloadSnapshot(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < iterations; i++ {
-			d := router.Resolve("https://example.com/live.mpd", "")
+			const target = "https://example.com/live.mpd"
+			d, transport, _, err := router.transportFor(target, "")
+			if err != nil {
+				report(err)
+				return
+			}
 			if d.ProxyURL == nil {
 				report(fmt.Errorf("mixed reload snapshot produced no proxy"))
 				return
@@ -258,6 +263,12 @@ func TestResolveUsesOneReloadSnapshot(t *testing.T) {
 			proxy := d.ProxyURL.String()
 			if proxy != "http://proxy-a:1001" && proxy != "http://proxy-b:1002" {
 				report(fmt.Errorf("mixed reload snapshot produced %q", proxy))
+				return
+			}
+			request, _ := http.NewRequest(http.MethodGet, target, nil)
+			transportProxy, err := transport.Proxy(request)
+			if err != nil || transportProxy == nil || transportProxy.String() != proxy {
+				report(fmt.Errorf("decision proxy %q used transport proxy %v: %w", proxy, transportProxy, err))
 				return
 			}
 		}

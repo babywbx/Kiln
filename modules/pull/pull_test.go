@@ -3,13 +3,79 @@ package pull
 import (
 	"context"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/babywbx/kiln/modules/proxyegress"
 )
+
+func TestClientReusesPinnedConnections(t *testing.T) {
+	var connections atomic.Int32
+	origin := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "ok")
+	}))
+	origin.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			connections.Add(1)
+		}
+	}
+	origin.Start()
+	defer origin.Close()
+	client := New(Options{Allowed: map[string]struct{}{"127.0.0.1": {}}})
+	for range 2 {
+		result, err := client.Get(context.Background(), Request{URL: origin.URL, ChannelID: "channel"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.Copy(io.Discard, result.Body)
+		_ = result.Body.Close()
+	}
+	if connections.Load() != 1 {
+		t.Fatalf("upstream connections = %d, want 1", connections.Load())
+	}
+}
+
+func TestClientSharedTransportKeepsChannelRouting(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "direct")
+	}))
+	defer origin.Close()
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "proxy")
+	}))
+	defer proxy.Close()
+	router, err := proxyegress.NewRouter(proxyegress.Config{
+		Default:  proxyegress.Direct,
+		Profiles: []proxyegress.Profile{{ID: "proxy", URL: proxy.URL}},
+		Rules: []proxyegress.Rule{{
+			Kind: proxyegress.KindChannel, Pattern: "proxied", ProxyID: "proxy",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := New(Options{Allowed: map[string]struct{}{"127.0.0.1": {}}, Router: router})
+	for _, test := range []struct {
+		channel string
+		want    string
+	}{{channel: "proxied", want: "proxy"}, {channel: "direct", want: "direct"}} {
+		result, err := client.Get(context.Background(), Request{URL: origin.URL, ChannelID: test.channel})
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := io.ReadAll(result.Body)
+		_ = result.Body.Close()
+		if err != nil || string(body) != test.want {
+			t.Fatalf("channel %q response = %q, %v; want %q", test.channel, body, err, test.want)
+		}
+	}
+}
 
 func TestDefaultRequestRejectsHostnameResolvingToPrivateAddress(t *testing.T) {
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

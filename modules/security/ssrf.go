@@ -105,7 +105,10 @@ func PinPublicProbeURL(ctx context.Context, rawURL string, allowedPrivate map[st
 		selected = ip
 	} else {
 		addresses, lookupErr := net.DefaultResolver.LookupIPAddr(ctx, host)
-		if lookupErr != nil || len(addresses) == 0 {
+		if lookupErr != nil {
+			return nil, fmt.Errorf("probe target dns lookup failed: %w", lookupErr)
+		}
+		if len(addresses) == 0 {
 			return nil, fmt.Errorf("probe target dns lookup failed")
 		}
 		for _, address := range addresses {

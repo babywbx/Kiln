@@ -65,7 +65,7 @@ func TestStopRedirectReturnsUpgradedLocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	next.Response = &http.Response{Header: http.Header{"Location": {"http://cdn.example.com/next.mpd"}}}
-	client := New(Options{}).pinnedClient("", "", nil, true, true)
+	client := New(Options{}).pinnedClient("", nil, true, true)
 	if err := client.CheckRedirect(next, []*http.Request{new(http.Request)}); err != http.ErrUseLastResponse {
 		t.Fatalf("redirect error = %v, want ErrUseLastResponse", err)
 	}

@@ -17,12 +17,12 @@ import (
 )
 
 type Client struct {
-	fallback    *http.Client
 	router      *proxyegress.Router
 	observe     *observe.Service
 	allowed     map[string]struct{}
 	maxPlaylist int64
 	stall       time.Duration
+	pinned      http.RoundTripper
 }
 
 type Options struct {
@@ -60,12 +60,12 @@ func New(opt Options) *Client {
 		}
 	}
 	return &Client{
-		fallback:    &http.Client{Transport: tr},
 		router:      opt.Router,
 		observe:     opt.Observe,
 		allowed:     opt.Allowed,
 		maxPlaylist: opt.MaxPlaylist,
 		stall:       opt.StallTimeout,
+		pinned:      proxyegress.NewPinnedTransport(tr, opt.Router, "", opt.Allowed),
 	}
 }
 
@@ -116,7 +116,7 @@ func (c *Client) Do(ctx context.Context, method string, req Request) (result Res
 	if method != http.MethodGet && method != http.MethodHead {
 		return Result{}, apperr.New(apperr.CodeInvalid, 400, "unsupported upstream method")
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, method, req.URL, nil)
+	httpReq, err := http.NewRequestWithContext(proxyegress.WithChannelID(ctx, req.ChannelID), method, req.URL, nil)
 	if err != nil {
 		return Result{}, apperr.Wrap(apperr.CodeInvalid, 400, "bad upstream url", err)
 	}
@@ -146,7 +146,7 @@ func (c *Client) Do(ctx context.Context, method string, req Request) (result Res
 		d := c.router.Resolve(req.URL, req.ChannelID)
 		proxyID, reason = d.ProxyID, d.Reason
 	}
-	client := c.pinnedClient(req.ChannelID, headerOrigin, req.Headers, req.StopRedirect, req.UpgradeInsecureRedirects)
+	client := c.pinnedClient(headerOrigin, req.Headers, req.StopRedirect, req.UpgradeInsecureRedirects)
 
 	resp, err := client.Do(httpReq)
 	if err != nil {
@@ -305,15 +305,13 @@ func (c *Client) UpgradeInsecureURL(u *url.URL) bool {
 }
 
 func (c *Client) pinnedClient(
-	channelID, headerOrigin string,
+	headerOrigin string,
 	customHeaders map[string]string,
 	stopRedirect bool,
 	upgradeInsecure bool,
 ) *http.Client {
 	return &http.Client{
-		Transport: proxyegress.NewPinnedTransport(
-			c.fallback.Transport.(*http.Transport), c.router, channelID, c.allowed,
-		),
+		Transport: c.pinned,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			upgraded := upgradeInsecure && c.UpgradeInsecureURL(req.URL)
 			if stopRedirect {

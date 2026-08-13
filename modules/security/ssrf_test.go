@@ -2,6 +2,8 @@ package security
 
 import (
 	"context"
+	"errors"
+	"net"
 	"net/url"
 	"testing"
 )
@@ -17,6 +19,23 @@ func TestPublicProbeURLRejectsSpecialDestinations(t *testing.T) {
 	}
 	if err := PublicProbeURL(context.Background(), "http://127.0.0.1/test", map[string]struct{}{"127.0.0.1": {}}); err != nil {
 		t.Fatalf("allowlisted target rejected: %v", err)
+	}
+}
+
+func TestPinPublicProbeURLPreservesDNSError(t *testing.T) {
+	original := net.DefaultResolver
+	net.DefaultResolver = &net.Resolver{
+		PreferGo: true,
+		Dial: func(context.Context, string, string) (net.Conn, error) {
+			return nil, &net.DNSError{Err: "temporary failure", IsTemporary: true}
+		},
+	}
+	defer func() { net.DefaultResolver = original }()
+
+	_, err := PinPublicProbeURL(context.Background(), "https://origin.example/manifest.mpd", nil)
+	var dnsErr *net.DNSError
+	if !errors.As(err, &dnsErr) || !dnsErr.IsTemporary {
+		t.Fatalf("DNS error = %v, want preserved temporary DNSError", err)
 	}
 }
 
