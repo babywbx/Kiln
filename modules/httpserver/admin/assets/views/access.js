@@ -3,7 +3,7 @@ import { endpoints } from "/admin/assets/core/api.js";
 import { loadCatalog, store } from "/admin/assets/core/store.js";
 import { vt } from "/admin/assets/core/view-i18n.js";
 import { badge, button, card, emptyState, field, input, notice, pageHead, select, table } from "/admin/assets/ui/kit.js";
-import { closeModal, confirmDialog, copyText, openModal, toast, toastError } from "/admin/assets/ui/overlay.js";
+import { closeModal, confirmDialog, copyButton, copyText, openModal, toast, toastError } from "/admin/assets/ui/overlay.js";
 
 const LOG_LIMIT = 100;
 
@@ -212,7 +212,7 @@ function showSecret(ctx, data) {
         kind: "primary",
         iconName: "copy",
         onClick: async () => {
-          await copyText(data.playlist_url, vt("access.playlistCopied"));
+          if (!(await copyText(data.playlist_url, vt("access.playlistCopied")))) return;
           closeModal();
           await ctx.reload();
         },
@@ -228,7 +228,7 @@ function secretBox(label, value) {
     { class: "secret" },
     h("strong", { text: label }),
     h("code", { class: "secret-value mono", text: value }),
-    button(vt("common.copy"), { size: "small", iconName: "copy", onClick: () => copyText(value, vt("access.labelCopied", { label })) }),
+    copyButton(value),
   );
 }
 

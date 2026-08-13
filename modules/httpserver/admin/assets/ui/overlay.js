@@ -221,12 +221,41 @@ function legacyCopy(value) {
   }
 }
 
-export async function copyText(value, message = "") {
+export async function copyText(value, message = "", { announce = true } = {}) {
   try {
     if (navigator.clipboard) await navigator.clipboard.writeText(value);
     else if (!legacyCopy(value)) throw new Error("clipboard unavailable");
-    toast(message || vt("common.copied"));
+    if (announce) toast(message || vt("common.copied"));
+    return true;
   } catch {
     toast(vt("common.copyFailed"), vt("common.copyDenied"), "danger");
+    return false;
   }
+}
+
+const COPIED_MS = 2000;
+
+export function copyButton(value, { size = "small" } = {}) {
+  const label = vt("common.copy");
+  let timer = 0;
+  const control = button(label, {
+    size,
+    iconName: "copy",
+    onClick: async () => {
+      const copied = await copyText(value, "", { announce: false });
+      control.classList.toggle("is-copied", copied);
+      control.classList.toggle("is-copy-failed", !copied);
+      control.replaceChildren(
+        icon(copied ? "check" : "circle-alert", 16),
+        h("span", { text: vt(copied ? "common.copied" : "common.copyFailed") }),
+      );
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        control.classList.remove("is-copied", "is-copy-failed");
+        control.replaceChildren(icon("copy", 16), h("span", { text: label }));
+      }, COPIED_MS);
+    },
+  });
+  control.setAttribute("aria-live", "polite");
+  return control;
 }

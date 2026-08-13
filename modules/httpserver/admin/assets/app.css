@@ -958,6 +958,23 @@ button.cell-link:disabled { cursor: default; }
 .secret { display: grid; gap: 10px; padding: 14px; border: 1px dashed var(--border-strong); border-radius: var(--r-md); background: var(--surface-soft); }
 .secret .button { justify-self: start; }
 .secret-value { display: block; padding: 10px; border-radius: var(--r-xs); background: var(--surface); word-break: break-all; }
+.code-block {
+  display: block;
+  max-height: 320px;
+  padding: 14px 16px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  background: var(--surface-soft);
+  color: var(--fg-soft);
+  font-size: 13px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.button.is-copied { color: var(--success); border-color: color-mix(in srgb, var(--success) 30%, transparent); background: var(--success-bg); }
+.button.is-copy-failed { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 30%, transparent); background: var(--danger-bg); }
 
 /* ---------------------------------------------------------------- overlays */
 

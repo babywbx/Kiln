@@ -2,7 +2,7 @@ import { formatTime, h } from "/admin/assets/core/dom.js";
 import { endpoints } from "/admin/assets/core/api.js";
 import { vt } from "/admin/assets/core/view-i18n.js";
 import { badge, button, card, emptyState, field, input, notice, select, setBusy, table } from "/admin/assets/ui/kit.js";
-import { closeModal, confirmDialog, copyText, openModal, toast, toastError } from "/admin/assets/ui/overlay.js";
+import { closeModal, confirmDialog, copyButton, copyText, openModal, toast, toastError } from "/admin/assets/ui/overlay.js";
 
 const SCOPES = ["read", "write", "delete", "refresh"];
 const PRESETS = {
@@ -187,7 +187,7 @@ function showIssuedToken(ctx, result, publicBase) {
     ),
     actions: [button(vt("apiToken.copyClose"), {
       kind: "primary", iconName: "copy",
-      onClick: async () => { await copyText(token, vt("apiToken.copied")); closeModal(); },
+      onClick: async () => { if (await copyText(token, vt("apiToken.copied"))) closeModal(); },
     })],
     onClose: () => ctx.reload(),
   });
@@ -203,7 +203,7 @@ function secretBox(label, value) {
     { class: "secret" },
     h("strong", { text: label }),
     h("code", { class: "secret-value mono", text: value }),
-    button(vt("common.copy"), { size: "small", iconName: "copy", onClick: () => copyText(value, vt("apiToken.copied")) }),
+    copyButton(value),
   );
 }
 

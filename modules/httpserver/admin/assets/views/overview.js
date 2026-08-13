@@ -1,9 +1,11 @@
 import { formatClock, formatNumber, frag, h } from "/admin/assets/core/dom.js";
 import { endpoints } from "/admin/assets/core/api.js";
 import { i18n } from "/admin/assets/core/i18n.js";
+import { errorSummary } from "/admin/assets/core/session-error.js";
 import { loadCatalog, refreshStatus, store } from "/admin/assets/core/store.js";
+import { vt } from "/admin/assets/core/view-i18n.js";
 import { badge, button, card, emptyState, linkButton, numberRoll, pageHead, table } from "/admin/assets/ui/kit.js";
-import { confirmDialog, toast, toastError } from "/admin/assets/ui/overlay.js";
+import { closeModal, confirmDialog, copyButton, openModal, toast, toastError } from "/admin/assets/ui/overlay.js";
 
 const ENGINE_LABELS = {
   native_rewrite: "overview.engine.nativeRewrite",
@@ -28,6 +30,31 @@ function engineLabel(session) {
 function sessionStateBadge(state) {
   const [key, tone] = SESSION_STATES[state] || ["overview.session.unknown", "neutral"];
   return badge(i18n.t(key, { state: state || "—" }), tone);
+}
+
+function showSessionError(channelID, message, returnFocusID) {
+  openModal({
+    title: i18n.t("overview.error.title"),
+    description: i18n.t("overview.error.description", { channel: channelID }),
+    body: h("code", { class: "code-block mono", text: message }),
+    actions: [copyButton(message, { size: "" }), button(vt("common.close"), { onClick: closeModal })],
+    onClose: () => document.getElementById(returnFocusID)?.focus(),
+  });
+}
+
+function errorCell(session) {
+  const message = (session.last_error || "").trim();
+  if (!message) return h("td", { class: "muted", text: "—" });
+  const controlID = `session-error-${encodeURIComponent(session.channel_id)}`;
+  const control = button(errorSummary(message), {
+    kind: "danger",
+    size: "small",
+    iconName: "circle-alert",
+    ariaLabel: i18n.t("overview.error.view", { channel: session.channel_id }),
+    onClick: () => showSessionError(session.channel_id, message, controlID),
+  });
+  control.id = controlID;
+  return h("td", {}, control);
 }
 
 export async function renderOverview(ctx) {
@@ -131,15 +158,16 @@ export async function renderOverview(ctx) {
       h(
         "tr",
         {},
-        h("td", {}, h("a", { class: "cell-link mono", href: `/admin/channels/${encodeURIComponent(session.channel_id)}`, "data-route": true, text: session.channel_id })),
+        h("td", {}, h("a", { class: "cell-link mono truncate", href: `/admin/channels/${encodeURIComponent(session.channel_id)}`, "data-route": true, text: session.channel_id })),
         h("td", {}, sessionStateBadge(session.state)),
         h("td", { text: (session.mode || "—").toUpperCase() }),
-        h("td", { class: "mono muted", text: engineLabel(session) }),
-        h("td", { class: "mono muted", text: session.pack_mode || "—" }),
-        h("td", { class: "muted truncate", text: session.last_error || "—" }),
+        h("td", { class: "muted truncate", text: engineLabel(session) }),
+        h("td", { class: "mono muted truncate", text: session.pack_mode || "—" }),
+        errorCell(session),
         h("td", {}, h("div", { class: "row-actions" }, button(i18n.t("overview.stop.action"), { kind: "danger", size: "small", onClick: () => stop(session.channel_id) }))),
       ),
     );
+    const offset = sessionBody.querySelector(".table-wrap")?.scrollLeft || 0;
     sessionBody.replaceChildren(table([
       i18n.t("overview.table.channel"),
       i18n.t("overview.table.status"),
@@ -149,6 +177,7 @@ export async function renderOverview(ctx) {
       i18n.t("overview.table.lastError"),
       "",
     ], rows));
+    if (offset) sessionBody.querySelector(".table-wrap").scrollLeft = offset;
   };
 
   paint();
