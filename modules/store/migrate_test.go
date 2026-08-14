@@ -1,11 +1,17 @@
 package store
 
 import (
+	"crypto/sha256"
 	"database/sql"
 	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/babywbx/kiln/modules/auth"
+	"github.com/babywbx/kiln/modules/channelconfig"
 	"github.com/babywbx/kiln/modules/config"
 )
 
@@ -33,6 +39,175 @@ func TestOpenMigratesFromEveryIntermediateVersion(t *testing.T) {
 			assertMigratedDatabase(t, db, start)
 		})
 	}
+}
+
+func TestV100Schema13UpgradeSmoke(t *testing.T) {
+	dir := t.TempDir()
+	seedDatabaseAtVersion(t, dir, 13)
+
+	const passwordHash = "$2a$10$8JxhvnpdTX/TrOTi1XaYWuPlrZK1aw3ANgGIWpTO6KtD2M432w7Ie"
+	accessToken := "v1" + strings.Repeat("A", 126)
+	adminToken := "kiln_v1_" + strings.Repeat("B", 48)
+	accessTokenHash := fixtureTokenHash(accessToken)
+	adminTokenHash := fixtureTokenHash(adminToken)
+	raw, err := sql.Open("sqlite", "file:"+filepath.Join(dir, "kiln.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`
+UPDATE channels SET title='Upgrade Fixture', headers_json='{"Authorization":"Bearer fixture"}', revision=7
+  WHERE id='default-agent';
+UPDATE proxy_profiles SET name='Release Proxy', url='http://fixture:secret@proxy.example:8080', revision=3
+  WHERE id='proxy-1';
+UPDATE proxy_rules SET revision=5 WHERE id='rule-1';
+INSERT INTO settings(key, value, revision, updated_at) VALUES
+  ('egress_default','proxy-1',4,108),
+  ('playlist_policy','rewrite',4,108);
+`); err != nil {
+		_ = raw.Close()
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`UPDATE auth_overrides SET username='release-admin', password_hash=?, revision=6
+  WHERE config_username='admin'`, passwordHash); err != nil {
+		_ = raw.Close()
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`UPDATE access_tokens SET token_hash=?, token_prefix=?, scope_json='["default-agent"]', revision=8, updated_at=109
+  WHERE id='legacy-token'`, accessTokenHash, accessToken[:10]); err != nil {
+		_ = raw.Close()
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`UPDATE admin_api_tokens SET token_hash=?, token_prefix=?, scopes_json='["read","write"]', revision=9, updated_at=110
+  WHERE id='legacy-admin-token'`, adminTokenHash, adminToken[:16]); err != nil {
+		_ = raw.Close()
+		t.Fatal(err)
+	}
+	var startVersion int
+	if err := raw.QueryRow(`SELECT MAX(version) FROM schema_version`).Scan(&startVersion); err != nil {
+		_ = raw.Close()
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if startVersion != 13 {
+		t.Fatalf("fixture schema version = %d, want 13", startVersion)
+	}
+
+	preUpgradeAuth, err := auth.New(config.Auth{Users: []config.User{{
+		ConfigName: "admin", Username: "release-admin", PasswordHash: passwordHash, Role: "admin", Revision: 6,
+	}}}, time.Hour, auth.Options{DataDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	preUpgradeLogin, err := preUpgradeAuth.Login("release-admin", "admin")
+	if err != nil {
+		t.Fatalf("v1.0.0 credentials: %v", err)
+	}
+	keyPath := filepath.Join(dir, "auth", "ed25519.pem")
+	keyBefore, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := Open(dir)
+	if err != nil {
+		t.Fatalf("upgrade schema 13 database: %v", err)
+	}
+	defer db.Close()
+	startupCfg := config.File{
+		Upstreams: []config.Upstream{{ID: "origin", BaseURL: "https://origin.example"}},
+		Proxies:   []config.ProxyProfile{{ID: "proxy-1", Name: "Release Proxy", URL: "http://proxy.example:8080"}},
+		Egress: config.Egress{
+			Default: "proxy-1", PlaylistPolicy: "rewrite",
+			Rules: []config.EgressRule{{ID: "rule-1", Priority: 10, Kind: "host_suffix", Pattern: "example.com", Proxy: "proxy-1"}},
+		},
+	}
+	if err := db.SeedFromConfig(startupCfg); err != nil {
+		t.Fatalf("seed current startup config: %v", err)
+	}
+	var version int
+	if err := db.sql.QueryRow(`SELECT MAX(version) FROM schema_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != 14 {
+		t.Fatalf("schema version = %d, want 14", version)
+	}
+
+	channel, found, err := db.GetChannelRow("default-agent")
+	if err != nil || !found {
+		t.Fatalf("upgraded channel found=%v err=%v", found, err)
+	}
+	if channel.Channel.Title != "Upgrade Fixture" || channel.Channel.Headers["Authorization"] != "Bearer fixture" ||
+		channel.Channel.Upstream != "origin" || channel.Channel.Path != "/default.m3u8" || channel.Channel.Ingress != "hls" ||
+		channel.Channel.Disabled || channel.Channel.UpgradeInsecureRedirects || channel.Revision != 7 {
+		t.Fatalf("upgraded channel = %#v", channel)
+	}
+	sourceURL, err := channelconfig.SourceURL(startupCfg, channel.Channel)
+	if err != nil || sourceURL != "https://origin.example/default.m3u8" {
+		t.Fatalf("upgraded channel source URL = %q, err=%v", sourceURL, err)
+	}
+	egress, err := db.GetEgressSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if egress.Default != "proxy-1" || egress.PlaylistPolicy != "rewrite" || egress.Revision != 4 ||
+		len(egress.Profiles) != 1 || egress.Profiles[0].URL != "http://fixture:secret@proxy.example:8080" || egress.Profiles[0].Revision != 3 ||
+		len(egress.Rules) != 1 || egress.Rules[0].ProxyID != "proxy-1" || egress.Rules[0].Revision != 5 {
+		t.Fatalf("upgraded egress = %#v", egress)
+	}
+
+	users, err := db.ApplyAuthOverrides([]config.User{{Username: "admin", PasswordHash: passwordHash, Role: "admin"}})
+	if err != nil || len(users) != 1 || users[0].Username != "release-admin" || users[0].Revision != 6 {
+		t.Fatalf("upgraded auth users = %#v, err=%v", users, err)
+	}
+	postUpgradeAuth, err := auth.New(config.Auth{Users: users}, time.Hour, auth.Options{DataDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := postUpgradeAuth.Parse(preUpgradeLogin.Token); err != nil {
+		t.Fatalf("pre-upgrade session token after upgrade: %v", err)
+	}
+	if _, err := postUpgradeAuth.Login("release-admin", "admin"); err != nil {
+		t.Fatalf("upgraded credentials: %v", err)
+	}
+	keyAfter, err := os.ReadFile(keyPath)
+	if err != nil || string(keyAfter) != string(keyBefore) {
+		t.Fatalf("signing key changed, err=%v", err)
+	}
+
+	if len(accessToken) != 128 || !strings.HasPrefix(accessToken, "v1") {
+		t.Fatal("v1.0.0 access token has an invalid format")
+	}
+	accessRow, found, err := db.GetAccessTokenByHash(accessTokenHash)
+	accessScopes := decodeStrings(accessRow.ScopeJSON)
+	if err != nil || !found || accessRow.ID != "legacy-token" || accessRow.TokenHash != accessTokenHash || accessRow.Prefix != accessToken[:10] ||
+		accessRow.Revision != 8 || !accessRow.Enabled || accessRow.ExpiresAt != 0 || accessRow.RevokedAt != 0 ||
+		len(accessScopes) != 1 || accessScopes[0] != "default-agent" {
+		t.Fatalf("upgraded access token = %#v, found=%v err=%v", accessRow, found, err)
+	}
+	if len(adminToken) != len("kiln_v1_")+48 || !strings.HasPrefix(adminToken, "kiln_v1_") {
+		t.Fatal("v1.0.0 admin API token has an invalid format")
+	}
+	adminRow, found, err := db.GetAdminAPITokenByHash(adminTokenHash)
+	adminScopes := decodeStrings(adminRow.ScopeJSON)
+	if err != nil || !found || adminRow.ID != "legacy-admin-token" || adminRow.TokenHash != adminTokenHash || adminRow.Prefix != adminToken[:16] ||
+		adminRow.Revision != 9 || !adminRow.Enabled || adminRow.ExpiresAt != 0 || adminRow.RevokedAt != 0 ||
+		len(adminScopes) != 2 || adminScopes[0] != "read" || adminScopes[1] != "write" {
+		t.Fatalf("upgraded admin API token = %#v, found=%v err=%v", adminRow, found, err)
+	}
+
+	playlist := channelconfig.M3U([]config.Channel{channel.Channel}, channelconfig.M3UOptions{
+		PublicBase: "https://kiln.example", PlayPathPrefix: "/p/" + accessToken + "/play/",
+	})
+	playURL := "https://kiln.example/p/" + accessToken + "/play/default-agent/index.m3u8"
+	if !strings.Contains(playlist, playURL) {
+		t.Fatalf("upgraded playlist missing play URL: %s", playlist)
+	}
+}
+
+func fixtureTokenHash(token string) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(token)))
 }
 
 func seedDatabaseAtVersion(t *testing.T, dir string, target int) {
