@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/babywbx/kiln/modules/apperr"
 	"github.com/babywbx/kiln/modules/proxyegress"
 )
 
@@ -212,6 +213,79 @@ func TestCrossOriginRedirectDoesNotForwardSourceQueryInReferer(t *testing.T) {
 	_ = result.Body.Close()
 	if got := <-referer; got != "" {
 		t.Fatalf("cross-origin Referer = %q, want empty", got)
+	}
+}
+
+func TestMediaErrorPreservationIsNarrowAndOptIn(t *testing.T) {
+	const upstreamBody = "upstream-secret-body"
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		status, err := strconv.Atoi(r.URL.Query().Get("status"))
+		if err != nil {
+			http.Error(w, "bad status", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Accept-Ranges", "bytes")
+		w.Header().Set("Content-Range", "bytes */10")
+		w.Header().Set("ETag", `"error-v1"`)
+		w.Header().Set("X-Origin-Secret", "do-not-forward")
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, upstreamBody)
+	}))
+	defer origin.Close()
+
+	tests := []struct {
+		name       string
+		status     int
+		preserve   bool
+		wantResult bool
+		wantRange  string
+	}{
+		{name: "default not found", status: http.StatusNotFound},
+		{name: "preserved not found", status: http.StatusNotFound, preserve: true, wantResult: true},
+		{name: "preserved gone", status: http.StatusGone, preserve: true, wantResult: true},
+		{name: "preserved range", status: http.StatusRequestedRangeNotSatisfiable, preserve: true, wantResult: true, wantRange: "bytes */10"},
+		{name: "other error", status: http.StatusUnauthorized, preserve: true},
+	}
+	client := New(Options{Allowed: map[string]struct{}{"127.0.0.1": {}}})
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result, err := client.Get(context.Background(), Request{
+				URL: origin.URL + "?status=" + strconv.Itoa(test.status), PreserveMediaErrors: test.preserve,
+			})
+			if !test.wantResult {
+				if err == nil {
+					_ = result.Body.Close()
+					t.Fatalf("status %d unexpectedly returned a result", test.status)
+				}
+				appErr, ok := apperr.As(err)
+				if !ok || appErr.HTTPStatus != http.StatusBadGateway {
+					t.Fatalf("status %d error = %v, want controlled 502", test.status, err)
+				}
+				if got, want := err.Error(), "upstream status "+strconv.Itoa(test.status); got != want {
+					t.Fatalf("status %d error = %q, want %q", test.status, got, want)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer result.Body.Close()
+			body, readErr := io.ReadAll(result.Body)
+			if readErr != nil || len(body) != 0 {
+				t.Fatalf("status %d body = %q, err=%v", test.status, body, readErr)
+			}
+			if result.StatusCode != test.status || result.ContentLength != -1 || result.ContentType != "" {
+				t.Fatalf("status %d result = %+v", test.status, result)
+			}
+			if got := result.Header.Get("Content-Range"); got != test.wantRange {
+				t.Fatalf("status %d Content-Range = %q, want %q", test.status, got, test.wantRange)
+			}
+			for _, name := range []string{"Accept-Ranges", "ETag", "X-Origin-Secret"} {
+				if got := result.Header.Get(name); got != "" {
+					t.Fatalf("status %d leaked %s %q", test.status, name, got)
+				}
+			}
+		})
 	}
 }
 

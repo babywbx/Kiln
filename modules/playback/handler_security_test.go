@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -111,6 +112,218 @@ func TestHandleUpstreamAcceptsURLSignedByRewrittenPlaylist(t *testing.T) {
 					test.name, tamperedResponse.Code, tamperedResponse.Body.String())
 			}
 		})
+	}
+}
+
+func TestHandleUpstreamPreservesRangeResponseWithoutForwardingPlayerCredentials(t *testing.T) {
+	received := make(chan http.Header, 2)
+	var origin *httptest.Server
+	origin = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/index.m3u8":
+			w.Header().Set("Content-Type", "application/x-mpegurl")
+			_, _ = io.WriteString(w, "#EXTM3U\n"+origin.URL+"/segment.ts\n")
+		case "/segment.ts":
+			received <- r.Header.Clone()
+			w.Header().Set("Accept-Ranges", "bytes")
+			w.Header().Set("ETag", `"range-v1"`)
+			w.Header().Set("Last-Modified", "Mon, 02 Jan 2006 15:04:05 GMT")
+			w.Header().Set("X-Origin-Secret", "do-not-forward")
+			if r.Header.Get("Range") == "bytes=2-5" {
+				w.Header().Set("Content-Range", "bytes 2-5/10")
+				w.Header().Set("Content-Length", "4")
+				w.WriteHeader(http.StatusPartialContent)
+				_, _ = io.WriteString(w, "2345")
+				return
+			}
+			w.Header().Set("Content-Length", "10")
+			_, _ = io.WriteString(w, "0123456789")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer origin.Close()
+
+	handler := newSecurityTestHandler(t, origin.URL, nil, 0)
+	indexRequest := httptest.NewRequest(http.MethodGet, "/v1/play/news/index.m3u8", nil)
+	indexRequest.SetPathValue("id", "news")
+	indexResponse := httptest.NewRecorder()
+	handler.HandleIndex(indexResponse, indexRequest)
+	if indexResponse.Code != http.StatusOK {
+		t.Fatalf("index status = %d, want 200: %s", indexResponse.Code, indexResponse.Body.String())
+	}
+	proxyURL := strings.TrimSpace(strings.Split(indexResponse.Body.String(), "\n")[1])
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/play/{id}/u/{upstream}", handler.HandleUpstream)
+
+	rangeRequest := httptest.NewRequest(http.MethodGet, proxyURL, nil)
+	rangeRequest.Header.Set("Range", "bytes=2-5")
+	rangeRequest.Header.Set("If-Range", `"range-v1"`)
+	rangeRequest.Header.Set("Authorization", "Bearer player-secret")
+	rangeRequest.Header.Set("Cookie", "player=session-secret")
+	rangeRequest.Header.Set("X-Player-Secret", "do-not-forward")
+	rangeResponse := httptest.NewRecorder()
+	mux.ServeHTTP(rangeResponse, rangeRequest)
+
+	upstreamHeaders := <-received
+	if got := upstreamHeaders.Get("Range"); got != "bytes=2-5" {
+		t.Fatalf("upstream Range = %q, want bytes=2-5", got)
+	}
+	if got := upstreamHeaders.Get("If-Range"); got != `"range-v1"` {
+		t.Fatalf("upstream If-Range = %q, want quoted etag", got)
+	}
+	for _, name := range []string{"Authorization", "Cookie", "X-Player-Secret"} {
+		if got := upstreamHeaders.Get(name); got != "" {
+			t.Fatalf("upstream received player %s %q", name, got)
+		}
+	}
+	if rangeResponse.Code != http.StatusPartialContent {
+		t.Fatalf("range status = %d, want 206", rangeResponse.Code)
+	}
+	if got := rangeResponse.Body.String(); got != "2345" {
+		t.Fatalf("range body = %q, want 2345", got)
+	}
+	for name, want := range map[string]string{
+		"Accept-Ranges":  "bytes",
+		"Content-Length": "4",
+		"Content-Range":  "bytes 2-5/10",
+		"ETag":           `"range-v1"`,
+		"Last-Modified":  "Mon, 02 Jan 2006 15:04:05 GMT",
+	} {
+		if got := rangeResponse.Header().Get(name); got != want {
+			t.Fatalf("range %s = %q, want %q", name, got, want)
+		}
+	}
+	if got := rangeResponse.Header().Get("X-Origin-Secret"); got != "" {
+		t.Fatalf("range response leaked unsafe header %q", got)
+	}
+
+	fullRequest := httptest.NewRequest(http.MethodGet, proxyURL, nil)
+	fullResponse := httptest.NewRecorder()
+	mux.ServeHTTP(fullResponse, fullRequest)
+	fullUpstreamHeaders := <-received
+	if fullUpstreamHeaders.Get("Range") != "" || fullUpstreamHeaders.Get("If-Range") != "" {
+		t.Fatalf("ordinary request gained range headers: %v", fullUpstreamHeaders)
+	}
+	if fullResponse.Code != http.StatusOK || fullResponse.Body.String() != "0123456789" {
+		t.Fatalf("ordinary response = %d %q, want 200 full body", fullResponse.Code, fullResponse.Body.String())
+	}
+}
+
+func TestHandleUpstreamPreservesOnlySelectedMediaErrorStatuses(t *testing.T) {
+	const upstreamBody = "upstream-secret-body"
+	tests := []struct {
+		name           string
+		asset          string
+		upstreamStatus int
+		wantStatus     int
+		wantRange      bool
+	}{
+		{name: "not found", asset: "missing.ts", upstreamStatus: http.StatusNotFound, wantStatus: http.StatusNotFound},
+		{name: "gone", asset: "gone.ts", upstreamStatus: http.StatusGone, wantStatus: http.StatusGone},
+		{name: "range unsatisfied", asset: "range.ts", upstreamStatus: http.StatusRequestedRangeNotSatisfiable, wantStatus: http.StatusRequestedRangeNotSatisfiable, wantRange: true},
+		{name: "other error", asset: "unauthorized.ts", upstreamStatus: http.StatusUnauthorized, wantStatus: http.StatusBadGateway},
+		{name: "nested playlist", asset: "child.m3u8", upstreamStatus: http.StatusNotFound, wantStatus: http.StatusNotFound},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/index.m3u8" {
+					w.Header().Set("Content-Type", "application/x-mpegurl")
+					_, _ = io.WriteString(w, "#EXTM3U\n"+test.asset+"\n")
+					return
+				}
+				w.Header().Set("Accept-Ranges", "bytes")
+				w.Header().Set("Content-Length", strconv.Itoa(len(upstreamBody)))
+				w.Header().Set("Content-Range", "bytes */10")
+				w.Header().Set("Content-Type", "application/x-upstream-secret")
+				w.Header().Set("ETag", `"error-v1"`)
+				w.Header().Set("Last-Modified", "Mon, 02 Jan 2006 15:04:05 GMT")
+				w.Header().Set("X-Origin-Secret", "do-not-forward")
+				w.WriteHeader(test.upstreamStatus)
+				_, _ = io.WriteString(w, upstreamBody)
+			}))
+			defer origin.Close()
+
+			handler := newSecurityTestHandler(t, origin.URL, nil, 0)
+			indexRequest := httptest.NewRequest(http.MethodGet, "/v1/play/news/index.m3u8", nil)
+			indexRequest.SetPathValue("id", "news")
+			indexResponse := httptest.NewRecorder()
+			handler.HandleIndex(indexResponse, indexRequest)
+			if indexResponse.Code != http.StatusOK {
+				t.Fatalf("index status = %d, want 200: %s", indexResponse.Code, indexResponse.Body.String())
+			}
+			proxyURL := strings.TrimSpace(strings.Split(indexResponse.Body.String(), "\n")[1])
+			mux := http.NewServeMux()
+			mux.HandleFunc("GET /v1/play/{id}/u/{upstream}", handler.HandleUpstream)
+			response := httptest.NewRecorder()
+			mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, proxyURL, nil))
+
+			if response.Code != test.wantStatus {
+				t.Fatalf("status = %d, want %d: %s", response.Code, test.wantStatus, response.Body.String())
+			}
+			if strings.Contains(response.Body.String(), upstreamBody) {
+				t.Fatalf("response leaked upstream error body: %q", response.Body.String())
+			}
+			if test.wantStatus != http.StatusBadGateway && response.Body.Len() != 0 {
+				t.Fatalf("preserved error body = %q, want empty", response.Body.String())
+			}
+			for _, name := range []string{"Accept-Ranges", "Content-Length", "ETag", "Last-Modified", "X-Origin-Secret"} {
+				if got := response.Header().Get(name); got != "" {
+					t.Fatalf("response leaked upstream %s %q", name, got)
+				}
+			}
+			if got := response.Header().Get("Content-Type"); got == "application/x-upstream-secret" {
+				t.Fatalf("response leaked upstream Content-Type %q", got)
+			}
+			wantRange := ""
+			if test.wantRange {
+				wantRange = "bytes */10"
+			}
+			if got := response.Header().Get("Content-Range"); got != wantRange {
+				t.Fatalf("Content-Range = %q, want %q", got, wantRange)
+			}
+		})
+	}
+}
+
+func TestHandleUpstreamPlaylistDoesNotInheritMediaResponseHeaders(t *testing.T) {
+	const childPlaylist = "#EXTM3U\nsegment.ts\n"
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/index.m3u8" {
+			w.Header().Set("Content-Type", "application/x-mpegurl")
+			_, _ = io.WriteString(w, "#EXTM3U\nchild.m3u8\n")
+			return
+		}
+		w.Header().Set("Accept-Ranges", "bytes")
+		w.Header().Set("Content-Length", strconv.Itoa(len(childPlaylist)))
+		w.Header().Set("Content-Range", "bytes 0-9/10")
+		w.Header().Set("Content-Type", "application/x-mpegurl")
+		w.Header().Set("ETag", `"playlist-v1"`)
+		w.Header().Set("Last-Modified", "Mon, 02 Jan 2006 15:04:05 GMT")
+		_, _ = io.WriteString(w, childPlaylist)
+	}))
+	defer origin.Close()
+
+	handler := newSecurityTestHandler(t, origin.URL, nil, 0)
+	indexRequest := httptest.NewRequest(http.MethodGet, "/v1/play/news/index.m3u8", nil)
+	indexRequest.SetPathValue("id", "news")
+	indexResponse := httptest.NewRecorder()
+	handler.HandleIndex(indexResponse, indexRequest)
+	proxyURL := strings.TrimSpace(strings.Split(indexResponse.Body.String(), "\n")[1])
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/play/{id}/u/{upstream}", handler.HandleUpstream)
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, proxyURL, nil))
+
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "/v1/play/news/u/") {
+		t.Fatalf("playlist response = %d %q", response.Code, response.Body.String())
+	}
+	for _, name := range []string{"Accept-Ranges", "Content-Length", "Content-Range", "ETag", "Last-Modified"} {
+		if got := response.Header().Get(name); got != "" {
+			t.Fatalf("playlist inherited %s %q", name, got)
+		}
 	}
 }
 

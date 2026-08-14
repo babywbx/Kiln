@@ -334,17 +334,38 @@ func (h *Handler) HandleUpstream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, sourceURL, _, _ := active.SourceSnapshot()
+	forwardHeaders := make(http.Header)
+	for _, name := range []string{"Range", "If-Range"} {
+		for _, value := range r.Header.Values(name) {
+			forwardHeaders.Add(name, value)
+		}
+	}
 	response, err := h.deps.Sessions.Pull().Get(r.Context(), pull.Request{
 		URL: absolute, UserAgent: version.UserAgent(channel.UserAgent),
 		Headers: h.deps.Sessions.HeadersFor(channel), HeaderOrigin: sourceURL, ChannelID: id,
+		ForwardHeaders:           forwardHeaders,
+		PreserveMediaErrors:      true,
 		UpgradeInsecureRedirects: h.deps.Cfg.UpgradeInsecureRedirectsFor(channel),
 	})
 	if err != nil {
 		h.deps.Observe.IncError()
-		writeAppError(w, err)
+		code, status, _ := apperr.PublicMessage(err)
+		writeAppError(w, apperr.New(code, status, "upstream request failed"))
 		return
 	}
 	defer response.Body.Close()
+	if response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusGone ||
+		response.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+		h.deps.Observe.IncError()
+		w.Header().Set("Cache-Control", "no-cache")
+		if response.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+			if contentRange := response.Header.Get("Content-Range"); contentRange != "" {
+				w.Header().Set("Content-Range", contentRange)
+			}
+		}
+		w.WriteHeader(response.StatusCode)
+		return
+	}
 	contentType := response.ContentType
 	if contentType == "" {
 		contentType = contentTypeFor(absolute)
@@ -389,17 +410,33 @@ func (h *Handler) HandleUpstream(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Cache-Control", "no-cache")
-	stream := &commitTrackingWriter{ResponseWriter: w}
+	responseHeaderNames := []string{"Content-Range", "Accept-Ranges", "Content-Length", "ETag", "Last-Modified"}
+	for _, name := range responseHeaderNames {
+		for _, value := range response.Header.Values(name) {
+			w.Header().Add(name, value)
+		}
+	}
+	if w.Header().Get("Content-Length") == "" && response.ContentLength >= 0 {
+		w.Header().Set("Content-Length", strconv.FormatInt(response.ContentLength, 10))
+	}
+	stream := &commitTrackingWriter{ResponseWriter: w, statusCode: response.StatusCode}
 	written, copyErr := io.Copy(stream, response.Body)
 	h.deps.Observe.AddBytesOut(written)
 	if copyErr != nil {
 		h.deps.Observe.IncError()
 		h.deps.Log.Warn("stream upstream body failed", "channel", id, "err", copyErr)
 		if !stream.committed {
+			for _, name := range responseHeaderNames {
+				w.Header().Del(name)
+			}
 			writeAppError(w, apperr.Wrap(apperr.CodeUpstream, http.StatusBadGateway, "read upstream body failed", copyErr))
 			return
 		}
 		panic(http.ErrAbortHandler)
+	}
+	if !stream.committed {
+		w.WriteHeader(response.StatusCode)
+		stream.committed = true
 	}
 }
 
@@ -781,13 +818,15 @@ func (w *bodyCountWriter) Write(body []byte) (int, error) {
 
 type commitTrackingWriter struct {
 	http.ResponseWriter
-	committed bool
+	committed  bool
+	statusCode int
 }
 
 func (w *commitTrackingWriter) Write(body []byte) (int, error) {
-	written, err := w.ResponseWriter.Write(body)
-	if written > 0 {
+	if !w.committed {
+		w.WriteHeader(w.statusCode)
 		w.committed = true
 	}
+	written, err := w.ResponseWriter.Write(body)
 	return written, err
 }

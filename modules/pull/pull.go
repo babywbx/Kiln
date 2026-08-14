@@ -90,6 +90,7 @@ type Request struct {
 	HeaderOrigin             string
 	ChannelID                string
 	StopRedirect             bool
+	PreserveMediaErrors      bool
 	UpgradeInsecureRedirects bool
 }
 
@@ -156,9 +157,24 @@ func (c *Client) Do(ctx context.Context, method string, req Request) (result Res
 	}
 	resp.Body = newStallGuard(resp.Body, c.observe, c.stall, abandon)
 	if resp.StatusCode >= 400 {
+		if req.PreserveMediaErrors && (resp.StatusCode == http.StatusNotFound ||
+			resp.StatusCode == http.StatusGone ||
+			resp.StatusCode == http.StatusRequestedRangeNotSatisfiable) {
+			header := make(http.Header)
+			if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+				if contentRange := resp.Header.Get("Content-Range"); contentRange != "" {
+					header.Set("Content-Range", contentRange)
+				}
+			}
+			_ = resp.Body.Close()
+			return Result{
+				Body: http.NoBody, Header: header, StatusCode: resp.StatusCode, ContentLength: -1,
+				FinalURL: resp.Request.URL.String(), ProxyID: proxyID, ProxyReason: reason,
+			}, nil
+		}
 		defer resp.Body.Close()
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return Result{}, apperr.New(apperr.CodeUpstream, 502, fmt.Sprintf("upstream status %s: %s", resp.Status, string(b)))
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 2048))
+		return Result{}, apperr.New(apperr.CodeUpstream, 502, fmt.Sprintf("upstream status %d", resp.StatusCode))
 	}
 	return Result{
 		Body:          resp.Body,
