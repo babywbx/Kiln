@@ -46,7 +46,11 @@ func RewritePlaylist(
 		if err != nil {
 			return "", err
 		}
-		out = append(out, mapURL(abs, proxyPrefix, allowedPrivate, shouldRewrite, sign))
+		mapped, err := mapURL(abs, proxyPrefix, allowedPrivate, shouldRewrite, sign)
+		if err != nil {
+			return "", err
+		}
+		out = append(out, mapped)
 	}
 	return strings.Join(out, "\n"), nil
 }
@@ -72,7 +76,11 @@ func rewriteTagURI(
 	if err != nil {
 		return "", err
 	}
-	return tag[:start] + mapURL(abs, proxyPrefix, allowedPrivate, shouldRewrite, sign) + tag[start+end:], nil
+	mapped, err := mapURL(abs, proxyPrefix, allowedPrivate, shouldRewrite, sign)
+	if err != nil {
+		return "", err
+	}
+	return tag[:start] + mapped + tag[start+end:], nil
 }
 
 func mapURL(
@@ -80,23 +88,23 @@ func mapURL(
 	allowedPrivate map[string]struct{},
 	shouldRewrite RewriteDecision,
 	sign UpstreamSigner,
-) string {
+) (string, error) {
+	if shouldRewrite != nil && !shouldRewrite(abs) {
+		return abs, nil
+	}
 	if err := security.MediaHostOK(abs, allowedPrivate); err != nil {
 		if err2 := security.HostAllowed(abs, allowedPrivate); err2 != nil {
-			return abs
+			return "", err
 		}
 	}
-	if shouldRewrite != nil && !shouldRewrite(abs) {
-		return abs
-	}
 	if sign == nil {
-		return abs
+		return abs, nil
 	}
 	signature := sign(abs)
 	if signature == "" {
-		return abs
+		return abs, nil
 	}
-	return proxyPrefix + EncodeUpstream(abs) + "?sig=" + url.QueryEscape(signature)
+	return proxyPrefix + EncodeUpstream(abs) + "?sig=" + url.QueryEscape(signature), nil
 }
 
 func EncodeUpstream(absolute string) string {

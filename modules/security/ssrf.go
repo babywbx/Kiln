@@ -50,11 +50,16 @@ func MediaHostOK(rawURL string, allowedPrivate map[string]struct{}) error {
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return fmt.Errorf("scheme not allowed")
 	}
-	host := strings.ToLower(u.Hostname())
+	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
 	if host == "" {
 		return fmt.Errorf("empty host")
 	}
+	_, explicitlyAllowed := allowedPrivate[host]
 	if metadataHost(host) {
+		return fmt.Errorf("host not allowed: %s", host)
+	}
+	if !explicitlyAllowed && (host == "localhost" || strings.HasSuffix(host, ".localhost") || strings.HasSuffix(host, ".local") ||
+		strings.HasSuffix(host, ".internal")) {
 		return fmt.Errorf("host not allowed: %s", host)
 	}
 	if ip := net.ParseIP(host); ip != nil {
@@ -65,13 +70,13 @@ func MediaHostOK(rawURL string, allowedPrivate map[string]struct{}) error {
 			return fmt.Errorf("host not allowed: %s", host)
 		}
 		if ip.IsLoopback() || ip.IsPrivate() {
-			if _, ok := allowedPrivate[host]; !ok {
+			if !explicitlyAllowed {
 				return fmt.Errorf("private host not allowlisted: %s", host)
 			}
 		}
 		return nil
 	}
-	if _, ok := allowedPrivate[host]; ok {
+	if explicitlyAllowed {
 		return nil
 	}
 	return nil

@@ -152,10 +152,11 @@ func TestHandleUpstreamStripsChannelHeadersFromCrossOriginAssets(t *testing.T) {
 	}
 }
 
-func TestHandleUpstreamRejectsSignedHostnameResolvingToPrivateAddress(t *testing.T) {
+func TestHandleIndexFailsClosedForSpecialHostname(t *testing.T) {
+	const target = "http://localhost.:1/private.ts?token=upstream-secret"
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
-		_, _ = io.WriteString(w, "#EXTM3U\nhttp://localhost:1/private.ts\n")
+		_, _ = io.WriteString(w, "#EXTM3U\n"+target+"\n")
 	}))
 	defer origin.Close()
 
@@ -164,21 +165,14 @@ func TestHandleUpstreamRejectsSignedHostnameResolvingToPrivateAddress(t *testing
 	indexRequest.SetPathValue("id", "news")
 	indexResponse := httptest.NewRecorder()
 	handler.HandleIndex(indexResponse, indexRequest)
-	if indexResponse.Code != http.StatusOK {
-		t.Fatalf("index status = %d, body = %s", indexResponse.Code, indexResponse.Body.String())
+	if indexResponse.Code != http.StatusInternalServerError {
+		t.Fatalf("index status = %d, want 500: %s", indexResponse.Code, indexResponse.Body.String())
 	}
-	proxyURL := strings.TrimSpace(strings.Split(indexResponse.Body.String(), "\n")[1])
-	upstream := strings.TrimPrefix(strings.SplitN(proxyURL, "?", 2)[0], "/v1/play/news/u/")
-	request := httptest.NewRequest(http.MethodGet, proxyURL, nil)
-	request.SetPathValue("id", "news")
-	request.SetPathValue("upstream", upstream)
-	response := httptest.NewRecorder()
-
-	handler.HandleUpstream(response, request)
-
-	if response.Code != http.StatusForbidden {
-		t.Fatalf("private DNS target status = %d, want 403: %s",
-			response.Code, response.Body.String())
+	body := indexResponse.Body.String()
+	for _, secret := range []string{target, egress.EncodeUpstream(target), "/u/", "upstream-secret"} {
+		if strings.Contains(body, secret) {
+			t.Fatalf("controlled error leaked %q in %s", secret, body)
+		}
 	}
 }
 
@@ -209,8 +203,8 @@ func TestHandleIndexRejectsPrivateDNSWithoutExplicitAllowlist(t *testing.T) {
 
 	handler.HandleIndex(response, request)
 
-	if response.Code != http.StatusBadGateway {
-		t.Fatalf("private HLS source status = %d, want 502: %s", response.Code, response.Body.String())
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("private HLS source status = %d, want 403: %s", response.Code, response.Body.String())
 	}
 	if reached.Load() {
 		t.Fatal("private HLS source received a request")

@@ -41,6 +41,68 @@ https://cdn.example/x.ts
 	}
 }
 
+func TestRewritePlaylistFailsClosedForForbiddenTargets(t *testing.T) {
+	tests := []struct {
+		name   string
+		target string
+		line   string
+	}{
+		{"private media", "http://10.0.0.1/private.ts", "http://10.0.0.1/private.ts"},
+		{"loopback tag", "http://127.0.0.1/key", `#EXT-X-KEY:METHOD=AES-128,URI="http://127.0.0.1/key"`},
+		{"loopback hostname", "http://localhost.:1/private.ts", "http://localhost.:1/private.ts"},
+		{"metadata media", "http://169.254.169.254/latest/meta-data", "http://169.254.169.254/latest/meta-data"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			out, err := RewritePlaylist(
+				"#EXTM3U\n"+test.line+"\n", "https://origin.example/live/index.m3u8",
+				"/v1/play/ch/u/", nil, func(string) bool { return true }, func(string) string { return "signed" },
+			)
+			if err == nil {
+				t.Fatal("expected forbidden target error")
+			}
+			if contains(out, test.target) {
+				t.Fatalf("forbidden target leaked in output: %s", out)
+			}
+		})
+	}
+}
+
+func TestRewritePlaylistAllowsExplicitPrivateTarget(t *testing.T) {
+	for _, test := range []struct {
+		target string
+		host   string
+	}{
+		{"http://10.0.0.1/private.ts", "10.0.0.1"},
+		{"http://localhost./private.ts", "localhost"},
+	} {
+		out, err := RewritePlaylist(
+			"#EXTM3U\n"+test.target+"\n", "https://origin.example/live/index.m3u8", "/v1/play/ch/u/",
+			map[string]struct{}{test.host: {}}, func(string) bool { return true }, func(string) string { return "signed" },
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !contains(out, "/v1/play/ch/u/") || contains(out, test.target) {
+			t.Fatalf("explicit private target was not rewritten: %s", out)
+		}
+	}
+}
+
+func TestRewritePlaylistPassthroughKeepsForbiddenTarget(t *testing.T) {
+	const target = "http://127.0.0.1/private.ts"
+	out, err := RewritePlaylist(
+		"#EXTM3U\n"+target+"\n", "https://origin.example/live/index.m3u8", "/v1/play/ch/u/",
+		nil, func(string) bool { return false }, func(string) string { return "signed" },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(out, target) {
+		t.Fatalf("passthrough target changed: %s", out)
+	}
+}
+
 func contains(s, sub string) bool {
 	return len(s) >= len(sub) && indexOf(s, sub) >= 0
 }
