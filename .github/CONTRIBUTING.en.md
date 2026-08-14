@@ -31,7 +31,7 @@ Before pasting configuration or logs, remove passwords, API tokens, play keys, d
 
 | Requirement | Version | Used for |
 | --- | --- | --- |
-| Go | 1.26.5 | The server |
+| Go | 1.26.6 | The server |
 | pnpm | See `package.json` | Documentation site and frontend checks |
 | Docker | Any recent version | Images and container tests, optional |
 
