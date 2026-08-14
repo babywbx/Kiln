@@ -1442,18 +1442,28 @@ func (s *Server) handleAdminEgressTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer res.Body.Close()
-	_, _ = io.CopyN(io.Discard, res.Body, 4096)
+	sample := sampleProbeBody(res.Body)
 	ok := res.StatusCode == http.StatusOK
 	out["ok"] = ok
 	out["reachable"] = true
 	out["status"] = res.StatusCode
 	out["final_url"] = publicURL(res.Request.URL.String(), false)
 	out["via_proxy"] = d.ProxyID
+	out["ttfb_ms"] = sample.firstByte.Milliseconds()
+	out["sample_bytes"] = sample.bytes
+	if sample.measurable {
+		out["throughput_kbps"] = sample.kbps
+	}
+	floor := probeThroughputFloor(s.deps.Cfg.Egress.MinTestKbps)
 	switch {
 	case res.StatusCode == http.StatusProxyAuthRequired:
 		out["outcome"], out["error"] = "proxy_auth", "the proxy requires authentication"
 	case res.StatusCode != http.StatusOK:
 		out["outcome"], out["error"] = "http_error", fmt.Sprintf("the test target returned HTTP %d", res.StatusCode)
+	case sample.measurable && floor > 0 && sample.kbps < floor:
+		out["ok"] = false
+		out["outcome"] = "slow"
+		out["error"] = fmt.Sprintf("the destination answered but only delivered %d kbps", sample.kbps)
 	default:
 		out["outcome"] = "success"
 	}

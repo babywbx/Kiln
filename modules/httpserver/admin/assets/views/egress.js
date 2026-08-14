@@ -1,6 +1,6 @@
 import { frag, h, icon } from "/admin/assets/core/dom.js";
 import { endpoints } from "/admin/assets/core/api.js";
-import { egressOutcomeMessage } from "/admin/assets/core/egress-status.js";
+import { egressOutcomeMessage, egressThroughputLabel } from "/admin/assets/core/egress-status.js";
 import { i18n } from "/admin/assets/core/i18n.js";
 import { loadCatalog, sourceURL, store } from "/admin/assets/core/store.js";
 import { badge, button, card, emptyState, field, input, notice, pageHead, select, setBusy, table } from "/admin/assets/ui/kit.js";
@@ -509,7 +509,8 @@ function resultNotice(result, expectedProxy = "") {
   const route = result.reason === "default" ? i18n.t("egress.result.defaultRoute") : i18n.t("egress.result.matchedRoute", { reason: result.reason || i18n.t("egress.result.defaultRoute") });
   const playlist = i18n.t(result.rewrite ? "egress.policy.rewrite" : "egress.policy.passthrough");
   const finalURL = result.final_url ? i18n.t("egress.result.finalURL", { url: result.final_url }) : "";
-  return notice(i18n.t("egress.result.success", { route, via, playlist, status: result.status, duration: result.dur_ms, finalURL }), "success", "circle-check");
+  const throughput = egressThroughputLabel(result);
+  return notice(i18n.t("egress.result.success", { route, via, playlist, status: result.status, duration: result.dur_ms, finalURL }) + throughput, "success", "circle-check");
 }
 
 function exportableProxy(proxy) {

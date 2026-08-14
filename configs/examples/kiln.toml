@@ -164,6 +164,10 @@ playlist_policy = "rewrite"
 # Only used when ffmpeg.mode = "docker": how the spawned ffmpeg container
 # reaches this process. Unrelated to the proxy urls above.
 # docker_proxy_host = "host.docker.internal"
+# Throughput floor for the connection test, in kbps. A destination that answers
+# but delivers less than this cannot carry live media, so the test says so
+# instead of reporting success. Negative disables the verdict.
+min_test_kbps = 1000
 
 # [[egress.rules]]
 # id = "example-cdn"

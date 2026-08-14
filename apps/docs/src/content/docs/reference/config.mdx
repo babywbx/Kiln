@@ -249,6 +249,7 @@ pprof 使用独立的监听器与路由，永远不会挂到对外的 HTTP 服�
 | `default` | string | `"direct"` | 未命中任何规则时使用的线路，必须是 `direct` 或某个已定义且启用的 `[[proxies]].id`，否则校验失败。 |
 | `playlist_policy` | string | `"rewrite"` | 播放列表地址改写策略，取值 `rewrite`、`passthrough`、`auto`，其它值校验失败。`rewrite` 始终改写为经由 Kiln 的地址，`passthrough` 始终保留原始地址，`auto` 仅在实际走了代理时改写。 |
 | `docker_proxy_host` | string | `"host.docker.internal"` | 仅在 `ffmpeg.mode = "docker"` 时生效，ffmpeg 子容器用这个主机名回连 Kiln 进程。不影响 `[[proxies]].url`，Kiln 从不改写线路地址。 |
+| `min_test_kbps` | int | `1000` | 连通性测试的吞吐门槛。测试会实际读取一段响应并测速，低于该值即判定为「可达但不足以承载播放」，而不是报成功。响应太小无法测速时不做判定，只报连通结果。负数关闭该判定。 |
 | `rules` | array | `[]` | 路由规则，见下方 `[[egress.rules]]`。 |
 
 ## `[[egress.rules]]`
