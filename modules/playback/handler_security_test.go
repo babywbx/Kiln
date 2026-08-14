@@ -586,6 +586,94 @@ func TestHandleIndexNeverAddsSessionTokenToExternalPlaylistURLs(t *testing.T) {
 	}
 }
 
+func TestHandleIndexAutoDirectProxiesOnlyConfiguredUpstreamRequests(t *testing.T) {
+	tests := []struct {
+		name       string
+		policy     proxyegress.PlaylistPolicy
+		headers    map[string]string
+		userAgent  string
+		wantProxy  bool
+		wantHeader string
+		wantAgent  string
+	}{
+		{
+			name: "fixed header", policy: proxyegress.PolicyAuto,
+			headers:   map[string]string{"X-Channel-Secret": "top-secret"},
+			wantProxy: true, wantHeader: "top-secret",
+		},
+		{
+			name: "custom user agent", policy: proxyegress.PolicyAuto,
+			userAgent: "channel-player", wantProxy: true, wantAgent: "channel-player",
+		},
+		{name: "no upstream configuration", policy: proxyegress.PolicyAuto},
+		{
+			name: "explicit passthrough", policy: proxyegress.PolicyPassthrough,
+			headers:   map[string]string{"X-Channel-Secret": "top-secret"},
+			userAgent: "channel-player",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			received := make(chan http.Header, 1)
+			origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/index.m3u8" {
+					w.Header().Set("Content-Type", "application/x-mpegurl")
+					_, _ = io.WriteString(w, "#EXTM3U\nsegment.ts\n")
+					return
+				}
+				received <- r.Header.Clone()
+				_, _ = io.WriteString(w, "segment")
+			}))
+			defer origin.Close()
+
+			handler := newSecurityTestHandler(t, origin.URL, test.headers, 0, test.userAgent)
+			router, err := proxyegress.NewRouter(proxyegress.Config{
+				Default: proxyegress.Direct, PlaylistPolicy: test.policy,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			handler.deps.Egress = router
+			indexRequest := httptest.NewRequest(http.MethodGet, "/v1/play/news/index.m3u8", nil)
+			indexRequest.SetPathValue("id", "news")
+			indexResponse := httptest.NewRecorder()
+			handler.HandleIndex(indexResponse, indexRequest)
+			if indexResponse.Code != http.StatusOK {
+				t.Fatalf("index status = %d, want 200: %s", indexResponse.Code, indexResponse.Body.String())
+			}
+			childURL := strings.TrimSpace(strings.Split(indexResponse.Body.String(), "\n")[1])
+			proxied := strings.HasPrefix(childURL, "/v1/play/news/u/")
+			if proxied != test.wantProxy {
+				t.Fatalf("child URL = %q, proxied = %v, want %v", childURL, proxied, test.wantProxy)
+			}
+			if !test.wantProxy {
+				if want := origin.URL + "/segment.ts"; childURL != want {
+					t.Fatalf("direct child URL = %q, want %q", childURL, want)
+				}
+				return
+			}
+
+			mux := http.NewServeMux()
+			mux.HandleFunc("GET /v1/play/{id}/u/{upstream}", handler.HandleUpstream)
+			segmentResponse := httptest.NewRecorder()
+			mux.ServeHTTP(segmentResponse, httptest.NewRequest(http.MethodGet, childURL, nil))
+			if segmentResponse.Code != http.StatusOK || segmentResponse.Body.String() != "segment" {
+				t.Fatalf("segment response = %d %q", segmentResponse.Code, segmentResponse.Body.String())
+			}
+			upstreamHeaders := <-received
+			if got := upstreamHeaders.Get("X-Channel-Secret"); got != test.wantHeader {
+				t.Fatalf("upstream fixed header = %q, want %q", got, test.wantHeader)
+			}
+			if test.wantAgent != "" {
+				if got := upstreamHeaders.Get("User-Agent"); got != test.wantAgent {
+					t.Fatalf("upstream User-Agent = %q, want %q", got, test.wantAgent)
+				}
+			}
+		})
+	}
+}
+
 func TestMaxViewersForcesPlaylistProxying(t *testing.T) {
 	handler := newSecurityTestHandler(t, "https://origin.example", nil, 1)
 	router, err := proxyegress.NewRouter(proxyegress.Config{
@@ -606,11 +694,15 @@ func newSecurityTestHandler(
 	baseURL string,
 	headers map[string]string,
 	maxViewers int,
+	userAgent ...string,
 ) *Handler {
 	t.Helper()
 	channel := config.Channel{
 		ID: "news", Title: "News", Ingress: "hls", SourceURL: baseURL + "/index.m3u8",
 		Headers: headers, MaxViewers: maxViewers,
+	}
+	if len(userAgent) > 0 {
+		channel.UserAgent = userAgent[0]
 	}
 	cfg := config.File{Channels: []config.Channel{channel}}
 	cat := catalog.New(cfg, nil)

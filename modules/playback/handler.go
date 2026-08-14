@@ -154,8 +154,19 @@ func (h *Handler) serveHLSIndex(w http.ResponseWriter, r *http.Request, active *
 
 func (h *Handler) shouldRewrite(channelID string) egress.RewriteDecision {
 	channel, _ := h.deps.Catalog.Get(channelID)
+	requiresUpstreamConfiguration := strings.TrimSpace(channel.UserAgent) != ""
+	for name, value := range h.deps.Sessions.HeadersFor(channel) {
+		if strings.TrimSpace(name) != "" && strings.TrimSpace(value) != "" {
+			requiresUpstreamConfiguration = true
+			break
+		}
+	}
+	forceAutoProxy := h.deps.Egress != nil &&
+		h.deps.Egress.Config().PlaylistPolicy == proxyegress.PolicyAuto &&
+		requiresUpstreamConfiguration
 	return func(absolute string) bool {
 		return channel.MaxViewers > 0 ||
+			forceAutoProxy ||
 			h.deps.Egress == nil ||
 			h.deps.Egress.ShouldRewriteURL(absolute, channelID)
 	}
