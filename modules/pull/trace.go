@@ -4,6 +4,7 @@ package pull
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"go.opentelemetry.io/otel"
@@ -25,7 +26,7 @@ func startRequestTrace(ctx context.Context, method, host string) (context.Contex
 
 func (t requestTrace) finish(status int, err error) {
 	if err != nil {
-		t.span.RecordError(err)
+		t.span.RecordError(errors.New("upstream request failed"))
 		t.span.SetStatus(codes.Error, "upstream request failed")
 	} else {
 		t.span.SetAttributes(attribute.Int("http.response.status_code", status))

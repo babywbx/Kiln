@@ -703,7 +703,7 @@ func (s *Server) recordAdminTokenLog(r *http.Request, token store.AdminAPITokenR
 		return
 	}
 	_ = s.deps.Store.InsertAdminAPITokenLog(store.AdminAPITokenLogRow{
-		TokenID: token.ID, TokenPrefix: token.Prefix, Method: r.Method, Path: r.URL.Path,
+		TokenID: token.ID, TokenPrefix: token.Prefix, Method: r.Method, Path: redactRequestPath(r.URL.Path),
 		Scope: scope, Decision: decision, Reason: reason, Status: status, Remote: security.ClientIP(r),
 		UserAgent: r.UserAgent(), RequestID: r.Header.Get("X-Request-ID"),
 	})
@@ -755,19 +755,22 @@ func writeAppErr(w http.ResponseWriter, err error) {
 }
 
 func redactRequestPath(raw string) string {
-	if !strings.HasPrefix(raw, "/p/") {
-		return raw
+	if strings.HasPrefix(raw, "/p/") {
+		rest := strings.TrimPrefix(raw, "/p/")
+		token, suffix, ok := strings.Cut(rest, "/")
+		if !ok || token == "" {
+			return "/p/[redacted]"
+		}
+		prefix := accesstoken.Prefix(token)
+		if prefix == "" {
+			prefix = "[redacted]"
+		}
+		raw = "/p/" + prefix + "…/" + suffix
 	}
-	rest := strings.TrimPrefix(raw, "/p/")
-	token, suffix, ok := strings.Cut(rest, "/")
-	if !ok || token == "" {
-		return "/p/[redacted]"
+	if prefix, _, ok := strings.Cut(raw, "/u/"); ok {
+		return prefix + "/u/[redacted]"
 	}
-	prefix := accesstoken.Prefix(token)
-	if prefix == "" {
-		prefix = "[redacted]"
-	}
-	return "/p/" + prefix + "…/" + suffix
+	return raw
 }
 
 func randomID() string {
