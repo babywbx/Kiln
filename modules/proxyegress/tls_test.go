@@ -2,6 +2,7 @@ package proxyegress
 
 import (
 	"crypto/tls"
+	"net/http"
 	"testing"
 )
 
@@ -45,5 +46,22 @@ func TestSetUpstreamRSAKeyExchangeSwitchesTheOfferedSuites(t *testing.T) {
 	SetUpstreamRSAKeyExchange(true)
 	if UpstreamTLSConfig().CipherSuites == nil {
 		t.Fatal("allowing rsa key exchange must reach the transports")
+	}
+}
+
+func TestUpstreamTransportsKeepAConnectionPerParallelTrack(t *testing.T) {
+	if upstreamIdleConnsPerHost <= 2 {
+		t.Fatalf("per-host idle pool = %d: go's default of 2 forces a fresh tls handshake for every track past the second", upstreamIdleConnsPerHost)
+	}
+	client, err := buildClient(nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport = %T", client.Transport)
+	}
+	if transport.MaxIdleConnsPerHost != upstreamIdleConnsPerHost {
+		t.Fatalf("direct pool = %d, want %d", transport.MaxIdleConnsPerHost, upstreamIdleConnsPerHost)
 	}
 }

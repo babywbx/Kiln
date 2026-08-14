@@ -13,6 +13,13 @@ var rsaKeyExchangeSuites = []uint16{
 	tls.TLS_RSA_WITH_AES_256_CBC_SHA,
 }
 
+// HTTP/2 is off behind a proxy, so every parallel track fetch needs its own connection.
+const upstreamIdleConnsPerHost = 32
+
+func UpstreamIdleConnsPerHost() int {
+	return upstreamIdleConnsPerHost
+}
+
 var upstreamRSAKeyExchange atomic.Bool
 
 func init() {

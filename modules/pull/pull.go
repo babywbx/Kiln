@@ -50,6 +50,7 @@ func New(opt Options) *Client {
 		}).DialContext,
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   proxyegress.UpstreamIdleConnsPerHost(),
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,

@@ -349,6 +349,7 @@ func buildClient(proxyURL *url.URL, _ time.Duration) (*http.Client, error) {
 		}).DialContext,
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          64,
+		MaxIdleConnsPerHost:   upstreamIdleConnsPerHost,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   12 * time.Second,
 		ResponseHeaderTimeout: 25 * time.Second,
