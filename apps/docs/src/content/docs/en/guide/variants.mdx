@@ -109,7 +109,7 @@ What the run supports:
 - In the official acceptance run, Lite completed 10 chains in a 1 CPU, 64 MiB container with a post-load RSS of 12.80 MiB and no OOM.
 
 <Aside type="caution" title="What this data cannot support">
-  The experiment used small deterministic fixtures, not real bitrates. It cannot support 1080p or 4K throughput rankings, multi-channel concurrency limits, CPU efficiency, time to first frame, or long-run memory stability, and it does not cover the memory and CPU cost of Full actually launching an ffmpeg fallback. Real deployments should run their own end-to-end acceptance and soak tests against the target channels.
+  The experiment used small deterministic fixtures, not real bitrates. It cannot support 1080p or 4K throughput rankings, multi-channel concurrency limits, CPU efficiency, time to first frame, or long-run memory stability, and it does not cover the memory and CPU cost of Full actually launching an ffmpeg fallback. Real deployments should run their own end-to-end acceptance and soak tests against the target channels; for field measurements at real bitrates, see [Measured performance](/en/guide/performance/).
 </Aside>
 
 ### Environment and method
