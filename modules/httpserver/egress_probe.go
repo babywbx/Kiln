@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"errors"
 	"io"
 	"time"
 )
@@ -20,35 +21,60 @@ type probeSample struct {
 	kbps       int64
 }
 
-// A reachable destination can still be too slow to carry media, and a small
-// response cannot tell us either way, so throughput is only reported when the
-// sample is large enough to mean something.
-func sampleProbeBody(body io.Reader) probeSample {
-	started := time.Now()
+// Small responses are measurable only after the window expires.
+func sampleProbeBody(body io.ReadCloser, requestStarted time.Time) (probeSample, error) {
+	return sampleProbeBodyWithin(body, requestStarted, probeSampleWindow)
+}
+
+func sampleProbeBodyWithin(body io.ReadCloser, requestStarted time.Time, window time.Duration) (probeSample, error) {
+	sampleStarted := time.Now()
+	firstByteAt := sampleStarted
 	sample := probeSample{}
 	buffer := make([]byte, 64<<10)
-	deadline := started.Add(probeSampleWindow)
 	firstByteSeen := false
+	var readErr error
+	expired := make(chan struct{})
+	timer := time.AfterFunc(window, func() {
+		_ = body.Close()
+		close(expired)
+	})
 
-	for sample.bytes < probeSampleBytes && time.Now().Before(deadline) {
-		read, err := body.Read(buffer)
+	for sample.bytes < probeSampleBytes {
+		remaining := probeSampleBytes - sample.bytes
+		read, err := body.Read(buffer[:min(int64(len(buffer)), remaining)])
 		if read > 0 {
 			if !firstByteSeen {
-				sample.firstByte = time.Since(started)
+				firstByteAt = time.Now()
+				sample.firstByte = firstByteAt.Sub(requestStarted)
 				firstByteSeen = true
 			}
 			sample.bytes += int64(read)
 		}
 		if err != nil {
+			readErr = err
 			break
 		}
 	}
-	sample.transfer = time.Since(started) - sample.firstByte
-	if sample.bytes >= probeSampleMinimum && sample.transfer > 0 {
-		sample.measurable = true
-		sample.kbps = sample.bytes * 8 / sample.transfer.Milliseconds()
+	windowElapsed := !timer.Stop()
+	if windowElapsed {
+		<-expired
 	}
-	return sample
+	sample.transfer = time.Since(firstByteAt)
+	if windowElapsed {
+		sample.transfer = time.Since(sampleStarted)
+	}
+	if sample.transfer > 0 && (windowElapsed || sample.bytes >= probeSampleMinimum) {
+		sample.measurable = true
+		sample.kbps = probeKbps(sample.bytes, sample.transfer)
+	}
+	if readErr != nil && !errors.Is(readErr, io.EOF) && !windowElapsed && sample.bytes < probeSampleBytes {
+		return sample, readErr
+	}
+	return sample, nil
+}
+
+func probeKbps(bytes int64, transfer time.Duration) int64 {
+	return bytes * 8 * int64(time.Second) / int64(transfer) / 1000
 }
 
 func probeThroughputFloor(configured int) int64 {

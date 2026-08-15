@@ -589,14 +589,13 @@ The connection test body:
 
 ```json
 {
-  "target": "custom",
-  "url": "https://example.com/live/index.m3u8",
+  "target": "public",
   "channel_id": "demo-hls",
   "proxy_id": "eu-1"
 }
 ```
 
-A `target` of `bing` uses the built-in public probe URL. `source` and `custom` require `url`, and the destination must be a public address. With no `target` and no `url`, the built-in probe is used. `proxy_url` tests an unsaved route directly, and `draft` tests an entire unsaved configuration. The response is always 200; the outcome lives in the fields:
+A `target` of `public` uses the built-in public HTTPS probe. `source` and `custom` require `url`, and the destination must be a public address. With no `target` and no `url`, the built-in probe is used. `proxy_url` tests an unsaved route directly, and `draft` tests an entire unsaved configuration. A valid test request returns 200 even when connectivity fails and reports the outcome in the response fields; authentication, request validation, target safety validation, and server errors still use their corresponding non-200 statuses:
 
 ```json
 {
@@ -606,15 +605,17 @@ A `target` of `bing` uses the built-in public probe URL. `source` and `custom` r
   "status": 200,
   "proxy_id": "eu-1",
   "via_proxy": "eu-1",
-  "reason": "rule:eu",
+  "reason": "default",
   "rewrite": true,
-  "final_url": "https://example.com/live/index.m3u8",
-  "dur_ms": 180,
-  "target": "custom"
+  "final_url": "https://example.com/",
+  "ttfb_ms": 42,
+  "sample_bytes": 559,
+  "dur_ms": 43,
+  "target": "public"
 }
 ```
 
-On failure `ok` is `false` and `outcome` is one of `blocked`, `dns`, `timeout`, `tls`, `proxy`, `proxy_auth`, `http_error`, or `network`, with an `error` description alongside.
+On failure `ok` is `false` and `outcome` is one of `slow`, `blocked`, `dns`, `timeout`, `tls`, `proxy`, `proxy_auth`, `http_error`, or `network`, with an `error` description alongside. `ttfb_ms` and `sample_bytes` are present after an HTTP response is received; `throughput_kbps` is included only when the sample can support a throughput verdict. `slow` means the target was reachable but measured below `egress.min_test_kbps`.
 
 ## Lite variant
 

@@ -216,7 +216,7 @@ function buildEditor(ctx, channel, revision, isNew, epg, egress) {
     egressStatus.textContent = vt("channel.egressTesting");
     try {
       const result = await endpoints.testEgress({
-        target: "bing",
+        target: "public",
         channel_id: idInput.value.trim() || channel.id,
         proxy_id: route.mode === "direct" ? "direct" : route.profile_id || "",
         proxy_url: route.new_proxy?.url || "",

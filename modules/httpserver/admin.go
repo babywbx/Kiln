@@ -1317,16 +1317,18 @@ func (s *Server) handleAdminEgressTest(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Target = strings.ToLower(strings.TrimSpace(req.Target))
 	req.URL = strings.TrimSpace(req.URL)
+	const builtInProbeURL = "https://example.com/"
 	switch req.Target {
 	case "":
 		if req.URL == "" {
-			req.Target = "bing"
-			req.URL = "http://bing.com/"
+			req.Target = "public"
+			req.URL = builtInProbeURL
 		} else {
 			req.Target = "source"
 		}
-	case "bing":
-		req.URL = "http://bing.com/"
+	case "public", "bing":
+		req.Target = "public"
+		req.URL = builtInProbeURL
 	case "source", "custom":
 		if req.URL == "" {
 			writeAppErr(w, apperr.New(apperr.CodeInvalid, http.StatusBadRequest, "custom connection test requires a URL"))
@@ -1338,7 +1340,16 @@ func (s *Server) handleAdminEgressTest(w http.ResponseWriter, r *http.Request) {
 	}
 	allowedPrivate := s.deps.Cfg.ExplicitAllowedHostSet()
 	if req.Target == "source" || req.Target == "custom" {
+		started := time.Now()
 		if err := security.PublicProbeURL(r.Context(), req.URL, allowedPrivate); err != nil {
+			outcome, message := egressProbeFailure(err)
+			if outcome == "dns" || outcome == "timeout" {
+				writeJSON(w, http.StatusOK, map[string]any{
+					"ok": false, "reachable": false, "outcome": outcome, "error": message,
+					"dur_ms": time.Since(started).Milliseconds(), "target": req.Target,
+				})
+				return
+			}
 			writeAppErr(w, apperr.New(apperr.CodeForbidden, http.StatusForbidden, err.Error()))
 			return
 		}
@@ -1423,18 +1434,19 @@ func (s *Server) handleAdminEgressTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpRequest.Header.Set("User-Agent", version.UserAgent(""))
+	httpRequest.Header.Set("Accept-Encoding", "identity")
 	res, err := client.Do(httpRequest)
 	out := map[string]any{
 		"proxy_id": d.ProxyID,
 		"reason":   d.Reason,
 		"rewrite":  d.Rewrite,
-		"dur_ms":   time.Since(start).Milliseconds(),
 		"target":   req.Target,
 	}
 	if d.ProxyURL != nil {
 		out["proxy_url"] = d.ProxyURL.Scheme + "://" + d.ProxyURL.Host
 	}
 	if err != nil {
+		out["dur_ms"] = time.Since(start).Milliseconds()
 		out["ok"] = false
 		out["reachable"] = false
 		out["outcome"], out["error"] = egressProbeFailure(err)
@@ -1442,8 +1454,9 @@ func (s *Server) handleAdminEgressTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer res.Body.Close()
-	sample := sampleProbeBody(res.Body)
+	sample, sampleErr := sampleProbeBody(res.Body, start)
 	ok := res.StatusCode == http.StatusOK
+	out["dur_ms"] = time.Since(start).Milliseconds()
 	out["ok"] = ok
 	out["reachable"] = true
 	out["status"] = res.StatusCode
@@ -1453,6 +1466,12 @@ func (s *Server) handleAdminEgressTest(w http.ResponseWriter, r *http.Request) {
 	out["sample_bytes"] = sample.bytes
 	if sample.measurable {
 		out["throughput_kbps"] = sample.kbps
+	}
+	if sampleErr != nil {
+		out["ok"] = false
+		out["outcome"], out["error"] = egressProbeFailure(sampleErr)
+		writeJSON(w, http.StatusOK, out)
+		return
 	}
 	floor := probeThroughputFloor(s.deps.Cfg.Egress.MinTestKbps)
 	switch {
@@ -1475,12 +1494,19 @@ func egressProbeFailure(err error) (string, string) {
 	var netErr net.Error
 	message := strings.ToLower(err.Error())
 	switch {
-	case strings.Contains(message, "probe target") || strings.Contains(message, "private"):
-		return "blocked", "the test was blocked because its destination is not public"
-	case errors.As(err, &dnsErr):
+	case errors.Is(err, proxyegress.ErrUnpinnableProxyTarget):
+		return "blocked", "plain HTTP targets cannot be safely pinned through an HTTP proxy"
+	case errors.Is(err, io.ErrUnexpectedEOF):
+		return "network", "the test response ended before the sample completed"
+	case strings.Contains(message, "proxy authentication required") ||
+		strings.Contains(message, "proxyconnect") && strings.Contains(message, "407"):
+		return "proxy_auth", "the proxy requires authentication"
+	case errors.As(err, &dnsErr) || strings.Contains(message, "dns lookup failed"):
 		return "dns", "the test target could not be resolved"
 	case errors.As(err, &netErr) && netErr.Timeout():
 		return "timeout", "the connection timed out"
+	case strings.Contains(message, "probe target") || strings.Contains(message, "private"):
+		return "blocked", "the test was blocked because its destination is not public"
 	case strings.Contains(message, "tls") || strings.Contains(message, "x509") || strings.Contains(message, "certificate"):
 		return "tls", "the TLS connection could not be established"
 	case strings.Contains(message, "proxyconnect") || strings.Contains(message, "socks"):

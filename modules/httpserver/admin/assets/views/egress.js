@@ -221,9 +221,9 @@ export async function renderEgress(ctx) {
   };
 
   const testTarget = select("test_target", [
-    ["bing", i18n.t("egress.test.targetBing")],
+    ["public", i18n.t("egress.test.targetPublic")],
     ["source", i18n.t("egress.test.targetSource")],
-  ], "bing");
+  ], "public");
   const testURL = input("test_url", "", { type: "url", placeholder: "https://example.com/live/index.m3u8" });
   const testChannel = select("test_channel", [["", i18n.t("egress.test.noChannel")], ...store.channels.map((channel) => [channel.id, channel.title || channel.id])], "");
   const testTargetField = field(i18n.t("egress.test.target"), testTarget);

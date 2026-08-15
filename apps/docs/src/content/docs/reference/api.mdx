@@ -589,14 +589,13 @@ DASH 频道的探测返回 `{"ok": true, "dur_ms": 1200, "inspection": {...}}`�
 
 ```json
 {
-  "target": "custom",
-  "url": "https://example.com/live/index.m3u8",
+  "target": "public",
   "channel_id": "demo-hls",
   "proxy_id": "eu-1"
 }
 ```
 
-`target` 取 `bing` 时使用内置公网探测地址，取 `source` 或 `custom` 时必须提供 `url` 且目标必须是公网地址，缺省在没有 `url` 时按内置地址处理。`proxy_url` 可以直接测试一条尚未保存的线路，`draft` 可以整体测试一份尚未保存的配置草稿。响应始终是 200，结果在字段里：
+`target` 取 `public` 时使用内置公网 HTTPS 探测地址，取 `source` 或 `custom` 时必须提供 `url` 且目标必须是公网地址，缺省且没有 `url` 时按内置地址处理。`proxy_url` 可以直接测试一条尚未保存的线路，`draft` 可以整体测试一份尚未保存的配置草稿。有效测试请求即使连通性失败也返回 200，并在结果字段中表达；鉴权、请求校验、目标安全校验与服务端错误仍返回对应的非 200 状态：
 
 ```json
 {
@@ -606,15 +605,17 @@ DASH 频道的探测返回 `{"ok": true, "dur_ms": 1200, "inspection": {...}}`�
   "status": 200,
   "proxy_id": "eu-1",
   "via_proxy": "eu-1",
-  "reason": "rule:eu",
+  "reason": "default",
   "rewrite": true,
-  "final_url": "https://example.com/live/index.m3u8",
-  "dur_ms": 180,
-  "target": "custom"
+  "final_url": "https://example.com/",
+  "ttfb_ms": 42,
+  "sample_bytes": 559,
+  "dur_ms": 43,
+  "target": "public"
 }
 ```
 
-失败时 `ok` 为 `false`，`outcome` 取值为 `blocked`、`dns`、`timeout`、`tls`、`proxy`、`proxy_auth`、`http_error` 或 `network`，并附 `error` 描述。
+失败时 `ok` 为 `false`，`outcome` 取值为 `slow`、`blocked`、`dns`、`timeout`、`tls`、`proxy`、`proxy_auth`、`http_error` 或 `network`，并附 `error` 描述。`ttfb_ms` 与 `sample_bytes` 在成功收到 HTTP 响应后给出；只有样本足以判断吞吐时才有 `throughput_kbps`。`slow` 表示目标可达，但实测吞吐低于 `egress.min_test_kbps`。
 
 ## Lite 变体
 
