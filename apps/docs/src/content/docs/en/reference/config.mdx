@@ -239,7 +239,7 @@ See [EPG](/en/guide/epg/) for channel matching and built-in source behavior.
 | --- | --- | --- | --- |
 | `id` | string | Required | Route identifier, referenced by `egress.default`, `[[egress.rules]]`, and `[[epg.sources]]`. `direct` is reserved and means no proxy. |
 | `name` | string | `""` | Display name. |
-| `url` | string | Required | Proxy address. Schemes are limited to `http`, `https`, `socks5`, `socks5h` — for example `http://127.0.0.1:7890` or `socks5h://127.0.0.1:7891`. |
+| `url` | string | Required | Proxy address. Schemes are limited to `http`, `https`, `socks5`, `socks5h`, for example `http://127.0.0.1:7890` or `socks5h://127.0.0.1:7891`. Kiln resolves and pins the target IP for every scheme; `socks5h` remains only as a compatibility spelling. A plain HTTP upstream cannot use an HTTP(S) forward proxy; use an HTTPS upstream or SOCKS5 instead. |
 | `disabled` | bool | `false` | Whether the route is inactive. A default or enabled rule pointing at it fails config validation or the admin update rather than falling back to direct. |
 
 ## `[egress]`

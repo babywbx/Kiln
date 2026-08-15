@@ -3,6 +3,7 @@ package pull
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -11,9 +12,98 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/babywbx/kiln/modules/proxyegress"
 )
+
+func TestHTTPSProxyTLSHandshakeTimesOut(t *testing.T) {
+	client, silentProxy := net.Pipe()
+	defer func() { _ = client.Close() }()
+	defer func() { _ = silentProxy.Close() }()
+
+	started := time.Now()
+	_, err := handshakeProxyTLS(context.Background(), client, "proxy.example", 25*time.Millisecond)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("TLS handshake error = %v, want context deadline exceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("TLS handshake took %s", elapsed)
+	}
+}
+
+func TestDialPinnedHTTPSProxyHandshakeFailureReturnsError(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = listener.Close() }()
+
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		connection, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		_, _ = connection.Write([]byte("not TLS"))
+		_ = connection.Close()
+	}()
+
+	connection, err := dialPinnedTarget(context.Background(), &url.URL{
+		Scheme: "https",
+		Host:   listener.Addr().String(),
+	}, "192.0.2.1:443")
+	if connection != nil {
+		_ = connection.Close()
+	}
+	if err == nil {
+		t.Fatal("HTTPS proxy handshake succeeded with invalid TLS")
+	}
+	<-served
+}
+
+func TestDialPinnedSOCKSNegotiationTimesOut(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	go func() {
+		connection, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer func() { _ = connection.Close() }()
+		_ = connection.SetDeadline(time.Now().Add(time.Second))
+		_, _ = io.Copy(io.Discard, connection)
+	}()
+
+	proxyURL := &url.URL{Scheme: "socks5", Host: listener.Addr().String()}
+	type result struct {
+		connection net.Conn
+		err        error
+	}
+	completed := make(chan result, 1)
+	go func() {
+		connection, err := dialPinnedThroughSOCKS(
+			context.Background(), proxyURL, "192.0.2.1:443", 25*time.Millisecond,
+		)
+		completed <- result{connection: connection, err: err}
+	}()
+
+	select {
+	case got := <-completed:
+		if got.connection != nil {
+			_ = got.connection.Close()
+		}
+		if got.err == nil {
+			t.Fatal("silent SOCKS proxy unexpectedly completed negotiation")
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("silent SOCKS proxy did not honor the dial timeout")
+	}
+}
 
 func TestDialPinnedChainsThroughHTTPProxy(t *testing.T) {
 	target, err := net.Listen("tcp", "127.0.0.1:0")
@@ -101,7 +191,7 @@ func TestDialPinnedChainsThroughHTTPProxy(t *testing.T) {
 }
 
 func TestDialPinnedChainsThroughSOCKSProxy(t *testing.T) {
-	target, err := net.Listen("tcp", "127.0.0.1:0")
+	target, err := net.Listen("tcp", ":0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,8 +239,10 @@ func TestDialPinnedChainsThroughSOCKSProxy(t *testing.T) {
 	if string(response) != "ping" {
 		t.Fatalf("tunnel response = %q, want ping", response)
 	}
-	if got, want := <-connectTarget, net.JoinHostPort("localhost", targetPort); got != want {
-		t.Fatalf("SOCKS5H target = %q, want proxy-resolved hostname %q", got, want)
+	got := <-connectTarget
+	host, port, err := net.SplitHostPort(got)
+	if err != nil || net.ParseIP(host) == nil || port != targetPort {
+		t.Fatalf("SOCKS5H target = %q, want locally pinned IP on port %s", got, targetPort)
 	}
 }
 
@@ -213,6 +305,12 @@ func startTestSOCKS5(t *testing.T, connectTarget chan<- string) string {
 				return
 			}
 			host = string(destination)
+		case 0x04:
+			destination := make([]byte, net.IPv6len)
+			if _, err := io.ReadFull(client, destination); err != nil {
+				return
+			}
+			host = net.IP(destination).String()
 		default:
 			return
 		}

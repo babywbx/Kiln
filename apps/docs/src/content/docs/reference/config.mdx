@@ -239,7 +239,7 @@ pprof 使用独立的监听器与路由，永远不会挂到对外的 HTTP 服�
 | --- | --- | --- | --- |
 | `id` | string | 必填 | 线路标识，被 `egress.default`、`[[egress.rules]]` 与 `[[epg.sources]]` 引用。`direct` 是保留标识，代表直连。 |
 | `name` | string | `""` | 展示名称。 |
-| `url` | string | 必填 | 代理地址，协议限 `http`、`https`、`socks5`、`socks5h`，例如 `http://127.0.0.1:7890` 或 `socks5h://127.0.0.1:7891`。 |
+| `url` | string | 必填 | 代理地址，协议限 `http`、`https`、`socks5`、`socks5h`，例如 `http://127.0.0.1:7890` 或 `socks5h://127.0.0.1:7891`。所有 scheme 的目标都由 Kiln 本机解析并固定 IP；`socks5h` 仅作为兼容写法保留。明文 HTTP 上游不能经 HTTP(S) 转发代理，需使用 HTTPS 上游或 SOCKS5。 |
 | `disabled` | bool | `false` | 是否停用。默认出口或已启用规则引用停用线路时，配置校验或管理端保存会失败，不会退回直连。 |
 
 ## `[egress]`

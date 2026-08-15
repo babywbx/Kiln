@@ -340,11 +340,14 @@ func (r *Router) transportFor(targetURL, channelID string) (Decision, *http.Tran
 	return decision, transport, r.generation, nil
 }
 
-func buildClient(proxyURL *url.URL, _ time.Duration) (*http.Client, error) {
+func buildClient(proxyURL *url.URL, dialTimeout time.Duration) (*http.Client, error) {
+	if dialTimeout <= 0 {
+		dialTimeout = 10 * time.Second
+	}
 	tr := &http.Transport{
 		Proxy: nil,
 		DialContext: (&net.Dialer{
-			Timeout:   10 * time.Second,
+			Timeout:   dialTimeout,
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
 		ForceAttemptHTTP2:     true,
@@ -371,12 +374,14 @@ func buildClient(proxyURL *url.URL, _ time.Duration) (*http.Client, error) {
 			if err != nil {
 				return nil, err
 			}
-			if cd, ok := d.(proxy.ContextDialer); ok {
-				tr.DialContext = cd.DialContext
-			} else {
-				tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-					return d.Dial(network, addr)
-				}
+			contextDialer, ok := d.(proxy.ContextDialer)
+			if !ok {
+				return nil, fmt.Errorf("SOCKS proxy dialer does not support context")
+			}
+			tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+				dialContext, cancel := context.WithTimeout(ctx, dialTimeout)
+				defer cancel()
+				return contextDialer.DialContext(dialContext, network, addr)
 			}
 			tr.Proxy = nil
 		default:
@@ -390,10 +395,6 @@ func compatTLSForProxy(tr *http.Transport) {
 	tr.ForceAttemptHTTP2 = false
 	tr.TLSNextProto = map[string]func(authority string, c *tls.Conn) http.RoundTripper{}
 	tr.TLSClientConfig = UpstreamTLSConfig()
-}
-
-func ProxyResolvesHostname(proxyURL *url.URL) bool {
-	return proxyURL != nil && !strings.EqualFold(proxyURL.Scheme, "socks5")
 }
 
 func matchHostSuffix(host, pattern string) bool {

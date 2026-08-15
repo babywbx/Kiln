@@ -66,12 +66,12 @@ proxy = "proxy-http"
 - `id` 唯一，被 `egress.default`、路由规则和节目单源引用；`name` 只用于界面显示。
 - `url` 支持 `http`、`https`、`socks5`、`socks5h` 四种 scheme，例如 `http://127.0.0.1:7890` 或 `socks5h://127.0.0.1:7891`。
 - 需要认证时把凭据放进 URL，例如 `http://user:password@127.0.0.1:7890`，控制台会显示该线路已配置凭据而不回显密码。
-- `socks5h` 由代理侧解析域名，`socks5` 先在本机解析再连接。回源地址依赖境外 DNS 时优先选 `socks5h`。
-- HTTP、HTTPS 与 `socks5h` 线路都会把原始域名交给代理解析，适用于本机处于 TUN 或 fake-IP 环境、只能由代理得到真实目标地址的部署；`socks5` 仍使用 Kiln 本机的解析结果。
+- 所有线路都先由 Kiln 本机解析并校验目标，再把固定 IP 交给直连或代理，同时保留原始 HTTP Host 与目标 TLS SNI。`socks5h` 继续作为兼容 scheme 接受，但目标同样使用本机解析出的固定 IP，不再让代理二次解析。
+- HTTPS 上游经 HTTP 或 HTTPS 转发代理时，CONNECT 目标是校验后的固定 IP。明文 HTTP 上游无法用 Go 的标准转发代理同时表达固定拨号 IP 与原始 Host，因此这个组合会在发起连接前被拒绝；请改用 HTTPS 上游或 SOCKS5 线路。
 - 线路可以停用而不删除。被 `egress.default` 或启用中的规则引用的线路不允许处于停用状态。
 
-<Aside type="caution" title="代理侧 DNS 是信任边界">
-  Kiln 会在发给代理前拒绝本机解析到私网或特殊地址的目标。HTTP、HTTPS 与 `socks5h` 代理会再次解析域名，而 Kiln 无法检查该结果。拉取地址不完全受控时，只使用可信代理，并在代理端阻止访问私网目标。
+<Aside type="caution" title="本地 DNS 是安全前提">
+  Kiln 必须在自身网络中得到目标的真实可连接 IP，才能完成 SSRF 校验并绑定实际拨号。TUN 或 fake-IP DNS 若返回代理网络里没有意义的合成地址，请为回源域名配置真实 DNS 解析；Kiln 不会退回到未经检查的代理侧解析。
 </Aside>
 
 <Aside type="note" title="两种引擎都支持全部四种 scheme">

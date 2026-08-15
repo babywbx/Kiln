@@ -9,6 +9,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -30,6 +31,11 @@ func TestPinnedTransportUsesSeparateTLSNamesForHTTPSProxyAndTarget(t *testing.T)
 		if r.Method != http.MethodConnect {
 			t.Errorf("proxy method = %s, want CONNECT", r.Method)
 			http.Error(w, "CONNECT required", http.StatusMethodNotAllowed)
+			return
+		}
+		connectHost, connectPort, err := net.SplitHostPort(r.Host)
+		if err != nil || net.ParseIP(connectHost) == nil || connectPort != "443" {
+			t.Errorf("CONNECT target = %q, want pinned IP on port 443", r.Host)
 			return
 		}
 		connection, buffered, err := w.(http.Hijacker).Hijack()
@@ -335,7 +341,7 @@ func testCertificate(t *testing.T, host string) (tls.Certificate, *x509.Certific
 	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: leaf}, leaf
 }
 
-func TestPinnedTransportSendsHostnameThroughHTTPProxy(t *testing.T) {
+func TestPinnedTransportPinsConnectTargetThroughHTTPProxy(t *testing.T) {
 	connectTarget := make(chan string, 1)
 	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		connectTarget <- request.Host
@@ -365,21 +371,86 @@ func TestPinnedTransportSendsHostnameThroughHTTPProxy(t *testing.T) {
 
 	select {
 	case got := <-connectTarget:
-		if got != "cdn.example.com:443" {
-			t.Fatalf("CONNECT target = %q, want cdn.example.com:443; a locally resolved address is meaningless to a remote proxy", got)
+		if got != "198.18.5.255:443" {
+			t.Fatalf("CONNECT target = %q, want pinned address 198.18.5.255:443", got)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("proxy never received a CONNECT request")
 	}
 }
 
-func TestPinnedTransportUsesSOCKSResolutionMode(t *testing.T) {
+func TestPinnedTransportRejectsPlainHTTPThroughHTTPProxy(t *testing.T) {
+	reached := make(chan struct{}, 1)
+	proxyServer := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		reached <- struct{}{}
+	}))
+	defer proxyServer.Close()
+	proxyURL, err := url.Parse(proxyServer.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := newPinnedTransport(&http.Transport{Proxy: http.ProxyURL(proxyURL)}, nil, "", nil,
+		func(_ context.Context, rawURL string, _ map[string]struct{}) (*url.URL, error) {
+			resolved, err := url.Parse(rawURL)
+			if err != nil {
+				return nil, err
+			}
+			resolved.Host = "198.18.5.255:8080"
+			return resolved, nil
+		})
+	response, err := (&http.Client{Timeout: 5 * time.Second, Transport: transport}).Get(
+		"http://cdn.example.com:8080/manifest.mpd",
+	)
+	if response != nil {
+		_ = response.Body.Close()
+	}
+	if !errors.Is(err, ErrUnpinnableProxyTarget) {
+		t.Fatalf("plain HTTP proxy error = %v, want fail-closed error", err)
+	}
+	select {
+	case <-reached:
+		t.Fatal("proxy was reached for an unpinnable plain HTTP target")
+	default:
+	}
+}
+
+func TestPinnedTransportPoolIsBounded(t *testing.T) {
+	base := &http.Transport{}
+	transport := &pinnedTransport{transports: map[pinnedTransportKey]pinnedTransportEntry{}}
+	for i := range maxPinnedTransports + 1 {
+		key := pinnedTransportKey{base: base, scheme: "http", authority: fmt.Sprintf("cdn-%d.example", i)}
+		if transport.transport(key, "198.18.5.255", 0) == nil {
+			t.Fatalf("transport %d was not created", i)
+		}
+	}
+	if got := len(transport.transports); got > maxPinnedTransports {
+		t.Fatalf("transport pool size = %d, want at most %d", got, maxPinnedTransports)
+	}
+}
+
+func TestPinnedTransportPreservesLegacyTLSDialer(t *testing.T) {
+	base := &http.Transport{}
+	base.DialTLS = func(string, string) (net.Conn, error) { //nolint:staticcheck // Exercise the legacy hook.
+		return nil, errors.New("legacy dialer")
+	}
+	transport := &pinnedTransport{transports: map[pinnedTransportKey]pinnedTransportEntry{}}
+	key := pinnedTransportKey{
+		base: base, scheme: "https", authority: "cdn.example:443", serverName: "cdn.example",
+		proxy: "https://proxy.example:443", proxyViaTransport: true,
+	}
+	got := transport.transport(key, "198.18.5.255", 0)
+	if got == nil || got.DialTLSContext != nil || got.DialTLS == nil { //nolint:staticcheck // Verify the legacy hook.
+		t.Fatalf("legacy TLS dialer was replaced: %#v", got)
+	}
+}
+
+func TestPinnedTransportPinsTargetThroughSOCKSProxy(t *testing.T) {
 	tests := []struct {
 		scheme string
 		want   string
 	}{
 		{scheme: "socks5", want: "198.18.5.255:8080"},
-		{scheme: "socks5h", want: "cdn.example.com:8080"},
+		{scheme: "socks5h", want: "198.18.5.255:8080"},
 	}
 	for _, test := range tests {
 		t.Run(test.scheme, func(t *testing.T) {

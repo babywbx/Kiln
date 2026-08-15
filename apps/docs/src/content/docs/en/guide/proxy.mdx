@@ -66,12 +66,12 @@ proxy = "proxy-http"
 - `id` must be unique and is what `egress.default`, rules, and EPG sources reference. `name` is for display only.
 - `url` accepts the `http`, `https`, `socks5` and `socks5h` schemes, for example `http://127.0.0.1:7890` or `socks5h://127.0.0.1:7891`.
 - Put credentials in the URL when the proxy needs them, for example `http://user:password@127.0.0.1:7890`. The console shows that a route has credentials without echoing the password back.
-- `socks5h` resolves hostnames at the proxy, `socks5` resolves them locally first. Prefer `socks5h` when the origin only resolves correctly from the proxy's network.
-- HTTP, HTTPS, and `socks5h` routes preserve the original hostname for proxy-side resolution. This is the right choice when Kiln runs behind TUN or fake-IP DNS and only the proxy can resolve the real destination; `socks5` still uses Kiln's local resolution.
+- Every route first resolves and validates the target in Kiln, then gives the pinned IP to the direct connection or proxy while retaining the original HTTP Host and target TLS SNI. `socks5h` remains accepted as a compatibility scheme, but its target also uses Kiln's pinned IP rather than a second proxy-side lookup.
+- For an HTTPS upstream through an HTTP or HTTPS forward proxy, CONNECT names the validated pinned IP. Go's standard forward-proxy path cannot express both a pinned dial address and the original Host for a plain HTTP upstream, so that combination is rejected before connecting; use an HTTPS upstream or a SOCKS5 route instead.
 - Routes can be disabled instead of deleted. A route referenced by `egress.default` or by an enabled rule cannot be left disabled.
 
-<Aside type="caution" title="Proxy-side DNS is a trust boundary">
-  Kiln rejects destinations that resolve locally to private or special addresses before proxying. HTTP, HTTPS, and `socks5h` proxies resolve the hostname again, and Kiln cannot inspect that result. Use trusted proxies and enforce private-destination blocking on the proxy when fetched URLs are not fully controlled.
+<Aside type="caution" title="Local DNS is a security prerequisite">
+  Kiln must obtain the target's real, reachable IP in its own network before it can validate SSRF policy and bind the actual dial. If TUN or fake-IP DNS returns a synthetic address that has no meaning in the proxy network, configure real DNS resolution for upstream hosts. Kiln does not fall back to unchecked proxy-side resolution.
 </Aside>
 
 <Aside type="note" title="Both engines support all four schemes">

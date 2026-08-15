@@ -1,8 +1,11 @@
 package proxyegress
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -110,6 +113,53 @@ func TestProxyTLSCompat(t *testing.T) {
 	}
 }
 
+func TestSOCKSNegotiationUsesDialTimeout(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	go func() {
+		connection, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer func() { _ = connection.Close() }()
+		_ = connection.SetDeadline(time.Now().Add(time.Second))
+		_, _ = io.Copy(io.Discard, connection)
+	}()
+
+	client, err := buildClient(
+		&url.URL{Scheme: "socks5", Host: listener.Addr().String()},
+		25*time.Millisecond,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := client.Transport.(*http.Transport)
+	type result struct {
+		connection net.Conn
+		err        error
+	}
+	completed := make(chan result, 1)
+	go func() {
+		connection, err := transport.DialContext(context.Background(), "tcp", "192.0.2.1:443")
+		completed <- result{connection: connection, err: err}
+	}()
+
+	select {
+	case got := <-completed:
+		if got.connection != nil {
+			_ = got.connection.Close()
+		}
+		if got.err == nil {
+			t.Fatal("silent SOCKS proxy unexpectedly completed negotiation")
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("silent SOCKS proxy did not honor the dial timeout")
+	}
+}
+
 func TestPlaylistRewritePolicy(t *testing.T) {
 	r, _ := NewRouter(Config{
 		Default: "p1", PlaylistPolicy: PolicyRewrite,
@@ -118,9 +168,6 @@ func TestPlaylistRewritePolicy(t *testing.T) {
 	d := r.Resolve("http://example.com/", "")
 	if !d.Rewrite || d.ProxyURL == nil {
 		t.Fatalf("%+v", d)
-	}
-	if ProxyResolvesHostname(&url.URL{Scheme: "socks5"}) || !ProxyResolvesHostname(d.ProxyURL) {
-		t.Fatal("SOCKS5 must resolve locally and SOCKS5H at the proxy")
 	}
 }
 

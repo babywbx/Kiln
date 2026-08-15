@@ -13,10 +13,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/babywbx/kiln/modules/proxyegress"
 	"github.com/babywbx/kiln/modules/security"
 	"golang.org/x/net/proxy"
 )
+
+const pinnedTunnelTimeout = 10 * time.Second
 
 func (c *Client) DialPinned(ctx context.Context, rawURL, channelID string) (net.Conn, error) {
 	target, err := url.Parse(rawURL)
@@ -36,9 +37,6 @@ func (c *Client) DialPinned(ctx context.Context, rawURL, channelID string) (net.
 		return dialPinnedTarget(ctx, nil, address)
 	}
 	decision := c.router.Resolve(rawURL, channelID)
-	if proxyegress.ProxyResolvesHostname(decision.ProxyURL) {
-		address = net.JoinHostPort(target.Hostname(), port)
-	}
 	return dialPinnedTarget(ctx, decision.ProxyURL, address)
 }
 
@@ -51,13 +49,13 @@ func dialPinnedTarget(ctx context.Context, proxyURL *url.URL, address string) (n
 		if net.ParseIP(host) == nil {
 			return nil, fmt.Errorf("pinned target requires an IP address")
 		}
-		return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "tcp", address)
+		return (&net.Dialer{Timeout: pinnedTunnelTimeout}).DialContext(ctx, "tcp", address)
 	}
 	scheme := strings.ToLower(proxyURL.Scheme)
 	switch scheme {
 	case "http", "https":
 	case "socks5", "socks5h":
-		return dialPinnedThroughSOCKS(ctx, proxyURL, address)
+		return dialPinnedThroughSOCKS(ctx, proxyURL, address, pinnedTunnelTimeout)
 	default:
 		return nil, fmt.Errorf("CONNECT tunnel cannot use %s proxy", scheme)
 	}
@@ -69,7 +67,7 @@ func dialPinnedTarget(ctx context.Context, proxyURL *url.URL, address string) (n
 		}
 		proxyAddress = net.JoinHostPort(proxyURL.Hostname(), port)
 	}
-	connection, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "tcp", proxyAddress)
+	connection, err := (&net.Dialer{Timeout: pinnedTunnelTimeout}).DialContext(ctx, "tcp", proxyAddress)
 	if err != nil {
 		return nil, err
 	}
@@ -80,16 +78,13 @@ func dialPinnedTarget(ctx context.Context, proxyURL *url.URL, address string) (n
 		}
 	}()
 	if scheme == "https" {
-		tlsConnection := tls.Client(connection, &tls.Config{
-			MinVersion: tls.VersionTLS12,
-			ServerName: proxyURL.Hostname(),
-		})
-		if err := tlsConnection.HandshakeContext(ctx); err != nil {
+		tlsConnection, err := handshakeProxyTLS(ctx, connection, proxyURL.Hostname(), pinnedTunnelTimeout)
+		if err != nil {
 			return nil, err
 		}
 		connection = tlsConnection
 	}
-	_ = connection.SetDeadline(time.Now().Add(10 * time.Second))
+	_ = connection.SetDeadline(time.Now().Add(pinnedTunnelTimeout))
 	request := "CONNECT " + address + " HTTP/1.1\r\nHost: " + address + "\r\n"
 	if proxyURL.User != nil {
 		password, _ := proxyURL.User.Password()
@@ -114,17 +109,30 @@ func dialPinnedTarget(ctx context.Context, proxyURL *url.URL, address string) (n
 	return &bufferedConn{Conn: connection, reader: reader}, nil
 }
 
-func dialPinnedThroughSOCKS(ctx context.Context, proxyURL *url.URL, address string) (net.Conn, error) {
+func handshakeProxyTLS(ctx context.Context, connection net.Conn, serverName string, timeout time.Duration) (net.Conn, error) {
+	handshakeContext, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	tlsConnection := tls.Client(connection, &tls.Config{MinVersion: tls.VersionTLS12, ServerName: serverName})
+	if err := tlsConnection.HandshakeContext(handshakeContext); err != nil {
+		return nil, err
+	}
+	return tlsConnection, nil
+}
+
+func dialPinnedThroughSOCKS(ctx context.Context, proxyURL *url.URL, address string, timeout time.Duration) (net.Conn, error) {
 	u := *proxyURL
 	u.Scheme = "socks5"
-	dialer, err := proxy.FromURL(&u, &net.Dialer{Timeout: 10 * time.Second})
+	dialer, err := proxy.FromURL(&u, proxy.Direct)
 	if err != nil {
 		return nil, err
 	}
-	if contextDialer, ok := dialer.(proxy.ContextDialer); ok {
-		return contextDialer.DialContext(ctx, "tcp", address)
+	contextDialer, ok := dialer.(proxy.ContextDialer)
+	if !ok {
+		return nil, fmt.Errorf("SOCKS proxy dialer does not support context")
 	}
-	return dialer.Dial("tcp", address)
+	dialContext, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return contextDialer.DialContext(dialContext, "tcp", address)
 }
 
 type bufferedConn struct {
