@@ -56,6 +56,7 @@ type Server struct {
 	tls    *http.Server
 	loginL *security.Limiter
 	play   *playback.Handler
+	logo   *http.Client
 }
 
 func New(deps Deps) *Server {
@@ -66,6 +67,13 @@ func New(deps Deps) *Server {
 		deps:   deps,
 		mux:    http.NewServeMux(),
 		loginL: security.NewLimiter(deps.Cfg.Auth.LoginRatePerMin),
+		logo: &http.Client{
+			Timeout: 15 * time.Second,
+			Transport: proxyegress.NewPinnedTransport(
+				http.DefaultTransport.(*http.Transport), deps.Egress, "",
+				deps.Cfg.ExplicitAllowedHostSet(),
+			),
+		},
 	}
 	s.play = playback.New(playback.Deps{
 		Cfg: deps.Cfg, Catalog: deps.Catalog, Sessions: deps.Sessions,

@@ -16,6 +16,7 @@ import (
 
 	"github.com/babywbx/kiln/modules/apperr"
 	"github.com/babywbx/kiln/modules/epg"
+	"github.com/babywbx/kiln/modules/proxyegress"
 	"github.com/babywbx/kiln/modules/store"
 )
 
@@ -46,16 +47,8 @@ func (s *Server) handleChannelLogo(w http.ResponseWriter, r *http.Request) {
 		writeAppErr(w, apperr.ErrNotFound)
 		return
 	}
-	client := &http.Client{Timeout: 15 * time.Second}
-	if s.deps.Egress != nil {
-		var err error
-		client, err = s.deps.Egress.ClientForChannel("", channel.ID, 15*time.Second)
-		if err != nil {
-			writeAppErr(w, apperr.Internal(err))
-			return
-		}
-	}
-	logo, err := epg.FetchLogo(r.Context(), client, candidates, epg.DefaultMaxLogoBytes)
+	ctx := proxyegress.WithChannelID(r.Context(), channel.ID)
+	logo, err := epg.FetchLogo(ctx, s.logo, candidates, epg.DefaultMaxLogoBytes)
 	if err != nil {
 		s.deps.Log.Warn("all channel logo sources failed", "channel", channel.ID, "err", err)
 		writeAppErr(w, apperr.New(apperr.CodeUpstream, http.StatusBadGateway, "channel logo unavailable"))

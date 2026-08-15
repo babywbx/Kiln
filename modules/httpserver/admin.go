@@ -1405,12 +1405,12 @@ func (s *Server) handleAdminEgressTest(w http.ResponseWriter, r *http.Request) {
 	}
 	d := testRouter.Resolve(req.URL, req.ChannelID)
 	start := time.Now()
+	transport := proxyegress.NewPinnedTransport(nil, testRouter, req.ChannelID, allowedPrivate)
 	client := &http.Client{
-		Timeout: 10 * time.Second,
-		Transport: &publicProbeTransport{
-			router: testRouter, channelID: req.ChannelID, allowedPrivate: allowedPrivate,
-		},
+		Timeout:   10 * time.Second,
+		Transport: transport,
 	}
+	defer client.CloseIdleConnections()
 	client.CheckRedirect = func(redirect *http.Request, via []*http.Request) error {
 		if len(via) >= 5 {
 			return errors.New("too many redirects")

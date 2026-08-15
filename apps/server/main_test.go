@@ -41,6 +41,7 @@ func TestBuildEPGServiceUsesPersistedSourcesWithoutLegacyEnabledFlag(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = service.Close() })
 	if service == nil || len(service.Sources()) != 1 || service.Sources()[0].ID != "fixture" {
 		t.Fatalf("service sources = %+v", service)
 	}
@@ -67,6 +68,7 @@ func TestBuildEPGServiceNewInstallHasNoActiveSources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = service.Close() })
 	if sources := service.Sources(); len(sources) != 0 {
 		t.Fatalf("new install active EPG sources = %+v, want none", sources)
 	}
@@ -75,7 +77,7 @@ func TestBuildEPGServiceNewInstallHasNoActiveSources(t *testing.T) {
 	}
 }
 
-func TestBuildEPGServiceUsesDirectByDefaultAndSelectedProxy(t *testing.T) {
+func TestBuildEPGServiceUsesDirectByDefaultAndRejectsUnpinnableProxy(t *testing.T) {
 	const guide = `<tv><channel id="one"><display-name>One</display-name></channel></tv>`
 	var originRequests atomic.Int64
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -112,7 +114,11 @@ func TestBuildEPGServiceUsesDirectByDefaultAndSelectedProxy(t *testing.T) {
 		t.Fatal(err)
 	}
 	cache := false
-	cfg := config.File{Server: config.Server{DataDir: directory}, EPG: config.EPG{Cache: &cache}}
+	cfg := config.File{
+		Server:   config.Server{DataDir: directory},
+		EPG:      config.EPG{Cache: &cache},
+		Security: config.Security{AllowedHosts: []string{"127.0.0.1"}},
+	}
 
 	service, err := buildEPGService(cfg, db, router, slog.Default())
 	if err != nil {
@@ -123,6 +129,9 @@ func TestBuildEPGServiceUsesDirectByDefaultAndSelectedProxy(t *testing.T) {
 	}
 	if originRequests.Load() != 1 || proxyRequests.Load() != 0 {
 		t.Fatalf("default EPG egress used origin=%d proxy=%d, want direct", originRequests.Load(), proxyRequests.Load())
+	}
+	if err := service.Close(); err != nil {
+		t.Fatal(err)
 	}
 
 	rows, err := db.ListEPGSources()
@@ -137,11 +146,12 @@ func TestBuildEPGServiceUsesDirectByDefaultAndSelectedProxy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := service.Refresh(context.Background()); err != nil {
-		t.Fatal(err)
+	t.Cleanup(func() { _ = service.Close() })
+	if err := service.Refresh(context.Background()); err == nil {
+		t.Fatal("plain HTTP EPG source unexpectedly used an HTTP proxy")
 	}
-	if originRequests.Load() != 1 || proxyRequests.Load() != 1 {
-		t.Fatalf("selected EPG egress used origin=%d proxy=%d, want proxy", originRequests.Load(), proxyRequests.Load())
+	if originRequests.Load() != 1 || proxyRequests.Load() != 0 {
+		t.Fatalf("blocked EPG egress used origin=%d proxy=%d", originRequests.Load(), proxyRequests.Load())
 	}
 }
 

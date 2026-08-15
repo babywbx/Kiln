@@ -325,11 +325,34 @@ func buildEPGService(cfg config.File, db *store.DB, router *proxyegress.Router, 
 		MaxSourceBytes: cfg.EPG.MaxSourceBytes,
 		UserAgent:      "Kiln EPG",
 		ClientForSource: func(source epg.Source) (*http.Client, error) {
+			const timeout = 45 * time.Second
+			allowedPrivate := cfg.ExplicitAllowedHostSet()
 			proxy := strings.TrimSpace(source.Proxy)
 			if proxy == "" || proxy == "auto" {
-				return router.ClientForChannel("", "", 45*time.Second)
+				base, selectedRouter := http.DefaultTransport.(*http.Transport), router
+				if selectedRouter != nil {
+					base = nil
+				}
+				return &http.Client{
+					Timeout: timeout,
+					Transport: proxyegress.NewPinnedTransport(
+						base, selectedRouter, "", allowedPrivate,
+					),
+				}, nil
 			}
-			return router.ClientForProxy(proxy, 45*time.Second)
+			if router == nil {
+				return nil, errors.New("egress router is unavailable")
+			}
+			client, err := router.ClientForProxy(proxy, timeout)
+			if err != nil {
+				return nil, err
+			}
+			base, ok := client.Transport.(*http.Transport)
+			if !ok {
+				return nil, errors.New("unsupported EPG transport")
+			}
+			client.Transport = proxyegress.NewPinnedTransport(base, nil, "", allowedPrivate)
+			return client, nil
 		},
 	}
 	return epg.NewService(epg.ServiceConfig{
