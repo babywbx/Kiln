@@ -4,13 +4,16 @@ package httpserver
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/pem"
 	"net"
 	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
+	"sync"
 	"testing"
 
 	"github.com/babywbx/kiln/modules/catalog"
@@ -42,8 +45,8 @@ func TestSelfSignedCertificateCoversLoopbackAndPublicBase(t *testing.T) {
 	if err := leaf.VerifyHostname("10.10.5.60"); err != nil {
 		t.Fatalf("verify hostname: %v", err)
 	}
-	if !leaf.IsCA {
-		t.Fatal("self-signed certificate must be usable as its own trust anchor")
+	if leaf.IsCA || leaf.KeyUsage != x509.KeyUsageDigitalSignature {
+		t.Fatalf("self-signed certificate is CA=%t with key usage %v, want a DigitalSignature-only leaf", leaf.IsCA, leaf.KeyUsage)
 	}
 }
 
@@ -85,6 +88,87 @@ func TestSelfSignedCertificateIsReusedAcrossRestarts(t *testing.T) {
 	}
 }
 
+func TestSelfSignedCertificateGenerationIsSerialized(t *testing.T) {
+	server := serverWithDataDir(t, "https://kiln.example")
+	type result struct {
+		material *tlsMaterial
+		err      error
+	}
+	const workers = 32
+	start := make(chan struct{})
+	results := make(chan result, workers)
+	var wait sync.WaitGroup
+	for range workers {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			<-start
+			material, err := server.selfSignedMaterial()
+			results <- result{material: material, err: err}
+		}()
+	}
+	close(start)
+	wait.Wait()
+	close(results)
+
+	var first []byte
+	for result := range results {
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		current := result.material.Certificate.Certificate[0]
+		if first == nil {
+			first = bytes.Clone(current)
+			continue
+		}
+		if !bytes.Equal(first, current) {
+			t.Fatal("concurrent generation returned different certificates")
+		}
+	}
+	certPath := filepath.Join(server.deps.Cfg.Server.DataDir, "tls", "kiln.crt")
+	keyPath := filepath.Join(server.deps.Cfg.Server.DataDir, "tls", "kiln.key")
+	pair, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		t.Fatalf("load generated keypair: %v", err)
+	}
+	if !bytes.Equal(first, pair.Certificate[0]) {
+		t.Fatal("stored certificate differs from the active certificate")
+	}
+}
+
+func TestSelfSignedCertificateReplacesLegacyCA(t *testing.T) {
+	server := serverWithDataDir(t, "https://kiln.example")
+	initial, err := server.selfSignedMaterial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := *initial.Certificate.Leaf
+	legacy.IsCA = true
+	legacy.KeyUsage |= x509.KeyUsageCertSign
+	legacyDER, err := x509.CreateCertificate(
+		rand.Reader, &legacy, &legacy, initial.Certificate.Leaf.PublicKey, initial.Certificate.PrivateKey,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPath := filepath.Join(server.deps.Cfg.Server.DataDir, "tls", "kiln.crt")
+	if err := os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: legacyDER}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	migrated, err := server.selfSignedMaterial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(legacyDER, migrated.Certificate.Certificate[0]) {
+		t.Fatal("legacy CA certificate was reused")
+	}
+	leaf := migrated.Certificate.Leaf
+	if leaf.IsCA || leaf.KeyUsage&x509.KeyUsageCertSign != 0 {
+		t.Fatalf("migrated certificate is CA=%t with key usage %v", leaf.IsCA, leaf.KeyUsage)
+	}
+}
+
 func TestSelfSignedCertificateIsReissuedWhenHostsChange(t *testing.T) {
 	server := serverWithDataDir(t, "https://first.example")
 	first, err := server.selfSignedMaterial()
@@ -111,19 +195,71 @@ func TestSelfSignedCertificateServesTLS(t *testing.T) {
 		t.Fatal(err)
 	}
 	listener, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{
-		Certificates: []tls.Certificate{material.Certificate},
-		MinVersion:   tls.VersionTLS12,
+		GetCertificate: server.activeTLSCertificate,
+		MinVersion:     tls.VersionTLS12,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = listener.Close() }()
+	served := dialTLSCertificate(t, listener, material)
+	if !bytes.Equal(served, material.Certificate.Certificate[0]) {
+		t.Fatal("listener did not serve the active certificate")
+	}
+}
+
+func TestSelfSignedCertificateRotationUpdatesTLSListener(t *testing.T) {
+	server := serverWithDataDir(t, "https://first.example")
+	first, err := server.selfSignedMaterial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{
+		GetCertificate: server.activeTLSCertificate,
+		MinVersion:     tls.VersionTLS12,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = listener.Close() }()
+	if served := dialTLSCertificate(t, listener, first); !bytes.Equal(served, first.Certificate.Certificate[0]) {
+		t.Fatal("listener did not serve the initial certificate")
+	}
+
+	server.deps.Cfg.Server.PublicBaseURL = "https://second.example"
+	status := server.tlsStatus()
+	if statusErr, ok := status["tls_certificate_error"]; ok {
+		t.Fatalf("rotate certificate from settings status: %v", statusErr)
+	}
+	server.tlsMu.RLock()
+	rotated := server.activeTLS
+	server.tlsMu.RUnlock()
+	if rotated == nil {
+		t.Fatal("rotation did not install an active certificate")
+	}
+	if bytes.Equal(first.Certificate.Certificate[0], rotated.Certificate.Certificate[0]) {
+		t.Fatal("host change did not rotate the certificate")
+	}
+	if err := rotated.Certificate.Leaf.VerifyHostname("second.example"); err != nil {
+		t.Fatalf("rotated certificate does not cover the new host: %v", err)
+	}
+	if served := dialTLSCertificate(t, listener, rotated); !bytes.Equal(served, rotated.Certificate.Certificate[0]) {
+		t.Fatal("listener kept serving the certificate replaced by the settings request")
+	}
+}
+
+func dialTLSCertificate(t *testing.T, listener net.Listener, material *tlsMaterial) []byte {
+	t.Helper()
+	accepted := make(chan error, 1)
 	go func() {
 		connection, acceptErr := listener.Accept()
-		if acceptErr == nil {
-			_ = connection.(*tls.Conn).Handshake()
-			_ = connection.Close()
+		if acceptErr != nil {
+			accepted <- acceptErr
+			return
 		}
+		handshakeErr := connection.(*tls.Conn).Handshake()
+		_ = connection.Close()
+		accepted <- handshakeErr
 	}()
 
 	roots := x509.NewCertPool()
@@ -137,10 +273,16 @@ func TestSelfSignedCertificateServesTLS(t *testing.T) {
 		ServerName: "localhost",
 		MinVersion: tls.VersionTLS12,
 	})
+	acceptErr := <-accepted
 	if err != nil {
 		t.Fatalf("tls dial against the generated certificate: %v", err)
 	}
+	if acceptErr != nil {
+		t.Fatalf("serve generated certificate: %v", acceptErr)
+	}
+	served := bytes.Clone(client.ConnectionState().PeerCertificates[0].Raw)
 	_ = client.Close()
+	return served
 }
 
 func TestTLSStaysOffWhenNothingEnablesIt(t *testing.T) {

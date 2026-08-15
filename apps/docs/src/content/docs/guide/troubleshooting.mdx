@@ -337,7 +337,7 @@ docker exec kiln sh -c 'wget -q --no-check-certificate -O /dev/null https://127.
 docker exec kiln kiln -healthcheck http://127.0.0.1:8080/healthz
 ```
 
-如果手工 `-healthcheck` 指向自动生成的自签名 HTTPS，在证书进入系统信任库前会失败。分离监听优先检查明文端口，HTTPS-only 则使用已受信的证书或上面的镜像探测方式，详见 [HTTPS 与分离监听](/guide/https/)。
+如果手工 `-healthcheck` 指向自动生成的自签名 HTTPS，默认校验会失败。分离监听优先检查明文端口，HTTPS-only 则配置匹配部署主机名的证书或使用上面的镜像探测方式，详见 [HTTPS 与分离监听](/guide/https/)。
 
 `/healthz` 通而 `/readyz` 不通，说明是兼容引擎缺失，回到上面的 [ffmpeg 不可用](#ffmpeg-不可用)。
 

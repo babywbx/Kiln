@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/babywbx/kiln/modules/accesstoken"
@@ -50,13 +51,15 @@ type Deps struct {
 }
 
 type Server struct {
-	deps   Deps
-	mux    *http.ServeMux
-	http   *http.Server
-	tls    *http.Server
-	loginL *security.Limiter
-	play   *playback.Handler
-	logo   *http.Client
+	deps      Deps
+	mux       *http.ServeMux
+	http      *http.Server
+	tls       *http.Server
+	loginL    *security.Limiter
+	play      *playback.Handler
+	logo      *http.Client
+	tlsMu     sync.RWMutex
+	activeTLS *tlsMaterial
 }
 
 func New(deps Deps) *Server {
@@ -120,7 +123,7 @@ func (s *Server) Start() error {
 	if err != nil {
 		return err
 	}
-	tlsConfig := &tls.Config{Certificates: []tls.Certificate{material.Certificate}, MinVersion: tls.VersionTLS12}
+	tlsConfig := &tls.Config{GetCertificate: s.activeTLSCertificate, MinVersion: tls.VersionTLS12}
 	if s.tls == nil {
 		s.http.TLSConfig = tlsConfig
 		s.deps.Log.Info("listening",

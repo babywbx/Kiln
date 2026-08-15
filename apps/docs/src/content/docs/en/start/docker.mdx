@@ -111,7 +111,7 @@ Every image carries a `HEALTHCHECK`: a 30-second interval, a 3-second timeout, a
 docker exec kiln /usr/local/bin/kiln -healthcheck http://127.0.0.1:8080/healthz
 ```
 
-`-healthcheck` performs normal certificate validation. A manual HTTPS probe fails until an auto-generated certificate is in the system trust store; with split listeners, prefer the plaintext health port. See [HTTPS and split listeners](/en/guide/https/).
+`-healthcheck` performs normal certificate validation. An auto-generated self-signed certificate fails default validation, so a manual HTTPS probe fails; with split listeners, prefer the plaintext health port. See [HTTPS and split listeners](/en/guide/https/).
 
 ## Resource adaptation inside a container
 

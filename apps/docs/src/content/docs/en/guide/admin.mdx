@@ -114,6 +114,6 @@ The settings page holds five cards, top to bottom.
 
 **Playback URLs and access logs** carries two settings that take effect immediately: the public base URL used to build playback and playlist addresses, and access log retention in days (1 to 3650).
 
-**HTTPS** toggles built-in TLS, which takes effect after a restart. The card reports whether listening is single or split, the TLS port, certificate source and path, covered hosts, expiry, or a loading error. A self-signed certificate also gets a trust-store reminder. With one listener, the card checks the public base URL scheme. A split listener allows either port, so verify both the scheme and port against the player's actual entry point. See [HTTPS and split listeners](/en/guide/https/) for deployment details.
+**HTTPS** toggles built-in TLS, which takes effect after a restart. The card reports whether listening is single or split, the TLS port, certificate source and path, covered hosts, expiry, or a loading error. With one listener, the card checks the public base URL scheme. A split listener allows either port, so verify both the scheme and port against the player's actual entry point. See [HTTPS and split listeners](/en/guide/https/) for deployment details.
 
 **Active configuration** is read-only: listen address, whether playback authentication is on, CORS origins, allowed public hosts, and the service version. These require a config file change and a restart. See the [configuration reference](/en/reference/config/).

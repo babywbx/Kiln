@@ -185,7 +185,7 @@ Windows 用内置的 `kiln.exe service` 子命令注册服务，不需要额外�
 kiln -healthcheck http://127.0.0.1:8080/healthz
 ```
 
-该子命令使用系统信任库并正常校验证书，没有跳过校验或自定义 CA 参数。自动生成的自签名证书尚未受信时，HTTPS 探测会失败；分离监听时优先探测明文健康端口。镜像里已经配好 `HEALTHCHECK`：`core` 与 `full` 用 `wget --no-check-certificate` 先试 HTTPS 再回退 HTTP；`lite` 基于 `scratch`，直接用上面这个子命令探测 HTTP。监听与证书细节见 [HTTPS 与分离监听](/guide/https/)。
+该子命令会正常校验证书，没有跳过校验或自定义 CA 参数。自动生成的自签名证书无法通过默认校验；分离监听时优先探测明文健康端口。镜像里已经配好 `HEALTHCHECK`：`core` 与 `full` 用 `wget --no-check-certificate` 先试 HTTPS 再回退 HTTP；`lite` 基于 `scratch`，直接用上面这个子命令探测 HTTP。监听与证书细节见 [HTTPS 与分离监听](/guide/https/)。
 
 ## 指标
 

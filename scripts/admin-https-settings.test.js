@@ -93,7 +93,7 @@ test("the public base scheme follows the active listener surface", () => {
   assert.match(settings, /raw\.replace\(\/\^\[a-z\]\[a-z0-9\+\.\-\]\*:\/i, scheme\)/, "single-listener fixes rewrite only the scheme");
 });
 
-test("the console shows where the certificate lives so it can be trusted", () => {
+test("the console shows the active certificate path", () => {
   assert.match(settings, /settings\.httpsCertificatePath/);
   assert.match(settings, /data\.tls_certificate_source === "self-signed" \? h\("p", \{ class: "field-hint", text: i18n\.t\("settings\.httpsTrustHint"\) \}\)/);
 });

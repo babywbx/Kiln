@@ -88,16 +88,26 @@ func (s *Server) tlsMaterial() (*tlsMaterial, error) {
 		return nil, fmt.Errorf("tls_cert_file and tls_key_file must be set together")
 	}
 	if certFile != "" {
+		s.tlsMu.Lock()
+		defer s.tlsMu.Unlock()
 		certificate, err := tls.LoadX509KeyPair(certFile, keyFile)
 		if err != nil {
 			return nil, fmt.Errorf("load tls keypair: %w", err)
 		}
-		return describeCertificate(certificate, tlsSourceFile)
+		material, err := describeCertificate(certificate, tlsSourceFile)
+		if err != nil {
+			return nil, err
+		}
+		s.activeTLS = material
+		return material, nil
 	}
 	return s.selfSignedMaterial()
 }
 
 func (s *Server) selfSignedMaterial() (*tlsMaterial, error) {
+	s.tlsMu.Lock()
+	defer s.tlsMu.Unlock()
+
 	dir := filepath.Join(s.deps.Cfg.Server.DataDir, "tls")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create tls dir: %w", err)
@@ -110,10 +120,13 @@ func (s *Server) selfSignedMaterial() (*tlsMaterial, error) {
 
 	if certificate, err := tls.LoadX509KeyPair(certPath, keyPath); err == nil {
 		material, err := describeCertificate(certificate, tlsSourceSelfSigned)
-		if err == nil && time.Until(material.NotAfter) > selfSignedRenewAt && coversHosts(material.Hosts, hosts) {
+		if err == nil && !material.Certificate.Leaf.IsCA &&
+			material.Certificate.Leaf.KeyUsage&x509.KeyUsageCertSign == 0 &&
+			time.Until(material.NotAfter) > selfSignedRenewAt && coversHosts(material.Hosts, hosts) {
 			if err := restrictTLSFiles(certPath, keyPath); err != nil {
 				return nil, err
 			}
+			s.activeTLS = material
 			return material, nil
 		}
 	}
@@ -135,7 +148,22 @@ func (s *Server) selfSignedMaterial() (*tlsMaterial, error) {
 	if err != nil {
 		return nil, err
 	}
-	return describeCertificate(certificate, tlsSourceSelfSigned)
+	material, err := describeCertificate(certificate, tlsSourceSelfSigned)
+	if err != nil {
+		return nil, err
+	}
+	s.activeTLS = material
+	return material, nil
+}
+
+func (s *Server) activeTLSCertificate(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+	s.tlsMu.RLock()
+	defer s.tlsMu.RUnlock()
+	if s.activeTLS == nil {
+		return nil, fmt.Errorf("tls certificate is unavailable")
+	}
+	certificate := s.activeTLS.Certificate
+	return &certificate, nil
 }
 
 func (s *Server) certificateHosts() []string {
@@ -199,10 +227,9 @@ func generateSelfSigned(hosts []string) (certPEM, keyPEM []byte, err error) {
 		Subject:               pkix.Name{CommonName: "Kiln", Organization: []string{"Kiln"}},
 		NotBefore:             now.Add(-time.Hour),
 		NotAfter:              now.Add(selfSignedLifetime),
-		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		KeyUsage:              x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
-		IsCA:                  true,
 	}
 	for _, host := range hosts {
 		if ip := net.ParseIP(host); ip != nil {

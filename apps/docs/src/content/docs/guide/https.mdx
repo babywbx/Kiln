@@ -65,9 +65,9 @@ tls_cert_file = "/etc/kiln/tls/fullchain.pem"
 tls_key_file = "/etc/kiln/tls/privkey.pem"
 ```
 
-两项都留空时，Kiln 会在 `{data_dir}/tls/kiln.crt` 与 `kiln.key` 生成并复用自签名证书。证书覆盖 localhost、当前网络接口、`public_base_url` 主机、`tls_listen` 的具体主机，以及 `security.public_hosts`。主机集合改变或距离到期不足 30 天时会重新签发。
+两项都留空时，Kiln 会在 `{data_dir}/tls/kiln.crt` 与 `kiln.key` 生成并复用自签名证书。证书覆盖 localhost、当前网络接口、`public_base_url` 主机、`tls_listen` 的具体主机，以及 `security.public_hosts`。出现证书未覆盖的必要主机或距离到期不足 30 天时会重新签发；删除主机不会替换仍然有效的证书。旧版本自动生成的 CA 证书会在升级后首次加载自动证书时一次性替换为 leaf 证书。
 
-浏览器第一次访问会报告不受信任。设置页会显示证书文件路径，可以把 `kiln.crt` 导入客户端系统信任库；这只分发证书，不要复制 `kiln.key`。也可以改用受客户端信任的正式证书。
+浏览器通常会把自动生成的证书标为不受信任。它只适合客户端已接受该证书的受控环境；普通客户端需要信任服务时，请配置为部署主机签发的证书。始终妥善保管 `kiln.key`。
 
 ## Docker
 
@@ -82,7 +82,7 @@ services:
       - "8443:8443"
 ```
 
-镜像自带的 Core 与 Full 健康检查会先探测 HTTPS，再回退到 HTTP。手动使用 `kiln -healthcheck` 时，自签名证书必须已经进入系统信任库；分离模式下直接探测明文 `http://127.0.0.1:8080/healthz` 最简单。
+镜像自带的 Core 与 Full 健康检查会先探测 HTTPS，再回退到 HTTP。手动使用 `kiln -healthcheck` 时会校验证书；分离模式下可直接探测 `http://127.0.0.1:8080/healthz`，不依赖 TLS 证书。
 
 ## 排查
 
@@ -90,6 +90,6 @@ services:
 - `tls_cert_file and tls_key_file must be set together`：只配置了证书或私钥其中之一。
 - `403 tls_required`：请求把凭据发到了 HTTP 端口，改用 TLS 端口；播放器要走 HTTP 时改用路径式播放密钥。
 - 播放列表里的协议或端口不对：修改设置页中的公开访问地址。配置文件与 `KILN_PUBLIC_BASE_URL` 在 Core 与 Full 中只负责数据库尚未建立该设置时的初始值。
-- 浏览器仍提示不受信任：确认导入的是设置页显示的当前 `kiln.crt`，且访问主机包含在证书覆盖列表中。
+- 浏览器提示证书不受信任：改用该浏览器接受的证书，并确认访问主机包含在证书覆盖列表中。
 
 全部配置键见 [配置参考](/reference/config/)，容器端口与持久化见 [Docker 部署](/start/docker/)。

@@ -62,7 +62,7 @@ Issues a single GET with a 3-second timeout. A 2xx response exits 0; anything el
 kiln -healthcheck http://127.0.0.1:8080/healthz
 ```
 
-It uses the system trust store and performs normal certificate validation, with no insecure or custom-CA flag. The Lite image uses this command against HTTP. Core and Full use `wget` to try HTTPS first and fall back to HTTP. A manual HTTPS probe fails until an auto-generated certificate is trusted.
+It performs normal certificate validation, with no insecure or custom-CA flag. The Lite image uses this command against HTTP. Core and Full use `wget` to try HTTPS first and fall back to HTTP. An auto-generated self-signed certificate fails default validation, so a manual HTTPS probe fails.
 
 ## Windows service
 

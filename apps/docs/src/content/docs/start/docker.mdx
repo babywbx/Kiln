@@ -111,7 +111,7 @@ volumes:
 docker exec kiln /usr/local/bin/kiln -healthcheck http://127.0.0.1:8080/healthz
 ```
 
-`-healthcheck` 会正常校验证书。自动生成的自签名证书尚未加入系统信任库时，手工探测 HTTPS 会失败；分离监听优先探测明文健康端口。详见 [HTTPS 与分离监听](/guide/https/)。
+`-healthcheck` 会正常校验证书。自动生成的自签名证书无法通过默认校验，因此手工 HTTPS 探测会失败；分离监听优先探测明文健康端口。详见 [HTTPS 与分离监听](/guide/https/)。
 
 ## 容器内的资源自适应
 

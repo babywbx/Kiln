@@ -337,7 +337,7 @@ docker exec kiln sh -c 'wget -q --no-check-certificate -O /dev/null https://127.
 docker exec kiln kiln -healthcheck http://127.0.0.1:8080/healthz
 ```
 
-A manual `-healthcheck` against auto-generated HTTPS fails until the certificate enters the system trust store. Prefer the plaintext port in split mode; for HTTPS-only mode use a trusted certificate or the image probe above. See [HTTPS and split listeners](/en/guide/https/).
+A manual `-healthcheck` against auto-generated HTTPS fails default certificate validation. Prefer the plaintext port in split mode; for HTTPS-only mode configure a certificate issued for the deployment hostname or use the image probe above. See [HTTPS and split listeners](/en/guide/https/).
 
 If `/healthz` passes but `/readyz` does not, the compatibility engine is missing. Go back to [ffmpeg unavailable](#ffmpeg-unavailable).
 

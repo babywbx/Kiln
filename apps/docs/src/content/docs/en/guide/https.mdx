@@ -65,9 +65,9 @@ tls_cert_file = "/etc/kiln/tls/fullchain.pem"
 tls_key_file = "/etc/kiln/tls/privkey.pem"
 ```
 
-With both empty, Kiln generates and reuses `{data_dir}/tls/kiln.crt` and `kiln.key`. The certificate covers localhost, current network interfaces, the `public_base_url` host, a concrete `tls_listen` host, and `security.public_hosts`. It is reissued when that host set changes or less than 30 days remain.
+With both empty, Kiln generates and reuses `{data_dir}/tls/kiln.crt` and `kiln.key`. The certificate covers localhost, current network interfaces, the `public_base_url` host, a concrete `tls_listen` host, and `security.public_hosts`. It is reissued when a required host is not covered or less than 30 days remain; removing a host does not replace an otherwise valid certificate. A CA certificate generated automatically by an older release is replaced once with a leaf certificate the first time automatic TLS loads after the upgrade.
 
-Browsers report the certificate as untrusted on first use. The settings page shows its file path so you can import `kiln.crt` into the client system trust store. Distribute the certificate only, never `kiln.key`. A certificate already trusted by your clients is the other option.
+Browsers normally report the generated certificate as untrusted. Use it only where clients already accept that certificate; configure a certificate issued for the deployment hostname when ordinary clients must trust the service. Keep `kiln.key` private.
 
 ## Docker
 
@@ -82,7 +82,7 @@ services:
       - "8443:8443"
 ```
 
-The built-in Core and Full image health checks try HTTPS first and then HTTP. When you invoke `kiln -healthcheck` yourself, a self-signed certificate must already be in the system trust store. In split mode, probing `http://127.0.0.1:8080/healthz` is simpler.
+The built-in Core and Full image health checks try HTTPS first and then HTTP. A manual `kiln -healthcheck` verifies the TLS certificate; in split mode, probing `http://127.0.0.1:8080/healthz` avoids that dependency.
 
 ## Troubleshooting
 
@@ -90,6 +90,6 @@ The built-in Core and Full image health checks try HTTPS first and then HTTP. Wh
 - `tls_cert_file and tls_key_file must be set together`: only one half of the key pair is configured.
 - `403 tls_required`: credentials were sent to the HTTP port. Use the TLS listener, or use a path-based playback key when a player must stay on HTTP.
 - A playlist has the wrong scheme or port: update the public base URL in Settings. In Core and Full, the config value and `KILN_PUBLIC_BASE_URL` only initialize this database setting when it does not exist yet.
-- The browser still reports an untrusted certificate: import the current `kiln.crt` shown in Settings and confirm the hostname appears in the certificate host list.
+- The browser reports an untrusted certificate: use a certificate accepted by that browser and confirm the access hostname appears in its host list.
 
 See [Configuration reference](/en/reference/config/) for every key and [Docker](/en/start/docker/) for ports and persistence.

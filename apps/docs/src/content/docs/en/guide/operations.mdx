@@ -185,7 +185,7 @@ The binary ships a health-check subcommand with a 3-second timeout. It exits wit
 kiln -healthcheck http://127.0.0.1:8080/healthz
 ```
 
-The subcommand uses the system trust store and performs normal certificate validation; it has no insecure or custom-CA flag. An HTTPS probe fails until an auto-generated certificate is trusted, so split mode should probe the plaintext health port. The images already declare `HEALTHCHECK`: `core` and `full` use `wget --no-check-certificate` to try HTTPS before HTTP, while scratch-based `lite` uses the subcommand above against HTTP. See [HTTPS and split listeners](/en/guide/https/) for listener and certificate details.
+The subcommand performs normal certificate validation and has no insecure or custom-CA flag. An auto-generated self-signed certificate fails default validation, so split mode should probe the plaintext health port. The images already declare `HEALTHCHECK`: `core` and `full` use `wget --no-check-certificate` to try HTTPS before HTTP, while scratch-based `lite` uses the subcommand above against HTTP. See [HTTPS and split listeners](/en/guide/https/) for listener and certificate details.
 
 ## Metrics
 
