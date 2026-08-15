@@ -93,9 +93,7 @@ func mapURL(
 		return abs, nil
 	}
 	if err := security.MediaHostOK(abs, allowedPrivate); err != nil {
-		if err2 := security.HostAllowed(abs, allowedPrivate); err2 != nil {
-			return "", err
-		}
+		return "", err
 	}
 	if sign == nil {
 		return abs, nil

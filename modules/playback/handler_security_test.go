@@ -378,10 +378,13 @@ func TestHandleIndexFailsClosedForSpecialHostname(t *testing.T) {
 	indexRequest.SetPathValue("id", "news")
 	indexResponse := httptest.NewRecorder()
 	handler.HandleIndex(indexResponse, indexRequest)
-	if indexResponse.Code != http.StatusInternalServerError {
-		t.Fatalf("index status = %d, want 500: %s", indexResponse.Code, indexResponse.Body.String())
+	if indexResponse.Code != http.StatusBadGateway {
+		t.Fatalf("index status = %d, want 502: %s", indexResponse.Code, indexResponse.Body.String())
 	}
 	body := indexResponse.Body.String()
+	if !strings.Contains(body, `"code":"upstream_error"`) {
+		t.Fatalf("index error is not classified as upstream: %s", body)
+	}
 	for _, secret := range []string{target, egress.EncodeUpstream(target), "/u/", "upstream-secret"} {
 		if strings.Contains(body, secret) {
 			t.Fatalf("controlled error leaked %q in %s", secret, body)

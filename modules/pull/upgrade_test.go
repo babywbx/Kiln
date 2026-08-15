@@ -25,7 +25,7 @@ func TestUpgradeInsecureURL(t *testing.T) {
 		{"carrier grade nat", "http://100.64.0.1/a.mpd", "http://100.64.0.1/a.mpd", false},
 		{"multicast", "http://224.0.0.1/a.mpd", "http://224.0.0.1/a.mpd", false},
 		{"single label host", "http://cdn/a.mpd", "https://cdn/a.mpd", true},
-		{"ipv6", "http://[2001:db8::1]/a.mpd", "https://[2001:db8::1]/a.mpd", true},
+		{"global ipv6", "http://[2600::1]/a.mpd", "https://[2600::1]/a.mpd", true},
 		{"ipv6 zone", "http://[fe80::1%25en0]/a.mpd", "http://[fe80::1%25en0]/a.mpd", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

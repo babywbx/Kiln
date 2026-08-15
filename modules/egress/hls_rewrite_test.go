@@ -43,20 +43,25 @@ https://cdn.example/x.ts
 
 func TestRewritePlaylistFailsClosedForForbiddenTargets(t *testing.T) {
 	tests := []struct {
-		name   string
-		target string
-		line   string
+		name    string
+		target  string
+		line    string
+		allowed map[string]struct{}
 	}{
-		{"private media", "http://10.0.0.1/private.ts", "http://10.0.0.1/private.ts"},
-		{"loopback tag", "http://127.0.0.1/key", `#EXT-X-KEY:METHOD=AES-128,URI="http://127.0.0.1/key"`},
-		{"loopback hostname", "http://localhost.:1/private.ts", "http://localhost.:1/private.ts"},
-		{"metadata media", "http://169.254.169.254/latest/meta-data", "http://169.254.169.254/latest/meta-data"},
+		{"private media", "http://10.0.0.1/private.ts", "http://10.0.0.1/private.ts", nil},
+		{"loopback tag", "http://127.0.0.1/key", `#EXT-X-KEY:METHOD=AES-128,URI="http://127.0.0.1/key"`, nil},
+		{"loopback hostname", "http://localhost.:1/private.ts", "http://localhost.:1/private.ts", nil},
+		{"metadata media", "http://169.254.169.254/latest/meta-data", "http://169.254.169.254/latest/meta-data", nil},
+		{
+			"allowlisted metadata media", "http://169.254.169.254/latest/meta-data",
+			"http://169.254.169.254/latest/meta-data", map[string]struct{}{"169.254.169.254": {}},
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			out, err := RewritePlaylist(
 				"#EXTM3U\n"+test.line+"\n", "https://origin.example/live/index.m3u8",
-				"/v1/play/ch/u/", nil, func(string) bool { return true }, func(string) string { return "signed" },
+				"/v1/play/ch/u/", test.allowed, func(string) bool { return true }, func(string) string { return "signed" },
 			)
 			if err == nil {
 				t.Fatal("expected forbidden target error")

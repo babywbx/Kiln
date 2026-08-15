@@ -136,7 +136,7 @@ func (h *Handler) serveHLSIndex(w http.ResponseWriter, r *http.Request, active *
 	)
 	if err != nil {
 		h.deps.Observe.IncError()
-		writeAppError(w, apperr.Internal(err))
+		writeAppError(w, apperr.Wrap(apperr.CodeUpstream, http.StatusBadGateway, "invalid upstream playlist", err))
 		return
 	}
 	if token != "" {
@@ -406,7 +406,7 @@ func (h *Handler) HandleUpstream(w http.ResponseWriter, r *http.Request) {
 			h.signUpstream(id),
 		)
 		if err != nil {
-			writeAppError(w, apperr.Internal(err))
+			writeAppError(w, apperr.Wrap(apperr.CodeUpstream, http.StatusBadGateway, "invalid upstream playlist", err))
 			return
 		}
 		if token != "" {

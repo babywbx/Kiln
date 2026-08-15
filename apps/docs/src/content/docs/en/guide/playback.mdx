@@ -102,3 +102,5 @@ Channels with `max_viewers` set get one more layer: the entry request is redirec
 ## Playlist rewriting
 
 An HLS channel's upstream playlist is rewritten before it reaches the player: relative references are resolved to absolute addresses, and entries that must be fetched through Kiln are pointed at `/v1/play/{id}/u/...` with a signature attached. Whether an entry is rewritten is decided by the `playlist_policy` outbound setting, `rewrite` by default; channels with `max_viewers` set are rewritten unconditionally, since viewer counting is impossible otherwise. Policy values and host-based routing rules are covered in [Outbound proxying](/en/guide/proxy/).
+
+If an entry that Kiln would fetch points at a private, metadata, or otherwise blocked destination, the complete upstream playlist is rejected with 502 `upstream_error` and the target URL is not exposed in the response. The outbound proxy page covers the boundary for direct-delivery policies.
