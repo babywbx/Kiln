@@ -13,11 +13,7 @@ sidebar:
 curl -fsSL https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh | sh -s -- --lang zh
 ```
 
-拉取超时或失败时，换镜像地址：
-
-```bash
-curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh | sh -s -- --lang zh
-```
+拉取脚本本身失败时，请先通过可信的 HTTPS 下载源保存到本地再执行；`--mirror` 只控制脚本后续下载发行包时使用的来源。
 
 <Aside type="note" title="关于 --lang">
   `--lang` 只影响脚本自身的输出语言，与 Kiln 运行时无关。不带该参数时，脚本按 `LC_ALL`、`LANG` 判断：以 `zh` 开头用中文，其余一律英文。设置 `NO_COLOR` 或输出被重定向时，脚本会关闭颜色与动画。
@@ -38,7 +34,7 @@ Windows 不在脚本支持范围内，脚本检测到 Windows 环境会直接退
     目标目录已有可执行的 `kiln` 时，运行 `kiln -version` 解析出 `version=` 与 `variant=`，据此判断这次是安装、升级、降级还是切换变体。
   </Step>
   <Step title="解析版本与下载源">
-    未指定 `--version` 时解析最新 Release，再并行探测所有候选下载源。
+    未指定 `--version` 时解析最新 Release。未显式指定镜像时，选择产物下载源会先探测主发布源，直连失败后才探测镜像。
   </Step>
   <Step title="展示计划并确认">
     把版本、变体、平台、安装位置、下载源、解码器状态列成一张表，确认后才开始写入。
@@ -56,7 +52,7 @@ Windows 不在脚本支持范围内，脚本检测到 Windows 环境会直接退
      变体      full
      平台      linux/amd64
      位置      /usr/local/bin/kiln
-     下载源    github.com（直连）
+     下载源    主发布源（直连）
      解码器    未检测到 ffmpeg（使用原生引擎，无需安装）
 ```
 
@@ -88,7 +84,7 @@ Windows 不在脚本支持范围内，脚本检测到 Windows 环境会直接退
 | `--version <v>` | 固定版本，写不写前导 `v` 都行；支持 SemVer 核心版本和预发布标识符，不支持 `+build` 元数据 | 最新 Release |
 | `--lite` | 安装 lite 变体，仅 Linux 提供构建 | full |
 | `--dir <path>` | 指定安装目录；显式给出后不再回退到别处 | 见[安装位置](#安装位置与-path) |
-| `--mirror <base>` | 手动指定 GitHub 代理镜像，跳过探测；必须是 `https://` 开头且不含空白字符，结尾多余的斜杠会被去掉 | 自动探测 |
+| `--mirror <base>` | 手动指定 HTTPS 下载镜像，跳过探测；地址不得含空白字符，结尾多余的斜杠会被去掉 | 自动探测 |
 | `--no-mirror` | 只走直连，不使用任何镜像；与 `--mirror` 互斥 | 关闭 |
 | `--lang` | 强制输出语言，只接受 `zh` 或 `en` | 跟随 `LC_ALL`、`LANG` |
 | `--service` | 安装 systemd unit，配置就绪时启用并启动；需要 Linux、systemd 与 root | 关闭 |
@@ -113,16 +109,16 @@ Windows 不在脚本支持范围内，脚本检测到 Windows 环境会直接退
 
 ## 镜像与下载源
 
-脚本内置三个 GitHub 代理镜像：`ghfast.top`、`ghproxy.net`、`gh-proxy.com`。
+脚本内置多个 HTTPS 下载镜像，具体列表以脚本为准。
 
-未指定 `--mirror` 时，脚本对「直连 + 三个镜像」同时发出 HEAD 探测，单个探测超时 3 秒，然后按优先级取第一个可用的：直连排在最前，镜像按内置顺序排在其后。也就是说直连能用就一定走直连，只有直连不通才会落到镜像，并在输出里明确标注当前用的是镜像。
+未指定 `--mirror` 时，脚本先单独探测主发布源，超时 3 秒。只有直连失败且未指定 `--no-mirror` 时，才并行探测内置镜像，并按内置顺序选取第一个可用源。输出会明确标注是否使用镜像。
 
 `--mirror` 会跳过整个探测过程，直接使用给定地址；`--no-mirror` 则把候选集合缩减为只有直连，探测不通就报错退出，不做任何回退。
 
-解析最新版本走同一套逻辑：先试直连的 Release 跳转地址，再退到 GitHub API；仍拿不到且允许镜像时，按顺序逐个试内置镜像。
+默认解析最新版本时，脚本先试主发布源的 Release 跳转地址与 API；仍拿不到且允许镜像时，再按顺序逐个尝试内置镜像。
 
-<Aside type="tip" title="镜像只影响传输">
-  校验和始终优先从 GitHub 直连获取，只有直连拿不到才退回当前下载源。校验和来自镜像时脚本会明确提示，此时可以用 `gh attestation verify` 对产物做端到端核验，发布流程为所有二进制签署了构建来源证明。
+<Aside type="caution" title="校验和只取自主发布源">
+  无论压缩包从哪里下载，`SHA256SUMS` 都只从主发布源获取，超时 10 秒。取不到时脚本以 3 退出，不会改用镜像提供的校验和，也不会触碰已有安装。
 </Aside>
 
 ## 安装位置与 PATH
@@ -139,10 +135,10 @@ Windows 不在脚本支持范围内，脚本检测到 Windows 环境会直接退
 
 ## 版本选择与升级
 
-重复运行脚本就是升级。版本比较覆盖 SemVer 核心版本和预发布标识符，因此 `1.0.0-rc.1` 会被正确判定为早于 `1.0.0`。
+重复运行脚本就是升级。版本比较覆盖 SemVer 核心版本和预发布标识符，因此 `1.1.0-rc.1` 会被正确判定为早于 `1.1.0`。
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh | sh -s -- --lang zh --version 1.0.0
+curl -fsSL https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh | sh -s -- --lang zh --version 1.1.0
 ```
 
 版本号格式非法时以 1 退出；格式合法但没有对应 Release 时，探测阶段找不到产物，以 3 退出。
@@ -256,7 +252,7 @@ curl -fsSL https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh | sh -
 
 ## 校验和与原子替换
 
-下载完成后，脚本先取 `SHA256SUMS`（直连超时 5 秒，失败则改用当前下载源，超时 10 秒），从中取出本次产物对应的那一行做比对。不匹配就立即丢弃下载的文件并以 4 退出，不触碰已有安装。
+下载完成后，脚本从主发布源获取 `SHA256SUMS`，超时 10 秒；取不到时以 3 退出，不回退到镜像。随后从中取出本次产物对应的一行做比对；不匹配就立即丢弃下载的文件并以 4 退出，不触碰已有安装。
 
 校验通过后才解包，并且不直接覆盖目标文件：
 

@@ -150,12 +150,6 @@ Linux 与 macOS 一条命令装好，重复运行即升级：
 curl -fsSL https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh | sh -s -- --lang zh
 ```
 
-拉取超时或失败时，换镜像地址：
-
-```bash
-curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh | sh -s -- --lang zh
-```
-
 脚本只做四件事：探测平台、选择可用的下载源、校验 `SHA256SUMS`、原子替换二进制。默认不需要 sudo，装到哪里、要做什么都会先展示、确认后才动手。
 
 <details>
@@ -177,7 +171,7 @@ curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/babywbx/Kiln/mai
 注册 systemd 服务：
 
 ```bash
-curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh -o /tmp/kiln-install.sh
+curl -fsSL https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh -o /tmp/kiln-install.sh
 sudo sh /tmp/kiln-install.sh --yes --service --lang zh
 ```
 

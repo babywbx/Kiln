@@ -21,6 +21,18 @@ fake_curl() {
 		esac
 		shift
 	done
+	[ -z "${KILN_TEST_LOG:-}" ] || printf '%s\n' "$url" >>"$KILN_TEST_LOG"
+	if [ "$head" = 1 ] && [ "${KILN_TEST_DIRECT_PROBE_FAIL:-0}" = 1 ]; then
+		case "$url" in https://github.com/*) exit 22 ;; esac
+	fi
+	if [ "${KILN_TEST_CANONICAL_SUMS_FAIL:-0}" = 1 ]; then
+		case "$url" in https://github.com/*/SHA256SUMS) exit 22 ;; esac
+	fi
+	if [ "${KILN_TEST_CANONICAL_METADATA_FAIL:-0}" = 1 ]; then
+		case "$url" in
+		https://github.com/*/releases/latest | https://api.github.com/*/releases/latest) exit 22 ;;
+		esac
+	fi
 	case "$url" in
 	*/releases/latest)
 		printf 'https://github.com/babywbx/Kiln/releases/tag/v%s' "$KILN_TEST_RELEASE_VERSION"
@@ -65,6 +77,11 @@ fake_wget() {
 		shift
 	done
 	[ -z "${KILN_TEST_LOG:-}" ] || printf '%s\n' "$url" >>"$KILN_TEST_LOG"
+	if [ "${KILN_TEST_CANONICAL_METADATA_FAIL:-0}" = 1 ]; then
+		case "$url" in
+		https://github.com/*/releases/latest | https://api.github.com/*/releases/latest) exit 8 ;;
+		esac
+	fi
 	case "$url" in
 	*/releases/latest)
 		printf '{"tag_name":"v%s"}\n' "$KILN_TEST_RELEASE_VERSION"
@@ -175,8 +192,9 @@ link_base_tools() {
 	done
 }
 
-test_probe_waits_for_sources() {
-	case_dir="$(make_case probe-wait)"
+test_direct_probe_skips_mirrors() {
+	case_dir="$(make_case direct-probe)"
+	: >"$case_dir/requests"
 	status=0
 	env \
 		HOME="$case_dir/home" \
@@ -188,12 +206,96 @@ test_probe_waits_for_sources() {
 		KILN_TEST_SUMS="$case_dir/SHA256SUMS" \
 		KILN_TEST_RELEASE_VERSION=1.2.3 \
 		KILN_TEST_RELEASE_VARIANT=full \
-		KILN_TEST_PROBE_DELAY=1 \
+		KILN_TEST_LOG="$case_dir/requests" \
 		"$TEST_SHELL" "$INSTALLER" --version 1.2.3 --dir "$case_dir/target" \
 		>"$case_dir/output" 2>&1 || status=$?
-	[ "$status" = 0 ] || fail "installer returned $status before delayed probes completed"
+	[ "$status" = 0 ] || fail "direct install returned $status"
 	[ -x "$case_dir/target/kiln" ] || fail "installer did not create the target binary"
-	printf 'ok - waits for concurrent source probes\n'
+	if grep -v '^https://github.com/' "$case_dir/requests" >/dev/null; then
+		fail "reachable canonical source still contacted a mirror"
+	fi
+	printf 'ok - probes mirrors only after the canonical source fails\n'
+}
+
+test_mirror_archive_uses_canonical_checksum() {
+	case_dir="$(make_case mirror-archive)"
+	: >"$case_dir/requests"
+	status=0
+	env \
+		HOME="$case_dir/home" \
+		PATH="$case_dir/fakebin:$BASE_PATH" \
+		TMPDIR="$case_dir/tmp" \
+		NO_COLOR=1 \
+		KILN_YES=1 \
+		KILN_TEST_ARCHIVE="$case_dir/kiln_1.2.3_linux_amd64.tar.gz" \
+		KILN_TEST_SUMS="$case_dir/SHA256SUMS" \
+		KILN_TEST_RELEASE_VERSION=1.2.3 \
+		KILN_TEST_RELEASE_VARIANT=full \
+		KILN_TEST_DIRECT_PROBE_FAIL=1 \
+		KILN_TEST_LOG="$case_dir/requests" \
+		"$TEST_SHELL" "$INSTALLER" --version 1.2.3 --dir "$case_dir/target" \
+		>"$case_dir/output" 2>&1 || status=$?
+	[ "$status" = 0 ] || fail "mirror archive install returned $status"
+	grep '\.tar\.gz$' "$case_dir/requests" | grep -vq '^https://github.com/' || fail "installer did not fall back for the archive"
+	grep -q '^https://github.com/.*/SHA256SUMS$' "$case_dir/requests" || fail "installer did not fetch the canonical checksum"
+	if grep '/SHA256SUMS$' "$case_dir/requests" | grep -vq '^https://github.com/'; then
+		fail "installer fetched a checksum through the archive mirror"
+	fi
+	[ -x "$case_dir/target/kiln" ] || fail "mirror archive install did not create the target binary"
+	printf 'ok - authenticates mirror archives with the canonical checksum\n'
+}
+
+test_missing_canonical_checksum_fails_closed() {
+	case_dir="$(make_case missing-canonical-sums)"
+	: >"$case_dir/requests"
+	status=0
+	env \
+		HOME="$case_dir/home" \
+		PATH="$case_dir/fakebin:$BASE_PATH" \
+		TMPDIR="$case_dir/tmp" \
+		NO_COLOR=1 \
+		KILN_YES=1 \
+		KILN_TEST_ARCHIVE="$case_dir/kiln_1.2.3_linux_amd64.tar.gz" \
+		KILN_TEST_SUMS="$case_dir/SHA256SUMS" \
+		KILN_TEST_RELEASE_VERSION=1.2.3 \
+		KILN_TEST_RELEASE_VARIANT=full \
+		KILN_TEST_DIRECT_PROBE_FAIL=1 \
+		KILN_TEST_CANONICAL_SUMS_FAIL=1 \
+		KILN_TEST_LOG="$case_dir/requests" \
+		"$TEST_SHELL" "$INSTALLER" --version 1.2.3 --dir "$case_dir/target" \
+		>"$case_dir/output" 2>&1 || status=$?
+	[ "$status" = 3 ] || fail "missing canonical checksum returned $status"
+	[ ! -e "$case_dir/target/kiln" ] || fail "unverified mirror archive was installed"
+	if grep '/SHA256SUMS$' "$case_dir/requests" | grep -vq '^https://github.com/'; then
+		fail "installer bypassed the unavailable canonical checksum"
+	fi
+	printf 'ok - fails closed without the canonical checksum\n'
+}
+
+test_missing_canonical_metadata_fails_closed() {
+	case_dir="$(make_case missing-canonical-metadata)"
+	: >"$case_dir/requests"
+	status=0
+	env \
+		HOME="$case_dir/home" \
+		PATH="$case_dir/fakebin:$BASE_PATH" \
+		TMPDIR="$case_dir/tmp" \
+		NO_COLOR=1 \
+		KILN_YES=1 \
+		KILN_TEST_ARCHIVE="$case_dir/kiln_1.2.3_linux_amd64.tar.gz" \
+		KILN_TEST_SUMS="$case_dir/SHA256SUMS" \
+		KILN_TEST_RELEASE_VERSION=1.2.3 \
+		KILN_TEST_RELEASE_VARIANT=full \
+		KILN_TEST_CANONICAL_METADATA_FAIL=1 \
+		KILN_TEST_LOG="$case_dir/requests" \
+		"$TEST_SHELL" "$INSTALLER" --dir "$case_dir/target" \
+		>"$case_dir/output" 2>&1 || status=$?
+	[ "$status" = 3 ] || fail "missing canonical release metadata returned $status"
+	[ ! -e "$case_dir/target/kiln" ] || fail "mirror-selected release was installed"
+	if grep -q '/https://github.com/.*/releases/latest$' "$case_dir/requests"; then
+		fail "installer fetched release metadata through a mirror"
+	fi
+	printf 'ok - fails closed without canonical release metadata\n'
 }
 
 test_failed_binary_preserves_existing_target() {
@@ -451,7 +553,7 @@ test_mirror_options_are_consistent() {
 	printf 'ok - keeps mirror options secure and consistent\n'
 }
 
-test_wget_resolves_latest_through_mirror() {
+test_wget_resolves_latest_from_canonical_source() {
 	case_dir="$(make_case wget-mirror)"
 	rm -f "$case_dir/fakebin/curl"
 	ln -s "$SELF" "$case_dir/fakebin/wget"
@@ -472,9 +574,13 @@ test_wget_resolves_latest_through_mirror() {
 		"$TEST_SHELL" "$INSTALLER" --mirror https://mirror.example --dir "$case_dir/target" \
 		>"$case_dir/output" 2>&1 || status=$?
 	[ "$status" = 0 ] || fail "wget mirror install returned $status"
-	grep -q '^https://mirror.example/https://api.github.com/repos/babywbx/Kiln/releases/latest$' "$case_dir/requests" || fail "wget resolved latest outside the manual mirror"
+	grep -q '^https://api.github.com/repos/babywbx/Kiln/releases/latest$' "$case_dir/requests" || fail "wget did not resolve latest from the canonical API"
+	if grep -q '^https://mirror.example/.*/releases/latest$' "$case_dir/requests"; then
+		fail "wget resolved release metadata through the manual mirror"
+	fi
+	grep '\.tar\.gz$' "$case_dir/requests" | grep -q '^https://mirror.example/' || fail "wget did not use the manual mirror for the archive"
 	[ -x "$case_dir/target/kiln" ] || fail "wget mirror install did not create the target binary"
-	printf 'ok - wget resolves latest through manual mirror\n'
+	printf 'ok - wget keeps release metadata canonical\n'
 }
 
 test_uninstall_uses_explicit_dir_without_install_dependencies() {
@@ -592,13 +698,32 @@ test_semver_orders_hyphenated_identifiers() {
 }
 
 test_release_guard_runs_installer_contract() {
+	if grep -q '^  push:' "$RELEASE_WORKFLOW"; then
+		fail "release workflow still triggers from a pushed tag"
+	fi
+	grep -Fq "if [ \"\$RUN_REF\" != refs/heads/main ]; then" "$RELEASE_WORKFLOW" || fail "release dispatch is not restricted to main"
 	grep -q 'Run Installer Contract' "$RELEASE_WORKFLOW" || fail "release guard does not validate versions through the installer"
 	grep -q 'uses: ./.github/workflows/ci.yml' "$RELEASE_WORKFLOW" || fail "release guard does not call full CI"
 	grep -q 'make test-install' "$CI_WORKFLOW" || fail "full CI does not run installer tests"
+	grep -q 'git merge-base --is-ancestor' "$RELEASE_WORKFLOW" || fail "release guard does not require a mainline tag"
+	grep -q 'git show -s --format=%cI' "$RELEASE_WORKFLOW" || fail "release metadata does not use the tagged commit time"
+	grep -Fq "refusing to replace \$image_ref" "$RELEASE_WORKFLOW" || fail "release publish does not protect immutable image tags"
+	grep -Fq "candidate_id=\"\${SHA:0:12}-\${GITHUB_RUN_ID}\"" "$RELEASE_WORKFLOW" || fail "release candidates cannot survive a failed-job rerun"
+	grep -Fq "prefix=\"candidate-\${SHA:0:12}-\${GITHUB_RUN_ID}-\"" "$RELEASE_WORKFLOW" || fail "release cleanup cannot find candidates from an earlier attempt"
+	grep -Fq "RUN_ATTEMPT: \${{ github.run_attempt }}" "$RELEASE_WORKFLOW" || fail "release publication cannot distinguish an initial run from a retry"
+	grep -Fq "if [ \"\$release_draft\" = false ]; then" "$RELEASE_WORKFLOW" || fail "release publication is not idempotent after a remote success"
+	grep -Fq "if [ \"\$RUN_ATTEMPT\" -le 1 ]; then" "$RELEASE_WORKFLOW" || fail "initial publication does not fail closed when the draft changed remotely"
+	grep -Fq "release \$TAG is already published" "$RELEASE_WORKFLOW" || fail "release rerun does not accept an already published matching release"
+	grep -Fq "refusing to replace published release" "$RELEASE_WORKFLOW" || fail "a fresh run can replace an already published release"
+	grep -Fq "if: always() && needs.publish.result == 'success' && (needs.guard.outputs.prerelease == 'true' || needs.floating-images.result == 'success')" "$RELEASE_WORKFLOW" ||
+		fail "release cleanup can discard candidates before publication completes"
 	printf 'ok - release guard runs the installer contract\n'
 }
 
-test_probe_waits_for_sources
+test_direct_probe_skips_mirrors
+test_mirror_archive_uses_canonical_checksum
+test_missing_canonical_checksum_fails_closed
+test_missing_canonical_metadata_fails_closed
 test_failed_binary_preserves_existing_target
 test_binary_directory_is_rejected
 test_wrong_binary_version_preserves_existing_target
@@ -610,7 +735,7 @@ test_service_upgrade_restarts_process
 test_service_failure_restores_binary_and_unit
 test_invalid_values_are_rejected
 test_mirror_options_are_consistent
-test_wget_resolves_latest_through_mirror
+test_wget_resolves_latest_from_canonical_source
 test_uninstall_uses_explicit_dir_without_install_dependencies
 test_uninstall_ignores_unknown_path_binary
 test_uninstall_handles_service_without_binary

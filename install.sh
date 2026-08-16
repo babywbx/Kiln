@@ -106,8 +106,7 @@ if [ "$lang" = "zh" ]; then
 	T_SAME="已安装 v%s，即为最新版本。"
 	T_SRC_DIRECT="github.com（直连）"
 	T_MIRROR_TAG="镜像"
-	T_SRC_MIRROR_NOTE="github.com 直连不可用，已切换镜像；校验和仍优先直连获取。"
-	T_SUMS_MIRROR_NOTE="校验和来自镜像，终极核验可用 gh attestation verify。"
+	T_SRC_MIRROR_NOTE="github.com 直连不可用，已切换镜像；校验和仍从 github.com 获取。"
 	T_DEC_YES="ffmpeg 已检测到（兼容引擎可用）"
 	T_DEC_NO="未检测到 ffmpeg（使用原生引擎，无需安装）"
 	T_SVC_ON="安装 systemd unit；配置存在时启用并启动"
@@ -208,8 +207,7 @@ else
 	T_SAME="kiln v%s is already the latest installed version."
 	T_SRC_DIRECT="github.com (direct)"
 	T_MIRROR_TAG="mirror"
-	T_SRC_MIRROR_NOTE="github.com unreachable, using mirror; checksums still fetched direct when possible."
-	T_SUMS_MIRROR_NOTE="Checksums came from the mirror; use gh attestation verify for end-to-end proof."
+	T_SRC_MIRROR_NOTE="github.com unreachable, using mirror; checksums still come from github.com."
 	T_DEC_YES="ffmpeg found (compat engine available)"
 	T_DEC_NO="ffmpeg not found (native engine, nothing to install)"
 	T_SVC_ON="install the systemd unit; enable and start when configured"
@@ -766,19 +764,11 @@ version=""
 if [ -n "$VERSION_REQ" ]; then
 	version="$VERSION_REQ"
 elif [ "$DRY_RUN" = 1 ]; then
-	version="1.0.0"
+	version="1.1.0"
 else
-	resolve_base="$GITHUB"
-	[ -z "$MIRROR_REQ" ] || resolve_base="$MIRROR_REQ/$GITHUB"
-	(resolve_latest "$resolve_base" >"$WORK/ver" 2>/dev/null || true) &
+	(resolve_latest "$GITHUB" >"$WORK/ver" 2>/dev/null || true) &
 	spin_while "$T_FETCH" "$!"
 	version="$(cat "$WORK/ver" 2>/dev/null || true)"
-	if [ -z "$version" ] && [ -z "$MIRROR_REQ" ] && [ "$NO_MIRROR" != 1 ]; then
-		for m in $MIRRORS; do
-			version="$(resolve_latest "$m/$GITHUB" || true)"
-			[ -n "$version" ] && break
-		done
-	fi
 	[ -n "$version" ] || die 3 "$T_NET_FAIL" "$T_NET_HINT_1" "$T_NET_HINT_2"
 fi
 if ! valid_version "$version"; then
@@ -793,41 +783,39 @@ asset_path="$REPO/releases/download/v${version}/${archive}"
 
 source_base="$GITHUB"
 source_label="$T_SRC_DIRECT"
-source_is_mirror=0
 if [ -n "$MIRROR_REQ" ]; then
 	source_base="$MIRROR_REQ/$GITHUB"
 	source_label="${MIRROR_REQ#https://}${P_L}${T_MIRROR_TAG}${P_R}"
-	source_is_mirror=1
 elif [ "$DRY_RUN" = 1 ]; then
 	if [ "${KILN_SIM_CN:-0}" = 1 ] && [ "$NO_MIRROR" != 1 ]; then
 		source_base="https://ghfast.top/$GITHUB"
 		source_label="ghfast.top${P_L}${T_MIRROR_TAG}${P_R}"
-		source_is_mirror=1
 		warn "$T_SRC_MIRROR_NOTE"
 		printf '\n'
 	fi
 else
-	candidates="$GITHUB"
-	[ "$NO_MIRROR" != 1 ] && candidates="$GITHUB $MIRRORS"
-	(
-		i=0
-		for c in $candidates; do
-			probe_url="$c/$asset_path"
-			[ "$c" = "$GITHUB" ] || probe_url="$c/$GITHUB/$asset_path"
-			(probe_ok "$probe_url" 2>/dev/null && touch "$WORK/ok_$i") &
-			i=$((i + 1))
-		done
-		wait
-	) >/dev/null 2>&1 &
+	(probe_ok "$GITHUB/$asset_path" 2>/dev/null && touch "$WORK/ok_direct") >/dev/null 2>&1 &
 	spin_while "$T_PROBE" "$!"
 	picked=""
-	i=0
-	for c in $candidates; do
-		if [ -e "$WORK/ok_$i" ] && [ -z "$picked" ]; then
-			picked="$c"
-		fi
-		i=$((i + 1))
-	done
+	[ ! -e "$WORK/ok_direct" ] || picked="$GITHUB"
+	if [ -z "$picked" ] && [ "$NO_MIRROR" != 1 ]; then
+		(
+			i=0
+			for candidate in $MIRRORS; do
+				(probe_ok "$candidate/$GITHUB/$asset_path" 2>/dev/null && touch "$WORK/ok_$i") &
+				i=$((i + 1))
+			done
+			wait
+		) >/dev/null 2>&1 &
+		spin_while "$T_PROBE" "$!"
+		i=0
+		for candidate in $MIRRORS; do
+			if [ -e "$WORK/ok_$i" ] && [ -z "$picked" ]; then
+				picked="$candidate"
+			fi
+			i=$((i + 1))
+		done
+	fi
 	if [ -z "$picked" ]; then
 		if [ -n "$VERSION_REQ" ]; then
 			# shellcheck disable=SC2059
@@ -840,7 +828,6 @@ else
 	else
 		source_base="$picked/$GITHUB"
 		source_label="${picked#https://}${P_L}${T_MIRROR_TAG}${P_R}"
-		source_is_mirror=1
 		warn "$T_SRC_MIRROR_NOTE"
 		printf '\n'
 	fi
@@ -966,11 +953,8 @@ if [ "$DRY_RUN" = 1 ]; then
 	fi
 else
 	sums_url="$GITHUB/$REPO/releases/download/v${version}/SHA256SUMS"
-	if ! fetch "$sums_url" "$WORK/SHA256SUMS" 5 2>/dev/null; then
-		fetch "$source_base/$REPO/releases/download/v${version}/SHA256SUMS" "$WORK/SHA256SUMS" 10 ||
-			die 3 "$T_NET_FAIL" "$T_NET_HINT_1" "$T_NET_HINT_2"
-		[ "$source_is_mirror" = 1 ] && warn "$T_SUMS_MIRROR_NOTE"
-	fi
+	fetch "$sums_url" "$WORK/SHA256SUMS" 10 2>/dev/null ||
+		die 3 "$T_NET_FAIL" "$T_NET_HINT_1" "$T_NET_HINT_2"
 	expected="$(awk -v f="$archive" '$2 == f { print $1 }' "$WORK/SHA256SUMS")"
 	actual="$($SHACMD "$WORK/$archive" | awk '{ print $1 }')"
 	if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then

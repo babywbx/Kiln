@@ -150,12 +150,6 @@ One command installs it on Linux and macOS; run it again to upgrade:
 curl -fsSL https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh | sh
 ```
 
-If the direct download times out, use the mirror:
-
-```bash
-curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh | sh
-```
-
 The script does four things: detect your platform, pick a working download source, verify `SHA256SUMS`, and swap the binary atomically. No sudo needed by default, and it shows you the full plan before touching anything.
 
 <details>
