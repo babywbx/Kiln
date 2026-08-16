@@ -2,12 +2,14 @@ package pull
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -17,8 +19,18 @@ import (
 )
 
 func TestClientReusesPinnedConnections(t *testing.T) {
+	const parallel = 8
 	var connections atomic.Int32
-	origin := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	arrived := [2]chan struct{}{make(chan struct{}, parallel), make(chan struct{}, parallel)}
+	release := [2]chan struct{}{make(chan struct{}), make(chan struct{})}
+	origin := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wave, err := strconv.Atoi(r.URL.Query().Get("wave"))
+		if err != nil || wave < 0 || wave >= len(arrived) {
+			http.Error(w, "bad wave", http.StatusBadRequest)
+			return
+		}
+		arrived[wave] <- struct{}{}
+		<-release[wave]
 		_, _ = io.WriteString(w, "ok")
 	}))
 	origin.Config.ConnState = func(_ net.Conn, state http.ConnState) {
@@ -29,16 +41,39 @@ func TestClientReusesPinnedConnections(t *testing.T) {
 	origin.Start()
 	defer origin.Close()
 	client := New(Options{Allowed: map[string]struct{}{"127.0.0.1": {}}})
-	for range 2 {
-		result, err := client.Get(context.Background(), Request{URL: origin.URL, ChannelID: "channel"})
-		if err != nil {
-			t.Fatal(err)
+	for wave := range 2 {
+		var requests sync.WaitGroup
+		requests.Add(parallel)
+		for range parallel {
+			go func() {
+				defer requests.Done()
+				result, err := client.Get(context.Background(), Request{
+					URL: origin.URL + "?wave=" + strconv.Itoa(wave), ChannelID: "channel",
+				})
+				if err != nil {
+					t.Errorf("wave %d: %v", wave, err)
+					return
+				}
+				_, _ = io.Copy(io.Discard, result.Body)
+				_ = result.Body.Close()
+			}()
 		}
-		_, _ = io.Copy(io.Discard, result.Body)
-		_ = result.Body.Close()
+		timer := time.NewTimer(5 * time.Second)
+		for range parallel {
+			select {
+			case <-arrived[wave]:
+			case <-timer.C:
+				close(release[wave])
+				requests.Wait()
+				t.Fatalf("wave %d did not reach %d concurrent requests", wave, parallel)
+			}
+		}
+		timer.Stop()
+		close(release[wave])
+		requests.Wait()
 	}
-	if connections.Load() != 1 {
-		t.Fatalf("upstream connections = %d, want 1", connections.Load())
+	if connections.Load() != parallel {
+		t.Fatalf("upstream connections = %d, want %d reused across both waves", connections.Load(), parallel)
 	}
 }
 
@@ -47,8 +82,10 @@ func TestClientSharedTransportKeepsChannelRouting(t *testing.T) {
 		_, _ = io.WriteString(w, "direct")
 	}))
 	defer origin.Close()
+	var proxyHits atomic.Int32
 	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, "proxy")
+		proxyHits.Add(1)
+		w.WriteHeader(http.StatusBadGateway)
 	}))
 	defer proxy.Close()
 	router, err := proxyegress.NewRouter(proxyegress.Config{
@@ -62,19 +99,20 @@ func TestClientSharedTransportKeepsChannelRouting(t *testing.T) {
 		t.Fatal(err)
 	}
 	client := New(Options{Allowed: map[string]struct{}{"127.0.0.1": {}}, Router: router})
-	for _, test := range []struct {
-		channel string
-		want    string
-	}{{channel: "proxied", want: "proxy"}, {channel: "direct", want: "direct"}} {
-		result, err := client.Get(context.Background(), Request{URL: origin.URL, ChannelID: test.channel})
-		if err != nil {
-			t.Fatal(err)
-		}
-		body, err := io.ReadAll(result.Body)
-		_ = result.Body.Close()
-		if err != nil || string(body) != test.want {
-			t.Fatalf("channel %q response = %q, %v; want %q", test.channel, body, err, test.want)
-		}
+	if _, err := client.Get(context.Background(), Request{URL: origin.URL, ChannelID: "proxied"}); !errors.Is(err, proxyegress.ErrUnpinnableProxyTarget) {
+		t.Fatalf("proxied channel error = %v, want unpinnable target", err)
+	}
+	result, err := client.Get(context.Background(), Request{URL: origin.URL, ChannelID: "direct"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(result.Body)
+	_ = result.Body.Close()
+	if err != nil || string(body) != "direct" {
+		t.Fatalf("direct channel response = %q, %v; want direct", body, err)
+	}
+	if got := proxyHits.Load(); got != 0 {
+		t.Fatalf("unsafe proxy received %d requests", got)
 	}
 }
 
@@ -218,7 +256,8 @@ func TestCrossOriginRedirectDoesNotForwardSourceQueryInReferer(t *testing.T) {
 
 func TestMediaErrorPreservationIsNarrowAndOptIn(t *testing.T) {
 	const upstreamBody = "upstream-secret-body"
-	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var connections atomic.Int32
+	origin := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		status, err := strconv.Atoi(r.URL.Query().Get("status"))
 		if err != nil {
 			http.Error(w, "bad status", http.StatusBadRequest)
@@ -231,6 +270,12 @@ func TestMediaErrorPreservationIsNarrowAndOptIn(t *testing.T) {
 		w.WriteHeader(status)
 		_, _ = io.WriteString(w, upstreamBody)
 	}))
+	origin.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			connections.Add(1)
+		}
+	}
+	origin.Start()
 	defer origin.Close()
 
 	tests := []struct {
@@ -286,6 +331,43 @@ func TestMediaErrorPreservationIsNarrowAndOptIn(t *testing.T) {
 				}
 			}
 		})
+	}
+	if got := connections.Load(); got != 1 {
+		t.Fatalf("upstream connections = %d, want 1", got)
+	}
+}
+
+func TestPreservedMediaErrorDoesNotWaitForTricklingBody(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", strconv.Itoa(errorBodyDrainLimit))
+		w.WriteHeader(http.StatusNotFound)
+		w.(http.Flusher).Flush()
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-ticker.C:
+				if _, err := w.Write([]byte("x")); err != nil {
+					return
+				}
+				w.(http.Flusher).Flush()
+			}
+		}
+	}))
+	defer origin.Close()
+	client := New(Options{Allowed: map[string]struct{}{"127.0.0.1": {}}})
+	started := time.Now()
+	result, err := client.Get(context.Background(), Request{URL: origin.URL, PreserveMediaErrors: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", result.StatusCode)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("preserved media error took %s", elapsed)
 	}
 }
 

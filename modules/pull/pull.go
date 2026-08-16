@@ -25,6 +25,11 @@ type Client struct {
 	pinned      http.RoundTripper
 }
 
+const (
+	errorBodyDrainLimit   = 2048
+	errorBodyDrainTimeout = 100 * time.Millisecond
+)
+
 type Options struct {
 	Observe      *observe.Service
 	Allowed      map[string]struct{}
@@ -157,6 +162,7 @@ func (c *Client) Do(ctx context.Context, method string, req Request) (result Res
 	}
 	resp.Body = newStallGuard(resp.Body, c.observe, c.stall, abandon)
 	if resp.StatusCode >= 400 {
+		drainErrorBody(resp.Body, resp.ContentLength)
 		if req.PreserveMediaErrors && (resp.StatusCode == http.StatusNotFound ||
 			resp.StatusCode == http.StatusGone ||
 			resp.StatusCode == http.StatusRequestedRangeNotSatisfiable) {
@@ -166,14 +172,11 @@ func (c *Client) Do(ctx context.Context, method string, req Request) (result Res
 					header.Set("Content-Range", contentRange)
 				}
 			}
-			_ = resp.Body.Close()
 			return Result{
 				Body: http.NoBody, Header: header, StatusCode: resp.StatusCode, ContentLength: -1,
 				FinalURL: resp.Request.URL.String(), ProxyID: proxyID, ProxyReason: reason,
 			}, nil
 		}
-		defer resp.Body.Close()
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 2048))
 		return Result{}, apperr.New(apperr.CodeUpstream, 502, fmt.Sprintf("upstream status %d", resp.StatusCode))
 	}
 	return Result{
@@ -186,6 +189,23 @@ func (c *Client) Do(ctx context.Context, method string, req Request) (result Res
 		ProxyID:       proxyID,
 		ProxyReason:   reason,
 	}, nil
+}
+
+func drainErrorBody(body io.ReadCloser, contentLength int64) {
+	if contentLength < 0 || contentLength > errorBodyDrainLimit {
+		_ = body.Close()
+		return
+	}
+	done := make(chan struct{})
+	timer := time.AfterFunc(errorBodyDrainTimeout, func() {
+		_ = body.Close()
+		close(done)
+	})
+	_, _ = io.Copy(io.Discard, body)
+	if !timer.Stop() {
+		<-done
+	}
+	_ = body.Close()
 }
 
 func (c *Client) GetBytes(ctx context.Context, req Request) ([]byte, string, error) {
