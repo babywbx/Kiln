@@ -163,7 +163,14 @@ func (f *Fetcher) Fetch(ctx context.Context, source Source, previous CacheMetada
 	encoding := strings.ToLower(strings.TrimSpace(response.Header.Get("Content-Encoding")))
 	isGzip := encoding == "gzip" || (len(magic) == 2 && magic[0] == 0x1f && magic[1] == 0x8b)
 	if isGzip && !response.Uncompressed {
+		var gzipTimer *time.Timer
+		if timeout > 0 {
+			gzipTimer = time.AfterFunc(timeout, cancel)
+		}
 		compressed, err := gzip.NewReader(reader)
+		if gzipTimer != nil {
+			gzipTimer.Stop()
+		}
 		if err != nil {
 			closeBody()
 			return FetchResult{}, fmt.Errorf("fetch EPG source %q: open gzip: %w", source.ID, err)

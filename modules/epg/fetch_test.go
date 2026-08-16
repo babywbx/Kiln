@@ -205,3 +205,40 @@ func TestFetcherTimesOutStalledStreamingReads(t *testing.T) {
 		t.Fatal("stalled body read succeeded")
 	}
 }
+
+func TestFetcherTimesOutStalledGzipHeader(t *testing.T) {
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Encoding", "gzip")
+		_, _ = w.Write([]byte{0x1f, 0x8b})
+		w.(http.Flusher).Flush()
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	defer server.Close()
+	defer close(release)
+
+	client := server.Client()
+	client.Timeout = 50 * time.Millisecond
+	done := make(chan error, 1)
+	go func() {
+		result, err := (&epg.Fetcher{Client: client}).Fetch(
+			context.Background(), epg.Source{ID: "stalled-gzip", URL: server.URL}, epg.CacheMetadata{},
+		)
+		if err == nil {
+			_ = result.Close()
+		}
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("stalled gzip header succeeded")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stalled gzip header did not time out")
+	}
+}
