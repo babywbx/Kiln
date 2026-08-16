@@ -221,6 +221,75 @@ func TestFFprobeRoutesNestedDASHRequestsThroughGuardedProxy(t *testing.T) {
 	}
 }
 
+func TestFFprobeSendsHeadersToHTTPSDASHSegments(t *testing.T) {
+	ffprobe, err := exec.LookPath("ffprobe")
+	if err != nil {
+		t.Skip("ffprobe is not installed")
+	}
+	demuxers, err := exec.Command(ffprobe, "-v", "quiet", "-demuxers").Output()
+	if err != nil || !strings.Contains(string(demuxers), " D  dash ") {
+		t.Skip("ffprobe does not include the DASH demuxer")
+	}
+	var authorized atomic.Int64
+	var unauthorized atomic.Int64
+	files := http.FileServer(http.Dir(filepath.Join("..", "..", "testdata", "cenc", "h264")))
+	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Channel-Secret") != "top-secret" || r.UserAgent() != "Kiln/1" {
+			unauthorized.Add(1)
+			http.Error(w, "missing source credentials", http.StatusForbidden)
+			return
+		}
+		authorized.Add(1)
+		files.ServeHTTP(w, r)
+	}))
+	defer origin.Close()
+
+	source, err := os.ReadFile(filepath.Join("..", "..", "testdata", "cenc", "h264", "stream.mpd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	clearManifest := strings.ReplaceAll(string(source),
+		`<ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011" value="cenc"/>`, "")
+	filtered, _, err := FilterMPDForPack(clearManifest, origin.URL+"/stream.mpd", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := filepath.Join(t.TempDir(), "input.mpd")
+	if err := os.WriteFile(input, []byte(filtered), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	proxy, err := startFFmpegForwardProxy(ffmpegProxyOptions{
+		Client:       pull.New(pull.Options{Allowed: map[string]struct{}{"127.0.0.1": {}}}),
+		HeaderOrigin: origin.URL + "/stream.mpd",
+		Headers:      map[string]string{"X-Channel-Secret": "top-secret"},
+		UserAgent:    "Kiln/1",
+		InputPath:    input,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proxy.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, ffprobe,
+		"-v", "error",
+		"-protocol_whitelist", "file,http,https,tcp,tls,crypto,httpproxy",
+		"-http_proxy", proxy.URL(),
+		"-user_agent", "Kiln/1",
+		"-headers", "X-Channel-Secret: top-secret\r\n",
+		"-show_entries", "format=duration",
+		proxy.InputURL(),
+	)
+	command.Env = append(os.Environ(), proxy.Env()...)
+	output, runErr := command.CombinedOutput()
+	if authorized.Load() == 0 {
+		t.Fatalf("ffprobe did not authenticate HTTPS DASH requests: %v: %s", runErr, output)
+	}
+	if unauthorized.Load() != 0 {
+		t.Fatalf("ffprobe sent %d unauthenticated HTTPS requests", unauthorized.Load())
+	}
+}
+
 func TestFFmpegProxyPinsHTTPSTunnel(t *testing.T) {
 	target := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, "ok")
@@ -362,32 +431,45 @@ func TestValidateFFmpegMPDAcceptsURNIdentifiers(t *testing.T) {
 
 func TestRefreshFFmpegMPDReplacesDynamicSnapshot(t *testing.T) {
 	var generation atomic.Int64
-	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	var entryHits atomic.Int64
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/entry" {
+			session := entryHits.Add(1)
+			http.Redirect(w, r, fmt.Sprintf("/session/%d/live.mpd", session), http.StatusFound)
+			return
+		}
 		current := generation.Load()
-		_, _ = io.WriteString(w, fmt.Sprintf(`<MPD type="dynamic" minimumUpdatePeriod="PT0.1S"><!-- generation-%d --><Period><AdaptationSet><Representation id="v%d" bandwidth="1" width="1" height="1"><SegmentTemplate initialization="init.mp4" media="seg-$Number$.m4s"/></Representation></AdaptationSet></Period></MPD>`, current, current))
+		_, _ = fmt.Fprintf(w, `<MPD type="dynamic" minimumUpdatePeriod="PT0.1S"><!-- generation-%d --><Period><AdaptationSet><Representation id="v%d" bandwidth="1" width="1" height="1"><SegmentTemplate initialization="init.mp4" media="seg-$Number$.m4s"/></Representation></AdaptationSet></Period></MPD>`, current, current)
 	}))
 	defer origin.Close()
 
+	options := DashOptions{
+		SourceURL:                origin.URL + "/entry",
+		Pull:                     pull.New(pull.Options{Allowed: map[string]struct{}{"127.0.0.1": {}}}),
+		UpgradeInsecureRedirects: true,
+	}
+	resolvedURL, initial, err := resolveMPD(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
 	path := filepath.Join(t.TempDir(), "input.mpd")
-	if err := os.WriteFile(path, []byte("initial"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(initial), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	options := DashOptions{
-		SourceURL:                origin.URL + "/live.mpd",
-		Pull:                     pull.New(pull.Options{Allowed: map[string]struct{}{"127.0.0.1": {}}}),
-		UpgradeInsecureRedirects: true,
-	}
 	proxy := &ffmpegForwardProxy{}
 	proxy.upgradeHTTP.Store(true)
 	generation.Store(2)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	go refreshFFmpegMPD(ctx, options, path, origin.URL, nil, proxy, 20*time.Millisecond, logger)
+	go refreshFFmpegMPD(ctx, options, path, resolvedURL, nil, proxy, 20*time.Millisecond, logger)
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		body, err := os.ReadFile(path)
 		if err == nil && strings.Contains(string(body), "generation-2") {
+			if got := entryHits.Load(); got != 1 {
+				t.Fatalf("entry hits = %d, want 1", got)
+			}
 			if proxy.upgradeHTTP.Load() {
 				t.Fatal("explicit HTTP refresh left proxy upgrades enabled")
 			}
@@ -429,6 +511,76 @@ func TestRefreshFFmpegMPDKeepsSnapshotAfterHeaderOriginChange(t *testing.T) {
 	}
 	if string(body) != initial {
 		t.Fatalf("cross-origin refresh replaced usable snapshot: %s", body)
+	}
+}
+
+func TestRefreshFFmpegMPDReresolvesExpiredSession(t *testing.T) {
+	var entryHits atomic.Int64
+	var session1Hits atomic.Int64
+	var session2Hits atomic.Int64
+	var session1Expired atomic.Bool
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/entry":
+			session := entryHits.Add(1)
+			http.Redirect(w, r, fmt.Sprintf("/session/%d/live.mpd", session), http.StatusFound)
+		case "/session/1/live.mpd":
+			session1Hits.Add(1)
+			if session1Expired.Load() {
+				http.NotFound(w, r)
+				return
+			}
+			_, _ = io.WriteString(w, `<MPD type="dynamic" minimumUpdatePeriod="PT0.1S"><!-- session-1 --><Period><AdaptationSet><Representation id="v" bandwidth="1" width="1" height="1"><SegmentTemplate initialization="init.mp4" media="seg-$Number$.m4s"/></Representation></AdaptationSet></Period></MPD>`)
+		case "/session/2/live.mpd":
+			session2Hits.Add(1)
+			_, _ = io.WriteString(w, `<MPD type="dynamic" minimumUpdatePeriod="PT0.1S"><!-- session-2 --><Period><AdaptationSet><Representation id="v" bandwidth="1" width="1" height="1"><SegmentTemplate initialization="init.mp4" media="seg-$Number$.m4s"/></Representation></AdaptationSet></Period></MPD>`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer origin.Close()
+
+	options := DashOptions{
+		SourceURL: origin.URL + "/entry",
+		Pull:      pull.New(pull.Options{Allowed: map[string]struct{}{"127.0.0.1": {}}}),
+	}
+	resolvedURL, initial, err := resolveMPD(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "input.mpd")
+	if err := os.WriteFile(path, []byte(initial), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	session1Expired.Store(true)
+	ctx, cancel := context.WithCancel(context.Background())
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	done := make(chan struct{})
+	go func() {
+		refreshFFmpegMPD(ctx, options, path, resolvedURL, nil, nil, 10*time.Millisecond, logger)
+		close(done)
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for session2Hits.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	if got := session2Hits.Load(); got < 2 {
+		t.Fatalf("session 2 hits = %d, want at least 2", got)
+	}
+	if got := entryHits.Load(); got != 2 {
+		t.Fatalf("entry hits = %d, want 2", got)
+	}
+	if got := session1Hits.Load(); got != 2 {
+		t.Fatalf("session 1 hits = %d, want 2", got)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "session-2") {
+		t.Fatalf("snapshot did not switch to session 2: %s", body)
 	}
 }
 

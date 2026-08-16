@@ -224,13 +224,19 @@ func startPackager(parent context.Context, opt DashOptions, log *slog.Logger, ab
 	var stderrBuf bytes.Buffer
 	var forwardProxy *ffmpegForwardProxy
 	proxyEnv := []string(nil)
+	refreshPath := att.input
 	if att.network {
+		inputPath := ""
+		if filepath.IsAbs(att.input) {
+			inputPath = att.input
+		}
 		forwardProxy, err = startFFmpegForwardProxy(ffmpegProxyOptions{
 			Client:                   opt.Pull,
 			ChannelID:                opt.ChannelID,
 			HeaderOrigin:             resolvedURL,
 			Headers:                  att.headers,
 			UserAgent:                opt.UserAgent,
+			InputPath:                inputPath,
 			Docker:                   opt.FFmpegMode.IsDocker(),
 			UpgradeInsecureRedirects: opt.UpgradeInsecureRedirects,
 			UpgradeHTTPRequests:      att.upgradeHTTPRequests,
@@ -241,6 +247,9 @@ func startPackager(parent context.Context, opt DashOptions, log *slog.Logger, ab
 			return nil, err
 		}
 		att.proxyURL = forwardProxy.URL()
+		if inputURL := forwardProxy.InputURL(); inputURL != "" {
+			att.input = inputURL
+		}
 		proxyEnv = forwardProxy.Env()
 	}
 	closeProxy := func() {
@@ -287,7 +296,7 @@ func startPackager(parent context.Context, opt DashOptions, log *slog.Logger, ab
 		job.pid = cmd.Process.Pid
 	}
 	if att.refreshInterval > 0 {
-		go refreshFFmpegMPD(ctx, opt, att.input, resolvedURL, att.headers, forwardProxy, att.refreshInterval, log)
+		go refreshFFmpegMPD(ctx, opt, refreshPath, resolvedURL, att.headers, forwardProxy, att.refreshInterval, log)
 	}
 	go func() {
 		processErr := cmd.Wait()
@@ -347,7 +356,6 @@ func buildPackagerArgs(opt DashOptions, att packAttempt, key, indexPath, segPatt
 		"-protocol_whitelist", protocols,
 		"-fflags", "+genpts+discardcorrupt",
 	}
-	// A file input rejects every http option; the forward proxy carries them instead.
 	if att.network && networkInput(att.input) {
 		maxRedirects := "0"
 		if opt.UpgradeInsecureRedirects {
@@ -658,7 +666,7 @@ func refreshFFmpegMPD(
 	ctx context.Context,
 	opt DashOptions,
 	path string,
-	headerOrigin string,
+	initialURL string,
 	headers map[string]string,
 	forwardProxy *ffmpegForwardProxy,
 	interval time.Duration,
@@ -666,13 +674,16 @@ func refreshFFmpegMPD(
 ) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
+	headerOrigin := initialURL
+	refreshURL := initialURL
+	prepareRefresh := func(startURL string) (string, string, error) {
+		var resolvedURL, body string
+		var err error
+		if startURL == opt.SourceURL || !remoteNetworkSource(startURL) {
+			resolvedURL, body, err = fetchPinnedMPD(ctx, opt)
+		} else {
+			resolvedURL, body, err = fetchPinnedMPDAttempt(ctx, opt, startURL)
 		}
-		resolvedURL, body, err := fetchPinnedMPD(ctx, opt)
 		if err == nil && hasFFmpegCustomHeaders(headers) && !sameURLOrigin(resolvedURL, headerOrigin) {
 			err = fmt.Errorf("dash manifest refresh crossed the authorized header origin")
 		}
@@ -688,11 +699,26 @@ func refreshFFmpegMPD(
 		if err == nil {
 			err = validateFFmpegMPD(body, resolvedURL, opt.Pull, headers)
 		}
+		return resolvedURL, body, err
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		resolvedURL, body, err := prepareRefresh(refreshURL)
+		if err != nil && ctx.Err() == nil && refreshURL != opt.SourceURL && remoteNetworkSource(refreshURL) {
+			resolvedURL, body, err = prepareRefresh(opt.SourceURL)
+		}
 		if err == nil && !canUpgradeFFmpegHTTPRedirects(body) {
 			forwardProxy.disableHTTPUpgrades()
 		}
 		if err == nil {
 			err = writeFFmpegMPD(path, []byte(body))
+		}
+		if err == nil {
+			refreshURL = resolvedURL
 		}
 		if err != nil && ctx.Err() == nil {
 			log.Warn("dash manifest refresh failed", "err", redactLogError(err))

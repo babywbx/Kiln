@@ -26,6 +26,7 @@ type ffmpegProxyOptions struct {
 	HeaderOrigin             string
 	Headers                  map[string]string
 	UserAgent                string
+	InputPath                string
 	Docker                   bool
 	UpgradeInsecureRedirects bool
 	UpgradeHTTPRequests      bool
@@ -39,6 +40,8 @@ type ffmpegForwardProxy struct {
 	userAgent       string
 	authorization   string
 	proxyURL        string
+	inputPath       string
+	inputURL        string
 	upgradeInsecure bool
 	upgradeHTTP     atomic.Bool
 	listener        net.Listener
@@ -87,6 +90,9 @@ func startFFmpegForwardProxy(options ffmpegProxyOptions) (*ffmpegForwardProxy, e
 		User:   url.UserPassword(username, password),
 		Host:   net.JoinHostPort(advertisedHost, fmt.Sprintf("%d", port)),
 	}
+	inputURL := *proxyAddress
+	inputURL.User = nil
+	inputURL.Path = "/__kiln_ffmpeg_input.mpd"
 	proxy := &ffmpegForwardProxy{
 		client:          options.Client,
 		channelID:       options.ChannelID,
@@ -96,6 +102,8 @@ func startFFmpegForwardProxy(options ffmpegProxyOptions) (*ffmpegForwardProxy, e
 		upgradeInsecure: options.UpgradeInsecureRedirects,
 		authorization:   authorization,
 		proxyURL:        proxyAddress.String(),
+		inputPath:       options.InputPath,
+		inputURL:        inputURL.String(),
 		listener:        listener,
 		connections:     map[net.Conn]struct{}{},
 	}
@@ -131,6 +139,13 @@ func validateFFmpegProxyHeaders(headers map[string]string, userAgent string) err
 
 func (p *ffmpegForwardProxy) URL() string {
 	return p.proxyURL
+}
+
+func (p *ffmpegForwardProxy) InputURL() string {
+	if p.inputPath == "" {
+		return ""
+	}
+	return p.inputURL
 }
 
 func (p *ffmpegForwardProxy) Env() []string {
@@ -174,6 +189,11 @@ func (p *ffmpegForwardProxy) ServeHTTP(w http.ResponseWriter, request *http.Requ
 	}
 	if request.Method != http.MethodGet && request.Method != http.MethodHead {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if p.inputPath != "" && request.URL != nil && request.URL.String() == p.inputURL {
+		w.Header().Set("Content-Type", "application/dash+xml")
+		http.ServeFile(w, request, p.inputPath)
 		return
 	}
 	if request.URL == nil || request.URL.Hostname() == "" ||
