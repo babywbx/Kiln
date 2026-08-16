@@ -1,9 +1,6 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
     inputs:
       tag:
@@ -14,7 +11,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  group: release-${{ inputs.tag }}
   cancel-in-progress: false
 
 env:
@@ -30,14 +27,19 @@ jobs:
       sha: ${{ steps.commit.outputs.sha }}
       version: ${{ steps.identity.outputs.version }}
       prerelease: ${{ steps.identity.outputs.prerelease }}
-      built_at: ${{ steps.identity.outputs.built_at }}
+      built_at: ${{ steps.source.outputs.built_at }}
     steps:
       - name: Resolve Release Identity
         id: identity
         env:
-          RAW_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          RAW_TAG: ${{ inputs.tag }}
+          RUN_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
+          if [ "$RUN_REF" != refs/heads/main ]; then
+            echo "refusing to release from outside refs/heads/main" >&2
+            exit 1
+          fi
           version="${RAW_TAG#v}"
           if [ "$RAW_TAG" != "v$version" ] || [ "${#version}" -gt 123 ] || \
             ! printf '%s' "$version" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?$'; then
@@ -52,7 +54,6 @@ jobs:
             echo "tag=$RAW_TAG"
             echo "version=$version"
             echo "prerelease=$prerelease"
-            echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           } >> "$GITHUB_OUTPUT"
 
       - name: Resolve Remote Tag
@@ -90,6 +91,20 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ steps.commit.outputs.sha }}
+          fetch-depth: 0
+
+      - name: Validate Tagged Commit
+        id: source
+        env:
+          SHA: ${{ steps.commit.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$SHA" refs/remotes/origin/main; then
+            echo "refusing to release a commit outside origin/main" >&2
+            exit 1
+          fi
+          echo "built_at=$(git show -s --format=%cI "$SHA")" >> "$GITHUB_OUTPUT"
 
       - name: Run Installer Contract
         env:
@@ -240,7 +255,7 @@ jobs:
         run: |
           set -euo pipefail
           base="${REGISTRY}/$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
-          candidate_id="${SHA:0:12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          candidate_id="${SHA:0:12}-${GITHUB_RUN_ID}"
           {
             echo "base=$base"
             echo "core=${base}:candidate-${candidate_id}-core"
@@ -544,17 +559,10 @@ jobs:
           FULL_DIGEST: ${{ needs.images.outputs.full_digest }}
           LITE_DIGEST: ${{ needs.images.outputs.lite_digest }}
           VERSION: ${{ needs.guard.outputs.version }}
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          promote() {
-            digest="$1"
-            shift
-            args=()
-            for image_tag in "$@"; do
-              args+=(--tag "$image_tag")
-            done
-            docker buildx imagetools create "${args[@]}" "$BASE@$digest"
-          }
           verify_ref() {
             image_ref="$1"
             expected="$2"
@@ -565,17 +573,51 @@ jobs:
               return 1
             fi
           }
+          publish_exact() {
+            digest="$1"
+            tag="$2"
+            image_ref="$BASE:$tag"
+            response=$(curl -sS -D - -o /dev/null -w '\n%{http_code}' \
+              -H "Authorization: Bearer $registry_token" \
+              -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json' \
+              "https://$REGISTRY/v2/$repository/manifests/$tag")
+            status=$(printf '%s\n' "$response" | tail -n 1)
+            case "$status" in
+              200)
+                actual=$(printf '%s\n' "$response" | awk '
+                  tolower($1) == "docker-content-digest:" {
+                    gsub("\\r", "", $2)
+                    digest = $2
+                  }
+                  END { print digest }
+                ')
+                if [ -z "$actual" ] || [ "$actual" != "$digest" ]; then
+                  echo "refusing to replace $image_ref at ${actual:-unknown}, want $digest" >&2
+                  return 1
+                fi
+                ;;
+              404)
+                docker buildx imagetools create --tag "$image_ref" "$BASE@$digest"
+                ;;
+              *)
+                echo "could not inspect $image_ref: registry returned HTTP $status" >&2
+                return 1
+                ;;
+            esac
+            verify_ref "$image_ref" "$digest"
+          }
 
           for digest in "$CORE_DIGEST" "$FULL_DIGEST" "$LITE_DIGEST"; do
             verify_ref "$BASE@$digest" "$digest"
           done
 
-          promote "$FULL_DIGEST" "$BASE:$VERSION"
-          promote "$CORE_DIGEST" "$BASE:$VERSION-core"
-          promote "$LITE_DIGEST" "$BASE:$VERSION-lite"
-          verify_ref "$BASE:$VERSION" "$FULL_DIGEST"
-          verify_ref "$BASE:$VERSION-core" "$CORE_DIGEST"
-          verify_ref "$BASE:$VERSION-lite" "$LITE_DIGEST"
+          repository=$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')
+          registry_token=$(curl -fsSL -u "$REGISTRY_USER:$REGISTRY_TOKEN" \
+            "https://$REGISTRY/token?scope=repository:$repository:pull&service=$REGISTRY" \
+            | jq -er '.token')
+          publish_exact "$FULL_DIGEST" "$VERSION"
+          publish_exact "$CORE_DIGEST" "$VERSION-core"
+          publish_exact "$LITE_DIGEST" "$VERSION-lite"
 
   publish:
     name: Publish / GitHub Release
@@ -591,6 +633,7 @@ jobs:
           TAG: ${{ needs.guard.outputs.tag }}
           SHA: ${{ needs.guard.outputs.sha }}
           PRERELEASE: ${{ needs.guard.outputs.prerelease }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
           resolve_tag_commit() {
@@ -614,12 +657,22 @@ jobs:
           fi
 
           release=$(gh release view "$TAG" --json isDraft,isPrerelease)
-          if [ "$(jq -r '.isDraft' <<<"$release")" != true ]; then
-            echo "release $TAG must be a draft before publication" >&2
+          release_prerelease=$(jq -r '.isPrerelease' <<<"$release")
+          if [ "$release_prerelease" != "$PRERELEASE" ]; then
+            echo "release $TAG prerelease state changed" >&2
             exit 1
           fi
-          if [ "$(jq -r '.isPrerelease' <<<"$release")" != "$PRERELEASE" ]; then
-            echo "release $TAG prerelease state changed" >&2
+          release_draft=$(jq -r '.isDraft' <<<"$release")
+          if [ "$release_draft" = false ]; then
+            if [ "$RUN_ATTEMPT" -le 1 ]; then
+              echo "release $TAG became published during the initial attempt" >&2
+              exit 1
+            fi
+            echo "release $TAG is already published"
+            exit 0
+          fi
+          if [ "$release_draft" != true ]; then
+            echo "release $TAG must be a draft before publication" >&2
             exit 1
           fi
           gh release edit "$TAG" --draft=false --verify-tag
@@ -730,7 +783,7 @@ jobs:
 
   cleanup:
     name: Publish / Discard Candidate Images
-    if: always() && needs.images.result != 'skipped'
+    if: always() && needs.publish.result == 'success' && (needs.guard.outputs.prerelease == 'true' || needs.floating-images.result == 'success')
     runs-on: ubuntu-latest
     continue-on-error: true
     needs: [guard, images, draft, version-images, publish, floating-images]
@@ -744,7 +797,7 @@ jobs:
         run: |
           set -euo pipefail
           package=$(printf '%s' "${GITHUB_REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')
-          prefix="candidate-${SHA:0:12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-"
+          prefix="candidate-${SHA:0:12}-${GITHUB_RUN_ID}-"
 
           api=""
           for owner_scope in "users/$GITHUB_REPOSITORY_OWNER" "orgs/$GITHUB_REPOSITORY_OWNER"; do
