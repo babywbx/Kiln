@@ -692,7 +692,10 @@ func TestIdleRenditionPausesAndRewarmsOnDemand(t *testing.T) {
 		t.Fatal("an idle rendition must not trip the no_progress re-anchor")
 	}
 
-	n.WantTrack("audio-main.m3u8")
+	publication := &nativePublication{pub: n.Publication(), native: n, dir: dir}
+	if _, ok := publication.Playlist("audio-main.m3u8"); !ok {
+		t.Fatal("the wrapped publication lost the audio playlist")
+	}
 	if err := n.advance(context.Background(), parseManifest(t, origin)); err != nil {
 		t.Fatalf("advance after rewarm: %v", err)
 	}
