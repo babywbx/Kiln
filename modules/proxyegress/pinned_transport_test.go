@@ -577,3 +577,122 @@ func TestPinnedTransportBoundsRebuildsUnderConcurrentReloads(t *testing.T) {
 		t.Fatal("a permanently stale generation must fail instead of spinning")
 	}
 }
+
+func trustedProxyRouter(t *testing.T, proxyURL string) *Router {
+	t.Helper()
+	router, err := NewRouter(Config{
+		Default:       "trusted",
+		Profiles:      []Profile{{ID: "trusted", URL: proxyURL}},
+		TrustProxyDNS: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return router
+}
+
+func refusingPinner(t *testing.T) destinationPinner {
+	t.Helper()
+	return func(context.Context, string, map[string]struct{}) (*url.URL, error) {
+		t.Error("a trusted proxy must resolve the destination itself")
+		return nil, errors.New("pin must not run")
+	}
+}
+
+func TestPinnedTransportHandsHostnameToATrustedProxy(t *testing.T) {
+	seen := make(chan string, 1)
+	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		seen <- request.Host
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer proxyServer.Close()
+
+	transport := newPinnedTransport(nil, trustedProxyRouter(t, proxyServer.URL), "", nil, refusingPinner(t))
+	response, err := (&http.Client{Timeout: 5 * time.Second, Transport: transport}).Get(
+		"http://cdn.example.com:8080/manifest.mpd",
+	)
+	if err != nil {
+		t.Fatalf("trusted proxy request failed: %v", err)
+	}
+	_ = response.Body.Close()
+
+	select {
+	case got := <-seen:
+		if got != "cdn.example.com:8080" {
+			t.Fatalf("proxy target = %q, want the original hostname", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the trusted proxy never received the request")
+	}
+}
+
+func TestTrustedProxyStillRejectsSpecialHostnames(t *testing.T) {
+	reached := make(chan struct{}, 1)
+	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached <- struct{}{}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer proxyServer.Close()
+
+	transport := newPinnedTransport(nil, trustedProxyRouter(t, proxyServer.URL), "", nil, refusingPinner(t))
+	client := &http.Client{Timeout: 5 * time.Second, Transport: transport}
+	for _, target := range []string{
+		"http://localhost:8080/manifest.mpd",
+		"http://metadata.google.internal/computeMetadata/v1/",
+		"http://kiln.internal/manifest.mpd",
+	} {
+		response, err := client.Get(target)
+		if response != nil {
+			_ = response.Body.Close()
+		}
+		if err == nil {
+			t.Fatalf("%s was accepted through a trusted proxy", target)
+		}
+	}
+	select {
+	case <-reached:
+		t.Fatal("a blocked hostname reached the trusted proxy")
+	default:
+	}
+}
+
+func TestTrustedProxyTransportDelegatesOnlyWhenAProxyIsConfigured(t *testing.T) {
+	seen := make(chan string, 1)
+	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		seen <- request.Host
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer proxyServer.Close()
+	proxyURL, err := url.Parse(proxyServer.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	viaProxy := NewTrustedProxyTransport(&http.Transport{Proxy: http.ProxyURL(proxyURL)}, nil)
+	response, err := (&http.Client{Timeout: 5 * time.Second, Transport: viaProxy}).Get(
+		"http://cdn.example.com:8080/manifest.mpd",
+	)
+	if err != nil {
+		t.Fatalf("trusted proxy request failed: %v", err)
+	}
+	_ = response.Body.Close()
+	select {
+	case got := <-seen:
+		if got != "cdn.example.com:8080" {
+			t.Fatalf("proxy target = %q, want the original hostname", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the trusted proxy never received the request")
+	}
+
+	direct := NewTrustedProxyTransport(&http.Transport{}, nil)
+	response, err = (&http.Client{Timeout: 5 * time.Second, Transport: direct}).Get(
+		"http://cdn.example.com:8080/manifest.mpd",
+	)
+	if response != nil {
+		_ = response.Body.Close()
+	}
+	if err == nil {
+		t.Fatal("a direct request must still be resolved and pinned locally")
+	}
+}

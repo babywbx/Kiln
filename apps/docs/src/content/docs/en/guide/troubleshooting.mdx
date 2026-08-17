@@ -273,7 +273,7 @@ Compare that against the profile table in [Operations](/en/guide/operations/). T
 
 **How to tell**: every profile resolves the target on the Kiln host, applies SSRF validation, and gives the pinned IP to the direct connection or proxy; `socks5h` no longer triggers a second proxy-side lookup. Errors such as `probe target dns lookup failed` or `resolved to a non-public address` therefore occur before the proxy takes over. A plain HTTP upstream through an HTTP(S) forward proxy is rejected because that path cannot both pin the dial address and preserve the original Host.
 
-**Fix**: give Kiln DNS that returns real, reachable addresses; do not depend on a second proxy lookup in TUN or fake-IP environments. Move a plain HTTP upstream to HTTPS or use SOCKS5. Add only exact, genuinely trusted private origins to `security.allowed_hosts`; never broadly disable private-network validation.
+**Fix**: give Kiln DNS that returns real, reachable addresses. On a host where TUN or fake-IP applies system-wide and no process can obtain a real address, set `egress.trust_proxy_dns = true` to hand resolution back to the proxy, at the cost of Kiln no longer validating the destination IP; see [Egress proxy](/en/guide/proxy/). Move a plain HTTP upstream to HTTPS or use SOCKS5. Add only exact, genuinely trusted private origins to `security.allowed_hosts`; never broadly disable private-network validation.
 
 ### FFmpeg container cannot reach Kiln
 

@@ -1370,6 +1370,7 @@ func (s *Server) handleAdminEgressTest(w http.ResponseWriter, r *http.Request) {
 			writeAppErr(w, apperr.New(apperr.CodeInvalid, 400, err.Error()))
 			return
 		}
+		cfg.TrustProxyDNS = s.deps.Cfg.Egress.TrustProxyDNS
 		testRouter, err = proxyegress.NewRouter(cfg)
 		if err != nil {
 			writeAppErr(w, apperr.New(apperr.CodeInvalid, 400, err.Error()))

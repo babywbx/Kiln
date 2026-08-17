@@ -9,6 +9,7 @@ func ConfigFromFile(file config.File) Config {
 		Default:         file.Egress.Default,
 		PlaylistPolicy:  PlaylistPolicy(file.Egress.PlaylistPolicy),
 		DockerProxyHost: file.Egress.DockerProxyHost,
+		TrustProxyDNS:   file.Egress.TrustProxyDNS,
 	}
 	if cfg.Default == "" {
 		cfg.Default = Direct

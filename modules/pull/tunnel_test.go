@@ -337,3 +337,70 @@ func startTestSOCKS5(t *testing.T, connectTarget chan<- string) string {
 	}()
 	return listener.Addr().String()
 }
+
+func TestDialPinnedSendsHostnameToATrustedProxy(t *testing.T) {
+	target, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = target.Close() }()
+	go func() {
+		connection, err := target.Accept()
+		if err != nil {
+			return
+		}
+		defer func() { _ = connection.Close() }()
+		_, _ = io.Copy(connection, connection)
+	}()
+	_, targetPort, err := net.SplitHostPort(target.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	connectTarget := make(chan string, 1)
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodConnect {
+			http.Error(w, "CONNECT required", http.StatusMethodNotAllowed)
+			return
+		}
+		connectTarget <- request.Host
+		upstream, err := net.Dial("tcp", request.Host)
+		if err != nil {
+			http.Error(w, "dial failed", http.StatusBadGateway)
+			return
+		}
+		downstream, buffered, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			_ = upstream.Close()
+			return
+		}
+		_, _ = buffered.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n")
+		_ = buffered.Flush()
+		go func() {
+			defer func() { _ = downstream.Close() }()
+			defer func() { _ = upstream.Close() }()
+			go func() { _, _ = io.Copy(upstream, downstream) }()
+			_, _ = io.Copy(downstream, upstream)
+		}()
+	}))
+	defer proxy.Close()
+
+	router, err := proxyegress.NewRouter(proxyegress.Config{
+		Default:       "trusted",
+		Profiles:      []proxyegress.Profile{{ID: "trusted", URL: proxy.URL}},
+		TrustProxyDNS: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := New(Options{Allowed: map[string]struct{}{"localhost": {}}, Router: router})
+	connection, err := client.DialPinned(context.Background(), "https://localhost:"+targetPort, "channel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = connection.Close() }()
+
+	if got := <-connectTarget; got != "localhost:"+targetPort {
+		t.Fatalf("proxy CONNECT target = %q, want the unresolved hostname", got)
+	}
+}

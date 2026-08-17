@@ -326,3 +326,41 @@ func TestTransportForUsesOneReloadSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestDecisionMarksProxyResolvesOnlyForTrustedProxies(t *testing.T) {
+	profiles := []Profile{{ID: "hk", URL: "http://proxy.example:1080"}}
+	for _, test := range []struct {
+		name    string
+		cfg     Config
+		target  string
+		want    bool
+		wantVia string
+	}{
+		{
+			name: "trusted proxy", want: true, wantVia: "hk", target: "https://cdn.example/a.mpd",
+			cfg: Config{Default: "hk", Profiles: profiles, TrustProxyDNS: true},
+		},
+		{
+			name: "untrusted proxy", want: false, wantVia: "hk", target: "https://cdn.example/a.mpd",
+			cfg: Config{Default: "hk", Profiles: profiles},
+		},
+		{
+			name: "direct stays pinned", want: false, wantVia: Direct, target: "https://cdn.example/a.mpd",
+			cfg: Config{Default: Direct, Profiles: profiles, TrustProxyDNS: true},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			router, err := NewRouter(test.cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			decision := router.Resolve(test.target, "")
+			if decision.ProxyID != test.wantVia {
+				t.Fatalf("proxy = %q, want %q", decision.ProxyID, test.wantVia)
+			}
+			if decision.ProxyResolves != test.want {
+				t.Fatalf("ProxyResolves = %v, want %v", decision.ProxyResolves, test.want)
+			}
+		})
+	}
+}

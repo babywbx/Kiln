@@ -351,7 +351,11 @@ func buildEPGService(cfg config.File, db *store.DB, router *proxyegress.Router, 
 			if !ok {
 				return nil, errors.New("unsupported EPG transport")
 			}
-			client.Transport = proxyegress.NewPinnedTransport(base, nil, "", allowedPrivate)
+			if cfg.Egress.TrustProxyDNS {
+				client.Transport = proxyegress.NewTrustedProxyTransport(base, allowedPrivate)
+			} else {
+				client.Transport = proxyegress.NewPinnedTransport(base, nil, "", allowedPrivate)
+			}
 			return client, nil
 		},
 	}

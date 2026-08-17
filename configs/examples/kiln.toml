@@ -168,6 +168,10 @@ playlist_policy = "rewrite"
 # but delivers less than this cannot carry live media, so the test says so
 # instead of reporting success. Negative disables the verdict.
 min_test_kbps = 1000
+# Let the proxy resolve the destination instead of Kiln. Required when the host
+# runs TUN or fake-IP DNS, where no process can obtain a real address. Kiln then
+# cannot validate the destination IP, so only enable it for a trusted proxy.
+# trust_proxy_dns = false
 
 # [[egress.rules]]
 # id = "example-cdn"

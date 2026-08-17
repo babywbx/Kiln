@@ -97,6 +97,8 @@
     "default": "direct",
     "playlist_policy": "rewrite",
     "docker_proxy_host": "host.docker.internal",
+    // Let the proxy resolve the destination. Only for TUN or fake-IP hosts.
+    "trust_proxy_dns": false,
     "rules": [
       // {
       //   "id": "example-cdn",

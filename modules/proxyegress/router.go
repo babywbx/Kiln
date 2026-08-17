@@ -57,6 +57,7 @@ type Config struct {
 	Profiles        []Profile
 	Rules           []Rule
 	DockerProxyHost string
+	TrustProxyDNS   bool
 }
 
 type Decision struct {
@@ -64,6 +65,8 @@ type Decision struct {
 	ProxyURL *url.URL
 	Rewrite  bool
 	Reason   string
+	// ProxyResolves hands DNS to the proxy; Kiln then cannot pin the address.
+	ProxyResolves bool
 }
 
 type Router struct {
@@ -248,6 +251,7 @@ func (r *Router) resolveLocked(targetURL, channelID string) Decision {
 			d.Reason = reason + "|missing-profile"
 		}
 	}
+	d.ProxyResolves = r.cfg.TrustProxyDNS && d.ProxyURL != nil
 	switch r.cfg.PlaylistPolicy {
 	case PolicyPassthrough:
 		d.Rewrite = false

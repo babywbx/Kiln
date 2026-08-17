@@ -273,7 +273,7 @@ inflight_mb=64 max_segment_mb=32 gc_percent=100 drop_file_cache=true
 
 **判断**：所有线路都由 Kiln 本机解析目标、执行 SSRF 校验，并把固定 IP 交给直连或代理；`socks5h` 也不会触发第二次代理侧解析。`probe target dns lookup failed` 或 `resolved to a non-public address` 因此会在代理接管前出现。明文 HTTP 上游经 HTTP(S) 转发代理无法同时固定拨号 IP 与保留原始 Host，这个组合会直接被拒绝。
 
-**处理**：让 Kiln 使用能返回真实可达地址的 DNS；TUN 或 fake-IP 环境不要依赖代理二次解析。明文 HTTP 上游改用 HTTPS，或改走 SOCKS5。只有确实可信的内网源才把精确主机名或 IP 加入 `security.allowed_hosts`，不要用通配方式放开私网校验。
+**处理**：让 Kiln 使用能返回真实可达地址的 DNS。整机启用 TUN 或 fake-IP、拿不到真实地址时，设 `egress.trust_proxy_dns = true` 把解析交回代理，代价是 Kiln 不再校验目标 IP，详见[出站代理](/guide/proxy/)。
 
 ### FFmpeg 容器连不上 Kiln
 

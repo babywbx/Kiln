@@ -71,7 +71,19 @@ proxy = "proxy-http"
 - 线路可以停用而不删除。被 `egress.default` 或启用中的规则引用的线路不允许处于停用状态。
 
 <Aside type="caution" title="本地 DNS 是安全前提">
-  Kiln 必须在自身网络中得到目标的真实可连接 IP，才能完成 SSRF 校验并绑定实际拨号。TUN 或 fake-IP DNS 若返回代理网络里没有意义的合成地址，请为回源域名配置真实 DNS 解析；Kiln 不会退回到未经检查的代理侧解析。
+  Kiln 必须在自身网络中得到目标的真实可连接 IP，才能完成 SSRF 校验并绑定实际拨号。TUN 或 fake-IP DNS 若返回代理网络里没有意义的合成地址，请为回源域名配置真实 DNS 解析。
+</Aside>
+
+宿主机整机启用 TUN 或 fake-IP、任何进程都拿不到真实地址时，本机解析这条前提不成立。这种部署可以设 `egress.trust_proxy_dns = true`，把域名原样交给代理解析，恢复 v1.1.0 之前的行为：
+
+```toml
+[egress]
+default = "proxy-http"
+trust_proxy_dns = true
+```
+
+<Aside type="caution" title="开启后代理就是信任边界">
+  Kiln 不再知道目标的真实 IP，也就无法校验它是否指向私网、metadata 或其它被阻止的地址，只保留 scheme 与主机名层面的检查（`localhost`、`.local`、`.internal`、metadata 主机仍然拒绝）。拉取地址不完全受控时不要开启，并在代理端阻止访问私网目标。该开关只对经过代理的请求生效，直连请求仍然本机解析并固定拨号。
 </Aside>
 
 <Aside type="note" title="两种引擎都支持全部四种 scheme">

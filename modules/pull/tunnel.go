@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/babywbx/kiln/modules/proxyegress"
 	"github.com/babywbx/kiln/modules/security"
 	"golang.org/x/net/proxy"
 )
@@ -24,20 +25,25 @@ func (c *Client) DialPinned(ctx context.Context, rawURL, channelID string) (net.
 	if err != nil || !strings.EqualFold(target.Scheme, "https") {
 		return nil, fmt.Errorf("CONNECT target must use https")
 	}
-	pinned, err := security.PinPublicProbeURL(ctx, rawURL, c.allowed)
-	if err != nil {
-		return nil, err
-	}
 	port := target.Port()
 	if port == "" {
 		port = "443"
 	}
-	address := net.JoinHostPort(pinned.Hostname(), port)
-	if c.router == nil {
-		return dialPinnedTarget(ctx, nil, address)
+	var decision proxyegress.Decision
+	if c.router != nil {
+		decision = c.router.Resolve(rawURL, channelID)
 	}
-	decision := c.router.Resolve(rawURL, channelID)
-	return dialPinnedTarget(ctx, decision.ProxyURL, address)
+	if decision.ProxyResolves {
+		if err := security.MediaHostOK(rawURL, c.allowed); err != nil {
+			return nil, err
+		}
+		return dialPinnedTarget(ctx, decision.ProxyURL, net.JoinHostPort(target.Hostname(), port))
+	}
+	pinned, err := security.PinPublicProbeURL(ctx, rawURL, c.allowed)
+	if err != nil {
+		return nil, err
+	}
+	return dialPinnedTarget(ctx, decision.ProxyURL, net.JoinHostPort(pinned.Hostname(), port))
 }
 
 func dialPinnedTarget(ctx context.Context, proxyURL *url.URL, address string) (net.Conn, error) {

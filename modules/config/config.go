@@ -44,6 +44,7 @@ type Egress struct {
 	Default         string       `json:"default" toml:"default"`
 	PlaylistPolicy  string       `json:"playlist_policy" toml:"playlist_policy"`
 	DockerProxyHost string       `json:"docker_proxy_host" toml:"docker_proxy_host"`
+	TrustProxyDNS   bool         `json:"trust_proxy_dns" toml:"trust_proxy_dns"`
 	MinTestKbps     int          `json:"min_test_kbps" toml:"min_test_kbps"`
 	Rules           []EgressRule `json:"rules" toml:"rules"`
 }

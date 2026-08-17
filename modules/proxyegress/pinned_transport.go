@@ -15,6 +15,18 @@ import (
 	"github.com/babywbx/kiln/modules/security"
 )
 
+// NewTrustedProxyTransport pins like NewPinnedTransport, except that a proxy
+// configured on base resolves the destination itself. Direct requests, which
+// have no proxy to delegate to, are still resolved and pinned locally.
+func NewTrustedProxyTransport(
+	base *http.Transport,
+	allowedPrivate map[string]struct{},
+) http.RoundTripper {
+	transport, _ := newPinnedTransport(base, nil, "", allowedPrivate, security.PinPublicProbeURL).(*pinnedTransport)
+	transport.trustProxyDNS = true
+	return transport
+}
+
 func NewPinnedTransport(
 	base *http.Transport,
 	router *Router,
@@ -65,6 +77,7 @@ type pinnedTransport struct {
 	channelID      string
 	allowedPrivate map[string]struct{}
 	pin            destinationPinner
+	trustProxyDNS  bool
 	mu             sync.Mutex
 	generation     uint64
 	transports     map[pinnedTransportKey]pinnedTransportEntry
@@ -77,6 +90,7 @@ type pinnedTransportKey struct {
 	serverName        string
 	proxy             string
 	proxyViaTransport bool
+	proxyResolves     bool
 }
 
 type pinnedTransportEntry struct {
@@ -94,10 +108,7 @@ func (t *pinnedTransport) CloseIdleConnections() {
 
 func (t *pinnedTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	originalURL := request.URL.String()
-	pinnedURL, err := t.pin(request.Context(), originalURL, t.allowedPrivate)
-	if err != nil {
-		return nil, err
-	}
+	var pinnedURL *url.URL
 
 	channelID := t.channelID
 	if channelID == "" {
@@ -109,12 +120,14 @@ func (t *pinnedTransport) RoundTrip(request *http.Request) (*http.Response, erro
 		base := t.base
 		generation := uint64(0)
 		var selectedProxy *url.URL
+		proxyResolves := false
 		if t.router != nil {
 			decision, selected, selectedGeneration, err := t.router.transportFor(originalURL, channelID)
 			if err != nil {
 				return nil, err
 			}
 			selectedProxy = decision.ProxyURL
+			proxyResolves = decision.ProxyResolves
 			base = selected
 			generation = selectedGeneration
 		}
@@ -130,13 +143,29 @@ func (t *pinnedTransport) RoundTrip(request *http.Request) (*http.Response, erro
 			selectedProxy = proxyURL
 			proxyViaTransport = proxyURL != nil
 		}
+		proxyResolves = proxyResolves || (t.trustProxyDNS && selectedProxy != nil)
 		proxyKey := ""
 		if selectedProxy != nil {
 			proxyKey = selectedProxy.String()
 		}
-		if proxyViaTransport && strings.EqualFold(request.URL.Scheme, "http") &&
+		if !proxyResolves && proxyViaTransport && strings.EqualFold(request.URL.Scheme, "http") &&
 			(strings.EqualFold(selectedProxy.Scheme, "http") || strings.EqualFold(selectedProxy.Scheme, "https")) {
 			return nil, ErrUnpinnableProxyTarget
+		}
+		dialHost := request.URL.Hostname()
+		if proxyResolves {
+			if err := security.MediaHostOK(originalURL, t.allowedPrivate); err != nil {
+				return nil, err
+			}
+		} else {
+			if pinnedURL == nil {
+				resolved, err := t.pin(request.Context(), originalURL, t.allowedPrivate)
+				if err != nil {
+					return nil, err
+				}
+				pinnedURL = resolved
+			}
+			dialHost = pinnedURL.Hostname()
 		}
 		key := pinnedTransportKey{
 			base:              base,
@@ -145,14 +174,18 @@ func (t *pinnedTransport) RoundTrip(request *http.Request) (*http.Response, erro
 			serverName:        request.URL.Hostname(),
 			proxy:             proxyKey,
 			proxyViaTransport: proxyViaTransport,
+			proxyResolves:     proxyResolves,
 		}
-		transport := t.transport(key, pinnedURL.Hostname(), generation)
+		transport := t.transport(key, dialHost, generation)
 		if transport == nil {
 			continue
 		}
-		pinnedRequest := request.Clone(request.Context())
-		pinnedRequest.URL = pinnedURL
-		pinnedRequest.Host = request.URL.Host
+		pinnedRequest := request
+		if !proxyResolves {
+			pinnedRequest = request.Clone(request.Context())
+			pinnedRequest.URL = pinnedURL
+			pinnedRequest.Host = request.URL.Host
+		}
 		response, err := transport.RoundTrip(pinnedRequest)
 		if response != nil {
 			response.Request = request

@@ -71,7 +71,19 @@ proxy = "proxy-http"
 - Routes can be disabled instead of deleted. A route referenced by `egress.default` or by an enabled rule cannot be left disabled.
 
 <Aside type="caution" title="Local DNS is a security prerequisite">
-  Kiln must obtain the target's real, reachable IP in its own network before it can validate SSRF policy and bind the actual dial. If TUN or fake-IP DNS returns a synthetic address that has no meaning in the proxy network, configure real DNS resolution for upstream hosts. Kiln does not fall back to unchecked proxy-side resolution.
+  Kiln must obtain the target's real, reachable IP in its own network before it can validate SSRF policy and bind the actual dial. If TUN or fake-IP DNS returns a synthetic address that has no meaning in the proxy network, configure real DNS resolution for upstream hosts.
+</Aside>
+
+That prerequisite does not hold on a host where TUN or fake-IP DNS is applied system-wide and no process can obtain a real address. Such a deployment can set `egress.trust_proxy_dns = true` to hand the hostname to the proxy, which restores the behavior from before v1.1.0:
+
+```toml
+[egress]
+default = "proxy-http"
+trust_proxy_dns = true
+```
+
+<Aside type="caution" title="The proxy becomes the trust boundary">
+  Kiln no longer learns the real destination IP, so it cannot check whether the target is private, a metadata endpoint, or otherwise blocked. Only the scheme and hostname checks remain (`localhost`, `.local`, `.internal`, and metadata hosts are still refused). Do not enable it when upstream URLs are not fully under your control, and block private destinations on the proxy. The switch applies only to proxied requests; direct requests still resolve and pin locally.
 </Aside>
 
 <Aside type="note" title="Both engines support all four schemes">
