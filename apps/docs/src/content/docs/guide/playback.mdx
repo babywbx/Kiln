@@ -19,6 +19,8 @@ DASH 频道每次重启会换一个发布代，播放地址上带 `?g=`。媒体
 
 分片与初始化段带长缓存头，播放列表一律 `no-store`。
 
+HLS 的 `/u/{upstream}` 媒体代理会把播放器的 `Range` 与 `If-Range` 请求头转发给上游。普通媒体响应会保留上游状态码，206 响应同时透传 `Content-Range`、`Accept-Ranges`、`Content-Length`、`ETag` 与 `Last-Modified`。上游返回 404、410 或 416 时，Kiln 保留状态码但丢弃上游错误正文和其它响应头；416 只额外保留 `Content-Range`。播放列表仍由 Kiln 完整读取并改写，不继承这些媒体响应头。
+
 ## 鉴权
 
 播放路由默认要求凭据，由 `security.play_require_auth` 控制。两种传法完全等价，查询参数优先：

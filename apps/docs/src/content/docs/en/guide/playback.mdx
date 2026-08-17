@@ -19,6 +19,8 @@ Each DASH restart produces a new publication generation, carried as `?g=` on the
 
 Segments and init segments carry long-lived cache headers; playlists are always `no-store`.
 
+For HLS, the `/u/{upstream}` media proxy forwards the player's `Range` and `If-Range` request headers upstream. Ordinary media responses preserve the upstream status; a 206 also carries `Content-Range`, `Accept-Ranges`, `Content-Length`, `ETag`, and `Last-Modified`. When the upstream returns 404, 410, or 416, Kiln preserves the status but discards the upstream error body and other response headers; a 416 keeps only `Content-Range`. Playlists are still read and rewritten in full and never inherit these media response headers.
+
 ## Authentication
 
 Playback routes require a credential by default, governed by `security.play_require_auth`. The two ways to pass one are exactly equivalent, with the query parameter taking precedence:

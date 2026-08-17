@@ -360,7 +360,7 @@ Playback has two parallel path families: `/v1/play/` for session and preview tok
 
 - `index.m3u8` is the entry point. HLS ingress fetches the upstream playlist and rewrites its URLs; DASH ingress serves the locally packaged master playlist.
 - `live/{file}` serves locally packaged output. File names may not contain path separators. When the publication generation changes, the request is redirected with a 307 carrying a `g` query parameter; a stale generation returns 410 with `Retry-After`. In low-latency mode the `_HLS_msn`, `_HLS_part`, and `_HLS_skip` directives are parsed and block for up to 15 seconds. Immutable segments carry `Cache-Control: private, max-age=31536000, immutable`.
-- `u/{upstream}` proxies an upstream fetch. The target URL is encoded and carries an HMAC `sig`; a mismatch returns 403, and the target host must also pass the egress allowlist. Playlist responses are rewritten further; everything else is streamed through untouched.
+- `u/{upstream}` proxies an upstream fetch. The target URL is encoded and carries an HMAC `sig`; a mismatch returns 403, and the target host must also pass the egress allowlist. Playlist responses are read in full and rewritten further. Other media requests forward only `Range` and `If-Range`; a 206 preserves `Content-Range`, `Accept-Ranges`, `Content-Length`, `ETag`, and `Last-Modified`. Upstream 404, 410, and 416 statuses pass through with an empty body, with only `Content-Range` retained for 416. Other upstream errors become a controlled 502 without exposing the upstream body or secret response headers.
 
 ### Authorization behavior
 

@@ -247,9 +247,9 @@ See [EPG](/en/guide/epg/) for channel matching and built-in source behavior.
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `default` | string | `"direct"` | Route used when no rule matches. Must be `direct` or a defined, enabled `[[proxies]]` id, otherwise validation fails. |
-| `playlist_policy` | string | `"rewrite"` | Playlist URL rewriting policy; one of `rewrite`, `passthrough`, `auto`. Anything else fails validation. `rewrite` always rewrites to a Kiln-relative URL, `passthrough` always keeps the original, `auto` rewrites only when a proxy was actually used. |
+| `playlist_policy` | string | `"rewrite"` | Playlist URL rewriting policy; one of `rewrite`, `passthrough`, `auto`. Anything else fails validation. `rewrite` always rewrites to a Kiln-relative URL and `passthrough` always keeps the original. `auto` rewrites URLs that use a proxy; it also rewrites every URL when the channel has a custom User-Agent or effective upstream headers so direct player requests do not lose that configuration. |
 | `docker_proxy_host` | string | `"host.docker.internal"` | Applies only when `ffmpeg.mode = "docker"`; the hostname the spawned ffmpeg container uses to reach the Kiln process. It does not affect `[[proxies]].url` — Kiln never rewrites a route address. |
-| `min_test_kbps` | int | `1000` | Throughput floor for the connection test. The test now reads a real sample of the response and measures it; below this rate the result is reported as reachable but too slow to carry playback rather than a success. A response too small to measure yields no verdict, only the reachability result. A negative value disables the verdict. |
+| `min_test_kbps` | int | `1000` | Throughput floor for the connection test. It reads up to 4 MiB or 5 seconds and measures the bytes delivered when the window expires; below this rate the result is reachable but too slow for playback. A response that ends before 256 KiB is not treated as a bandwidth sample and reports reachability only. A negative value disables the verdict. |
 | `rules` | array | `[]` | Routing rules, see `[[egress.rules]]` below. |
 
 ## `[[egress.rules]]`
