@@ -25,7 +25,7 @@ body:
     attributes:
       label: 版本 / Version
       description: '`kiln -version` 的完整输出 / The full output of `kiln -version`'
-      placeholder: kiln version=1.0.0 commit=… built_at=… variant=full
+      placeholder: kiln version=1.1.0 commit=dev built_at=unknown variant=full
     validations:
       required: true
 

@@ -2,6 +2,12 @@ package version
 
 import "testing"
 
+func TestReleaseFallbackVersion(t *testing.T) {
+	if Version != "1.1.0" {
+		t.Fatalf("fallback version = %q, want 1.1.0", Version)
+	}
+}
+
 func TestUserAgentFollowsBuildVersionUnlessOverridden(t *testing.T) {
 	original := Version
 	Version = "0.3.0"

@@ -1,39 +1,39 @@
 ---
 title: Measured performance
-description: Field measurements of Kiln v1.1.0 against a real upstream at real bitrates - a one-hour soak, viewer fan-out, traffic planning, live latency, and the limits of this data.
+description: Field measurements of a Kiln v1.1.0 candidate against a real upstream at real bitrates - a one-hour soak, viewer fan-out, traffic planning, and the limits of this data.
 sidebar:
   order: 8
 ---
 
-The numbers in [Lite, Core and Full](/en/guide/variants/) come from deterministic in-repo fixtures and answer one question: which variant costs less. This page answers a different one: what Kiln holds up under real bitrates, a real upstream, and continuous load. The two runs differ in method and in reproducibility, so do not read them as one dataset.
+The numbers in [Lite, Core and Full](/en/guide/variants/) come from deterministic in-repo fixtures and answer one question: which variant costs less. This page reports observed behaviour under real bitrates, a real upstream, and continuous load. The two runs differ in method and in reproducibility, so do not read them as one dataset.
 
-Everything below was measured on v1.1.0. That release fixed upstream TLS suite negotiation, the options passed to the ffmpeg fallback, and the per-host connection pool ceiling; these measurements were taken after those fixes.
+Everything below was measured on a v1.1.0 candidate after the upstream TLS, fallback-option and connection-pool corrections described in this release. Until the release is tagged, these numbers do not identify a published v1.1.0 artifact.
 
 ## One hour of continuous dual-channel playback
 
-Two encrypted DASH live sources were consumed simultaneously for one hour: a 4K channel at roughly 15 Mbps on the host loopback, and a 1080p channel at roughly 5 Mbps across an internal tunnel. The consumer was ffmpeg performing a full fetch and demux, not a single manifest request.
+Two encrypted DASH live sources were consumed simultaneously for one hour: a 4K channel at roughly 15 Mbps on a same-host path, and a 1080p channel at roughly 5 Mbps across an additional network hop. The consumer was ffmpeg performing a full fetch and demux, not a single manifest request.
 
 | Metric | Value |
 | --- | --- |
-| 4K channel | 3551 seconds of media decoded in 3600 seconds of wall clock |
+| 4K channel | 3551 seconds of media timeline consumed in 3600 seconds of wall clock |
 | 1080p channel | 3519 seconds |
 | Buffering and underrun events | 0 |
 | CPU | 3.07% mean, 13.9% peak (123 samples) |
 | Container memory | 106 MiB mean, 27 floor, 241 peak (1 GiB limit) |
-| Upstream ingest | 8.76 GB, 19.7 Mbps mean |
-| Egress | 8.63 GB, 19.4 Mbps mean |
+| Upstream ingest | 8.76 GB over roughly 59 minutes, recorded mean 19.7 Mbps |
+| Egress | 8.63 GB over the same window, recorded mean 19.4 Mbps |
 | Server-side warnings | 0 |
 
-CPU percentages treat one core as 100%. The gap between media duration and wall clock comes from startup and the playlist-edge offset; neither consumer ever fell behind real time.
+CPU percentages treat one core as 100%. The run did not retain a separate first-packet timestamp or a steady-state PTS slope, so the gap between media duration and wall clock cannot be divided between startup, playlist-edge offset, and lag accumulated during the run. This figure alone does not prove that steady state always kept pace with real time.
 
 What the run supports:
 
-- **Ingest and egress are nearly equal** (19.7 against 19.4). On-demand pulling works: Kiln fetches only the tracks a player actually requests rather than every upstream track. Pulling all tracks would put ingest well above egress.
-- **Memory is a sawtooth, not a climb.** A 27 MiB floor, a 241 MiB peak and a 106 MiB mean, with no monotonic rise across the hour, is the expected shape for segment buffers plus GC. The peak leaves roughly four times headroom under the 1 GiB limit.
+- **Ingest and egress are nearly equal** (19.7 against 19.4). That is consistent with fetching the primary video clock plus requested non-primary renditions, but the run had no control with rendition idling disabled and therefore does not quantify the bytes saved.
+- **Memory is a sawtooth, not a climb.** A 27 MiB floor, a 241 MiB peak and a 106 MiB mean, with no monotonic rise across the hour, is the expected shape for segment buffers plus GC. The peak is about 24% of the 1 GiB limit, leaving roughly 783 MiB.
 - **Every server-side counter stayed at zero**: slow segments, re-anchors, stalls, session restarts and handshake failures.
-- Twelve track pauses and five rewarms occurred, which is normal `on_demand` behaviour.
+- Native-path logs recorded twelve track pauses and five rewarms, direct evidence that `rendition_idle_sec` triggered during the run, but the run did not quantify its byte savings.
 
-At the decoder, the 4K path logged exactly 2 `Packet corrupt` entries, both on the same timestamp and therefore one segment boundary; the tunnelled path logged 13, of which 7 were `End of file`, matching tunnel jitter. Neither path was interrupted.
+The ffmpeg input path logged 2 `Packet corrupt` entries at the same timestamp for the 4K channel. The second path logged 13 entries, 7 of them `End of file`. Because `-c copy` performs no decode, these messages only establish that the input or demux path observed an anomaly; their counts alone cannot attribute the cause. Neither consumer process was interrupted.
 
 ## Viewer fan-out
 
@@ -46,13 +46,13 @@ One channel was consumed by 1, 5, 10 and 20 concurrent clients to test whether u
 | 10 | 5.75 Mbps | 14.9 Mbps | 1.96% | 150 to 214 MiB |
 | 20 | 3.84 Mbps | 72.6 Mbps | 2.27% | 143 to 165 MiB |
 
-**Upstream pulling is independent of viewer count.** Ingest stayed in the same 2 to 6 Mbps band from 1 to 20 viewers, and was in fact lower at 20 viewers (3.84) than at 10 (5.75), while egress over the same period reached 72.6 Mbps.
+**This run did not show upstream pulling growing in proportion to viewer count.** Ingest stayed in the same 2 to 6 Mbps band from 1 to 20 viewers, and was lower at 20 viewers (3.84) than at 10 (5.75), while egress over the same period reached 72.6 Mbps.
 
-The server-side counters make the point more directly. `kiln_sessions` stayed at 1 throughout. Upstream segment fetches ran at 4.3 per 10 seconds with 10 viewers, 3.9 per 10 seconds with 20 viewers, and 3 per 10 seconds in the gaps where no viewer was connected but the channel had not yet idled out. All three sit in the same band, which means upstream fetching is driven by the rate the stream is produced at, with viewer count playing no part. Kiln keeps one upstream session per channel and fans it out.
+The server-side counters make the sharing more direct. `kiln_sessions` stayed at 1 throughout. Upstream segment fetches ran at 4.3 per 10 seconds with 10 viewers, 3.9 per 10 seconds with 20 viewers, and 3 per 10 seconds in gaps where no viewer was connected but the channel had not yet idled out. These rates are of the same order and show that the clients shared one upstream session. With only one 60-second window per tier, the data does not establish statistical independence between viewer count and upstream bytes.
 
-CPU grows sublinearly with the audience, reaching 2.27% of one core at 20 viewers. Memory does not track viewer count at all, and was lower at 20 viewers than at 10.
+In this sample CPU rose from 0.79% with one viewer to 2.27% with twenty, slower than the viewer count. Memory showed no monotonic relationship. Treating either relationship as a capacity result would require longer windows and repeated runs.
 
-Every client selected the first rendition in the master playlist (576p50, roughly 2 Mbps including audio), so this demonstrates **same-rendition fan-out**. When viewers spread across different renditions, Kiln pulls one copy of each rendition that is actually requested.
+Every client selected the first rendition in the master playlist (576p50, roughly 2 Mbps including audio), so this demonstrates **same-rendition fan-out**. When viewers select non-primary renditions, Kiln keeps one primary video pull as the clock and adds one pull for each requested non-primary rendition.
 
 <Aside type="caution" title="Read the egress column as an order of magnitude only">
   Egress swings widely and is lower at 10 viewers than at 5. The clients are unthrottled, each holds a different buffer position, and their fetches bunch together; a 60 second counting window spans only about 7 segment periods, which is too small a sample to smooth that bunching out. Use this column only for the order of magnitude, namely that egress can be more than ten times ingest. It is not a steady-state per-viewer rate and it is certainly not a capacity ceiling. A usable capacity figure needs windows of several minutes, repeated over several rounds.
@@ -60,7 +60,7 @@ Every client selected the first rendition in the master playlist (576p50, roughl
 
 ## Traffic planning
 
-With on-demand pulling in effect, a single viewer costs roughly the bitrate of the rendition they selected:
+When the selected rendition is the primary video, its nominal bitrate gives this order of magnitude for one viewer. Selecting a non-primary rendition also retains the primary video clock:
 
 | Rendition | Per hour | Per month at 2 hours a day |
 | --- | ---: | ---: |
@@ -68,36 +68,36 @@ With on-demand pulling in effect, a single viewer costs roughly the bitrate of t
 | About 5 Mbps (1080p plus audio) | 2.3 GB | About 135 GB |
 | About 15 Mbps (4K plus audio) | 6.8 GB | About 405 GB |
 
-In the one-hour dual-channel run, the bitrate estimate predicted 9.0 GB against 8.76 GB of measured upstream ingest, roughly 3% low, with the difference coming from variable bitrate and the ramp-up at the start. The table can be used directly for capacity planning. Multiple viewers on the same rendition of the same channel do not increase upstream consumption.
+The traffic counter covered roughly 59 minutes rather than a full hour, so its 8.76 GB total cannot be compared directly with the 9.0 GB hourly estimate. The recorded 19.7 Mbps mean corresponds to about 8.9 GB per hour; because the exact window duration and raw byte count were not retained here, no further cause is assigned to the difference. Use the table as a preliminary data-transfer allowance estimate and leave margin based on a long measurement of your own deployment. Multiple viewers on the same rendition of one channel share one upstream session.
 
 ## Live latency
 
-End-to-end latency is dominated by the upstream segment duration and the playlist depth. On this path, upstream segments are 8 seconds long, Kiln keeps 8 segments in the playlist, it advertises a `TARGETDURATION` of 12 seconds, and the LL-HLS part target is 0.5 seconds, with the player's own startup buffer added on top.
+This run sampled how far the playlist edge trailed the upstream timestamp, not end-to-end latency at the player's screen. End-to-end results also depend on the output engine, playlist window, and player buffering. The native and ffmpeg compatibility paths produce different output structures, so one set of `TARGETDURATION` or LL-HLS part settings cannot describe both.
 
 <Aside type="caution" title="No measured latency figure is published here">
   We measured how far the playlist edge trails real time, but the result did not reproduce across runs: the same channel landed anywhere between 7 and 55 seconds on different rounds, and the ordering between the two channels reversed entirely. The value depends both on where the sample falls within the segment cycle and on whether the timestamps the upstream writes into `EXT-X-PROGRAM-DATE-TIME` are accurate, and the latter is outside Kiln's control. Until we have a method that reproduces, no number goes here; measure it on your own path.
 </Aside>
 
 <Aside type="caution" title="What this data cannot support">
-  These are field measurements from one machine, one upstream and one deployment, not a reproducible controlled benchmark. The upstream is a private encrypted source, so no reader can reproduce the same path; do not use these absolute values to compare Kiln against other implementations. The run does not cover concurrent pulling of more than two channels, the cost of the ffmpeg fallback path, soaks longer than an hour, the distribution of cold-start time to first frame, or architectures other than arm64. Every fan-out client ran on the host loopback, so real network TCP behaviour is absent and an audience spread across the public internet will behave differently on the egress side. CPU percentages are tied to this specific CPU and do not transfer across architectures.
+  These are field measurements from one machine, one source path and one deployment, not a reproducible controlled benchmark. The exact source path is not included, so the absolute values should not be generalized beyond this setup. The retained record does not identify `engine` and `pack_mode` for each channel in the one-hour run, so it cannot separate the resource cost of the native and ffmpeg compatibility paths. The run also does not cover concurrent pulling of more than two channels, soaks longer than an hour, the distribution of cold-start time to first frame, or architectures other than arm64. Every fan-out client ran on the host loopback, so real network TCP behaviour is absent and an audience spread across the public internet will behave differently on the egress side. CPU percentages are tied to this specific CPU and do not transfer across architectures.
 </Aside>
 
 ### Environment and method
 
-The host was an Apple M4 Mac mini running containers on OrbStack under `linux/arm64`, with the Kiln container limited to 1 GiB of memory. The build under test was v1.1.0.
+The measurements ran in an arm64 container limited to 1 GiB of memory. The build under test was a v1.1.0 candidate.
 
-The upstreams were two encrypted DASH live sources reached through an HTTP forward proxy, with 8 second upstream segments. Every consumer used ffmpeg's `-c copy -f null -`, fetching and demuxing in full without transcoding, so the measurement covers the real segment download and packaging path. The 4K path was consumed on the host loopback to exclude the internal network and served as the primary criterion; the 1080p path crossed an internal tunnel and is reference only, since its jitter includes tunnel quality.
+The sources were two encrypted DASH live streams reached through an HTTP forward proxy, with 8 second upstream segments. Every consumer used ffmpeg's `-c copy -f null -`, fetching and demuxing in full without transcoding, so the measurement covers the real segment download and packaging path. The 4K stream used a same-host path and served as the primary criterion; the 1080p stream crossed an additional network hop and is reference only because that path adds unrelated jitter.
 
-CPU and memory come from the container's cgroup v2 counters (`usage_usec` in `cpu.stat`, and `memory.current`); traffic comes from exact byte counters for the container's `eth0` in `/proc/net/dev`. The `NetIO` field of `docker stats` carries only three significant digits, which at GB scale is not enough to difference across a window, so it cannot be used for short-window measurement.
+CPU and memory come from the container's cgroup v2 counters (`usage_usec` in `cpu.stat`, and `memory.current`); traffic comes from exact byte counters for the container's `eth0` in `/proc/net/dev`. Summary network counters rounded to three significant digits are not precise enough for short-window differences at GB scale.
 
 Each fan-out step waited 75 seconds before counting, so that the clients' catch-up burst was over and they had reached steady state, then counted over a 60 second window, with a check at both ends of the window confirming the clients were still alive. Buffering was judged from both sides: underruns and stalls in the client ffmpeg logs, and Kiln's own counters for slow segments, re-anchors, stalls, session restarts and handshake failures.
 
 ### Reproducing this on your own deployment
 
-The path above cannot be reproduced directly, but the equivalent measurement runs against your own channels. The repository ships `scripts/live-performance.sh`, which starts an instance and measures cold start, time to the first manifest, throughput as a ratio of real time, peak RSS and peak CPU for the channels you name:
+The path above cannot be reproduced directly. The repository ships `scripts/live-performance.sh` for a similar short, single-channel run against your own source. It measures cold start, time to the first manifest, throughput as a ratio of real time, peak RSS and peak CPU. It starts Kiln on the host and samples through `ps`; it does not reproduce this page's soak, fan-out, or container cgroup method:
 
 ```bash
-KILN_PERF_CONFIG=configs/local.toml \
+KILN_PERF_CONFIG=/path/to/your/kiln.toml \
 KILN_PERF_CHANNELS=my-channel \
 KILN_PERF_CAPTURE_SECONDS=60 \
   sh scripts/live-performance.sh

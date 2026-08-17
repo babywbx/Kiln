@@ -47,10 +47,10 @@ kiln -version
 Prints one space-separated line:
 
 ```text
-kiln version=1.0.0 commit=dev built_at=unknown variant=full
+kiln version=1.1.0 commit=dev built_at=unknown variant=full
 ```
 
-`variant` identifies the build: `full` or `lite`. The `version`, `commit`, and `built_at` values are injected by linker flags at build time and are placeholders when running straight from source.
+`variant` identifies the build as `full` or `lite`. Release artifacts receive `version`, `commit`, and `built_at` through linker flags; a direct source run uses `dev` and `unknown` for the latter two fields.
 
 A running instance also reports its version without a credential: `GET /` returns `name`, `version`, `commit`, and the admin console path. See the [API reference](/en/reference/api/).
 

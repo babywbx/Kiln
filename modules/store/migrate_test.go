@@ -42,6 +42,7 @@ func TestOpenMigratesFromEveryIntermediateVersion(t *testing.T) {
 }
 
 func TestV100Schema13UpgradeSmoke(t *testing.T) {
+	assertV100MigrationsFrozen(t)
 	dir := t.TempDir()
 	seedDatabaseAtVersion(t, dir, 13)
 
@@ -208,6 +209,18 @@ INSERT INTO settings(key, value, revision, updated_at) VALUES
 
 func fixtureTokenHash(token string) string {
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(token)))
+}
+
+func assertV100MigrationsFrozen(t *testing.T) {
+	t.Helper()
+	const want = "6efa5b758f4b6cb1fc078fed10dbd7a29ee9e09be17e44ed0c47ce820e489d23"
+	got := fmt.Sprintf("%x", sha256.Sum256([]byte(
+		schemaV1+schemaV2+schemaV3+schemaV4+schemaV5+schemaV6+schemaV7+
+			schemaV8+schemaV9+schemaV10+schemaV11+schemaV12+schemaV13,
+	)))
+	if got != want {
+		t.Fatalf("v1.0.0 migration snapshot hash = %s, want %s", got, want)
+	}
 }
 
 func seedDatabaseAtVersion(t *testing.T, dir string, target int) {

@@ -34,7 +34,7 @@ lite 变体只构建 Linux，文件名前缀换成 `kiln-lite`，覆盖 `amd64`�
 
 <Steps>
   <Step title="下载产物与校验和">
-    从 [Releases](https://github.com/babywbx/Kiln) 页面取对应平台的压缩包，连同 `SHA256SUMS` 一起下载到同一目录。
+    从 [Releases](https://github.com/babywbx/Kiln/releases) 页面取对应平台的压缩包，连同 `SHA256SUMS` 一起下载到同一目录。
   </Step>
   <Step title="核对校验和">
     校验不通过就不要继续，重新下载或换个下载源。
@@ -47,14 +47,16 @@ lite 变体只构建 Linux，文件名前缀换成 `kiln-lite`，覆盖 `amd64`�
       </TabItem>
       <TabItem label="macOS">
         ```bash
-        grep 'kiln_1.0.0_darwin_arm64.tar.gz' SHA256SUMS | shasum -a 256 -c -
+        VERSION=1.1.0
+        grep "kiln_${VERSION}_darwin_arm64.tar.gz" SHA256SUMS | shasum -a 256 -c -
         ```
       </TabItem>
     </Tabs>
   </Step>
   <Step title="解压并放进 PATH">
     ```bash
-    tar -xzf kiln_1.0.0_linux_amd64.tar.gz
+    VERSION=1.1.0
+    tar -xzf "kiln_${VERSION}_linux_amd64.tar.gz"
     sudo install -m 0755 kiln /usr/local/bin/kiln
     ```
 
@@ -89,7 +91,8 @@ Windows 版自带服务子命令，不需要额外的守护工具或包装器。
     下载 `kiln_<version>_windows_amd64.zip` 并解压，例如放到 `C:\kiln`。用 `Get-FileHash` 核对 `SHA256SUMS` 里对应的那一行。
 
     ```powershell
-    Get-FileHash kiln_1.0.0_windows_amd64.zip -Algorithm SHA256
+    $Version = "1.1.0"
+    Get-FileHash "kiln_${Version}_windows_amd64.zip" -Algorithm SHA256
     ```
   </Step>
   <Step title="准备配置">

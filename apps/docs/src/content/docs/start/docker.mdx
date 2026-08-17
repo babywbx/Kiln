@@ -37,9 +37,9 @@ docker pull ghcr.io/babywbx/kiln:latest   # full，内置 ffmpeg
 
 | 标签格式 | 含义 |
 | --- | --- |
-| `:1.0.0-lite`、`:1.0-lite`、`:1-lite`、`:lite` | lite 变体的精确版本、次版本、主版本与最新版 |
-| `:1.0.0-core`、`:1.0-core`、`:1-core`、`:core` | core 变体的同一组标签 |
-| `:1.0.0`、`:1.0`、`:1`、`:latest` | full 变体的同一组标签，`:latest` 即 full 的最新版 |
+| `:1.1.0-lite`、`:1.1-lite`、`:1-lite`、`:lite` | lite 变体的精确版本、次版本、主版本与最新版 |
+| `:1.1.0-core`、`:1.1-core`、`:1-core`、`:core` | core 变体的同一组标签 |
+| `:1.1.0`、`:1.1`、`:1`、`:latest` | full 变体的同一组标签，`:latest` 即 full 的最新版 |
 
 预发布版本只推出带完整版本号的那一个标签，不会移动 `lite`、`core`、`latest` 以及主次版本标签。core 覆盖 `linux/amd64`、`linux/arm64`、`linux/arm/v7` 与 `linux/arm/v6`，lite 与 full 覆盖 `linux/amd64` 与 `linux/arm64`。三个变体在发布时都会生成构建溯源证明并推送到镜像仓库。
 

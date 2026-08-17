@@ -1,11 +1,21 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import test from "node:test";
 
 const distUrl = new URL("../dist/", import.meta.url);
+const sourceUrl = new URL("../src/content/docs/", import.meta.url);
 
 async function readPage(path) {
   return readFile(new URL(path, distUrl), "utf8");
+}
+
+async function sourceDocuments() {
+  const paths = await readdir(sourceUrl, { recursive: true });
+  return Promise.all(
+    paths
+      .filter((path) => path.endsWith(".mdx"))
+      .map(async (path) => [path, await readFile(new URL(path, sourceUrl), "utf8")]),
+  );
 }
 
 function tags(html, name) {
@@ -86,4 +96,10 @@ test("404 is noindex without canonical or language alternates", async () => {
   assert.equal(metaContent(html, "name", "robots"), "noindex");
   assert.equal(links(html, "canonical").length, 0);
   assert.equal(links(html, "alternate").filter((link) => "hreflang" in link).length, 0);
+});
+
+test("published documentation does not pin a concrete commit", async () => {
+  for (const [path, source] of await sourceDocuments()) {
+    assert.doesNotMatch(source, /`(?=[0-9a-f]{7,40}`)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}`/i, path);
+  }
 });

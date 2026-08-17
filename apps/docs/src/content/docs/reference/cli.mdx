@@ -47,10 +47,10 @@ kiln -version
 输出单行，字段之间用空格分隔：
 
 ```text
-kiln version=1.0.0 commit=dev built_at=unknown variant=full
+kiln version=1.1.0 commit=dev built_at=unknown variant=full
 ```
 
-`variant` 区分构建变体，完整版为 `full`，Lite 版为 `lite`。`version`、`commit` 与 `built_at` 由构建时的链接参数注入，从源码直接运行时是占位值。
+`variant` 区分构建变体，完整版为 `full`，Lite 版为 `lite`。正式产物的 `version`、`commit` 与 `built_at` 由构建时的链接参数注入；从源码直接运行时，`commit` 与 `built_at` 分别为 `dev` 和 `unknown`。
 
 运行中的实例也可以在不带凭据的情况下查询版本，`GET /` 会返回 `name`、`version`、`commit` 与管理控制台路径，详见 [API 参考](/reference/api/)。
 

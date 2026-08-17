@@ -8,9 +8,10 @@ Kiln is a gateway that serves the network. It holds password hashes, session sig
 
 | Version | Status |
 | --- | --- |
+| 1.1.x | Receiving security reports |
 | 1.0.x | Receiving security reports |
 
-Only the latest patch release receives fixes. Please upgrade and confirm the issue still reproduces before reporting.
+Reports are accepted for both listed series. For each listed series, fixes ship in its latest patch release. Please upgrade to the latest release in that series and confirm the issue still reproduces before reporting.
 
 ## How to report
 

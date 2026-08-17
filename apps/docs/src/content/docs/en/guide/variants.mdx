@@ -114,7 +114,7 @@ What the run supports:
 
 ### Environment and method
 
-The host was an Apple M1 Max with 10 cores and 64 GiB, running containers on OrbStack under `linux/arm64`. Each Kiln container was limited to 1 CPU and 128 MiB with swap equal to memory, a read-only root filesystem, all Linux capabilities dropped, and `no-new-privileges` enabled. The three variants ran in interleaved order so a fixed sequence could not bias the caches.
+The test ran on a 10-core arm64 host with 64 GiB of memory and a `linux/arm64` container environment. Each Kiln container was limited to 1 CPU and 128 MiB with swap equal to memory, a read-only root filesystem, all Linux capabilities dropped, and `no-new-privileges` enabled. The three variants ran in interleaved order so a fixed sequence could not bias the caches.
 
 The workload used the deterministic media fixtures in the repository rather than an external origin: a 320×180, 25 fps, 4 second H.264 test pattern at roughly 120 kbit/s paired with a 32 kbit/s stereo AAC tone. Every iteration fetched the master, media, init and segment of the encrypted DASH to HLS chain, plus the playlist, init and segment of the HLS proxy chain. Full defaults to `auto`, but the native engine handles this fixture end to end; the logs confirmed the native path and no ffmpeg child process appeared in the process table, so these numbers isolate the cost of the variant itself.
 
@@ -140,7 +140,7 @@ KILN_SMOKE_EXPECTED_PROFILE=lite \
   sh deploy/docker/native-media-runtime-smoke.sh kiln:lite-local
 ```
 
-For Core and Full, swap `KILN_SMOKE_VARIANT` and `KILN_SMOKE_EXPECTED_PROFILE` for `core` / `full` and `compact`. A serious re-run should repeat at least 5 rounds and rotate the order, and comparisons across commits should hold the Docker version, host load, container limits, fixture and iteration count constant. Acceptance against real channels is a separate script, `scripts/live-performance.sh`, which measures cold start, first manifest, throughput ratio, RSS and CPU.
+For Core and Full, swap `KILN_SMOKE_VARIANT` and `KILN_SMOKE_EXPECTED_PROFILE` for `core` / `full` and `compact`. A serious re-run should repeat at least 5 rounds and rotate the order, and comparisons across versions should hold the Docker version, host load, container limits, fixture and iteration count constant. Acceptance against real channels is a separate script, `scripts/live-performance.sh`, which measures cold start, first manifest, throughput ratio, RSS and CPU.
 
 ## Picking one
 
