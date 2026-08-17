@@ -47,7 +47,7 @@ Each archive contains the executable (`kiln`, or `kiln.exe` on Windows) plus `LI
       </TabItem>
       <TabItem label="macOS">
         ```bash
-        VERSION=1.1.0
+        VERSION=1.1.1
         grep "kiln_${VERSION}_darwin_arm64.tar.gz" SHA256SUMS | shasum -a 256 -c -
         ```
       </TabItem>
@@ -55,7 +55,7 @@ Each archive contains the executable (`kiln`, or `kiln.exe` on Windows) plus `LI
   </Step>
   <Step title="Unpack and put it on PATH">
     ```bash
-    VERSION=1.1.0
+    VERSION=1.1.1
     tar -xzf "kiln_${VERSION}_linux_amd64.tar.gz"
     sudo install -m 0755 kiln /usr/local/bin/kiln
     ```
@@ -91,7 +91,7 @@ The Windows build ships its own service commands, so no external supervisor or w
     Download `kiln_<version>_windows_amd64.zip` and unpack it somewhere permanent, for example `C:\kiln`. Check the hash against the matching line in `SHA256SUMS`.
 
     ```powershell
-    $Version = "1.1.0"
+    $Version = "1.1.1"
     Get-FileHash "kiln_${Version}_windows_amd64.zip" -Algorithm SHA256
     ```
   </Step>

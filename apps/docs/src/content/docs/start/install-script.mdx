@@ -135,10 +135,10 @@ Windows 不在脚本支持范围内，脚本检测到 Windows 环境会直接退
 
 ## 版本选择与升级
 
-重复运行脚本就是升级。版本比较覆盖 SemVer 核心版本和预发布标识符，因此 `1.1.0-rc.1` 会被正确判定为早于 `1.1.0`。
+重复运行脚本就是升级。版本比较覆盖 SemVer 核心版本和预发布标识符，因此 `1.1.1-rc.1` 会被正确判定为早于 `1.1.1`。
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh | sh -s -- --lang zh --version 1.1.0
+curl -fsSL https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh | sh -s -- --lang zh --version 1.1.1
 ```
 
 版本号格式非法时以 1 退出；格式合法但没有对应 Release 时，探测阶段找不到产物，以 3 退出。

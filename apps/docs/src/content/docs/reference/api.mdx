@@ -143,7 +143,7 @@ API Token 只能访问**已登记**的路由。登记表共 43 条，就是本�
 `Accept` 含 `text/html` 时 302 跳转到 `/admin`，否则返回 JSON：
 
 ```json
-{ "name": "kiln", "version": "1.1.0", "commit": "dev", "admin": "/admin" }
+{ "name": "kiln", "version": "1.1.1", "commit": "dev", "admin": "/admin" }
 ```
 
 该模式同时兜底所有未匹配的 GET 路径，此时返回 404 `not_found`。
@@ -397,7 +397,7 @@ API Token 只能访问**已登记**的路由。登记表共 43 条，就是本�
 {
   "channel": { "id": "demo-hls", "title": "Demo HLS" },
   "egress_binding": { "mode": "auto" },
-  "effective_user_agent": "Kiln/1.1.0",
+  "effective_user_agent": "Kiln/1.1.1",
   "revision": 3,
   "updated_at": 0
 }

@@ -3,8 +3,8 @@ package version
 import "testing"
 
 func TestReleaseFallbackVersion(t *testing.T) {
-	if Version != "1.1.0" {
-		t.Fatalf("fallback version = %q, want 1.1.0", Version)
+	if Version != "1.1.1" {
+		t.Fatalf("fallback version = %q, want 1.1.1", Version)
 	}
 }
 

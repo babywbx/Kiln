@@ -47,7 +47,7 @@ lite 变体只构建 Linux，文件名前缀换成 `kiln-lite`，覆盖 `amd64`�
       </TabItem>
       <TabItem label="macOS">
         ```bash
-        VERSION=1.1.0
+        VERSION=1.1.1
         grep "kiln_${VERSION}_darwin_arm64.tar.gz" SHA256SUMS | shasum -a 256 -c -
         ```
       </TabItem>
@@ -55,7 +55,7 @@ lite 变体只构建 Linux，文件名前缀换成 `kiln-lite`，覆盖 `amd64`�
   </Step>
   <Step title="解压并放进 PATH">
     ```bash
-    VERSION=1.1.0
+    VERSION=1.1.1
     tar -xzf "kiln_${VERSION}_linux_amd64.tar.gz"
     sudo install -m 0755 kiln /usr/local/bin/kiln
     ```
@@ -91,7 +91,7 @@ Windows 版自带服务子命令，不需要额外的守护工具或包装器。
     下载 `kiln_<version>_windows_amd64.zip` 并解压，例如放到 `C:\kiln`。用 `Get-FileHash` 核对 `SHA256SUMS` 里对应的那一行。
 
     ```powershell
-    $Version = "1.1.0"
+    $Version = "1.1.1"
     Get-FileHash "kiln_${Version}_windows_amd64.zip" -Algorithm SHA256
     ```
   </Step>

@@ -135,10 +135,10 @@ When the install directory is not on `PATH`, the script prints a ready-to-paste 
 
 ## Versions and upgrades
 
-Re-running the script is the upgrade path. Comparison covers the SemVer core and prerelease identifiers, so `1.1.0-rc.1` correctly sorts before `1.1.0`.
+Re-running the script is the upgrade path. Comparison covers the SemVer core and prerelease identifiers, so `1.1.1-rc.1` correctly sorts before `1.1.1`.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh | sh -s -- --version 1.1.0
+curl -fsSL https://raw.githubusercontent.com/babywbx/Kiln/main/install.sh | sh -s -- --version 1.1.1
 ```
 
 A malformed version string exits 1. A well-formed version with no matching release gets as far as source probing and exits 3.

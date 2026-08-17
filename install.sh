@@ -764,7 +764,7 @@ version=""
 if [ -n "$VERSION_REQ" ]; then
 	version="$VERSION_REQ"
 elif [ "$DRY_RUN" = 1 ]; then
-	version="1.1.0"
+	version="1.1.1"
 else
 	(resolve_latest "$GITHUB" >"$WORK/ver" 2>/dev/null || true) &
 	spin_while "$T_FETCH" "$!"
